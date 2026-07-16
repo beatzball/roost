@@ -2,7 +2,7 @@
 # amux-agent-state — record an AI agent's state onto its tmux window.
 #
 # Called by Claude Code lifecycle hooks (see `amux hooks`). It stamps the
-# window that the agent runs in with a state + colour, which the amux status
+# window that the agent runs in with a state + glyph, which the amux status
 # bar renders at a glance. It is a deliberate no-op unless the agent is running
 # inside an `amux` server pane, so it is safe to wire into your GLOBAL Claude
 # hooks — running `claude` anywhere else does nothing.
@@ -23,18 +23,29 @@ case "$sock" in
   *) exit 0 ;;
 esac
 
+# Each state gets a glyph with a distinct SHAPE, not just a distinct colour, so
+# the bar stays readable for colourblind users and in a mono terminal. All four
+# are single-codepoint and exactly two cells wide — no variation selectors, which
+# are what break tmux's width maths and smear the status line.
 case "$state" in
-  blocked) color="#e0533d" ;;   # 🔴 needs you
-  working) color="#e0a53d" ;;   # 🟡 thinking
-  done)    color="#3d7ce0" ;;   # 🔵 finished, awaiting next prompt
-  idle|*)  state="idle"; color="#4a4668" ;;  # 🟢 / dim
+  blocked) glyph="🛑" ;;        # stop sign — needs you
+  working) glyph="⏳" ;;        # hourglass — thinking
+  done)    glyph="✅" ;;        # check — finished, awaiting next prompt
+  idle|*)  state="idle"; glyph="💤" ;;
 esac
 
-prev="$(tmux -S "$sock" show-options -wqv -t "$TMUX_PANE" @agent_state 2>/dev/null || true)"
+# PostToolUse fires after EVERY tool call and Claude blocks on this script
+# exiting, so the overwhelmingly common case — state already correct — has to be
+# cheap: one read, then bail before doing any writes. #{@agent_state} resolves
+# the window option *with* the global fallback, i.e. exactly what the bar shows.
+cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}|#{@agent_glyph}' 2>/dev/null || true)"
+prev="${cur%%|*}"
+prev_glyph="${cur#*|}"
+[ "$state" = "$prev" ] && [ "$glyph" = "$prev_glyph" ] && exit 0
 
 # Stamp the WINDOW that owns this pane (reliably read by window-status-format).
 tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
-tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_color "$color" 2>/dev/null || true
+tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_glyph "$glyph" 2>/dev/null || true
 
 # On a real state change, record when it happened (for elapsed-time display)
 # and ping if an off-screen agent just became blocked (needs your input).
