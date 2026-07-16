@@ -133,8 +133,8 @@ echo "all three agents finished"
 
 ### Remote agents
 
-Remote agents in one line of tmux — run agents on another machine and drive
-them from here (amux must be installed on the remote):
+Run agents on another machine and drive them from here — tmux-native, no daemon
+(amux must be installed on the remote):
 
 ```sh
 amux ssh devbox         # ssh -t devbox amux  → attach the remote agent view
