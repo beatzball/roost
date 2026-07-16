@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# amux — launch an on-demand tmux "agent view" on its own isolated server.
+#
+# Your normal `tmux` is untouched: amux uses a separate socket (-L amux) and its
+# own config (tmux/amux.conf), so it never sees or disturbs your regular
+# sessions. Run your AI coding agents inside it; Claude Code hooks colour each
+# window by state (🔴 blocked · 🟡 working · 🔵 done · 🟢 idle).
+#
+#   amux            start the agent view (or attach if already running)
+#   amux new NAME   open a new agent window called NAME and attach
+#   amux hooks      print the Claude Code hook config that powers the colours
+#   amux status     is the amux server running?
+#   amux kill       tear down the amux server
+set -euo pipefail
+
+# Resolve the repo root even when invoked via a symlink on PATH.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+AMUX_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+SOCKET="amux"
+SESSION="amux"
+CONF="$AMUX_HOME/tmux/amux.conf"
+
+t() { tmux -L "$SOCKET" "$@"; }
+
+ensure_server() {
+  if ! t has-session -t "$SESSION" 2>/dev/null; then
+    t -f "$CONF" new-session -d -s "$SESSION"
+    t set-environment -g AMUX_HOME "$AMUX_HOME"
+    t set-option -g @amux_home "$AMUX_HOME"
+    t set-environment -g PATH "$AMUX_HOME/scripts:$PATH"
+  fi
+}
+
+case "${1:-up}" in
+  up|start|"")
+    ensure_server
+    exec t attach -t "$SESSION"
+    ;;
+  new)
+    ensure_server
+    name="${2:-agent}"
+    t new-window -t "$SESSION" -n "$name" -c "$PWD"
+    exec t attach -t "$SESSION"
+    ;;
+  hooks)
+    cat <<JSON
+# Add this to ~/.claude/settings.json (merge into an existing "hooks" block).
+# Then run \`claude\` inside an \`amux\` window and its colour tracks its state.
+# Outside amux these hooks are silent no-ops.
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "$AMUX_HOME/scripts/amux-agent-state working" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "$AMUX_HOME/scripts/amux-agent-state blocked" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "$AMUX_HOME/scripts/amux-agent-state done" } ] }
+    ]
+  }
+}
+JSON
+    ;;
+  status)
+    if t has-session -t "$SESSION" 2>/dev/null; then
+      echo "amux: running (socket=$SOCKET)"; t list-windows -t "$SESSION" -F '  #I #{pane_current_command}  [#{@agent_state}]'
+    else echo "amux: not running"; fi
+    ;;
+  kill|down|stop)
+    t kill-server 2>/dev/null && echo "amux: server stopped." || echo "amux: not running." ;;
+  *) echo "usage: amux [up|new NAME|hooks|status|kill]" >&2; exit 2 ;;
+esac
