@@ -80,8 +80,51 @@ tmux config, so there's nothing new to learn:
 | `prefix H J K L` | resize pane (repeatable) |
 | `prefix > / <` | swap pane forward / back |
 | `prefix C-c` | new session |
+| `prefix a` | **agent switcher** — fzf popup of all agents + state + elapsed time |
 | `prefix b` | **jump to the next blocked agent** (needs your input) |
 | `prefix r` | reload amux config |
+
+### At-a-glance signals
+
+- **Status bar counts** — the top-right shows the whole herd rolled up, e.g.
+  `●4 ●1 ●3` (blocked / working / done), so you see the picture even when the
+  window tabs scroll off.
+- **Desktop notification** — when an agent you're *not* looking at becomes
+  blocked (needs input), amux pings you with a native macOS notification. Only
+  `blocked` notifies — `done` fires every turn and would be noise.
+- **Elapsed time** — the `prefix a` switcher shows how long each agent has been
+  in its current state, so a stuck agent stands out. It's computed only when you
+  open the switcher — nothing extra runs on the status tick.
+
+## Driving a fleet
+
+amux exposes tmux's scripting as small agent-shaped commands, so you (or a
+script, or one agent) can drive the others:
+
+```sh
+amux send api "run the tests"   # type a prompt + Enter into the "api" agent
+amux read api 20                # print that agent's last 20 non-blank lines
+amux wait-done api              # block until "api" is done/idle
+amux wait-done api 300          # ...with a 5-minute timeout
+```
+
+Combine them to orchestrate parallel work:
+
+```sh
+for w in api web worker; do amux send "$w" "update the changelog"; done
+for w in api web worker; do amux wait-done "$w"; done
+echo "all three agents finished"
+```
+
+### Remote agents
+
+Remote agents in one line of tmux — run agents on another machine and drive
+them from here (amux must be installed on the remote):
+
+```sh
+amux ssh devbox         # ssh -t devbox amux  → attach the remote agent view
+amux ssh devbox new api # forward any subcommand to the remote amux
+```
 
 ## Enable the state colours (one-time)
 
@@ -115,7 +158,12 @@ nothing.
 ## Layout
 
 ```
-bin/amux                 # launcher / CLI
+bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, status, kill)
 tmux/amux.conf           # the isolated agent-view config
-scripts/amux-agent-state # hook target that records agent state
+scripts/amux-agent-state # hook target that records agent state (+ elapsed-time stamp, block notify)
+scripts/amux-status      # status-bar roll-up of agent-state counts
+scripts/amux-switch      # fzf agent switcher (prefix a)
 ```
+
+Requires `fzf` for the `prefix a` switcher (it degrades to a hint if missing);
+everything else is plain tmux + bash.

@@ -6,11 +6,15 @@
 # sessions. Run your AI coding agents inside it; Claude Code hooks colour each
 # window by state (🔴 blocked · 🟡 working · 🔵 done · 🟢 idle).
 #
-#   amux            start the agent view (or attach if already running)
-#   amux new NAME   open a new agent window called NAME and attach
-#   amux hooks      print the Claude Code hook config that powers the colours
-#   amux status     is the amux server running?
-#   amux kill       tear down the amux server
+#   amux                 start the agent view (or attach if already running)
+#   amux new NAME        open a new agent window called NAME and attach
+#   amux ssh HOST [ARGS] run amux on a remote host (agents there, driven here)
+#   amux send WIN TEXT   type TEXT + Enter into an agent window (prompt an agent)
+#   amux read WIN [N]    print the last N lines of an agent window (default 40)
+#   amux wait-done WIN [T]  block until WIN is done/idle (optional T-sec timeout)
+#   amux hooks           print the Claude Code hook config that powers the colours
+#   amux status          is the amux server running?
+#   amux kill            tear down the amux server
 set -euo pipefail
 
 # Resolve the repo root even when invoked via a symlink on PATH.
@@ -68,6 +72,32 @@ case "${1:-up}" in
 }
 JSON
     ;;
+  ssh)
+    host="${2:?usage: amux ssh HOST [ARGS...]}"; shift 2
+    # Run amux on the remote (must be installed there); agents run remote,
+    # you drive them from this terminal. Just SSH + a remote amux — no daemon.
+    exec ssh -t "$host" amux "$@"
+    ;;
+  send)
+    win="${2:?usage: amux send WINDOW TEXT...}"; shift 2
+    t send-keys -t "$SESSION:$win" "$*" Enter
+    ;;
+  read)
+    win="${2:?usage: amux read WINDOW [LINES]}"; lines="${3:-40}"
+    # Drop the pane's trailing blank rows, keep the last N non-empty lines.
+    t capture-pane -p -t "$SESSION:$win" | grep -v '^[[:space:]]*$' | tail -n "$lines"
+    ;;
+  wait-done|wait)
+    win="${2:?usage: amux wait-done WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
+    while :; do
+      st="$(t show-options -wqv -t "$SESSION:$win" @agent_state 2>/dev/null || echo idle)"
+      case "$st" in done|idle) exit 0 ;; esac
+      sleep 1; waited=$((waited + 1))
+      if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
+        echo "amux: timed out waiting for '$win' (still $st)" >&2; exit 1
+      fi
+    done
+    ;;
   status)
     if t has-session -t "$SESSION" 2>/dev/null; then
       echo "amux: running (socket=$SOCKET)"; t list-windows -t "$SESSION" -F '  #I #{pane_current_command}  [#{@agent_state}]'
@@ -75,5 +105,5 @@ JSON
     ;;
   kill|down|stop)
     t kill-server 2>/dev/null && echo "amux: server stopped." || echo "amux: not running." ;;
-  *) echo "usage: amux [up|new NAME|hooks|status|kill]" >&2; exit 2 ;;
+  *) echo "usage: amux [up|new NAME|ssh HOST|send WIN TEXT|read WIN [N]|wait-done WIN [T]|hooks|status|kill]" >&2; exit 2 ;;
 esac
