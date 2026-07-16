@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# amux-switch — fzf popup to jump to any agent across the amux server.
+# Shows each window's state + how long it's been in it + project dir.
+# Bound to `prefix + a`; run inside a display-popup.
+sock="amux"
+
+if ! command -v fzf >/dev/null 2>&1; then
+  tmux -L "$sock" display-message "amux: install fzf to use the agent switcher"
+  exit 0
+fi
+
+now="$(date +%s)"
+
+rows="$(tmux -L "$sock" list-windows -a \
+  -F '#{session_id}	#{window_id}	#{@agent_state}	#{@agent_since}	#{window_name}	#{pane_current_command}	#{b:pane_current_path}')"
+
+sel="$(printf '%s\n' "$rows" | awk -F'\t' -v now="$now" '
+  {
+    st=$3; since=$4; el=(since==""?0:now-since); m=int(el/60);
+    dot="🟢"; if(st=="blocked")dot="🔴"; else if(st=="working")dot="🟡"; else if(st=="done")dot="🔵";
+    # hidden key: session_id<TAB>window_id ; visible: the rest
+    printf "%s\t%s\t%s %-8s %3dm  %s  (%s/%s)\n", $1, $2, dot, st, m, $5, $6, $7
+  }' | fzf --with-nth=3.. --delimiter='\t' --reverse --prompt='agent > ' --no-info)"
+
+[ -n "$sel" ] || exit 0
+sid="$(printf '%s' "$sel" | cut -f1)"
+wid="$(printf '%s' "$sel" | cut -f2)"
+tmux -L "$sock" switch-client -t "$sid" \; select-window -t "$wid"

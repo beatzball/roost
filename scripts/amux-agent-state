@@ -30,8 +30,25 @@ case "$state" in
   idle|*)  state="idle"; color="#4a4668" ;;  # 🟢 / dim
 esac
 
+prev="$(tmux -S "$sock" show-options -wqv -t "$TMUX_PANE" @agent_state 2>/dev/null || true)"
+
 # Stamp the WINDOW that owns this pane (reliably read by window-status-format).
 tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
 tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_color "$color" 2>/dev/null || true
+
+# On a real state change, record when it happened (for elapsed-time display)
+# and ping if an off-screen agent just became blocked (needs your input).
+if [ "$state" != "$prev" ]; then
+  tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
+
+  if [ "$state" = blocked ]; then
+    active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
+    if [ "$active" != "1" ] && command -v osascript >/dev/null 2>&1; then
+      wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
+      osascript -e "display notification \"needs your input\" with title \"amux · ${wname}\" sound name \"Ping\"" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 # Nudge every attached client to repaint now instead of waiting for the tick.
 tmux -S "$sock" refresh-client -S 2>/dev/null || true

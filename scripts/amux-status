@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# amux-status — one-line summary of agent states for the amux status bar.
+# Rolls every window across the amux server up to coloured counts:
+#   ●3 blocked  ●1 working  ●4 done  ●2 idle
+# Invoked from status-right on the normal status tick; cheap (one tmux call).
+sock="amux"
+
+b=0 w=0 d=0 i=0
+while IFS= read -r st; do
+  case "$st" in
+    blocked) b=$((b+1)) ;;
+    working) w=$((w+1)) ;;
+    done)    d=$((d+1)) ;;
+    *)       i=$((i+1)) ;;
+  esac
+done < <(tmux -L "$sock" list-windows -a -F '#{@agent_state}' 2>/dev/null)
+
+out=""
+[ "$b" -gt 0 ] && out+="#[fg=#e0533d]●${b} "
+[ "$w" -gt 0 ] && out+="#[fg=#e0a53d]●${w} "
+[ "$d" -gt 0 ] && out+="#[fg=#3d7ce0]●${d} "
+[ "$i" -gt 0 ] && out+="#[fg=#6a6690]●${i} "
+printf '%s#[default]' "$out"
