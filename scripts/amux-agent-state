@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# amux-agent-state — record an AI agent's state onto its tmux window.
+#
+# Called by Claude Code lifecycle hooks (see `amux hooks`). It stamps the
+# window that the agent runs in with a state + colour, which the amux status
+# bar renders at a glance. It is a deliberate no-op unless the agent is running
+# inside an `amux` server pane, so it is safe to wire into your GLOBAL Claude
+# hooks — running `claude` anywhere else does nothing.
+#
+#   usage: amux-agent-state <working|blocked|done|idle>
+set -euo pipefail
+
+state="${1:-idle}"
+
+# Must be inside tmux, in a known pane.
+[ -n "${TMUX:-}" ] || exit 0
+[ -n "${TMUX_PANE:-}" ] || exit 0
+
+# $TMUX = "<socket-path>,<pid>,<session>"; only act on the amux socket.
+sock="${TMUX%%,*}"
+case "$sock" in
+  */amux) ;;
+  *) exit 0 ;;
+esac
+
+case "$state" in
+  blocked) color="#e0533d" ;;   # 🔴 needs you
+  working) color="#e0a53d" ;;   # 🟡 thinking
+  done)    color="#3d7ce0" ;;   # 🔵 finished, awaiting next prompt
+  idle|*)  state="idle"; color="#4a4668" ;;  # 🟢 / dim
+esac
+
+# Stamp the WINDOW that owns this pane (reliably read by window-status-format).
+tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
+tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_color "$color" 2>/dev/null || true
+# Nudge every attached client to repaint now instead of waiting for the tick.
+tmux -S "$sock" refresh-client -S 2>/dev/null || true
