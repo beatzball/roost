@@ -57,15 +57,26 @@ config and scripts no matter where you run it from.
 ## Use
 
 ```sh
-amux            # start the agent view, or attach if it's already running
-amux new api    # open a new agent window named "api" and attach
-amux status     # list agent windows and their states
-amux kill       # tear down the amux server
+amux             # start/attach the default session ("main")
+amux session a   # start/attach a named session — as many as you like
+amux session b   # a second workspace, sharing the same server
+amux new api     # open a new agent window named "api" and attach
+amux status      # list running sessions + agents and their states
+amux kill a      # kill session "a" (omit the name to stop the whole server)
 ```
 
 Detach with the prefix then `d`, like any tmux. Inside `amux`, run your agents
 as windows (`claude`, `codex`, `aider`, …) and the status bar shows one coloured
 tab per agent — so you can see who's blocked at a glance.
+
+**Sessions** all share one server, so the status counts and the `prefix a`
+switcher roll up across every session — `amux session a` and `amux session b`
+give you separate workspaces you attach/reattach independently, while still
+seeing the whole herd in one place.
+
+**Window names** auto-follow each agent's project (the basename of its working
+directory), so an agent in `~/work/api` shows up as `api`. Give a window an
+explicit name with `amux new NAME` or the rename key and it sticks.
 
 ### Keys
 
@@ -107,6 +118,10 @@ amux read api 20                # print that agent's last 20 non-blank lines
 amux wait-done api              # block until "api" is done/idle
 amux wait-done api 300          # ...with a 5-minute timeout
 ```
+
+Targets are `[SESSION:]WINDOW` — a bare name (`api`) resolves against the
+default `main` session; qualify it (`amux send b:api …`, or by index `b:2`) to
+reach an agent in another session.
 
 Combine them to orchestrate parallel work:
 
