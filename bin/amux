@@ -6,15 +6,19 @@
 # sessions. Run your AI coding agents inside it; Claude Code hooks colour each
 # window by state (🔴 blocked · 🟡 working · 🔵 done · 🟢 idle).
 #
-#   amux                 start the agent view (or attach if already running)
-#   amux new NAME        open a new agent window called NAME and attach
-#   amux ssh HOST [ARGS] run amux on a remote host (agents there, driven here)
-#   amux send WIN TEXT   type TEXT + Enter into an agent window (prompt an agent)
-#   amux read WIN [N]    print the last N lines of an agent window (default 40)
-#   amux wait-done WIN [T]  block until WIN is done/idle (optional T-sec timeout)
-#   amux hooks           print the Claude Code hook config that powers the colours
-#   amux status          is the amux server running?
-#   amux kill            tear down the amux server
+# All amux sessions share one server, so the status counts and `prefix a`
+# switcher roll up across every session.
+#
+#   amux                    start/attach the default session ("main")
+#   amux session NAME       start/attach a named session (amux session a, ...)
+#   amux new NAME [SESSION] open a new agent window and attach (default session "main")
+#   amux ssh HOST [ARGS]    run amux on a remote host (agents there, driven here)
+#   amux send TGT TEXT      type TEXT + Enter into an agent (TGT = [SESSION:]WINDOW)
+#   amux read TGT [N]       print an agent's last N non-blank lines (default 40)
+#   amux wait-done TGT [T]  block until TGT is done/idle (optional T-sec timeout)
+#   amux hooks              print the Claude Code hook config that powers the colours
+#   amux status             list running sessions + agents
+#   amux kill [SESSION]     kill one session, or the whole server if none given
 set -euo pipefail
 
 # Resolve the repo root even when invoked via a symlink on PATH.
@@ -27,30 +31,47 @@ done
 AMUX_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
 SOCKET="amux"
-SESSION="amux"
+DEFAULT_SESSION="main"
 CONF="$AMUX_HOME/tmux/amux.conf"
 
 t() { tmux -L "$SOCKET" "$@"; }
 
-ensure_server() {
-  if ! t has-session -t "$SESSION" 2>/dev/null; then
-    t -f "$CONF" new-session -d -s "$SESSION"
+server_running()  { t list-sessions >/dev/null 2>&1; }        # ≥1 session exists
+session_exists()  { t has-session -t "=$1" 2>/dev/null; }      # exact-name match
+
+# Create the session if missing. The first session boots the server with our
+# config (server/global options + bindings apply to every later session too).
+ensure_session() {
+  local s="$1"
+  session_exists "$s" && return 0
+  if server_running; then
+    t new-session -d -s "$s" -c "$PWD"
+  else
+    t -f "$CONF" new-session -d -s "$s" -c "$PWD"
     t set-environment -g AMUX_HOME "$AMUX_HOME"
     t set-option -g @amux_home "$AMUX_HOME"
     t set-environment -g PATH "$AMUX_HOME/scripts:$PATH"
   fi
 }
 
+attach_session() { ensure_session "$1"; exec tmux -L "$SOCKET" attach -t "=$1"; }
+
+# Resolve a send/read target: "sess:win" as-is, bare "win" → default session.
+target() { case "$1" in *:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
+
 case "${1:-up}" in
   up|start|"")
-    ensure_server
-    exec tmux -L "$SOCKET" attach -t "$SESSION"
+    attach_session "$DEFAULT_SESSION"
+    ;;
+  session|s)
+    sess="${2:?usage: amux session NAME}"
+    attach_session "$sess"
     ;;
   new)
-    ensure_server
-    name="${2:-agent}"
-    t new-window -t "$SESSION" -n "$name" -c "$PWD"
-    exec tmux -L "$SOCKET" attach -t "$SESSION"
+    name="${2:-agent}"; sess="${3:-$DEFAULT_SESSION}"
+    ensure_session "$sess"
+    t new-window -t "=$sess" -n "$name" -c "$PWD"
+    exec tmux -L "$SOCKET" attach -t "=$sess"
     ;;
   hooks)
     cat <<JSON
@@ -79,31 +100,39 @@ JSON
     exec ssh -t "$host" amux "$@"
     ;;
   send)
-    win="${2:?usage: amux send WINDOW TEXT...}"; shift 2
-    t send-keys -t "$SESSION:$win" "$*" Enter
+    raw="${2:?usage: amux send [SESSION:]WINDOW TEXT...}"; shift 2
+    t send-keys -t "$(target "$raw")" "$*" Enter
     ;;
   read)
-    win="${2:?usage: amux read WINDOW [LINES]}"; lines="${3:-40}"
+    raw="${2:?usage: amux read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
     # Drop the pane's trailing blank rows, keep the last N non-empty lines.
-    t capture-pane -p -t "$SESSION:$win" | grep -v '^[[:space:]]*$' | tail -n "$lines"
+    t capture-pane -p -t "$(target "$raw")" | grep -v '^[[:space:]]*$' | tail -n "$lines"
     ;;
   wait-done|wait)
-    win="${2:?usage: amux wait-done WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
+    raw="${2:?usage: amux wait-done [SESSION:]WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
+    tgt="$(target "$raw")"
     while :; do
-      st="$(t show-options -wqv -t "$SESSION:$win" @agent_state 2>/dev/null || echo idle)"
+      st="$(t show-options -wqv -t "$tgt" @agent_state 2>/dev/null || echo idle)"
       case "$st" in done|idle) exit 0 ;; esac
       sleep 1; waited=$((waited + 1))
       if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
-        echo "amux: timed out waiting for '$win' (still $st)" >&2; exit 1
+        echo "amux: timed out waiting for '$raw' (still $st)" >&2; exit 1
       fi
     done
     ;;
   status)
-    if t has-session -t "$SESSION" 2>/dev/null; then
-      echo "amux: running (socket=$SOCKET)"; t list-windows -t "$SESSION" -F '  #I #{pane_current_command}  [#{@agent_state}]'
+    if server_running; then
+      echo "amux: running (socket=$SOCKET)"
+      t list-sessions -F '  session #{session_name} — #{session_windows} agents#{?session_attached, [attached],}'
+      t list-windows -a -F '    #{session_name}:#I #{window_name}/#{pane_current_command}  [#{@agent_state}]'
     else echo "amux: not running"; fi
     ;;
   kill|down|stop)
-    t kill-server 2>/dev/null && echo "amux: server stopped." || echo "amux: not running." ;;
-  *) echo "usage: amux [up|new NAME|ssh HOST|send WIN TEXT|read WIN [N]|wait-done WIN [T]|hooks|status|kill]" >&2; exit 2 ;;
+    if [ -n "${2:-}" ]; then
+      t kill-session -t "=$2" 2>/dev/null && echo "amux: session '$2' killed." || echo "amux: no session '$2'."
+    else
+      t kill-server 2>/dev/null && echo "amux: server stopped (all sessions)." || echo "amux: not running."
+    fi
+    ;;
+  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|status|kill [SESSION]]" >&2; exit 2 ;;
 esac
