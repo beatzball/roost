@@ -40,13 +40,13 @@ ensure_server() {
 case "${1:-up}" in
   up|start|"")
     ensure_server
-    exec t attach -t "$SESSION"
+    exec tmux -L "$SOCKET" attach -t "$SESSION"
     ;;
   new)
     ensure_server
     name="${2:-agent}"
     t new-window -t "$SESSION" -n "$name" -c "$PWD"
-    exec t attach -t "$SESSION"
+    exec tmux -L "$SOCKET" attach -t "$SESSION"
     ;;
   hooks)
     cat <<JSON
