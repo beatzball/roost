@@ -6,9 +6,9 @@ without giving up your normal tmux setup or switching to a different terminal.
 `amux` runs on its **own isolated tmux server** with its own config, so your
 everyday `tmux` (config, sessions, plugins, muscle memory) is **never touched**.
 Launch it with one command, run your agents as windows inside it, and each
-window is coloured by what its agent is doing:
+window is badged with what its agent is doing:
 
-> 🔴 blocked / needs you · 🟡 working · 🔵 done · 🟢 idle
+> 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
 
 State comes from **Claude Code's own lifecycle hooks** — not from scraping
 process names or terminal output — so it's accurate rather than guessed. No
@@ -34,7 +34,7 @@ owning nothing but a few small shell files you can read end to end.
 
 - `tmux` ≥ 3.0
 - `git`
-- Claude Code (for the state colours; the view itself works without it)
+- Claude Code (for the state badges; the view itself works without it)
 
 ## Install
 
@@ -66,7 +66,7 @@ amux kill a      # kill session "a" (omit the name to stop the whole server)
 ```
 
 Detach with the prefix then `d`, like any tmux. Inside `amux`, run your agents
-as windows (`claude`, `codex`, `aider`, …) and the status bar shows one coloured
+as windows (`claude`, `codex`, `aider`, …) and the status bar shows one badged
 tab per agent — so you can see who's blocked at a glance.
 
 **Sessions** all share one server, so the status counts and the `prefix a`
@@ -98,8 +98,10 @@ tmux config, so there's nothing new to learn:
 ### At-a-glance signals
 
 - **Status bar counts** — the top-right shows the whole herd rolled up, e.g.
-  `●4 ●1 ●3` (blocked / working / done), so you see the picture even when the
-  window tabs scroll off.
+  `🛑4 ⏳1 ✅3` (blocked / working / done), so you see the picture even when the
+  window tabs scroll off. Counts are ordered by how much they want your
+  attention, and the glyphs are read back off the windows, so they can never
+  disagree with the tabs.
 - **Desktop notification** — when an agent you're *not* looking at becomes
   blocked (needs input), amux pings you with a native macOS notification. Only
   `blocked` notifies — `done` fires every turn and would be noise.
@@ -141,9 +143,9 @@ amux ssh devbox         # ssh -t devbox amux  → attach the remote agent view
 amux ssh devbox new api # forward any subcommand to the remote amux
 ```
 
-## Enable the state colours (one-time)
+## Enable the state badges (one-time)
 
-The colours are driven by three Claude Code hooks. Print the snippet:
+The badges are driven by four Claude Code hooks. Print the snippet:
 
 ```sh
 amux hooks
@@ -153,22 +155,35 @@ Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
 
 | Claude hook | state |
 |-------------|-------|
-| `UserPromptSubmit` | 🟡 working |
-| `Notification` (permission / waiting) | 🔴 blocked |
-| `Stop` | 🔵 done |
+| `UserPromptSubmit` | ⏳ working |
+| `Notification` (matcher: `permission_prompt`) | 🛑 blocked |
+| `PostToolUse` | ⏳ working |
+| `Stop` | ✅ done |
+
+Two of those are subtler than they look:
+
+- **`Notification` must be scoped to `permission_prompt`.** Unmatched, it also
+  fires for `idle_prompt` and `auth_success` — so a *finished* agent would go red.
+- **`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission
+  dialog, so it's the first observable event after you approve. Without it a
+  window stays red from your approval until the whole turn ends.
 
 `scripts/amux-agent-state` is a **no-op unless it runs inside an amux pane**, so
 it's safe in your global Claude settings — running `claude` elsewhere does
-nothing.
+nothing. It also returns early when the state is already correct, which keeps it
+cheap on `PostToolUse` (that fires on every single tool call, and Claude waits
+for the hook to exit).
 
 ## How it works
 
 - `bin/amux` starts `tmux -L amux -f tmux/amux.conf` — a second tmux server,
   fully separate from your default one (different socket, different config).
-- `tmux/amux.conf` renders each window's background from a per-window option,
-  `@agent_color`, defaulting to a dim idle colour.
+- `tmux/amux.conf` badges each window from a per-window option, `@agent_glyph`,
+  defaulting to idle. The glyphs are shape-distinct (not just colour-distinct),
+  so the bar still reads correctly if you're colourblind. Backgrounds mark only
+  which window is **active**, which keeps every tab's text high-contrast.
 - Claude hooks call `scripts/amux-agent-state <state>`, which stamps the window
-  owning `$TMUX_PANE` with the state + colour, then repaints.
+  owning `$TMUX_PANE` with the state + glyph, then repaints.
 
 ## Layout
 

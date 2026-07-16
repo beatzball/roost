@@ -1,23 +1,37 @@
 #!/usr/bin/env bash
 # amux-status — one-line summary of agent states for the amux status bar.
-# Rolls every window across the amux server up to coloured counts:
-#   ●3 blocked  ●1 working  ●4 done  ●2 idle
+# Rolls every window across the amux server up to badged counts:
+#   🛑3 blocked  ⏳1 working  ✅4 done  💤2 idle
 # Invoked from status-right on the normal status tick; cheap (one tmux call).
+#
+# The glyphs are read back off the windows rather than hardcoded here, so
+# amux-agent-state stays the single source of truth for what each state looks
+# like. (The old ● dots also carried a latent bug: U+25CF is East-Asian
+# Ambiguous width, so it renders 1 cell here but 2 in a CJK locale, smearing
+# the bar. The state emoji are unambiguously 2 cells everywhere.)
 sock="amux"
 
 b=0 w=0 d=0 i=0
-while IFS= read -r st; do
+gb="🛑" gw="⏳" gd="✅" gi="💤"   # fallbacks, only used if a window lacks a glyph
+while IFS='|' read -r st gl; do
   case "$st" in
-    blocked) b=$((b+1)) ;;
-    working) w=$((w+1)) ;;
-    done)    d=$((d+1)) ;;
-    *)       i=$((i+1)) ;;
+    blocked) b=$((b+1)); [ -n "$gl" ] && gb="$gl" ;;
+    working) w=$((w+1)); [ -n "$gl" ] && gw="$gl" ;;
+    done)    d=$((d+1)); [ -n "$gl" ] && gd="$gl" ;;
+    *)       i=$((i+1)); [ -n "$gl" ] && gi="$gl" ;;
   esac
-done < <(tmux -L "$sock" list-windows -a -F '#{@agent_state}' 2>/dev/null)
+done < <(tmux -L "$sock" list-windows -a -F '#{@agent_state}|#{@agent_glyph}' 2>/dev/null)
 
+# Ordered by how much they want your attention. The emoji carry their own colour,
+# so no #[fg=] is needed — which is what lets the counts stay legible on any bg.
+#
+# Spacing: one space inside a badge, two between them. Emoji render flush against
+# a following digit, and with an equal gap either side "🛑1 ⏳2" reads as one run
+# of characters — the outer gap has to beat the inner gap for each badge to read
+# as a unit. The trailing pair also separates the counts from the session name.
 out=""
-[ "$b" -gt 0 ] && out+="#[fg=#e0533d]●${b} "
-[ "$w" -gt 0 ] && out+="#[fg=#e0a53d]●${w} "
-[ "$d" -gt 0 ] && out+="#[fg=#3d7ce0]●${d} "
-[ "$i" -gt 0 ] && out+="#[fg=#6a6690]●${i} "
-printf '%s#[default]' "$out"
+[ "$b" -gt 0 ] && out+="${gb} ${b}  "
+[ "$w" -gt 0 ] && out+="${gw} ${w}  "
+[ "$d" -gt 0 ] && out+="${gd} ${d}  "
+[ "$i" -gt 0 ] && out+="${gi} ${i}  "
+printf '%s' "$out"
