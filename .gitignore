@@ -1,2 +1,7 @@
 .DS_Store
 *.log
+
+# Claude Code local settings — machine-specific, may contain local paths.
+# Only a *global* gitignore protects this on the author's machine; contributors
+# cloning this repo have no such protection, so it is ignored here too.
+.claude/settings.local.json
