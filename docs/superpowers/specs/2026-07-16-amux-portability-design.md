@@ -254,24 +254,37 @@ curl -fsSL https://raw.githubusercontent.com/beatzball/amux/main/install.sh | sh
    touching anything** if unmet
 2. Fetch to `$XDG_DATA_HOME/amux` (default `~/.local/share/amux`) — `git clone`
    when git exists, else curl a tarball
-3. Put `amux` on `PATH` (see below)
+3. Make `amux` reachable — symlink if possible, else print (see below)
 4. Hand off to `amux init` if on a tty; otherwise print the command to run
 
-**PATH is the invasive part**, and the main risk in this unit. It must:
+**PATH: never edit the user's shell rc.** The installer does not touch
+`.zshrc`, `.bashrc`, `.profile`, or fish config. Editing shell startup files
+from a piped-curl script is the most invasive thing this design could do, and it
+buys very little: it needs backups, idempotency, and per-shell syntax branching,
+and it can leave a broken shell if it goes wrong. Homebrew's installer prints
+next steps rather than editing; amux does the same.
 
-- detect the shell (`$SHELL`) and pick the matching rc: `.zshrc`, `.bashrc`,
-  `.config/fish/config.fish`
-- be **idempotent** — re-running must not append a second `export PATH` line
-- back up the rc file before editing
-- print exactly what it changed, and how to undo it
+Instead:
 
-Prefer symlinking into an existing PATH dir (`~/.local/bin`) when one is already
-on `PATH`, and only edit an rc file when there's no other option. Editing
-someone's shell rc from a piped-curl script is the most invasive thing in this
-whole design and should be the fallback, not the default.
+1. If a writable directory **already on `$PATH`** exists (prefer
+   `~/.local/bin`), symlink `amux` into it → works immediately, nothing to print
+2. Otherwise, **print** the exact line to add, and stop
 
-**Also needed:** `amux update` (git pull / re-fetch) and a documented uninstall
-(remove the data dir, the symlink, the rc line, and the Claude hooks).
+Only symlink into a directory that is *already* on `PATH`. Creating
+`~/.local/bin` when it isn't on `PATH` helps nobody — the user would still need
+the export line, and now there's a stray directory too.
+
+**Shell detection survives, but only to print the right snippet** — never to
+apply it. `export PATH=...` is wrong for fish (`fish_add_path`), so `$SHELL`
+still decides *what to print*. The failure mode degrades from "corrupted shell
+rc" to "printed a line the user ignores".
+
+Because `amux` may not be on `PATH` yet, the installer invokes `amux init` by
+absolute path.
+
+**Also needed:** `amux update` (git pull / re-fetch) and a documented uninstall.
+Uninstall is now just: remove the data dir, the symlink, and the Claude hooks —
+there is no rc line to hunt down, because we never wrote one.
 
 **Security posture.** `curl | sh` asks for a lot of trust. Mitigations: serve
 only over HTTPS from the canonical repo; keep the script short and readable;
@@ -344,7 +357,8 @@ cover *delivery*. Runners need tmux + fzf installed.
 - **`prefix r` and `prefix a` actually work** — both were broken, nothing caught it
 - emitted hook JSON is valid and matches the README's documented hook count
 - **every shipped theme passes the contrast thresholds**, light and dark
-- `install.sh` is idempotent: running twice adds exactly one PATH entry
+- `install.sh` never writes to any shell rc file (asserted: rc files byte-identical after a run)
+- `install.sh` symlinks when a PATH dir is available, and prints instructions when not
 - `install.sh` preflight fails cleanly on tmux < 3.1 without mutating anything
 
 ## Open items to verify during implementation
@@ -363,4 +377,4 @@ cover *delivery*. Runners need tmux + fzf installed.
 7. `$COLORFGBG` reliability — which terminals set it, and whether its value can be
    trusted enough even to pre-fill the light/dark answer
 8. Whether `~/.local/bin` is on `PATH` by default on the target platforms, since
-   that decides how often the installer must fall back to editing an rc file
+   that decides how often the user gets a manual step instead of a working symlink
