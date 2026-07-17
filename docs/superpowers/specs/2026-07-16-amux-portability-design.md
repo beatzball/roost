@@ -181,7 +181,14 @@ So the validator is a **test, not a script**: for every shipped theme, assert
 | idle-fg on bar-bg | 4.5:1 (AA) |
 | active-fg on active-bg | 4.5:1 (AA) |
 | active-bg on bar-bg (the wedge) | 3:1 — it must be *visible*, not readable |
-| logo-bg vs active-bg | distinguishable (the complaint that started this) |
+| logo-bg vs active-bg | ΔE ≥ 20 (CIE76) — the complaint that started this |
+
+The logo/active pair uses **perceptual distance (ΔE), not contrast** — two
+purples can share a luminance and still look different, which contrast (a
+luminance ratio) cannot see. ΔE ≥ 20 is calibrated from the amux default the
+user accepted (logo/active measured 23.4). Implementation found all four
+upstream palettes failed the naive luminance check; the corrected validator and
+the tuned palettes live in the plan.
 
 A theme with a failing ratio cannot merge. This runs in CI and is the single
 highest-value item in this batch: it mechanically prevents the exact class of
@@ -363,7 +370,7 @@ cover *delivery*. Runners need tmux + fzf installed.
 
 ## Open items to verify during implementation
 
-1. Exact tmux floor — audit every feature used, don't assume 3.1
+1. Exact tmux floor — VERIFIED 3.1: gated only by source-file -F + display-popup; #{E:} (2.9), #{==:} (2.4), refresh-client -S (1.7) all predate it
 2. `source-file -q` genuinely suppresses errors for a missing file
 3. `$XDG_CONFIG_HOME` handling in `bin/amux`
 4. Whether nerd-font glyph widths are stable (PUA codepoints have no fallback
