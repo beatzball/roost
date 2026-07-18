@@ -49,8 +49,12 @@ ensure_session() {
   else
     t -f "$CONF" new-session -d -s "$s" -c "$PWD"
     t set-environment -g AMUX_HOME "$AMUX_HOME"
-    t set-option -g @amux_home "$AMUX_HOME"
+    t set-option -g @amux-home "$AMUX_HOME"
     t set-environment -g PATH "$AMUX_HOME/scripts:$PATH"
+    # User config: sourced AFTER the base conf so it overrides. -q: silent if absent.
+    AMUX_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/amux/amux.conf"
+    t set-option -g @amux-user-conf "$AMUX_USER_CONF"
+    t source-file -qF "#{@amux-user-conf}"
   fi
 }
 
