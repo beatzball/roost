@@ -48,7 +48,7 @@
 
 **Interfaces:**
 - Produces (sourced by every `tests/test-*.sh`):
-  - `amux_test_server` — start a tmux server on a fresh short socket, echo the socket path; sets `$AMUX_TEST_SOCK`
+  - `amux_test_server` — start a tmux server on a fresh short socket; sets and exports `$AMUX_TEST_SOCK`. **Call it bare, then read `$AMUX_TEST_SOCK`** (`amux_test_server; sock="$AMUX_TEST_SOCK"`) — NOT via `sock=$(amux_test_server)`, because command substitution runs in a subshell and the export would not reach your shell (`T` reads the global and would break).
   - `amux_test_teardown` — kill the server, remove the socket dir
   - `assert_eq <actual> <expected> <label>` — print PASS/FAIL, increment counters
   - `assert_contains <haystack> <needle> <label>`
@@ -66,7 +66,7 @@ Create `tests/test-harness.sh`:
 set -u
 . "$(dirname "$0")/lib.sh"
 
-sock="$(amux_test_server)"
+amux_test_server; sock="$AMUX_TEST_SOCK"
 trap amux_test_teardown EXIT
 
 # socket path must be short enough for the ~104-char unix limit
@@ -206,7 +206,7 @@ set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 NOTIFY="$HERE/scripts/amux-notify"
 
-sock="$(amux_test_server)"; trap amux_test_teardown EXIT
+amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
 export AMUX_NOTIFY_SOCK="$AMUX_TEST_SOCK"
 
 # backend=none → nothing invoked, exit 0
@@ -319,7 +319,7 @@ set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 
-sock="$(amux_test_server)"; trap amux_test_teardown EXIT
+amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
 # amux-agent-state only acts on a socket path ending in /amux
 sdir="$(mktemp -d /tmp/amx.XXXX)"; s="$sdir/amux"
 tmux -S "$s" -f /dev/null new-session -d
@@ -422,7 +422,7 @@ set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 
-sock="$(amux_test_server)"; trap amux_test_teardown EXIT
+amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 
 # defaults exist for the appearance options
@@ -448,7 +448,7 @@ Create `tests/test-reload.sh` (proves the keybindings this repo shipped broken):
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-sock="$(amux_test_server)"; trap amux_test_teardown EXIT
+amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 T set-option -g @amux-home "$HERE"
 
@@ -988,7 +988,7 @@ Create `tests/test-switcher.sh`:
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-sock="$(amux_test_server)"; trap amux_test_teardown EXIT
+amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 T set-option -g @amux-home "$HERE"
 
