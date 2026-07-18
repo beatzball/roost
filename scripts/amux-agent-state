@@ -27,12 +27,17 @@ esac
 # the bar stays readable for colourblind users and in a mono terminal. All four
 # are single-codepoint and exactly two cells wide — no variation selectors, which
 # are what break tmux's width maths and smear the status line.
+#
+# Built-in fallback glyphs. Config (@amux-glyph-<state>) overrides these; the
+# fallback guarantees the bar never goes blank if the option is missing/empty.
 case "$state" in
-  blocked) glyph="🛑" ;;        # stop sign — needs you
-  working) glyph="⏳" ;;        # hourglass — thinking
-  done)    glyph="✅" ;;        # check — finished, awaiting next prompt
-  idle|*)  state="idle"; glyph="💤" ;;
+  blocked) fallback="🛑" ;;        # stop sign — needs you
+  working) fallback="⏳" ;;        # hourglass — thinking
+  done)    fallback="✅" ;;        # check — finished, awaiting next prompt
+  idle|*)  state="idle"; fallback="💤" ;;
 esac
+glyph="$(tmux -S "$sock" show-options -gqv "@amux-glyph-$state" 2>/dev/null)"
+[ -n "$glyph" ] || glyph="$fallback"
 
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
 # exiting, so the overwhelmingly common case — state already correct — has to be
@@ -54,9 +59,9 @@ if [ "$state" != "$prev" ]; then
 
   if [ "$state" = blocked ]; then
     active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
-    if [ "$active" != "1" ] && command -v osascript >/dev/null 2>&1; then
+    if [ "$active" != "1" ]; then
       wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
-      osascript -e "display notification \"needs your input\" with title \"amux · ${wname}\" sound name \"Ping\"" >/dev/null 2>&1 || true
+      AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "needs your input" || true
     fi
   fi
 fi
