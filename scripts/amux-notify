@@ -18,11 +18,13 @@ if [ "$backend" = tmux ]; then tmux_fallback; exit 0; fi
 # auto: user override first
 cmd="$(opt @amux-notify-cmd)"
 if [ -n "$cmd" ]; then
-  # %t → title, %s → message. User-supplied shell (documented).
-  esc_t=$(printf '%s' "$title" | sed 's/[&/\]/\\&/g')
-  esc_s=$(printf '%s' "$msg"   | sed 's/[&/\]/\\&/g')
-  run=$(printf '%s' "$cmd" | sed "s/%t/$esc_t/g; s/%s/$esc_s/g")
-  sh -c "$run" >/dev/null 2>&1 || true
+  # %t/%s are replaced with shell positionals $1/$2, and the real title/message
+  # are passed as arguments — so shell metacharacters in the payload (window
+  # names, message text) can never be re-parsed as shell syntax. Reference the
+  # placeholders double-quoted ("%s") or bare, NOT single-quoted (which would
+  # suppress the positional expansion).
+  run=$(printf '%s' "$cmd" | sed 's/%t/$1/g; s/%s/$2/g')
+  sh -c "$run" sh "$title" "$msg" >/dev/null 2>&1 || true
   exit 0
 fi
 
