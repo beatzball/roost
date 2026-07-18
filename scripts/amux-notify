@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# amux-notify <title> <message> — deliver one desktop notification, cross-platform.
+# Delivery only; the caller decides *whether* to notify. Never fails: every
+# backend miss falls through, and the final fallback is an in-tmux message.
+set -u
+title="${1:-amux}"; msg="${2:-}"
+sock="${AMUX_NOTIFY_SOCK:-amux}"
+
+opt() { tmux -S "$sock" show-options -gqv "$1" 2>/dev/null; }
+
+backend="$(opt @amux-notify-backend)"; backend="${backend:-auto}"
+[ "$backend" = none ] && exit 0
+
+tmux_fallback() { tmux -S "$sock" display-message "$title — $msg" 2>/dev/null || true; }
+
+if [ "$backend" = tmux ]; then tmux_fallback; exit 0; fi
+
+# auto: user override first
+cmd="$(opt @amux-notify-cmd)"
+if [ -n "$cmd" ]; then
+  # %t → title, %s → message. User-supplied shell (documented).
+  esc_t=$(printf '%s' "$title" | sed 's/[&/\]/\\&/g')
+  esc_s=$(printf '%s' "$msg"   | sed 's/[&/\]/\\&/g')
+  run=$(printf '%s' "$cmd" | sed "s/%t/$esc_t/g; s/%s/$esc_s/g")
+  sh -c "$run" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+case "$(uname -s)" in
+  Darwin)
+    osascript -e "display notification \"$msg\" with title \"$title\" sound name \"Ping\"" >/dev/null 2>&1 && exit 0 ;;
+esac
+if grep -qi microsoft /proc/version 2>/dev/null && command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -Command "New-BurntToastNotification -Text '$title','$msg'" >/dev/null 2>&1 && exit 0
+  powershell.exe -NoProfile -Command "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')" >/dev/null 2>&1
+fi
+if { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && command -v notify-send >/dev/null 2>&1; then
+  notify-send "$title" "$msg" >/dev/null 2>&1 && exit 0
+fi
+tmux_fallback
+exit 0

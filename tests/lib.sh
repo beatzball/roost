@@ -9,7 +9,8 @@ amux_test_server() {
   AMUX_TEST_SOCK="$AMUX_TEST_SOCKDIR/s"
   export AMUX_TEST_SOCK
   tmux -S "$AMUX_TEST_SOCK" -f /dev/null new-session -d -x 200 -y 50
-  printf '%s\n' "$AMUX_TEST_SOCK"
+  # Callers read the exported $AMUX_TEST_SOCK; nothing consumes stdout. Emitting
+  # the path here would just be noise in every test file's output.
 }
 
 amux_test_teardown() {
