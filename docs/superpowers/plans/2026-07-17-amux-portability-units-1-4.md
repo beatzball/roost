@@ -225,7 +225,8 @@ assert_eq "$(cat "$marker")" "" "backend=tmux skips the OS chain"
 # @amux-notify-cmd wins over everything, with %t/%s substitution
 T set-option -g @amux-notify-backend auto
 cmdout="$(mktemp)"
-T set-option -g @amux-notify-cmd "printf '%s|%s' '%t' '%s' > $cmdout"
+# %t and %s each appear once, as a printf format string printf prints literally.
+T set-option -g @amux-notify-cmd "printf '%t|%s' > $cmdout"
 "$NOTIFY" "TITLE" "MSG"
 assert_eq "$(cat "$cmdout")" "TITLE|MSG" "@amux-notify-cmd runs with %t/%s substituted"
 
@@ -1101,6 +1102,11 @@ the previous file). Reload a running amux with `prefix + r`.
 
 Update the desktop-notification bullet to describe the cross-platform chain and
 the `@amux-notify-cmd` escape hatch, and note the headless-remote limitation.
+
+Also document the `@amux-notify-cmd` placeholder rules (surfaced by the Task 2
+review): `%t`→title, `%s`→message; reference them double-quoted (`"%s"`) or bare,
+never single-quoted; and they collide with any *literal* `%s`/`%t` the command
+itself needs (e.g. `date +%s`), so avoid combining them.
 Add a short Themes list: `amux`, `catppuccin-mocha`, `catppuccin-latte`,
 `tokyonight-storm`, `tokyonight-day`.
 
