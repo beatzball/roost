@@ -23,13 +23,19 @@ assert_eq "$(cat "$marker")" "" "backend=tmux skips the OS chain"
 # @amux-notify-cmd wins over everything, with %t/%s substitution
 T set-option -g @amux-notify-backend auto
 cmdout="$(mktemp)"
-# %t and %s each appear once, as a printf format string printf prints literally.
-# (A cmd like `printf '%s|%s' '%t' '%s'` cannot work: the substitution is a global
-#  %s→msg replace, which would also clobber printf's own %s format specifiers.)
-T set-option -g @amux-notify-cmd "printf '%t|%s' > $cmdout"
+# %t/%s become $1/$2; double-quote them so the positional expansion happens.
+T set-option -g @amux-notify-cmd "printf \"%t|%s\" > $cmdout"
 "$NOTIFY" "TITLE" "MSG"
 assert_eq "$(cat "$cmdout")" "TITLE|MSG" "@amux-notify-cmd runs with %t/%s substituted"
 
 # always exits 0 even when a backend command fails
 T set-option -g @amux-notify-cmd "false"
 "$NOTIFY" a b; assert_eq "$?" "0" "amux-notify exits 0 even when backend fails"
+
+# Injection: metacharacters in the MESSAGE must not execute. A template that
+# double-quotes %s must treat a malicious payload as inert data.
+rm -f /tmp/amux-pwned-$$
+T set-option -g @amux-notify-cmd "true \"%s\""
+"$NOTIFY" "t" "x\" ; touch /tmp/amux-pwned-$$ #"
+[ -f /tmp/amux-pwned-$$ ] && { rm -f /tmp/amux-pwned-$$; assert_eq injected safe "message metacharacters do not execute"; } \
+  || assert_eq safe safe "message metacharacters do not execute"
