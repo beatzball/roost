@@ -521,20 +521,29 @@ Reload binding sources both files:
 bind r source-file -F "#{@amux-home}/tmux/amux.conf" \; source-file -qF "#{@amux-user-conf}" \; display "amux config reloaded"
 ```
 
-Then write the actual U+E0B0 bytes into the `@amux-sep-*` defaults and the two format strings via a python heredoc (PUA chars do not survive normal edits):
+The format strings from Step 4 reference `#{@amux-sep-left}`/`#{@amux-sep-right}`,
+so the wedge byte lives ONLY in the two `@amux-sep-*` default lines. PUA chars do
+not survive normal file edits (they silently vanished three times during this
+project's earlier work), so write the byte via `chr(0xE0B0)` in python — never by
+typing it into an editor — and verify by exact count:
 
 ```bash
-python3 - <<'PY'
+python3 - <<'PYEOF'
 p="tmux/amux.conf"; s=open(p,encoding="utf-8").read()
-W="⮀".replace("⮀","")  # U+E0B0
-s=s.replace('set -g @amux-sep-left      ""', f'set -g @amux-sep-left      "{W}"')
-s=s.replace('set -g @amux-sep-right     ""', f'set -g @amux-sep-right     "{W}"')
+W=chr(0xE0B0)  # powerline wedge; MUST come from chr(), never typed
+assert 'set -g @amux-sep-left      ""' in s, "sep-left default not found verbatim"
+assert 'set -g @amux-sep-right     ""' in s, "sep-right default not found verbatim"
+s=s.replace('set -g @amux-sep-left      ""', 'set -g @amux-sep-left      "%s"' % W)
+s=s.replace('set -g @amux-sep-right     ""', 'set -g @amux-sep-right     "%s"' % W)
 open(p,"w",encoding="utf-8").write(s)
 print("wedge count:", s.count(W))
-PY
+PYEOF
 ```
 
-Expected output: `wedge count: 4` (two defaults + two format references if literal, or 2 if formats use `#{@amux-sep-*}`). Adjust to whatever the format strings actually contain; the assertion is that the count is non-zero and matches intent.
+Expected output: `wedge count: 2` — exactly the two `@amux-sep-*` default lines.
+If it prints anything else, STOP: either the format strings still hold literal
+wedges (they must use `#{@amux-sep-*}`), or a default line did not match verbatim.
+Do not proceed until it prints exactly `2`.
 
 - [ ] **Step 7: Run all tests + confirm config still loads**
 
