@@ -42,6 +42,7 @@ def check(name,t):
     C("idle-fg","bar-bg",4.5,"idle-fg on bar-bg")
     C("active-fg","active-bg",4.5,"active-fg on active-bg")
     C("active-bg","bar-bg",3.0,"wedge active-bg on bar-bg")
+    C("active-fg","logo-bg",3.0,"logo text on logo-bg (bold)")
     d=dE(t["logo-bg"],t["active-bg"])
     if d<20: fails.append(f"logo vs active ΔE: {d:.1f} < 20")
     return fails
