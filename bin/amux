@@ -17,6 +17,7 @@
 #   amux read TGT [N]       print an agent's last N non-blank lines (default 40)
 #   amux wait-done TGT [T]  block until TGT is done/idle (optional T-sec timeout)
 #   amux hooks              print the Claude Code hook config that powers the badges
+#   amux doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   amux status             list running sessions + agents
 #   amux kill [SESSION]     kill one session, or the whole server if none given
 set -euo pipefail
@@ -76,6 +77,9 @@ case "${1:-up}" in
     ensure_session "$sess"
     t new-window -t "=$sess" -n "$name" -c "$PWD"
     exec tmux -L "$SOCKET" attach -t "=$sess"
+    ;;
+  doctor)
+    exec "$AMUX_HOME/scripts/amux-doctor"
     ;;
   hooks)
     cat <<JSON
@@ -146,5 +150,5 @@ JSON
       t kill-server 2>/dev/null && echo "amux: server stopped (all sessions)." || echo "amux: not running."
     fi
     ;;
-  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|status|kill [SESSION]]" >&2; exit 2 ;;
+  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|doctor|status|kill [SESSION]]" >&2; exit 2 ;;
 esac
