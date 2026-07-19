@@ -37,7 +37,7 @@ owning nothing but a few small shell files you can read end to end.
 - A powerline/Nerd Font for the tab separators — or run `amux init` and pick the
   plain-separator fallback
 - Claude Code (for the state badges; the view itself works without it)
-- Optional: `fzf` (the `prefix a` switcher), `python3` (auto-merge Claude hooks)
+- Optional: `fzf` (for the `prefix a` agent switcher)
 
 ## Install
 
@@ -60,8 +60,8 @@ config and scripts no matter where you run it from.
 ## Setup
 
 ```sh
-amux doctor   # check tmux version, font, notifier, hooks
-amux init     # pick theme, glyph set, separator style; merge Claude hooks
+amux doctor   # check tmux version, truecolor, fzf, notifier, hooks
+amux init     # pick theme, glyph set, separator style; print the Claude hooks
 ```
 
 `amux init` writes `~/.config/amux/amux.conf` and is safe to re-run (it backs up
@@ -122,8 +122,9 @@ tmux config, so there's nothing new to learn:
 - **Desktop notification** — when an agent you're *not* looking at becomes
   blocked (needs input), amux pings you with a native desktop notification. Only
   `blocked` notifies — `done` fires every turn and would be noise. Delivery is
-  cross-platform: macOS (`osascript`), Linux (`notify-send`, when a display is
-  present), WSL (`BurntToast` via `powershell.exe`), falling back to an in-tmux
+  cross-platform, tried in this order: macOS (`osascript`), WSL (`BurntToast` via
+  `powershell.exe`), Linux (`notify-send`, when a display is
+  present), falling back to an in-tmux
   `display-message` if nothing else is available (e.g. a headless remote
   session with no OS notifier reachable). Set `@amux-notify-backend` to `tmux`
   to always use the in-tmux message, or `none` to disable notifications
@@ -232,7 +233,7 @@ scripts/amux-status      # status-bar roll-up of agent-state counts
 scripts/amux-switch      # fzf agent switcher (prefix a)
 scripts/amux-notify      # cross-platform desktop notification delivery
 scripts/amux-doctor      # preflight checks (tmux version, truecolor, hooks, notifier)
-scripts/amux-init        # setup wizard (theme, glyphs, separator style, hook merge)
+scripts/amux-init        # setup wizard (theme, glyphs, separator style, prints hooks)
 scripts/amux-themes.sh   # built-in theme palettes
 ```
 

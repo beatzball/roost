@@ -56,7 +56,10 @@ target="$cfg/amux.conf"
   echo "set -g @amux-glyph-idle    \"$gi\""
 } > "$target"
 
-hooks="$(ask 'Merge Claude Code hooks into settings.json now? [y/skip]')"
+# Prints the hook JSON for the user to paste into ~/.claude/settings.json — amux
+# never edits that file itself (same reason the installer prints PATH steps
+# rather than editing your shell rc: don't silently rewrite a user's config).
+hooks="$(ask 'Print the Claude Code hooks to add to settings.json? [y/skip]')"
 case "$hooks" in y|Y|yes) "$HERE/../bin/amux" hooks ;; *) : ;; esac
 
 echo "amux: wrote $target" >&2
