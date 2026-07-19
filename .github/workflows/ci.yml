@@ -1,0 +1,22 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tmux + fzf (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y tmux fzf
+      - name: Install tmux + fzf (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tmux fzf
+      - name: tmux version
+        run: tmux -V
+      - name: Run test suite
+        run: bash tests/run.sh
+      - name: Contrast validator
+        run: python3 tests/test-contrast.py
