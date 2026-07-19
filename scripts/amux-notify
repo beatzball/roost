@@ -40,7 +40,6 @@ case "$(uname -s)" in
 esac
 if grep -qi microsoft /proc/version 2>/dev/null && command -v powershell.exe >/dev/null 2>&1; then
   powershell.exe -NoProfile -Command "New-BurntToastNotification -Text '$title','$msg'" >/dev/null 2>&1 && exit 0
-  powershell.exe -NoProfile -Command "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')" >/dev/null 2>&1
 fi
 if { [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && command -v notify-send >/dev/null 2>&1; then
   notify-send "$title" "$msg" >/dev/null 2>&1 && exit 0
