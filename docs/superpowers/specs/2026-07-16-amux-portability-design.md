@@ -228,6 +228,11 @@ lines; amux is 580 total, and the wizard must not dwarf the tool.
 5. **Merge Claude hooks?** → back up `settings.json`, merge via `python3`,
    falling back to printing the JSON for manual merge
 
+> **Shipped as print-only:** `amux init` prints the hook JSON for the user to
+> paste into `settings.json`; it does not write that file. This matches the
+> installer's "print, don't edit the user's config" stance. python3 is therefore
+> not a runtime dependency (test-only).
+
 **Behaviour:**
 
 - Writes explicit values to `$XDG_CONFIG_HOME/amux/amux.conf`

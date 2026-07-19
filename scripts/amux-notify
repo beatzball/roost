@@ -4,15 +4,20 @@
 # backend miss falls through, and the final fallback is an in-tmux message.
 set -u
 title="${1:-amux}"; msg="${2:-}"
-sock="${AMUX_NOTIFY_SOCK:-amux}"
-
-opt() { tmux -S "$sock" show-options -gqv "$1" 2>/dev/null; }
+# Socket: tests / amux-agent-state set AMUX_NOTIFY_SOCK to a socket PATH (-S);
+# with it unset we address the shared server by name (-L amux), like every other
+# amux component. (Using -S amux here would mean a socket FILE named "amux".)
+nt() {
+  if [ -n "${AMUX_NOTIFY_SOCK:-}" ]; then tmux -S "$AMUX_NOTIFY_SOCK" "$@"
+  else tmux -L amux "$@"; fi
+}
+opt() { nt show-options -gqv "$1" 2>/dev/null; }
 
 backend="$(opt @amux-notify-backend)"; backend="${backend:-auto}"
 if [ "${1:-}" = "--which" ]; then printf '%s\n' "$backend"; exit 0; fi
 [ "$backend" = none ] && exit 0
 
-tmux_fallback() { tmux -S "$sock" display-message "$title — $msg" 2>/dev/null || true; }
+tmux_fallback() { nt display-message "$title — $msg" 2>/dev/null || true; }
 
 if [ "$backend" = tmux ]; then tmux_fallback; exit 0; fi
 
