@@ -9,6 +9,7 @@ sock="${AMUX_NOTIFY_SOCK:-amux}"
 opt() { tmux -S "$sock" show-options -gqv "$1" 2>/dev/null; }
 
 backend="$(opt @amux-notify-backend)"; backend="${backend:-auto}"
+if [ "${1:-}" = "--which" ]; then printf '%s\n' "$backend"; exit 0; fi
 [ "$backend" = none ] && exit 0
 
 tmux_fallback() { tmux -S "$sock" display-message "$title — $msg" 2>/dev/null || true; }

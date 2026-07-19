@@ -39,3 +39,7 @@ T set-option -g @amux-notify-cmd "true \"%s\""
 "$NOTIFY" "t" "x\" ; touch /tmp/amux-pwned-$$ #"
 [ -f /tmp/amux-pwned-$$ ] && { rm -f /tmp/amux-pwned-$$; assert_eq injected safe "message metacharacters do not execute"; } \
   || assert_eq safe safe "message metacharacters do not execute"
+
+# --which reports the resolved backend without delivering a notification
+T set-option -g @amux-notify-backend tmux
+assert_eq "$("$NOTIFY" --which)" "tmux" "--which reports the resolved backend"

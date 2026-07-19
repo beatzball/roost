@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# amux doctor — preflight checks. Exit non-zero only if a REQUIRED check fails
+# (tmux >= 3.1, truecolor). Optional checks warn.
+required_fail=0
+ok()   { printf '  ✓ %s\n' "$1"; }
+warn() { printf '  ! %s\n' "$1"; }
+bad()  { printf '  ✗ %s\n' "$1"; required_fail=1; }
+
+ver="$(tmux -V 2>/dev/null | sed 's/^tmux //')"
+# numeric compare: 3.1 is the floor (source-file -F, display-popup)
+maj="${ver%%.*}"; rest="${ver#*.}"; min="${rest%%[a-z]*}"
+if [ -z "$maj" ]; then bad "tmux not found"
+elif [ "$maj" -gt 3 ] 2>/dev/null || { [ "$maj" -eq 3 ] && [ "${min:-0}" -ge 1 ]; } 2>/dev/null; then
+  ok "tmux $ver (>= 3.1)"
+else
+  bad "tmux $ver — need >= 3.1 (source-file -F, display-popup)"
+fi
+
+case "${COLORTERM:-}" in
+  truecolor|24bit) ok "truecolor terminal" ;;
+  *) warn "COLORTERM not truecolor — the palette is #rrggbb and may band" ;;
+esac
+
+command -v fzf >/dev/null 2>&1 && ok "fzf present (prefix a switcher)" \
+  || warn "fzf missing — the prefix a switcher will be unavailable"
+command -v python3 >/dev/null 2>&1 && ok "python3 present (hook merge)" \
+  || warn "python3 missing — amux init can't auto-merge Claude hooks"
+
+settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+if grep -q amux-agent-state "$settings" 2>/dev/null; then
+  ok "Claude hooks wired in $settings"
+else
+  warn "Claude hooks not found in $settings — run: amux hooks"
+fi
+
+printf '\n  notify backend: %s\n' \
+  "$("$(dirname "$0")/amux-notify" --which 2>/dev/null || echo 'auto (run amux init to choose)')"
+
+[ "$required_fail" -eq 0 ]
