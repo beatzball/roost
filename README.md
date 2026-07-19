@@ -32,9 +32,12 @@ owning nothing but a few small shell files you can read end to end.
 
 ## Requirements
 
-- `tmux` ≥ 3.0
+- `tmux` ≥ 3.1  (needs `source-file -F` and `display-popup`)
 - `git`
+- A powerline/Nerd Font for the tab separators — or run `amux init` and pick the
+  plain-separator fallback
 - Claude Code (for the state badges; the view itself works without it)
+- Optional: `fzf` (the `prefix a` switcher), `python3` (auto-merge Claude hooks)
 
 ## Install
 
@@ -53,6 +56,20 @@ ln -s "$PWD/amux/bin/amux" /usr/local/bin/amux
 
 The launcher resolves its own location (following symlinks), so it finds its
 config and scripts no matter where you run it from.
+
+## Setup
+
+```sh
+amux doctor   # check tmux version, font, notifier, hooks
+amux init     # pick theme, glyph set, separator style; merge Claude hooks
+```
+
+`amux init` writes `~/.config/amux/amux.conf` and is safe to re-run (it backs up
+the previous file). Reload a running amux with `prefix + r`.
+
+**Themes:** `amux`, `catppuccin-mocha`, `catppuccin-latte`, `tokyonight-storm`,
+`tokyonight-day`. Pick one in `amux init`, or set `@amux-color-*` options by
+hand in `~/.config/amux/amux.conf`.
 
 ## Use
 
@@ -103,8 +120,28 @@ tmux config, so there's nothing new to learn:
   attention, and the glyphs are read back off the windows, so they can never
   disagree with the tabs.
 - **Desktop notification** — when an agent you're *not* looking at becomes
-  blocked (needs input), amux pings you with a native macOS notification. Only
-  `blocked` notifies — `done` fires every turn and would be noise.
+  blocked (needs input), amux pings you with a native desktop notification. Only
+  `blocked` notifies — `done` fires every turn and would be noise. Delivery is
+  cross-platform: macOS (`osascript`), Linux (`notify-send`, when a display is
+  present), WSL (`BurntToast` via `powershell.exe`), falling back to an in-tmux
+  `display-message` if nothing else is available (e.g. a headless remote
+  session with no OS notifier reachable). Set `@amux-notify-backend` to `tmux`
+  to always use the in-tmux message, or `none` to disable notifications
+  entirely; the default is `auto`.
+
+  For full control, set `@amux-notify-cmd` to your own command — `%t` is
+  replaced with the title and `%s` with the message, e.g.:
+
+  ```sh
+  set -g @amux-notify-cmd 'notify-send "%t" "%s"'
+  ```
+
+  Reference the placeholders double-quoted (`"%s"`) or bare — never
+  single-quoted, since `%t`/`%s` are wired to shell positional parameters
+  (`$1`/`$2`) before your command runs, and single quotes would suppress that
+  substitution. Because the swap is textual, avoid combining the placeholders
+  with a command that needs a *literal* `%t` or `%s` of its own (e.g.
+  `date +%s`) — the two would collide.
 - **Elapsed time** — the `prefix a` switcher shows how long each agent has been
   in its current state, so a stuck agent stands out. It's computed only when you
   open the switcher — nothing extra runs on the status tick.
@@ -188,11 +225,15 @@ for the hook to exit).
 ## Layout
 
 ```
-bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, status, kill)
+bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, doctor, init, status, kill)
 tmux/amux.conf           # the isolated agent-view config
 scripts/amux-agent-state # hook target that records agent state (+ elapsed-time stamp, block notify)
 scripts/amux-status      # status-bar roll-up of agent-state counts
 scripts/amux-switch      # fzf agent switcher (prefix a)
+scripts/amux-notify      # cross-platform desktop notification delivery
+scripts/amux-doctor      # preflight checks (tmux version, truecolor, hooks, notifier)
+scripts/amux-init        # setup wizard (theme, glyphs, separator style, hook merge)
+scripts/amux-themes.sh   # built-in theme palettes
 ```
 
 Requires `fzf` for the `prefix a` switcher (it degrades to a hint if missing);
