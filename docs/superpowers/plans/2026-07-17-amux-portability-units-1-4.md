@@ -971,51 +971,76 @@ git commit -m "Add amux init setup wizard"
 
 ---
 
-## Task 8: End-to-end keybinding + switcher tests
+## Task 8: End-to-end rollup + switcher tests
 
 **Files:**
+- Modify: `scripts/amux-status` (socket override so the rollup is testable)
 - Create: `tests/test-switcher.sh`
-- Modify: none (proves already-shipped behaviour + the new config path)
 
-**Interfaces:**
-- Consumes: everything above.
+**Why the amux-status change:** the status rollup hardcodes `tmux -L amux`, so a
+test cannot drive it without touching the user's real `amux` server. Add an
+opt-in override: when `AMUX_STATUS_SOCK` is set (tests only), query that socket
+PATH via `-S`; otherwise the production `-L amux`. This is the minimum needed to
+test the rollup that reads `@agent_glyph`.
 
-- [ ] **Step 1: Write the test**
+- [ ] **Step 1: Add the socket override to `scripts/amux-status`**
 
-Create `tests/test-switcher.sh`:
+Replace the `sock="amux"` line and the `done < <(tmux -L "$sock" ...)` line. Remove `sock="amux"` and add a helper after the header comment:
+
+```bash
+# Socket: the shared -L amux server in production. Tests set AMUX_STATUS_SOCK to a
+# socket PATH to point the rollup at an isolated server (-S) instead.
+amux_status_tmux() {
+  if [ -n "${AMUX_STATUS_SOCK:-}" ]; then tmux -S "$AMUX_STATUS_SOCK" "$@"
+  else tmux -L amux "$@"; fi
+}
+```
+
+Then change the read loop's source from `tmux -L "$sock" list-windows ...` to:
+
+```bash
+done < <(amux_status_tmux list-windows -a -F '#{@agent_state}|#{@agent_glyph}' 2>/dev/null)
+```
+
+- [ ] **Step 2: Write `tests/test-switcher.sh`**
 
 ```bash
 #!/usr/bin/env bash
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
+amux_test_server; trap amux_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 T set-option -g @amux-home "$HERE"
 
-# prefix a target resolves to an absolute, existing script (display-popup has no -F)
+# prefix a target script exists and is executable
 [ -x "$HERE/scripts/amux-switch" ] && assert_eq ok ok "amux-switch is executable" \
   || assert_eq "" exec "amux-switch is executable"
 
-# status rollup renders configured glyphs, no raw #[fg=
-T new-window; T new-window
-T set-option -w -t :1 @agent_state blocked; T set-option -w -t :1 @agent_glyph "🛑"
+# rollup: one window each of blocked / working / idle, driven against the TEST
+# server via AMUX_STATUS_SOCK. Use window IDs (not indices) so base-index timing
+# is irrelevant. The third window keeps the global default state (idle).
+w0="$(T display -p '#{window_id}')"
+w1="$(T new-window -PF '#{window_id}')"
+T new-window
+T set-option -w -t "$w0" @agent_state blocked
+T set-option -w -t "$w1" @agent_state working
 out="$(AMUX_STATUS_SOCK="$AMUX_TEST_SOCK" "$HERE/scripts/amux-status" 2>/dev/null || true)"
-# amux-status hardcodes socket 'amux'; assert it at least runs and emits no colour codes
-case "$out" in *'#[fg='*) assert_eq "has-codes" "no-codes" "status emits no raw colour codes" ;;
-  *) assert_eq ok ok "status emits no raw colour codes" ;; esac
+assert_contains "$out" "🛑 1" "rollup shows one blocked (🛑 1)"
+assert_contains "$out" "⏳ 1" "rollup shows one working (⏳ 1)"
+assert_contains "$out" "💤 1" "rollup shows one idle (💤 1)"
+# emoji self-colour: the rollup must emit NO raw #[fg=...] colour codes
+case "$out" in *'#[fg='*) assert_eq "has-codes" "none" "rollup emits no raw colour codes" ;;
+  *) assert_eq ok ok "rollup emits no raw colour codes" ;; esac
 ```
 
-- [ ] **Step 2: Run**
+- [ ] **Step 3: Run + commit**
 
-Run: `bash tests/test-switcher.sh`
-Expected: PASS (or a clear FAIL that pins a real gap to fix).
-
-- [ ] **Step 3: Commit**
+Run: `bash tests/test-switcher.sh` (all PASS), then `bash tests/run.sh` (whole suite green).
 
 ```bash
-git add tests/test-switcher.sh
-git commit -m "Add switcher/status end-to-end tests"
+git add scripts/amux-status tests/test-switcher.sh
+git commit -m "Add rollup socket override + end-to-end switcher/rollup tests"
 ```
 
 ---
