@@ -23,8 +23,8 @@ esac
 
 command -v fzf >/dev/null 2>&1 && ok "fzf present (prefix a switcher)" \
   || warn "fzf missing — the prefix a switcher will be unavailable"
-command -v python3 >/dev/null 2>&1 && ok "python3 present (hook merge)" \
-  || warn "python3 missing — amux init can't auto-merge Claude hooks"
+: # python3 is not required at runtime — amux init prints the hooks for you to
+  # merge by hand; only the test suite uses python3.
 
 settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
 if grep -q amux-agent-state "$settings" 2>/dev/null; then
