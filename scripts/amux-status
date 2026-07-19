@@ -9,7 +9,13 @@
 # like. (The old ● dots also carried a latent bug: U+25CF is East-Asian
 # Ambiguous width, so it renders 1 cell here but 2 in a CJK locale, smearing
 # the bar. The state emoji are unambiguously 2 cells everywhere.)
-sock="amux"
+
+# Socket: the shared -L amux server in production. Tests set AMUX_STATUS_SOCK to a
+# socket PATH to point the rollup at an isolated server (-S) instead.
+amux_status_tmux() {
+  if [ -n "${AMUX_STATUS_SOCK:-}" ]; then tmux -S "$AMUX_STATUS_SOCK" "$@"
+  else tmux -L amux "$@"; fi
+}
 
 b=0 w=0 d=0 i=0
 gb="🛑" gw="⏳" gd="✅" gi="💤"   # fallbacks, only used if a window lacks a glyph
@@ -20,7 +26,7 @@ while IFS='|' read -r st gl; do
     done)    d=$((d+1)); [ -n "$gl" ] && gd="$gl" ;;
     *)       i=$((i+1)); [ -n "$gl" ] && gi="$gl" ;;
   esac
-done < <(tmux -L "$sock" list-windows -a -F '#{@agent_state}|#{@agent_glyph}' 2>/dev/null)
+done < <(amux_status_tmux list-windows -a -F '#{@agent_state}|#{@agent_glyph}' 2>/dev/null)
 
 # Ordered by how much they want your attention. The emoji carry their own colour,
 # so no #[fg=] is needed — which is what lets the counts stay legible on any bg.
