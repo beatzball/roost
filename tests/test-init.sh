@@ -43,6 +43,13 @@ printf 'n\ny\ndark\namux\nemoji\nskip\n' | AMUX_INIT_ANSWERS=- "$INIT" >/dev/nul
 ls "$cfgdir/amux/"*.bak >/dev/null 2>&1 && assert_eq ok ok "backs up existing config" \
   || assert_eq "" backup "backs up existing config"
 
+# light/dark mode drives the default theme when no theme name is given.
+# (Empty theme answer → mode's default: light picks catppuccin-latte, dark amux.)
+cfgL="$(mktemp -d /tmp/amx.XXXX)"
+printf 'n\nn\nlight\n\nemoji\nskip\n' | XDG_CONFIG_HOME="$cfgL" AMUX_INIT_ANSWERS=- "$INIT" >/dev/null 2>&1
+assert_contains "$(cat "$cfgL/amux/amux.conf")" '@amux-color-bar-bg    "#eff1f5"' "light mode defaults to a light theme (catppuccin-latte)"
+rm -rf "$cfgL"
+
 # refuses on non-tty without the answers hook
 if [ -t 0 ]; then :; else
   out="$("$INIT" </dev/null 2>&1 || true)"

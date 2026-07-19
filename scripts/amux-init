@@ -18,9 +18,14 @@ case "$pl" in y|Y) sep="$(printf '\xee\x82\xb0')" ;; *) sep="" ;; esac
 
 mode="$(ask 'Terminal is light or dark? [dark]')"; mode="${mode:-dark}"
 
-# theme list, optionally filtered by mode
-theme="$(ask 'Theme? [amux]')"; theme="${theme:-amux}"
-amux_theme "$theme" >/dev/null 2>&1 || theme="amux"
+# Mode picks the suggested themes and the default; any valid theme name is still
+# accepted (a light-mode user could still choose a dark theme if they insist).
+case "$mode" in
+  light) suggest="catppuccin-latte tokyonight-day"; deftheme="catppuccin-latte" ;;
+  *)     suggest="amux catppuccin-mocha tokyonight-storm"; deftheme="amux" ;;
+esac
+theme="$(ask "Theme? [$suggest] (default $deftheme)")"; theme="${theme:-$deftheme}"
+amux_theme "$theme" >/dev/null 2>&1 || theme="$deftheme"
 set -- $(amux_theme "$theme")
 bar_bg="$1" bar_fg="$2" logo_bg="$3" active_bg="$4" active_fg="$5" idle_fg="$6"
 
