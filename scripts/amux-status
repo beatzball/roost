@@ -18,7 +18,11 @@ amux_status_tmux() {
 }
 
 b=0 w=0 d=0 i=0
-gb="🛑" gw="⏳" gd="✅" gi="💤"   # fallbacks, only used if a window lacks a glyph
+gb="🛑" gw="⏳" gd="✅"   # fallbacks, only used if a stamped window lacks a glyph
+# idle is the DEFAULT state of an unstamped window (e.g. a brand-new tab), so its
+# fallback must track the configured glyph set, not a hardcoded emoji — otherwise
+# the rollup shows 💤 for a nerd/ascii theme. Matches the status-bar tab fallback.
+gi="$(amux_status_tmux show-options -gqv @amux-glyph-idle 2>/dev/null)"; [ -n "$gi" ] || gi="💤"
 while IFS='|' read -r st gl; do
   case "$st" in
     blocked) b=$((b+1)); [ -n "$gl" ] && gb="$gl" ;;

@@ -14,6 +14,8 @@ State comes from **Claude Code's own lifecycle hooks** — not from scraping
 process names or terminal output — so it's accurate rather than guessed. No
 external plugins, no compiled binary, nothing that reaches into `~/.tmux.conf`.
 
+![amux in a real session — the badged agent status bar up top, editor and agent panes below, and the live `amux settings` popup open in the middle](assets/amux-overview.png)
+
 ## Prior art & credit
 
 Watching agent state from inside tmux is a well-trodden idea; `amux` is a
@@ -68,8 +70,24 @@ amux init     # pick theme, glyph set, separator style; print the Claude hooks
 the previous file). Reload a running amux with `prefix + r`.
 
 **Themes:** `amux`, `catppuccin-mocha`, `catppuccin-latte`, `tokyonight-storm`,
-`tokyonight-day`. Pick one in `amux init`, or set `@amux-color-*` options by
-hand in `~/.config/amux/amux.conf`.
+`tokyonight-day`, `gruvbox`, `nord`, `rose-pine`. Pick one in `amux init`, or
+set `@amux-color-*` options by hand in `~/.config/amux/amux.conf`.
+
+### Changing settings later
+
+`amux settings` opens an fzf menu to change the **theme**, **glyph set**,
+**separator**, and **notifications** — one at a time. Each pick applies live to
+the running server (no restart) and is saved to `~/.config/amux/amux.conf`.
+Inside amux, press **`prefix S`** (`Ctrl-s S`) to open it right where you are.
+
+Unlike `amux init` (which regenerates the whole config), `amux settings` edits
+just the one line it changes, leaving any hand-added config untouched.
+
+The **theme**, **glyph**, and **separator** pickers preview live: as you move through the list
+the bar updates on the running server, **Enter** commits the choice, and **Esc**
+reverts to what you had. The currently-saved option is marked with a `✓`.
+
+![The glyph-set picker drilled down — each set (emoji, orbs, ascii, nerd) shows its own icons, and `✓` marks the one currently saved](assets/amux-settings-glyphs.png)
 
 ## Use
 
@@ -80,6 +98,7 @@ amux session b   # a second workspace, sharing the same server
 amux new api     # open a new agent window named "api" and attach
 amux status      # list running sessions + agents and their states
 amux kill a      # kill session "a" (omit the name to stop the whole server)
+amux settings    # change theme/glyphs/separator/notifications, live
 ```
 
 Detach with the prefix then `d`, like any tmux. Inside `amux`, run your agents
@@ -111,6 +130,7 @@ tmux config, so there's nothing new to learn:
 | `prefix a` | **agent switcher** — fzf popup of all agents + state + elapsed time |
 | `prefix b` | **jump to the next blocked agent** (needs your input) |
 | `prefix r` | reload amux config |
+| `prefix S` | **settings** — fzf menu to change theme/glyphs/separator/notifications, live |
 
 ### At-a-glance signals
 
@@ -226,7 +246,7 @@ for the hook to exit).
 ## Layout
 
 ```
-bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, doctor, init, status, kill)
+bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, doctor, init, settings, status, kill)
 tmux/amux.conf           # the isolated agent-view config
 scripts/amux-agent-state # hook target that records agent state (+ elapsed-time stamp, block notify)
 scripts/amux-status      # status-bar roll-up of agent-state counts
@@ -234,7 +254,10 @@ scripts/amux-switch      # fzf agent switcher (prefix a)
 scripts/amux-notify      # cross-platform desktop notification delivery
 scripts/amux-doctor      # preflight checks (tmux version, truecolor, hooks, notifier)
 scripts/amux-init        # setup wizard (theme, glyphs, separator style, prints hooks)
+scripts/amux-settings    # live settings TUI (prefix S) — change theme/glyphs/separator/notifications
+scripts/amux-restamp     # re-stamp window glyphs from the current glyph set (used by reload)
 scripts/amux-themes.sh   # built-in theme palettes
+scripts/lib/amux-config.sh # shared config helpers (surgical writer, glyph/sep maps, live-apply)
 ```
 
 Requires `fzf` for the `prefix a` switcher (it degrades to a hint if missing);

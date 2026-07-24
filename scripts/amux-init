@@ -3,6 +3,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/amux-themes.sh"
+. "$HERE/lib/amux-config.sh"
 
 # Answers come from stdin. On a non-tty we require AMUX_INIT_ANSWERS=- (tests).
 if [ ! -t 0 ] && [ "${AMUX_INIT_ANSWERS:-}" != "-" ]; then
@@ -14,7 +15,7 @@ notify="$(ask 'Enable OS notifications? [y/N]')"
 case "$notify" in y|Y|yes) nb="auto" ;; *) nb="tmux" ;; esac
 
 pl="$(ask 'Does this look like a triangle?  (y/N)')"   # caller shows the wedge
-case "$pl" in y|Y) sep="$(printf '\xee\x82\xb0')" ;; *) sep="" ;; esac
+case "$pl" in y|Y) sep="$(amux_sep triangle)" ;; *) sep="$(amux_sep none)" ;; esac
 
 mode="$(ask 'Terminal is light or dark? [dark]')"; mode="${mode:-dark}"
 
@@ -30,14 +31,10 @@ set -- $(amux_theme "$theme")
 bar_bg="$1" bar_fg="$2" logo_bg="$3" active_bg="$4" active_fg="$5" idle_fg="$6"
 
 gset="$(ask 'Glyph set? emoji/orbs/ascii/nerd [emoji]')"; gset="${gset:-emoji}"
-case "$gset" in
-  orbs)  gb="🔴" gw="🟡" gd="🔵" gi="🟢" ;;
-  ascii) gb="[!]" gw="[~]" gd="[+]" gi="[·]" ;;
-  # \xHH (not \uXXXX): bash 3.2's printf (macOS /bin/bash) has no \u support
-  # and would write the literal escape text into the config.
-  nerd)  gb="$(printf '\xef\x81\xb1')" gw="$(printf '\xef\x89\x92')" gd="$(printf '\xef\x80\x8c')" gi="$(printf '\xef\x86\x86')" ;;
-  *)     gb="🛑" gw="⏳" gd="✅" gi="💤" ;;
-esac
+# set -f: the ascii glyphs ([!] [~] [+]) are glob patterns; disable pathname
+# expansion around the word-split so they stay literal.
+set -f; set -- $(amux_glyphset "$gset"); set +f
+gb="$1" gw="$2" gd="$3" gi="$4"
 
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/amux"
 mkdir -p "$cfg"
