@@ -12,6 +12,8 @@
 #   amux                    start/attach the default session ("main")
 #   amux session NAME       start/attach a named session (amux session a, ...)
 #   amux new NAME [SESSION] open a new agent window and attach (default session "main")
+#   amux spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
+#   amux whoami             print this agent's own target (session:index)
 #   amux ssh HOST [ARGS]    run amux on a remote host (agents there, driven here)
 #   amux send TGT TEXT      type TEXT + Enter into an agent (TGT = [SESSION:]WINDOW)
 #   amux read TGT [N]       print an agent's last N non-blank lines (default 40)
@@ -33,11 +35,13 @@ while [ -L "$SOURCE" ]; do
 done
 AMUX_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
-SOCKET="amux"
+# Socket: a name (-L, production default "amux") or, for tests, a path (-S).
+SOCKET="${AMUX_SOCKET:-amux}"
+case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
 DEFAULT_SESSION="main"
 CONF="$AMUX_HOME/tmux/amux.conf"
 
-t() { tmux -L "$SOCKET" "$@"; }
+t() { tmux "$_SOCKET_FLAG" "$SOCKET" "$@"; }
 
 server_running()  { t list-sessions >/dev/null 2>&1; }        # ≥1 session exists
 session_exists()  { t has-session -t "=$1" 2>/dev/null; }      # exact-name match
@@ -61,7 +65,7 @@ ensure_session() {
   fi
 }
 
-attach_session() { ensure_session "$1"; exec tmux -L "$SOCKET" attach -t "=$1"; }
+attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$1"; }
 
 # Resolve a send/read target: "sess:win" as-is, bare "win" → default session.
 target() { case "$1" in *:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
@@ -77,8 +81,10 @@ case "${1:-up}" in
   new)
     name="${2:-agent}"; sess="${3:-$DEFAULT_SESSION}"
     ensure_session "$sess"
-    t new-window -t "=$sess" -n "$name" -c "$PWD"
-    exec tmux -L "$SOCKET" attach -t "=$sess"
+    # `=$sess:` — trailing colon so a numeric session name isn't parsed as a window
+    # index (matches spawn; a bare `=0` fails "index 0 in use").
+    t new-window -t "=$sess:" -n "$name" -c "$PWD"
+    exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$sess"
     ;;
   doctor)
     exec "$AMUX_HOME/scripts/amux-doctor"
@@ -88,6 +94,29 @@ case "${1:-up}" in
     ;;
   settings)
     exec "$AMUX_HOME/scripts/amux-settings"
+    ;;
+  whoami)
+    # Only meaningful inside an amux pane. $TMUX_PANE identifies the caller's pane.
+    if [ -z "${TMUX_PANE:-}" ]; then echo "amux whoami: not inside an amux session" >&2; exit 1; fi
+    me="$(t display-message -p -t "$TMUX_PANE" '#{session_name}:#{window_index}' 2>/dev/null || true)"
+    [ -n "$me" ] || { echo "amux whoami: not inside an amux session" >&2; exit 1; }
+    printf '%s\n' "$me"
+    ;;
+  spawn)
+    name="${2:?usage: amux spawn NAME [CMD...]}"; shift 2
+    # Helper lands in the caller's own session when inside amux, else the default.
+    if [ -n "${TMUX_PANE:-}" ]; then
+      sess="$(t display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
+    else
+      sess="$DEFAULT_SESSION"
+    fi
+    ensure_session "$sess"
+    # Background (-d) + non-attaching: create the window WITHOUT switching the
+    # caller's focus to it (plain new-window selects it, so a client viewing the
+    # session would jump there), and print its session:index target.
+    # `=$sess:` — exact-match the session AND the trailing colon avoids tmux parsing
+    # a numeric session name as a window index (e.g. `=0` fails "index 0 in use").
+    t new-window -d -P -F '#{session_name}:#{window_index}' -t "=$sess:" -n "$name" -c "$PWD" "$@"
     ;;
   hooks)
     cat <<JSON
@@ -125,7 +154,21 @@ JSON
     ;;
   send)
     raw="${2:?usage: amux send [SESSION:]WINDOW TEXT...}"; shift 2
-    t send-keys -t "$(target "$raw")" "$*" Enter
+    tgt="$(target "$raw")"
+    # Validate: a typo'd target must fail loudly, not silently deliver nothing.
+    if [ -z "$(t display-message -p -t "$tgt" '#{window_id}' 2>/dev/null)" ]; then
+      echo "amux send: no such target '$raw'" >&2; exit 2
+    fi
+    # Two-step submit: literal text, a beat, then Enter. A single
+    # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
+    delay="$(t show-options -gqv @amux-send-enter-delay 2>/dev/null)"
+    # Fall back to 0.3 for unset / non-numeric / multi-dot values, AND guard the
+    # sleep itself, so NO value can ever abort after the text is typed but before
+    # Enter is sent (which would leave the prompt half-delivered in the input box).
+    case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
+    t send-keys -t "$tgt" -l -- "$*"
+    sleep "$delay" 2>/dev/null || true
+    t send-keys -t "$tgt" Enter
     ;;
   read)
     raw="${2:?usage: amux read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
@@ -158,5 +201,5 @@ JSON
       t kill-server 2>/dev/null && echo "amux: server stopped (all sessions)." || echo "amux: not running."
     fi
     ;;
-  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
+  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
 esac
