@@ -191,6 +191,21 @@ for w in api web worker; do amux wait-done "$w"; done
 echo "all three agents finished"
 ```
 
+### Driving agents from inside amux
+
+An agent (or you) can coordinate the fleet from inside amux:
+
+- `amux whoami` — this agent's own target (`session:index`)
+- `amux spawn NAME [cmd]` — open a helper agent window without attaching; prints its target
+- `amux send TARGET "…"` — reliably type a prompt into an agent and submit it
+- `amux wait-done TARGET` / `amux read TARGET` — wait for it to finish, then read the reply
+
+For LLM agents, install the portable skill so they know the loop:
+
+```sh
+npx skills add beatzball/amux --skill amux    # or copy skills/amux/SKILL.md into your agent's instructions
+```
+
 ### Remote agents
 
 Run agents on another machine and drive them from here — tmux-native, no daemon
