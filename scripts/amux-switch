@@ -14,7 +14,7 @@ now="$(date +%s)"
 # @agent_glyph comes straight from the window, so the switcher and the status bar
 # can never drift apart — amux-agent-state is the single source for state glyphs.
 rows="$(tmux -L "$sock" list-windows -a \
-  -F '#{session_id}	#{window_id}	#{@agent_state}	#{@agent_since}	#{window_name}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_glyph}	#{@amux-glyph-idle}	#{session_name}:#{window_index}')"
+  -F '#{session_id}	#{window_id}	#{@agent_state}	#{@agent_since}	#{window_name}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_glyph}	#{@amux-glyph-idle}	#{pane_id}')"
 
 sel="$(printf '%s\n' "$rows" | awk -F'\t' -v now="$now" '
   {

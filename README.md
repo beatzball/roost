@@ -193,12 +193,20 @@ echo "all three agents finished"
 
 ### Driving agents from inside amux
 
-An agent (or you) can coordinate the fleet from inside amux:
+An agent (or you) can coordinate the fleet from inside amux. Targets are
+stable ids (e.g. `%12`) captured from `spawn`/`split`/`whoami` — capture them
+in a variable and reuse them; friendly `session:index`/name forms still work
+too.
 
-- `amux whoami` — this agent's own target (`session:index`)
-- `amux spawn NAME [cmd]` — open a helper agent window without attaching; prints its target
+- `amux whoami` — this agent's own target (its `%N`)
+- `amux spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
+- `amux split [-h|-v] [-t P] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane
 - `amux send TARGET "…"` — reliably type a prompt into an agent and submit it
 - `amux wait-done TARGET` / `amux read TARGET` — wait for it to finish, then read the reply
+
+`spawn` (window) is for a co-agent you `wait-done` on independently; `split`
+(pane) is for a helper you `send`/`read` in-place — a pane's state is shared
+with its window, so `wait-done` on it isn't per-pane.
 
 For LLM agents, install the portable skill so they know the loop:
 
