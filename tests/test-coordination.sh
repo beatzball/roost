@@ -62,7 +62,7 @@ T set-option -gu @amux-send-enter-delay 2>/dev/null || true
 # --- whoami ---
 pane="$(T display-message -p -t "$recv" '#{pane_id}')"
 me="$(TMUX_PANE="$pane" "$AMUX" whoami)"
-assert_eq "$me" "$recv" "whoami prints the caller's session:index"
+assert_eq "$me" "$pane" "whoami prints the caller's pane id (%N)"
 
 out="$(env -u TMUX_PANE "$AMUX" whoami 2>&1)"; rc=$?
 assert_eq "$rc" "1" "whoami outside an amux pane exits 1"
@@ -79,23 +79,23 @@ assert_eq "$after" "$((before + 1))" "spawn creates a new window"
 assert_eq "$(active_win)" "$active_before" "spawn creates in the background (does not switch the active window)"
 assert_eq "$(T display-message -p -t "$new" '#{window_name}')" "helper" "spawn names the window"
 # the printed target resolves (proves format + that spawn returned, i.e. did not attach)
-assert_contains "$new" ":" "spawn prints a session:index target"
-[ -n "$(T display-message -p -t "$new" '#{window_id}')" ] \
-  && assert_eq ok ok "spawn's printed target resolves to a live window" \
-  || assert_eq "" live "spawn's printed target resolves to a live window"
+case "$new" in %*) assert_eq ok ok "spawn prints a stable pane id (%N)" ;; *) assert_eq "$new" "%..." "spawn prints a stable pane id (%N)" ;; esac
+[ -n "$(T display-message -p -t "$new" '#{pane_id}')" ] \
+  && assert_eq ok ok "spawn's printed target resolves to a live pane" \
+  || assert_eq "" live "spawn's printed target resolves to a live pane"
 
 # spawn with a CMD runs it in the new window
 new2="$(TMUX_PANE="$pane" "$AMUX" spawn helper2 true)"
-assert_contains "$new2" ":" "spawn NAME CMD prints a target"
+assert_contains "$new2" "%" "spawn NAME CMD prints a target"
 
 # --- switcher target column (unit-check the row format; fzf needs a tty) ---
-# fields: sid \t wid \t state \t since \t name \t cmd \t path \t glyph \t idleglyph \t session:index
-row="$(printf '$0\t@1\tidle\t\tapi\tzsh\tapi\t💤\t💤\tmain:2\n')"
+# fields: sid \t wid \t state \t since \t name \t cmd \t path \t glyph \t idleglyph \t %N
+row="$(printf '$0\t@1\tidle\t\tapi\tzsh\tapi\t💤\t💤\t%%7\n')"
 line="$(printf '%s' "$row" | awk -F'\t' -v now=100 '
   { st=$3; since=$4; el=(since==""?0:now-since); m=int(el/60);
     dot=($8!=""?$8:($9!=""?$9:"💤")); tgt=$10;
     printf "%s %-8s %3dm  %-14s %s  (%s/%s)\n", dot, st, m, tgt, $5, $6, $7 }')"
-assert_contains "$line" "main:2" "switcher row shows the session:index target"
+assert_contains "$line" "%7" "switcher row shows the %N send-target"
 assert_contains "$line" "api" "switcher row still shows the window name"
 
 # --- skill integrity: it must reference only real amux subcommands ---
@@ -104,10 +104,30 @@ assert_contains "$line" "api" "switcher row still shows the window name"
 # sidesteps dispatch-syntax quirks like `wait-done|wait)`.
 SKILL="$HERE/skills/amux/SKILL.md"
 [ -f "$SKILL" ] && assert_eq ok ok "skills/amux/SKILL.md exists" || assert_eq "" exists "skills/amux/SKILL.md exists"
-for cmd in whoami spawn send wait-done read status; do
+for cmd in whoami spawn split send wait-done read status; do
   if grep -q "amux $cmd" "$SKILL" 2>/dev/null && grep -qw "$cmd" "$HERE/bin/amux" 2>/dev/null; then
     assert_eq ok ok "skill uses a real subcommand: amux $cmd"
   else
     assert_eq "" real "skill uses a real subcommand: amux $cmd"
   fi
 done
+
+# --- stable-id targets: send/read accept %N (pane) and @N (window) ---
+recvpane="$(T display-message -p -t "$recv" '#{pane_id}')"   # %N
+"$AMUX" send "$recvpane" "printf 'PID-%s\n' OK"
+wait_for "$recvpane" 'PID-OK' \
+  && assert_eq ok ok "send routes a %N pane-id target" \
+  || assert_eq no-exec executed "send routes a %N pane-id target"
+"$AMUX" read "$recvpane" 5 | grep -q 'PID-OK' \
+  && assert_eq ok ok "read routes a %N pane-id target" \
+  || assert_eq "" read "read routes a %N pane-id target"
+recvwin="$(T display-message -p -t "$recv" '#{window_id}')"  # @N
+"$AMUX" send "$recvwin" "printf 'WID-%s\n' OK"
+wait_for "$recvwin" 'WID-OK' \
+  && assert_eq ok ok "send routes an @N window-id target" \
+  || assert_eq no-exec executed "send routes an @N window-id target"
+
+# status leads each window row with the stable %N target
+"$AMUX" status | grep -qE '%[0-9]' \
+  && assert_eq ok ok "amux status shows a stable %N target" \
+  || assert_eq "" pane-id "amux status shows a stable %N target"
