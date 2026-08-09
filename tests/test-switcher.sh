@@ -5,25 +5,69 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 amux_test_server; trap amux_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 T set-option -g @amux-home "$HERE"
-# Unset the global @agent_glyph so window-specific states work properly
-T set-option -gu @agent_glyph
 
 # prefix a target script exists and is executable
 [ -x "$HERE/scripts/amux-switch" ] && assert_eq ok ok "amux-switch is executable" \
   || assert_eq "" exec "amux-switch is executable"
 
-# rollup: one window each of blocked / working / idle, driven against the TEST
-# server via AMUX_STATUS_SOCK. Use window IDs (not indices) so base-index timing
-# is irrelevant. The third window keeps the global default state (idle).
+# rollup: counts AGENT PANES, not windows. Two agents in one window count twice;
+# a plain shell counts not at all.
 w0="$(T display -p '#{window_id}')"
-w1="$(T new-window -PF '#{window_id}')"
-T new-window
-T set-option -w -t "$w0" @agent_state blocked
-T set-option -w -t "$w1" @agent_state working
+p0="$(T display -p '#{pane_id}')"
+p0b="$(T split-window -d -P -F '#{pane_id}' -t "$p0" 'sh -c "while :; do sleep 5; done"')"
+p1="$(T new-window -d -PF '#{pane_id}')"
+T new-window -d              # a window of plain shells — contributes nothing
+T set-option -p -t "$p0"  @agent_state blocked
+T set-option -p -t "$p0b" @agent_state idle
+T set-option -p -t "$p1"  @agent_state working
 out="$(AMUX_STATUS_SOCK="$AMUX_TEST_SOCK" "$HERE/scripts/amux-status" 2>/dev/null || true)"
 assert_contains "$out" "🛑 1" "rollup shows one blocked (🛑 1)"
 assert_contains "$out" "⏳ 1" "rollup shows one working (⏳ 1)"
-assert_contains "$out" "💤 1" "rollup shows one idle (💤 1)"
+assert_contains "$out" "💤 1" "rollup counts the idle AGENT pane, not the plain shells"
 # emoji self-colour: the rollup must emit NO raw #[fg=...] colour codes
 case "$out" in *'#[fg='*) assert_eq "has-codes" "none" "rollup emits no raw colour codes" ;;
   *) assert_eq ok ok "rollup emits no raw colour codes" ;; esac
+
+# --- switcher rows (fzf needs a tty, so dump the composed rows instead) ---
+T set-option -g @amux-glyph-blocked "B"
+T set-option -g @amux-glyph-working "W"
+T set-option -g @amux-glyph-idle    "I"
+rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+
+# Field-match with awk rather than grepping for literal tabs — a tab that gets
+# mangled into spaces on edit would make these assertions quietly meaningless.
+hdrs()  { printf '%s\n' "$rows" | awk -F'\t' -v w="$1" '$2==w && $3==""'  | wc -l | tr -d ' '; }
+prows() { printf '%s\n' "$rows" | awk -F'\t' -v p="$1" '$3==p'; }
+
+# w0 has two panes -> a header row plus one indented row per pane
+assert_eq "$(hdrs "$w0")" "1" "a multi-pane window emits exactly one header row"
+assert_eq "$(prows "$p0"  | wc -l | tr -d ' ')" "1" "the blocked pane appears as its own row"
+assert_eq "$(prows "$p0b" | wc -l | tr -d ' ')" "1" "the sibling pane appears as its own row"
+
+# a single-pane window collapses to ONE flat row — no header
+w1id="$(T display-message -p -t "$p1" '#{window_id}')"
+assert_eq "$(prows "$p1" | wc -l | tr -d ' ')" "1" "a single-pane window emits one row"
+assert_eq "$(hdrs "$w1id")" "0" "a single-pane window emits no header row"
+
+# every pane row carries window·command, so fzf filtering (which hides headers)
+# leaves each row still self-describing
+wname="$(T display-message -p -t "$p0b" '#{window_name}')"
+assert_contains "$(prows "$p0b")" "${wname}·" "a pane row names its window, so filtered rows keep context"
+
+# a non-agent pane shows the idle glyph and no state word
+T new-window -d
+plain="$(T list-panes -a -F '#{pane_id} #{@agent_state}' | awk '$2==""{print $1; exit}')"
+rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+prow="$(prows "$plain")"
+assert_contains "$prow" "I" "a non-agent pane row shows the idle glyph"
+case "$prow" in *blocked*|*working*|*done*|*idle*)
+    assert_eq "has-state" "none" "a non-agent pane row names no state" ;;
+  *) assert_eq ok ok "a non-agent pane row names no state" ;;
+esac
+
+# rows are GROUPED: every window's rows form one contiguous run, so a header is
+# never separated from the panes it introduces. If the sort were dropped, the
+# runs would interleave and the de-duplicated count would exceed the unique one.
+runs="$(printf '%s\n' "$rows" | cut -f2 | uniq | wc -l | tr -d ' ')"
+uniq="$(printf '%s\n' "$rows" | cut -f2 | sort -u | wc -l | tr -d ' ')"
+assert_eq "$runs" "$uniq" "each window's rows form one contiguous run"

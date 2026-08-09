@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # amux doctor — preflight checks. Exit non-zero only if a REQUIRED check fails
-# (tmux >= 3.1, truecolor). Optional checks warn.
+# (tmux >= 3.2, truecolor). Optional checks warn.
 required_fail=0
 ok()   { printf '  ✓ %s\n' "$1"; }
 warn() { printf '  ! %s\n' "$1"; }
 bad()  { printf '  ✗ %s\n' "$1"; required_fail=1; }
 
 ver="$(tmux -V 2>/dev/null | sed 's/^tmux //')"
-# numeric compare: 3.1 is the floor (source-file -F, display-popup)
+# numeric compare: 3.2 is the floor (#{P:} pane loops, #{E:}, pane options)
 maj="${ver%%.*}"; rest="${ver#*.}"; min="${rest%%[a-z]*}"
 if [ -z "$maj" ]; then bad "tmux not found"
-elif [ "$maj" -gt 3 ] 2>/dev/null || { [ "$maj" -eq 3 ] && [ "${min:-0}" -ge 1 ]; } 2>/dev/null; then
-  ok "tmux $ver (>= 3.1)"
+elif [ "$maj" -gt 3 ] 2>/dev/null || { [ "$maj" -eq 3 ] && [ "${min:-0}" -ge 2 ]; } 2>/dev/null; then
+  ok "tmux $ver (>= 3.2)"
 else
-  bad "tmux $ver — need >= 3.1 (source-file -F, display-popup)"
+  bad "tmux $ver — need >= 3.2 (#{P:} pane loops, #{E:}, pane options)"
 fi
 
 case "${COLORTERM:-}" in

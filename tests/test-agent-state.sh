@@ -9,26 +9,33 @@ sdir="$(mktemp -d /tmp/amx.XXXX)"; s="$sdir/amux"
 trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir"' EXIT
 tmux -S "$s" -f /dev/null new-session -d
 pane="$(tmux -S "$s" display -p '#{pane_id}')"
-# configured glyph for 'working'
-tmux -S "$s" set-option -g @amux-glyph-working "GW"
 run() { env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/amux-agent-state" "$1"; }
-st() { tmux -S "$s" display -p -t "$pane" '#{@agent_state}|#{@agent_glyph}'; }
+pstate() { tmux -S "$s" show-options -pqv -t "$1" @agent_state; }
 
+# state is recorded on the PANE, which is what lets two agents share a window
 run working
-assert_eq "$(st)" "working|GW" "glyph is read from @amux-glyph-working, not hardcoded"
+assert_eq "$(pstate "$pane")" "working" "state is stamped at pane scope"
 
-# unknown/empty config → built-in default, never blank
-tmux -S "$s" set-option -gu @amux-glyph-working
-run idle; run working
-assert_contains "$(st)" "working|" "missing config falls back to a non-empty glyph"
-[ "$(tmux -S "$s" display -p -t "$pane" '#{@agent_glyph}')" != "" ] \
-  && assert_eq ok ok "glyph never blank" || assert_eq "" "non-empty" "glyph never blank"
+# and NOT on the window — a window-scoped value would be inherited by every
+# unstamped pane in that window (pane -> window -> global lookup)
+assert_eq "$(tmux -S "$s" show-options -wqv -t "$pane" @agent_state)" "" \
+  "nothing is stamped at window scope"
 
-# early-return: repeat call does not restamp @agent_since
+# a sibling pane in the same window is untouched
+sib="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+run blocked
+assert_eq "$(pstate "$sib")" "" "stamping one pane leaves its sibling empty"
+assert_eq "$(pstate "$pane")" "blocked" "the stamped pane holds its own state"
+
+# the retired glyph option is never written
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @agent_glyph)" "" \
+  "@agent_glyph is retired and never stamped"
+
+# early-return: a repeat call does not rewrite @agent_since
 run done
-before="$(tmux -S "$s" display -p -t "$pane" '#{@agent_since}')"
+before="$(tmux -S "$s" show-options -pqv -t "$pane" @agent_since)"
 sleep 1; run done
-after="$(tmux -S "$s" display -p -t "$pane" '#{@agent_since}')"
+after="$(tmux -S "$s" show-options -pqv -t "$pane" @agent_since)"
 assert_eq "$after" "$before" "unchanged state bails before writing"
 
 # notify path: newly blocked on a NON-active window invokes amux-notify.

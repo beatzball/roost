@@ -1,12 +1,12 @@
 ---
 name: amux
-description: Coordinate AI agents running as windows inside an amux tmux session — discover peers, spawn helpers, send prompts, and collect replies. Use when you are running inside amux and need to drive or talk to another agent.
+description: Coordinate AI agents running as panes inside an amux tmux session — discover peers, spawn helpers, send prompts, and collect replies. Use when you are running inside amux and need to drive or talk to another agent.
 ---
 
 # Driving agents with amux
 
 You are (possibly) an agent running inside **amux** — a tmux "agent view" where
-each agent is a window. These commands let you coordinate with sibling agents.
+each agent is a pane. These commands let you coordinate with sibling agents.
 
 ## Preflight — are you inside amux?
 
@@ -16,11 +16,11 @@ you are not in amux; tell the user and do not run the rest.
 
 ## Discover the fleet
 
-`amux status` lists every session and window with its state, e.g.:
+`amux status` lists every session and pane with its state, e.g.:
 
 ```
-    %3  main:1 api/claude  [working]
-    %7  main:2 web/claude  [blocked]
+    %3  main:1.1 api/claude  [working]
+    %7  main:2.1 web/claude  [blocked]
 ```
 
 ## Targets are stable ids
@@ -31,6 +31,14 @@ every later command. Ids don't drift if windows get renamed or reordered.
 Friendly `session:index` forms (e.g. `main:2`) or window names still work
 too — handy when a human is typing the target — but prefer the captured id in
 scripts.
+
+State is per-pane. A pane opened with `amux split` is a real agent: it has its
+own badge, appears in the switcher, and is addressable by its `%N` for `send`,
+`read`, and `wait-done`. `amux wait-done %N` waits on that one pane; giving it a
+window target instead waits for **every** agent pane in that window.
+
+A pane counts as an agent only once a hook has stamped it. A helper pane running
+a shell command, a log tail, or a pager is not an agent and never shows a state.
 
 ## Spawn a co-agent (a new window, no focus stealing)
 
@@ -79,17 +87,19 @@ r1="$(amux split -h claude)"          # right column
 r2="$(amux split -v -t "$r1" claude)" # stacked below r1
 ```
 
-**Boundary — `spawn` vs `split`:** `spawn` opens a *window* for a co-agent you
-`wait-done` on independently. `split` opens a *pane* for a helper you
-`send`/`read` — pane state is shared with its window, so `wait-done` on a
-split pane is not per-pane (it reflects the whole window).
+**Boundary — `spawn` vs `split`:** `spawn` opens a *window* for a co-agent,
+with its own tab and badge. `split` opens a *pane* beside you, in your
+current window. Both are real agents: each has its own state, its own
+border badge, and is addressable by `%N` — including `wait-done %N`, which
+waits on that one pane whether it came from `spawn` or `split`.
 
 ## The coordination idiom
 
 1. `amux whoami` — confirm you're in amux and learn your address.
 2. `amux status` — find a target, or `amux spawn`/`amux split` a helper.
 3. `amux send TARGET "[from <you>] <task>"`.
-4. `amux wait-done TARGET [timeout]` — window co-agents only.
+4. `amux wait-done TARGET [timeout]` — pane-precise on a `%N`, aggregates
+   the window's agent panes otherwise.
 5. `amux read TARGET` — collect the result.
 
 Send **one** prompt at a time, then wait — don't fire a second before the first

@@ -5,8 +5,8 @@ without giving up your normal tmux setup or switching to a different terminal.
 
 `amux` runs on its **own isolated tmux server** with its own config, so your
 everyday `tmux` (config, sessions, plugins, muscle memory) is **never touched**.
-Launch it with one command, run your agents as windows inside it, and each
-window is badged with what its agent is doing:
+Launch it with one command, run your agents as panes or windows inside it,
+and each is badged with what its agent is doing:
 
 > 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
 
@@ -34,7 +34,7 @@ owning nothing but a few small shell files you can read end to end.
 
 ## Requirements
 
-- `tmux` ≥ 3.1  (needs `source-file -F` and `display-popup`)
+- `tmux` ≥ 3.2  (needs pane options, `#{P:}` pane loops, and `display-popup`)
 - `git`
 - A powerline/Nerd Font for the tab separators — or run `amux init` and pick the
   plain-separator fallback
@@ -68,6 +68,12 @@ amux init     # pick theme, glyph set, separator style; print the Claude hooks
 
 `amux init` writes `~/.config/amux/amux.conf` and is safe to re-run (it backs up
 the previous file). Reload a running amux with `prefix + r`.
+
+**Upgrading a running server:** `prefix + r` also migrates any leftover
+window-scoped agent state from before per-pane state existed, so a server you
+started on an older amux upgrades in place — no restart needed. To do it
+without touching a pane (e.g. from outside amux), run
+`scripts/amux-migrate-state` once instead.
 
 **Themes:** `amux`, `catppuccin-mocha`, `catppuccin-latte`, `tokyonight-storm`,
 `tokyonight-day`, `gruvbox`, `nord`, `rose-pine`. Pick one in `amux init`, or
@@ -259,12 +265,17 @@ for the hook to exit).
 
 - `bin/amux` starts `tmux -L amux -f tmux/amux.conf` — a second tmux server,
   fully separate from your default one (different socket, different config).
-- `tmux/amux.conf` badges each window from a per-window option, `@agent_glyph`,
-  defaulting to idle. The glyphs are shape-distinct (not just colour-distinct),
-  so the bar still reads correctly if you're colourblind. Backgrounds mark only
-  which window is **active**, which keeps every tab's text high-contrast.
-- Claude hooks call `scripts/amux-agent-state <state>`, which stamps the window
-  owning `$TMUX_PANE` with the state + glyph, then repaints.
+- `tmux/amux.conf` badges each window from its **panes**: one glyph per distinct
+  agent state present, urgency-ordered and deduplicated, computed live from
+  `#{P:}` so a pane dying never leaves a stale badge. Glyphs are shape-distinct
+  (not just colour-distinct), so the bar still reads correctly if you're
+  colourblind. Backgrounds mark only which window is **active**, which keeps
+  every tab's text high-contrast.
+- Claude hooks call `scripts/amux-agent-state <state>`, which stamps the **pane**
+  identified by `$TMUX_PANE`, then repaints. Pane scope is what lets two agents
+  share one window — `amux split` puts a second agent beside the first without
+  either clobbering the other's badge. A pane is an agent only if it has been
+  stamped, so a plain shell or a `tail -f` never badges anything.
 
 ## Layout
 
@@ -272,13 +283,14 @@ for the hook to exit).
 bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, doctor, init, settings, status, kill)
 tmux/amux.conf           # the isolated agent-view config
 scripts/amux-agent-state # hook target that records agent state (+ elapsed-time stamp, block notify)
-scripts/amux-status      # status-bar roll-up of agent-state counts
-scripts/amux-switch      # fzf agent switcher (prefix a)
+scripts/amux-status      # status-bar roll-up of agent-pane counts
+scripts/amux-switch      # fzf agent switcher, panes grouped by window (prefix a)
 scripts/amux-notify      # cross-platform desktop notification delivery
 scripts/amux-doctor      # preflight checks (tmux version, truecolor, hooks, notifier)
 scripts/amux-init        # setup wizard (theme, glyphs, separator style, prints hooks)
 scripts/amux-settings    # live settings TUI (prefix S) — change theme/glyphs/separator/notifications
-scripts/amux-restamp     # re-stamp window glyphs from the current glyph set (used by reload)
+scripts/amux-migrate-state # clear pre-pane-state window options from a running server (used by reload)
+scripts/amux-next-blocked  # select the next blocked agent pane (prefix b)
 scripts/amux-themes.sh   # built-in theme palettes
 scripts/lib/amux-config.sh # shared config helpers (surgical writer, glyph/sep maps, live-apply)
 ```

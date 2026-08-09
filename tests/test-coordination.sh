@@ -131,3 +131,39 @@ wait_for "$recvwin" 'WID-OK' \
 "$AMUX" status | grep -qE '%[0-9]' \
   && assert_eq ok ok "amux status shows a stable %N target" \
   || assert_eq "" pane-id "amux status shows a stable %N target"
+
+# --- wait-done is pane-precise ---
+# The regression this guards: pane options are invisible to `show-options -wqv`,
+# which returns empty — so a window-scoped read reports every agent "done".
+wpane="$(T display-message -p -t "$recv" '#{pane_id}')"
+sib="$(T split-window -d -P -F '#{pane_id}' -t "$wpane")"
+T set-option -p -t "$sib" @agent_state working
+
+# the busy pane blocks; a 1s timeout must fail rather than return success
+"$AMUX" wait-done "$sib" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "1" "wait-done on a working pane times out (does not read window scope)"
+
+# its sibling is not an agent, so it is already done
+"$AMUX" wait-done "$wpane" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "wait-done on a non-agent pane returns immediately"
+
+# a window target aggregates: one working pane keeps the whole window busy
+wid="$(T display-message -p -t "$recv" '#{window_id}')"
+"$AMUX" wait-done "$wid" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "1" "wait-done on a window waits for every agent pane"
+
+# once that pane finishes, the window target returns
+T set-option -p -t "$sib" @agent_state done
+"$AMUX" wait-done "$wid" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "wait-done on a window returns once all agent panes are done"
+
+# a window with no agents at all returns immediately
+empty="$(T new-window -d -PF '#{window_id}')"
+"$AMUX" wait-done "$empty" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "wait-done on a window with no agents returns immediately"
+
+# --- status lists panes ---
+T set-option -p -t "$sib" @agent_state blocked
+out="$("$AMUX" status)"
+assert_contains "$out" "$sib" "status lists the helper pane by its %N"
+assert_contains "$out" "blocked" "status shows each pane's own state"

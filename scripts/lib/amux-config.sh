@@ -55,6 +55,15 @@ amux_cfg_set() {
 }
 
 # amux_cfg_tmux ARGS -> talk to the test socket if set, else the amux server.
+#
+# Deliberately NO "server we are running inside" step, unlike amux-status,
+# amux-switch, amux-notify, amux-next-blocked and amux-migrate-state. Those are
+# only ever invoked from within an amux server (a binding, a popup, the conf),
+# so inheriting $TMUX is always right for them. This lib backs `amux init` and
+# `amux settings`, which a user may legitimately run from a normal terminal —
+# including one inside their REGULAR tmux. Inheriting $TMUX there would write
+# amux's theme and glyph options into their everyday tmux server. Addressing
+# -L amux by name is the correct behaviour for this one.
 amux_cfg_tmux() {
   if [ -n "${AMUX_CONFIG_SOCK:-}" ]; then tmux -S "$AMUX_CONFIG_SOCK" "$@"
   else tmux -L amux "$@"; fi
@@ -94,19 +103,15 @@ amux_current_glyphset() {
   printf 'custom'
 }
 
-# amux_apply_live HOME -> reload the running server + re-stamp glyphs. No server -> no-op.
+# amux_apply_live HOME -> reload the running server. No server -> no-op.
 amux_apply_live() {
   local home="$1"
   amux_cfg_tmux has-session 2>/dev/null || return 0
   amux_cfg_tmux source-file -F "#{@amux-home}/tmux/amux.conf" 2>/dev/null || \
     amux_cfg_tmux source-file "$home/tmux/amux.conf" 2>/dev/null || true
   amux_cfg_tmux source-file -qF "#{@amux-user-conf}" 2>/dev/null || true
-  "$home/scripts/amux-restamp" 2>/dev/null || true
   amux_cfg_tmux refresh-client -S 2>/dev/null || true
 }
-
-# Directory of this lib (scripts/lib), used to locate sibling scripts (amux-restamp).
-_AMUX_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 
 # amux_menu_row SAVED VALUE SUFFIX -> "VALUE<TAB><mark>VALUE<SUFFIX>".
 # <mark> is a fixed 2-col "✓ " (saved) or "  " (not), so the highlight moving
@@ -125,10 +130,6 @@ amux_preview_keys() {
     separator) echo "@amux-sep-left @amux-sep-right" ;;
   esac
 }
-
-# _amux_restamp -> run the sibling amux-restamp against the current (test or prod)
-# server. AMUX_CONFIG_SOCK empty in prod -> amux-restamp falls back to -L amux.
-_amux_restamp() { AMUX_RESTAMP_SOCK="${AMUX_CONFIG_SOCK:-}" "$_AMUX_LIB_DIR/../amux-restamp" 2>/dev/null || true; }
 
 # amux_preview_apply TYPE VALUE -> apply to the RUNNING server only (no config write).
 amux_preview_apply() {
@@ -151,7 +152,6 @@ amux_preview_apply() {
       amux_cfg_tmux set-option -g @amux-glyph-working "$2" 2>/dev/null || true
       amux_cfg_tmux set-option -g @amux-glyph-done    "$3" 2>/dev/null || true
       amux_cfg_tmux set-option -g @amux-glyph-idle    "$4" 2>/dev/null || true
-      _amux_restamp
       ;;
     separator)
       s="$(amux_sep "$value")"
@@ -172,14 +172,13 @@ amux_snapshot() {
   done
 }
 
-# amux_restore TYPE FILE -> re-apply a snapshot to the server (+ restamp glyphs).
+# amux_restore TYPE FILE -> re-apply a snapshot to the server.
 amux_restore() {
-  local type="$1" file="$2" k v tab
+  local file="$2" k v tab
   [ -f "$file" ] || return 0
   tab="$(printf '\t')"
   while IFS="$tab" read -r k v; do
     [ -n "$k" ] && amux_cfg_tmux set-option -g "$k" "$v" 2>/dev/null || true
   done < "$file"
-  [ "$type" = glyphs ] && _amux_restamp
   amux_cfg_tmux refresh-client -S 2>/dev/null || true
 }

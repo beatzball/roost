@@ -13,12 +13,12 @@ marker="$(mktemp)"
 shimdir="$(mktemp -d /tmp/amx.XXXX)"
 cat > "$shimdir/tmux" <<'EOF'
 #!/bin/sh
-[ "$1" = "-V" ] && { echo "tmux 3.0a"; exit 0; }
+[ "$1" = "-V" ] && { echo "tmux 3.1c"; exit 0; }
 exit 0
 EOF
 chmod +x "$shimdir/tmux"
 PATH="$shimdir:$PATH" "$DOC" >/dev/null 2>&1
-assert_eq "$?" "1" "doctor exits non-zero on tmux < 3.1"
+assert_eq "$?" "1" "doctor exits non-zero on tmux < 3.2"
 rm -rf "$shimdir"
 
 # a faked new tmux passes the version gate

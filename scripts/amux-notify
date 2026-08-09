@@ -4,11 +4,14 @@
 # backend miss falls through, and the final fallback is an in-tmux message.
 set -u
 title="${1:-amux}"; msg="${2:-}"
-# Socket: tests / amux-agent-state set AMUX_NOTIFY_SOCK to a socket PATH (-S);
-# with it unset we address the shared server by name (-L amux), like every other
-# amux component. (Using -S amux here would mean a socket FILE named "amux".)
+# Socket, in order: AMUX_NOTIFY_SOCK (tests / amux-agent-state pass a PATH -> -S),
+# else the server we are running inside, else the shared server by name.
+# (Using -S amux here would mean a socket FILE named "amux".) The middle step
+# keeps a notification — and its in-tmux fallback message — on the server that
+# actually raised it, rather than on the developer's live one.
 nt() {
   if [ -n "${AMUX_NOTIFY_SOCK:-}" ]; then tmux -S "$AMUX_NOTIFY_SOCK" "$@"
+  elif [ -n "${TMUX:-}" ]; then tmux -S "${TMUX%%,*}" "$@"
   else tmux -L amux "$@"; fi
 }
 opt() { nt show-options -gqv "$1" 2>/dev/null; }
