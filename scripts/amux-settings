@@ -105,6 +105,6 @@ while :; do
     quit|"") break ;;
   esac
   # Apply live only when something was actually picked. A cancelled submenu (Esc)
-  # leaves v empty → no needless re-source/restamp flicker of the bar.
+  # leaves v empty → no needless re-source flicker of the bar.
   [ -n "$v" ] && amux_apply_live "$ROOT"
 done

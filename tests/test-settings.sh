@@ -55,19 +55,23 @@ assert_eq "$(amux_current_theme)" "tokyonight-storm" "current_theme reverse-look
 tmux -S "$AMUX_TEST_SOCK" set-option -g @amux-color-bar-bg "#abcdef"
 assert_eq "$(amux_current_theme)" "custom" "current_theme returns custom when off-tuple"
 
-# apply_live makes a config change live: it re-sources base THEN user conf, then
-# re-stamps. A distinctive working glyph must be routed through the USER config
+# apply_live makes a config change live: it re-sources base THEN user conf.
+# A distinctive working glyph must be routed through the USER config
 # (not a bare set-option), because re-sourcing the base conf resets @amux-glyph-*
 # to its defaults first — the user conf is what overrides, exactly as in production.
 tmux -S "$AMUX_TEST_SOCK" set-option -g @amux-home "$HERE"
 tmux -S "$AMUX_TEST_SOCK" set-option -g @amux-user-conf "$(amux_cfg_path)"
-export AMUX_RESTAMP_SOCK="$AMUX_TEST_SOCK"
 amux_cfg_set @amux-glyph-working "WW"
 w="$(tmux -S "$AMUX_TEST_SOCK" display-message -p '#{window_id}')"
-tmux -S "$AMUX_TEST_SOCK" set-option -w -t "$w" @agent_state working
-tmux -S "$AMUX_TEST_SOCK" set-option -w -t "$w" @agent_glyph "OLD"
+p="$(tmux -S "$AMUX_TEST_SOCK" display-message -p '#{pane_id}')"
+tmux -S "$AMUX_TEST_SOCK" set-option -p -t "$p" @agent_state working
 amux_apply_live "$HERE"
-assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -wqv -t "$w" @agent_glyph)" "WW" "apply_live re-sources user conf + re-stamps (OLD->WW)"
+# A glyph change is live with NO re-stamping: the bar derives the glyph from
+# @amux-glyph-<state> at render time, so there is nothing left to go stale.
+assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -gqv @amux-glyph-working)" "WW" \
+  "apply_live re-sources the user conf (glyph override wins)"
+assert_contains "$(tmux -S "$AMUX_TEST_SOCK" list-windows -a -F '#{E:@amux-tab-badge}')" "WW" \
+  "the tab badge picks up the new glyph with no re-stamp"
 tmux -S "$AMUX_TEST_SOCK" kill-server 2>/dev/null
 
 # fzf-missing: prints an install hint, exits 0 (no crash)
@@ -87,7 +91,7 @@ assert_eq "$row_saved" "$(printf 'nord\t\xe2\x9c\x93 nord')" "menu_row marks the
 assert_eq "$row_other" "$(printf 'amux\t  amux')" "menu_row pads unsaved rows with two spaces (no reflow)"
 
 # preview primitives against a running server; assert NO config write
-amux_test_server; export AMUX_CONFIG_SOCK="$AMUX_TEST_SOCK"; export AMUX_RESTAMP_SOCK="$AMUX_TEST_SOCK"
+amux_test_server; export AMUX_CONFIG_SOCK="$AMUX_TEST_SOCK"
 tmux -S "$AMUX_TEST_SOCK" source-file "$HERE/tmux/amux.conf" >/dev/null 2>&1
 pvcfg="$(mktemp -d /tmp/amx.XXXX)"; PV_XDG_SAVE="${XDG_CONFIG_HOME:-}"; export XDG_CONFIG_HOME="$pvcfg"
 
@@ -107,12 +111,13 @@ amux_restore theme "$snap"
 assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -gqv @amux-color-bar-bg)" "#282828" "restore returns the server to the snapshot"
 rm -f "$snap"
 
-# glyphs preview re-stamps a window
+# glyphs preview is live for the tab badge, with nothing stamped
 tmux -S "$AMUX_TEST_SOCK" set-option -g @amux-home "$HERE"
-w="$(tmux -S "$AMUX_TEST_SOCK" display-message -p '#{window_id}')"
-tmux -S "$AMUX_TEST_SOCK" set-option -w -t "$w" @agent_state working
+p="$(tmux -S "$AMUX_TEST_SOCK" display-message -p '#{pane_id}')"
+tmux -S "$AMUX_TEST_SOCK" set-option -p -t "$p" @agent_state working
 amux_preview_apply glyphs ascii
-assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -wqv -t "$w" @agent_glyph)" "[~]" "preview_apply glyphs re-stamps windows"
+assert_contains "$(tmux -S "$AMUX_TEST_SOCK" list-windows -a -F '#{E:@amux-tab-badge}')" "[~]" \
+  "preview_apply glyphs is live on the tab badge"
 
 # separator round-trip: triangle -> preview none ("" value) -> restore must return
 # the wedge, NOT stay empty. (Guards amux_restore against skipping empty values.)
@@ -130,7 +135,7 @@ tmux -S "$AMUX_TEST_SOCK" kill-server 2>/dev/null
 rm -rf "$pvcfg"; if [ -n "$PV_XDG_SAVE" ]; then export XDG_CONFIG_HOME="$PV_XDG_SAVE"; else unset XDG_CONFIG_HOME; fi
 
 # ---- --apply-preview CLI seam (Task 3) ----
-amux_test_server; export AMUX_CONFIG_SOCK="$AMUX_TEST_SOCK"; export AMUX_RESTAMP_SOCK="$AMUX_TEST_SOCK"
+amux_test_server; export AMUX_CONFIG_SOCK="$AMUX_TEST_SOCK"
 tmux -S "$AMUX_TEST_SOCK" source-file "$HERE/tmux/amux.conf" >/dev/null 2>&1
 seamcfg="$(mktemp -d /tmp/amx.XXXX)"; SEAM_XDG_SAVE="${XDG_CONFIG_HOME:-}"; export XDG_CONFIG_HOME="$seamcfg"
 

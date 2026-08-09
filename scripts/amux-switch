@@ -1,32 +1,84 @@
 #!/usr/bin/env bash
-# amux-switch — fzf popup to jump to any agent across the amux server.
-# Shows each window's state + how long it's been in it + project dir.
+# amux-switch — fzf popup to jump to any agent PANE across the amux server.
+# Panes are the unit of agency, so this lists panes, grouped by window.
 # Bound to `prefix + a`; run inside a display-popup.
-sock="amux"
+#
+# Layout: a single-pane window collapses to one flat row (the common case must
+# not double in length). A window with two or more panes gets a header row plus
+# one indented row per pane. Every pane row also carries "window·command",
+# because fzf hides the headers the moment you type — each row has to stay
+# self-describing on its own.
+set -u
 
-if ! command -v fzf >/dev/null 2>&1; then
-  tmux -L "$sock" display-message "amux: install fzf to use the agent switcher"
+# Socket, in order: AMUX_SWITCH_SOCK (test seam, a path -> -S), else the server
+# we are running inside, else the shared production server by name.
+# The middle step matters more here than anywhere else: this script issues
+# switch-client / select-window / select-pane, so addressing the wrong server
+# would yank a real session's focus around rather than merely misreport.
+# `prefix a` runs it in a display-popup, whose child inherits $TMUX.
+tmx() {
+  if [ -n "${AMUX_SWITCH_SOCK:-}" ]; then tmux -S "$AMUX_SWITCH_SOCK" "$@"
+  elif [ -n "${TMUX:-}" ]; then tmux -S "${TMUX%%,*}" "$@"
+  else tmux -L amux "$@"; fi
+}
+
+if [ -z "${AMUX_SWITCH_DUMP:-}" ] && ! command -v fzf >/dev/null 2>&1; then
+  tmx display-message "amux: install fzf to use the agent switcher"
   exit 0
 fi
 
 now="$(date +%s)"
 
-# @agent_glyph comes straight from the window, so the switcher and the status bar
-# can never drift apart — amux-agent-state is the single source for state glyphs.
-rows="$(tmux -L "$sock" list-windows -a \
-  -F '#{session_id}	#{window_id}	#{@agent_state}	#{@agent_since}	#{window_name}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_glyph}	#{@amux-glyph-idle}	#{pane_id}')"
+# Glyphs come from config, so the switcher and the status bar can never drift —
+# both derive from @amux-glyph-<state>. Hardcoded values are last-resort only.
+gb="$(tmx show-options -gqv @amux-glyph-blocked 2>/dev/null)"; [ -n "$gb" ] || gb="🛑"
+gw="$(tmx show-options -gqv @amux-glyph-working 2>/dev/null)"; [ -n "$gw" ] || gw="⏳"
+gd="$(tmx show-options -gqv @amux-glyph-done    2>/dev/null)"; [ -n "$gd" ] || gd="✅"
+gi="$(tmx show-options -gqv @amux-glyph-idle    2>/dev/null)"; [ -n "$gi" ] || gi="💤"
 
-sel="$(printf '%s\n' "$rows" | awk -F'\t' -v now="$now" '
+# list-panes -a does NOT return panes in display order (observed %0 %2 %1), so
+# sort explicitly: session name, then window index, then pane index.
+raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}' 2>/dev/null \
+  | sort -t'	' -k2,2 -k4,4n -k8,8n)"
+
+# No panes (e.g. a dead/unreachable socket) -> $raw is empty, and
+# `printf '%s\n' "$raw"` below would still feed awk ONE empty line, which its
+# unguarded rule prints as a garbage row (all key fields empty). Selecting
+# that row would run `switch-client -t ""`. Bail before awk instead.
+[ -n "$raw" ] || exit 0
+
+# Hidden key fields: session_id, window_id, pane_id (empty on a header row).
+rows="$(printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v gb="$gb" -v gw="$gw" -v gd="$gd" -v gi="$gi" '
+  function glyph(s) {
+    if (s == "blocked") return gb
+    if (s == "working") return gw
+    if (s == "done")    return gd
+    return gi
+  }
   {
-    st=$3; since=$4; el=(since==""?0:now-since); m=int(el/60);
-    # $8 = stamped @agent_glyph; unstamped windows fall back to the configured
-    # idle glyph ($9 = @amux-glyph-idle), then a hardcoded emoji as last resort.
-    dot=($8!=""?$8:($9!=""?$9:"💤")); tgt=$10;
-    # hidden key: session_id<TAB>window_id ; visible: the rest
-    printf "%s\t%s\t%s %-8s %3dm  %-14s %s  (%s/%s)\n", $1, $2, dot, st, m, tgt, $5, $6, $7
-  }' | fzf --with-nth=3.. --delimiter='\t' --reverse --prompt='agent > ' --no-info)"
+    sid=$1; wid=$3; wname=$5; wpanes=$6+0; pid=$7; cmd=$9; path=$10; st=$11; since=$12
+    # A pane with no state is a plain shell, not an idle agent: show the idle
+    # glyph but no state word and no elapsed time.
+    el = (st == "" || since == "") ? "--" : sprintf("%dm", int((now - since) / 60))
+    if (wpanes <= 1) {
+      printf "%s\t%s\t%s\t%s %-8s %4s  %-6s %s·%s  (%s)\n", sid, wid, pid, glyph(st), st, el, pid, wname, cmd, path
+    } else {
+      if (wid != lastwid) { printf "%s\t%s\t\t%s  (%s)\n", sid, wid, wname, path; lastwid = wid }
+      printf "%s\t%s\t%s\t  %s %-8s %4s  %-6s %s·%s\n", sid, wid, pid, glyph(st), st, el, pid, wname, cmd
+    }
+  }')"
 
+# Tests cannot drive fzf (it needs a tty), so allow dumping the composed rows.
+if [ -n "${AMUX_SWITCH_DUMP:-}" ]; then printf '%s\n' "$rows"; exit 0; fi
+
+sel="$(printf '%s\n' "$rows" | fzf --with-nth=4.. --delimiter='\t' --reverse --prompt='agent > ' --no-info)"
 [ -n "$sel" ] || exit 0
+
 sid="$(printf '%s' "$sel" | cut -f1)"
 wid="$(printf '%s' "$sel" | cut -f2)"
-tmux -L "$sock" switch-client -t "$sid" \; select-window -t "$wid"
+pid="$(printf '%s' "$sel" | cut -f3)"
+tmx switch-client -t "$sid"
+tmx select-window -t "$wid"
+# A header row has no pane id — selecting it lands on the window's active pane.
+[ -n "$pid" ] && tmx select-pane -t "$pid"
+exit 0

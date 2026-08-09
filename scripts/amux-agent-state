@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# amux-agent-state — record an AI agent's state onto its tmux window.
+# amux-agent-state — record an AI agent's state onto its tmux pane.
 #
 # Called by Claude Code lifecycle hooks (see `amux hooks`). It stamps the
-# window that the agent runs in with a state + glyph, which the amux status
-# bar renders at a glance. It is a deliberate no-op unless the agent is running
+# pane that the agent runs in with a state, which the amux status bar
+# renders at a glance (glyphs are derived at render time, not stored here).
+# It is a deliberate no-op unless the agent is running
 # inside an `amux` server pane, so it is safe to wire into your GLOBAL Claude
 # hooks — running `claude` anywhere else does nothing.
 #
@@ -23,46 +24,31 @@ case "$sock" in
   *) exit 0 ;;
 esac
 
-# Each state gets a glyph with a distinct SHAPE, not just a distinct colour, so
-# the bar stays readable for colourblind users and in a mono terminal. All four
-# are single-codepoint and exactly two cells wide — no variation selectors, which
-# are what break tmux's width maths and smear the status line.
-#
-# Built-in fallback glyphs. Config (@amux-glyph-<state>) overrides these; the
-# fallback guarantees the bar never goes blank if the option is missing/empty.
-case "$state" in
-  blocked) fallback="🛑" ;;        # stop sign — needs you
-  working) fallback="⏳" ;;        # hourglass — thinking
-  done)    fallback="✅" ;;        # check — finished, awaiting next prompt
-  idle|*)  state="idle"; fallback="💤" ;;
-esac
+# Normalise: anything unrecognised is idle.
+case "$state" in blocked|working|done) ;; *) state="idle" ;; esac
+
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
 # exiting, so the common case — state already correct — must be cheap: ONE read,
-# then bail before any writes. This single call resolves prev state, prev glyph,
-# AND the configured glyph for the new state (each with the global fallback, i.e.
-# exactly what the bar shows). It MUST carry `|| true`: under `set -e` a bare
+# then bail before any writes. It MUST carry `|| true`: under `set -e` a bare
 # failing $(...) aborts, and a dead tmux server (agent windows are killable) has
 # to degrade, never break Claude.
-cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" "#{@agent_state}|#{@agent_glyph}|#{@amux-glyph-$state}" 2>/dev/null || true)"
-prev="${cur%%|*}"; rest="${cur#*|}"; prev_glyph="${rest%%|*}"; glyph="${rest#*|}"
-[ -n "$glyph" ] || glyph="$fallback"   # torn/empty config must never blank the bar
-[ "$state" = "$prev" ] && [ "$glyph" = "$prev_glyph" ] && exit 0
+prev="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}' 2>/dev/null || true)"
+[ "$state" = "$prev" ] && exit 0
 
-# Stamp the WINDOW that owns this pane (reliably read by window-status-format).
-tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
-tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_glyph "$glyph" 2>/dev/null || true
+# Stamp the PANE, not the window. Pane scope is what lets two agents share one
+# window without overwriting each other's badge. Glyphs are NOT stamped: the
+# status bar derives them from @amux-glyph-<state> at render time, so a theme
+# change is live everywhere with nothing left to go stale.
+tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
+tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
 
-# On a real state change, record when it happened (for elapsed-time display)
-# and ping if an off-screen agent just became blocked (needs your input).
-if [ "$state" != "$prev" ]; then
-  tmux -S "$sock" set-option -w -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
-
-  if [ "$state" = blocked ]; then
-    active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
-    if [ "$active" != "1" ]; then
-      wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
-      AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "needs your input" || true
-    fi
+# Ping if an off-screen agent just became blocked (needs your input). If the
+# window is on screen the pane is visible, so no ping.
+if [ "$state" = blocked ]; then
+  active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
+  if [ "$active" != "1" ]; then
+    wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
+    AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "needs your input" || true
   fi
 fi
 

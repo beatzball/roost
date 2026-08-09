@@ -4,7 +4,7 @@
 # Your normal `tmux` is untouched: amux uses a separate socket (-L amux) and its
 # own config (tmux/amux.conf), so it never sees or disturbs your regular
 # sessions. Run your AI coding agents inside it; Claude Code hooks badge each
-# window by state (🛑 blocked · ⏳ working · ✅ done · 💤 idle).
+# pane by state (🛑 blocked · ⏳ working · ✅ done · 💤 idle).
 #
 # All amux sessions share one server, so the status counts and `prefix a`
 # switcher roll up across every session.
@@ -14,11 +14,11 @@
 #   amux new NAME [SESSION] open a new agent window and attach (default session "main")
 #   amux spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
 #   amux split [-h|-v] [-t P] [CMD]  open a helper pane in the current window; prints its %N
-#   amux whoami             print this agent's own target (session:index)
+#   amux whoami             print this agent's own pane id (%N)
 #   amux ssh HOST [ARGS]    run amux on a remote host (agents there, driven here)
-#   amux send TGT TEXT      type TEXT + Enter into an agent (TGT = [SESSION:]WINDOW)
+#   amux send TGT TEXT      type TEXT + Enter into an agent (TGT = %N pane, @N window, or [SESSION:]WINDOW)
 #   amux read TGT [N]       print an agent's last N non-blank lines (default 40)
-#   amux wait-done TGT [T]  block until TGT is done/idle (optional T-sec timeout)
+#   amux wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   amux hooks              print the Claude Code hook config that powers the badges
 #   amux doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   amux init               setup wizard: writes ~/.config/amux/amux.conf
@@ -196,20 +196,47 @@ JSON
   wait-done|wait)
     raw="${2:?usage: amux wait-done [SESSION:]WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
     tgt="$(target "$raw")"
-    while :; do
-      st="$(t show-options -wqv -t "$tgt" @agent_state 2>/dev/null || echo idle)"
-      case "$st" in done|idle) exit 0 ;; esac
+    # A %N target is pane-precise; anything else aggregates the window's agent
+    # panes. The two cases MUST branch on the target form: `list-panes -t %N`
+    # lists that pane's whole WINDOW, not the single pane.
+    # State is a PANE option, so it is read with display-message (which resolves
+    # pane scope). `show-options -wqv` exits 0 with EMPTY output for a pane
+    # option, so a `|| echo idle` fallback never fires and the empty string
+    # matches neither done nor idle — the wait loop would hang until timeout.
+    busy() {
+      case "$tgt" in
+        %*)
+          case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
+            working|blocked) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+        *)
+          # Command substitution, NOT a pipe into `grep -q`: bin/amux runs under
+          # `set -o pipefail`, and grep exiting early can SIGPIPE list-panes, so
+          # the pipeline would report failure even when a pane IS busy — and
+          # wait-done would return immediately on a working agent.
+          states="$(t list-panes -t "$tgt" -F '#{@agent_state}' 2>/dev/null || true)"
+          case "$states" in
+            *working*|*blocked*) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+    }
+    while busy; do
       sleep 1; waited=$((waited + 1))
       if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
-        echo "amux: timed out waiting for '$raw' (still $st)" >&2; exit 1
+        echo "amux: timed out waiting for '$raw'" >&2; exit 1
       fi
     done
+    exit 0
     ;;
   status)
     if server_running; then
       echo "amux: running (socket=$SOCKET)"
-      t list-sessions -F '  session #{session_name} — #{session_windows} agents#{?session_attached, [attached],}'
-      t list-windows -a -F '    #{pane_id}  #{session_name}:#I #{window_name}/#{pane_current_command}  [#{@agent_state}]'
+      t list-sessions -F '  session #{session_name} — #{session_windows} windows#{?session_attached, [attached],}'
+      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}/#{pane_current_command}  [#{?@agent_state,#{@agent_state},-}]'
     else echo "amux: not running"; fi
     ;;
   kill|down|stop)
