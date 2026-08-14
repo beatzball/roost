@@ -38,7 +38,7 @@ gi="$(tmx show-options -gqv @amux-glyph-idle    2>/dev/null)"; [ -n "$gi" ] || g
 
 # list-panes -a does NOT return panes in display order (observed %0 %2 %1), so
 # sort explicitly: session name, then window index, then pane index.
-raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}' 2>/dev/null \
+raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@amux-name}' 2>/dev/null \
   | sort -t'	' -k2,2 -k4,4n -k8,8n)"
 
 # No panes (e.g. a dead/unreachable socket) -> $raw is empty, and
@@ -56,15 +56,21 @@ rows="$(printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v gb="$gb" -v gw="$gw" 
     return gi
   }
   {
-    sid=$1; wid=$3; wname=$5; wpanes=$6+0; pid=$7; cmd=$9; path=$10; st=$11; since=$12
+    sid=$1; wid=$3; wname=$5; wpanes=$6+0; pid=$7; cmd=$9; path=$10; st=$11; since=$12; nm=$13
+    label = (nm != "" ? nm : cmd)
+    # spawn NAME names the window AND the pane from the same NAME, so an
+    # unconditional dot-label suffix would echo the window name back
+    # (api-agent dot api-agent) where real signal, i.e. what is running,
+    # belongs. Suppress the suffix only when it would just repeat the name.
+    suffix = (label == wname) ? "" : "·" label
     # A pane with no state is a plain shell, not an idle agent: show the idle
     # glyph but no state word and no elapsed time.
     el = (st == "" || since == "") ? "--" : sprintf("%dm", int((now - since) / 60))
     if (wpanes <= 1) {
-      printf "%s\t%s\t%s\t%s %-8s %4s  %-6s %s·%s  (%s)\n", sid, wid, pid, glyph(st), st, el, pid, wname, cmd, path
+      printf "%s\t%s\t%s\t%s %-8s %4s  %-6s %s%s  (%s)\n", sid, wid, pid, glyph(st), st, el, pid, wname, suffix, path
     } else {
       if (wid != lastwid) { printf "%s\t%s\t\t%s  (%s)\n", sid, wid, wname, path; lastwid = wid }
-      printf "%s\t%s\t%s\t  %s %-8s %4s  %-6s %s·%s\n", sid, wid, pid, glyph(st), st, el, pid, wname, cmd
+      printf "%s\t%s\t%s\t  %s %-8s %4s  %-6s %s%s\n", sid, wid, pid, glyph(st), st, el, pid, wname, suffix
     }
   }')"
 

@@ -50,9 +50,43 @@ assert_eq "$(prows "$p1" | wc -l | tr -d ' ')" "1" "a single-pane window emits o
 assert_eq "$(hdrs "$w1id")" "0" "a single-pane window emits no header row"
 
 # every pane row carries window·command, so fzf filtering (which hides headers)
-# leaves each row still self-describing
-wname="$(T display-message -p -t "$p0b" '#{window_name}')"
-assert_contains "$(prows "$p0b")" "${wname}·" "a pane row names its window, so filtered rows keep context"
+# leaves each row still self-describing — UNLESS the label just echoes the
+# window name back (see the suppression test below). Both branches depend on
+# the relationship between #{window_name} and the pane's resolved label, and
+# this test does not get to leave that relationship to chance: tmux's
+# automatic-rename recomputes the name asynchronously (observed directly —
+# setting automatic-rename-format does not retitle the window until a later,
+# separate round-trip to the server lands), so whether a bare `T display` here
+# reads the pre- or post-rename value is a race, not a fact about the
+# environment. CI happened to read it before the recompute landed (window
+# stayed at its startup name, which matched the pane's command, so the
+# suppression branch fired); this machine's timing usually let the recompute
+# land first. Pin the window name explicitly instead of racing it.
+T rename-window -t "$w0" apiwin
+# An explicit rename-window turns automatic-rename off for that window (tmux's
+# own documented behaviour), so "apiwin" cannot be renamed out from under us
+# by a later automatic-rename tick. Confirm rather than assume.
+assert_eq "$(T show-options -wqv -t "$w0" automatic-rename)" "off" \
+  "an explicit rename-window disables automatic-rename for that window"
+rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+assert_contains "$(prows "$p0b")" "apiwin·" "a pane row names its window, so filtered rows keep context"
+
+# ...and the suffix is SUPPRESSED when the pane's resolved label equals the
+# window name — the pairing `amux spawn NAME` produces, since it names the
+# window and the pane from the same NAME. Reproduce that pairing directly
+# (explicit rename + explicit @amux-name) rather than hoping automatic-rename
+# happens to land on a matching value.
+w3="$(T new-window -d -PF '#{window_id}')"
+p3="$(T display-message -p -t "$w3" '#{pane_id}')"
+T rename-window -t "$w3" samename
+T set-option -p -t "$p3" @amux-name samename
+rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+prow3="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p3" '$3==p')"
+assert_contains "$prow3" "samename" "a pane row whose label equals its window name still shows the name"
+case "$prow3" in
+  *"samename·samename"*) assert_eq "doubled" "single" "the ·suffix is suppressed when the label equals the window name" ;;
+  *) assert_eq ok ok "the ·suffix is suppressed when the label equals the window name" ;;
+esac
 
 # a non-agent pane shows the idle glyph and no state word
 T new-window -d
@@ -71,3 +105,14 @@ esac
 runs="$(printf '%s\n' "$rows" | cut -f2 | uniq | wc -l | tr -d ' ')"
 uniq="$(printf '%s\n' "$rows" | cut -f2 | sort -u | wc -l | tr -d ' ')"
 assert_eq "$runs" "$uniq" "each window's rows form one contiguous run"
+
+# --- switcher prefers @amux-name over the process name ---
+T set-option -p -t "$p0" @amux-name "planner"
+rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p0" '$3==p')" "planner" \
+  "a named pane's switcher row shows the name"
+T set-option -pu -t "$p0" @amux-name
+rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+cmd="$(T display-message -p -t "$p0" '#{pane_current_command}')"
+assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p0" '$3==p')" "$cmd" \
+  "an unnamed pane's switcher row falls back to the command"

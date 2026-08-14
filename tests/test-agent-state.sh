@@ -6,7 +6,9 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # amux-agent-state only acts on a socket whose path ends in /amux, so build one
 # directly rather than via amux_test_server (whose socket lacks that suffix).
 sdir="$(mktemp -d /tmp/amx.XXXX)"; s="$sdir/amux"
-trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir"' EXIT
+# deadsdir is unset until the dead-server block below creates it; the ${:-}
+# keeps this trap safe to install (and to fire) before that point.
+trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir" "${deadsdir:-}"' EXIT
 tmux -S "$s" -f /dev/null new-session -d
 pane="$(tmux -S "$s" display -p '#{pane_id}')"
 run() { env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/amux-agent-state" "$1"; }
@@ -57,4 +59,4 @@ dpane="$(tmux -S "$ds" display -p '#{pane_id}')"
 tmux -S "$ds" kill-server 2>/dev/null
 env TMUX="$ds,0,0" TMUX_PANE="$dpane" "$HERE/scripts/amux-agent-state" working
 assert_eq "$?" "0" "dead tmux server degrades, does not abort the hook"
-rm -rf "$deadsdir"
+# deadsdir cleanup is handled by the top-of-file EXIT trap.

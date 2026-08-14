@@ -6,7 +6,12 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 . "$HERE/scripts/lib/amux-config.sh"
 
 cfgdir="$(mktemp -d /tmp/amx.XXXX)"; export XDG_CONFIG_HOME="$cfgdir"
-trap 'rm -rf "$cfgdir"' EXIT
+# amux_test_teardown is a no-op until the first amux_test_server call below
+# sets AMUX_TEST_SOCK/AMUX_TEST_SOCKDIR; it's the safety net for whichever
+# server is still live at exit. Each of the 3 amux_test_server calls in this
+# file OVERWRITES those vars, so the earlier two sockdirs are torn down
+# explicitly (below) rather than relying on this trap alone.
+trap 'rm -rf "$cfgdir"; amux_test_teardown' EXIT
 conf="$cfgdir/amux/amux.conf"
 
 # writer creates the file and writes the key
@@ -72,7 +77,7 @@ assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -gqv @amux-glyph-working)" "
   "apply_live re-sources the user conf (glyph override wins)"
 assert_contains "$(tmux -S "$AMUX_TEST_SOCK" list-windows -a -F '#{E:@amux-tab-badge}')" "WW" \
   "the tab badge picks up the new glyph with no re-stamp"
-tmux -S "$AMUX_TEST_SOCK" kill-server 2>/dev/null
+amux_test_teardown
 
 # fzf-missing: prints an install hint, exits 0 (no crash)
 out="$(AMUX_FZF=definitely-not-fzf "$HERE/scripts/amux-settings" </dev/null 2>&1)"; rc=$?
@@ -131,7 +136,7 @@ amux_restore separator "$sepsnap"
 assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -gqv @amux-sep-left)" "$wedge" "restore returns the wedge (empty value not skipped)"
 rm -f "$sepsnap"
 
-tmux -S "$AMUX_TEST_SOCK" kill-server 2>/dev/null
+amux_test_teardown
 rm -rf "$pvcfg"; if [ -n "$PV_XDG_SAVE" ]; then export XDG_CONFIG_HOME="$PV_XDG_SAVE"; else unset XDG_CONFIG_HOME; fi
 
 # ---- --apply-preview CLI seam (Task 3) ----
@@ -145,5 +150,5 @@ assert_eq "$(tmux -S "$AMUX_TEST_SOCK" show-options -gqv @amux-color-logo-bg)" "
 [ -f "$seamcfg/amux/amux.conf" ] && assert_eq wrote no-write "--apply-preview writes NO config" \
   || assert_eq ok ok "--apply-preview writes NO config"
 
-tmux -S "$AMUX_TEST_SOCK" kill-server 2>/dev/null
+amux_test_teardown
 rm -rf "$seamcfg"; if [ -n "$SEAM_XDG_SAVE" ]; then export XDG_CONFIG_HOME="$SEAM_XDG_SAVE"; else unset XDG_CONFIG_HOME; fi

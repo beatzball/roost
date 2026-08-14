@@ -206,9 +206,19 @@ too.
 
 - `amux whoami` — this agent's own target (its `%N`)
 - `amux spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
-- `amux split [-h|-v] [-t P] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane
+- `amux split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
 - `amux send TARGET "…"` — reliably type a prompt into an agent and submit it
 - `amux wait-done TARGET` / `amux read TARGET` — wait for it to finish, then read the reply
+
+`amux send` verifies its own submit rather than trusting a fire-and-forget
+`send-keys`, and its exit code says what went wrong: **exit 2** means the
+target is unusable — it doesn't exist, or its pane is dead — re-resolve the
+target. **Exit 1** means delivery to a valid target failed — either the text
+never reached the pane (typing itself failed) or it was typed but never left
+the input line even after retrying extra Enters — retry the same target or
+inspect the pane, don't re-resolve it. A missing argument also exits 1, but
+as a `usage:` line rather than an `amux send:` one — that's a caller bug, not
+a delivery failure.
 
 `spawn` (window) is for a co-agent you `wait-done` on independently; `split`
 (pane) is for a helper you `send`/`read` in-place — a pane's state is shared
