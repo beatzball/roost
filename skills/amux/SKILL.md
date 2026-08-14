@@ -58,8 +58,19 @@ are real and cost tokens — only spawn what you need.
 
 `amux send TARGET "text"` types the text and submits it reliably. Until amux
 adds sender attribution, prefix who you are so the receiver can reply (as
-above). A bad target fails loudly (exit 2) — check the target from
-`amux status` or the id you captured.
+above). Exit codes tell you WHAT to do next, so branch on `$?`:
+
+- **exit 2** — the target itself is bad (doesn't exist, or its pane is dead).
+  Re-resolve it: check `amux status` or the id you captured.
+- **exit 1** — delivery to a valid target failed: either the text never
+  reached the pane (typing itself failed, e.g. the pane died mid-send) or it
+  was typed but never left the input line even after retrying extra Enters
+  (a cold TUI swallowed the submit). Do NOT re-resolve the target — `amux
+  send` the same target again, or `amux read` it to see what's stuck. A
+  missing TARGET/TEXT argument also exits 1, but with a `usage:` message
+  instead of an `amux send:` one — that's a caller bug, not a delivery
+  failure; fix the call instead of retrying.
+- **exit 0** — delivered and submitted. Nothing to do.
 
 ## Wait for the reply, then read it
 
@@ -85,6 +96,16 @@ Compose layouts by splitting a specific pane with `-t`:
 # agent full-left, a stack of helpers on the right:
 r1="$(amux split -h claude)"          # right column
 r2="$(amux split -v -t "$r1" claude)" # stacked below r1
+```
+
+Both `spawn` and `split -n NAME` can name a pane. The name is what shows on
+its border, its tab, and its switcher row — instead of the raw process name
+(which for some agents is just a version string). Useful once several
+helpers share one window and "claude" no longer tells them apart:
+
+```sh
+r1="$(amux split -h -n reviewer claude)"
+r2="$(amux split -v -t "$r1" -n tests 'npm test -- --watch')"
 ```
 
 **Boundary — `spawn` vs `split`:** `spawn` opens a *window* for a co-agent,

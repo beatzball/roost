@@ -39,6 +39,25 @@ out="$("$AMUX" send "nope:99" "x" 2>&1)"; rc=$?
 assert_eq "$rc" "2" "send to a bad target exits 2"
 assert_contains "$out" "no such target" "send to a bad target explains why"
 
+# validation: a DEAD pane (remain-on-exit) fails loudly too, delivers nothing.
+# The bug this guards: with remain-on-exit on, a pane whose command has
+# already exited still resolves #{window_id} fine — the "no such target"
+# check alone lets it through — and send-keys against it then silently
+# no-ops. The frozen screen never gains the message, so `pending()` sees
+# before==cur with no match and reports a clean send that delivered nothing.
+# Measured against the pre-fix binary (commit 89a3975): `amux send` exits 0.
+T set-option -g remain-on-exit on
+dead="$(T new-window -d -PF '#{pane_id}' true)"
+n=20
+while [ "$n" -gt 0 ]; do
+  [ "$(T display-message -p -t "$dead" '#{pane_dead}' 2>/dev/null)" = "1" ] && break
+  sleep 0.2; n=$((n - 1))
+done
+out="$("$AMUX" send "$dead" "x" 2>&1)"; rc=$?
+assert_eq "$rc" "2" "send to a dead pane exits 2, not a false 0"
+assert_contains "$out" "dead pane" "send to a dead pane explains why"
+T set-option -gu remain-on-exit 2>/dev/null || true
+
 # a non-numeric @amux-send-enter-delay must NOT break send — it falls back to 0.3
 # and still submits (no abort with the text left unsent).
 T set-option -g @amux-send-enter-delay "not-a-number"
@@ -78,6 +97,41 @@ assert_eq "$after" "$((before + 1))" "spawn creates a new window"
 # spawn must NOT steal focus — the session's active window is unchanged (-d).
 assert_eq "$(active_win)" "$active_before" "spawn creates in the background (does not switch the active window)"
 assert_eq "$(T display-message -p -t "$new" '#{window_name}')" "helper" "spawn names the window"
+
+# regression (Fix 1): spawn sets @amux-name to the SAME string it already used
+# to name the window, so every window-scoped label site (status, the tab
+# formats, the switcher) must suppress the "·LABEL"/"/LABEL" suffix when it
+# would just echo the window name back ("helper/helper"). The pre-fix bug
+# rendered exactly that duplicate; assert_contains "reviewer" elsewhere does
+# NOT catch this because that fixture names a pane differently from its window.
+statusline="$("$AMUX" status | grep "^    $new ")"
+case "$statusline" in
+  *"helper/helper"*) assert_eq "helper/helper" "helper" "spawn: status does not duplicate the label (no window/window echo)" ;;
+  *) assert_eq ok ok "spawn: status does not duplicate the label (no window/window echo)" ;;
+esac
+assert_contains "$statusline" " helper " "spawn: status still shows the (single) label"
+
+# same check against the REAL rendered tab formats, not just the status list —
+# resolve window-status-format/-current-format the way tmux itself would.
+# amux status alone doesn't load tmux/amux.conf onto the test server (it only
+# sets pane options), so the tab formats source it here before being resolved.
+T source-file "$HERE/tmux/amux.conf"
+tab="$(T display-message -p -t "$new" '#{E:window-status-format}')"
+tabcur="$(T display-message -p -t "$new" '#{E:window-status-current-format}')"
+case "$tab$tabcur" in
+  *"helper·helper"*) assert_eq "helper·helper" "helper" "spawn: window-status formats do not duplicate the label" ;;
+  *) assert_eq ok ok "spawn: window-status formats do not duplicate the label" ;;
+esac
+assert_contains "$tab" "helper" "spawn: window-status-format still shows the (single) label"
+
+# and the switcher row
+switchrow="$(AMUX_SWITCH_SOCK="$sock" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch" | awk -F'\t' -v p="$new" '$3==p')"
+case "$switchrow" in
+  *"helper·helper"*) assert_eq "helper·helper" "helper" "spawn: switcher row does not duplicate the label" ;;
+  *) assert_eq ok ok "spawn: switcher row does not duplicate the label" ;;
+esac
+assert_contains "$switchrow" "helper" "spawn: switcher row still shows the (single) label"
+
 # the printed target resolves (proves format + that spawn returned, i.e. did not attach)
 case "$new" in %*) assert_eq ok ok "spawn prints a stable pane id (%N)" ;; *) assert_eq "$new" "%..." "spawn prints a stable pane id (%N)" ;; esac
 [ -n "$(T display-message -p -t "$new" '#{pane_id}')" ] \
@@ -87,6 +141,22 @@ case "$new" in %*) assert_eq ok ok "spawn prints a stable pane id (%N)" ;; *) as
 # spawn with a CMD runs it in the new window
 new2="$(TMUX_PANE="$pane" "$AMUX" spawn helper2 true)"
 assert_contains "$new2" "%" "spawn NAME CMD prints a target"
+
+# regression: a short-lived CMD's pane can be reaped by tmux before the
+# subsequent `set-option @amux-name` runs. Under `set -euo pipefail` that
+# failing set-option used to abort the whole `spawn` before its `printf`, so
+# spawn returned nothing and exited 1 for a window that was actually created.
+# One run passing is not proof (the race doesn't always land) — repeat it.
+spawn_fail=0
+for i in 1 2 3 4 5 6 7 8; do
+  out="$(TMUX_PANE="$pane" "$AMUX" spawn "quickie$i" true 2>&1)"; rc=$?
+  case "$out" in
+    %*) : ;;
+    *) spawn_fail=$((spawn_fail + 1)) ;;
+  esac
+  [ "$rc" -eq 0 ] || spawn_fail=$((spawn_fail + 1))
+done
+assert_eq "$spawn_fail" "0" "spawn NAME CMD returns a %N and exits 0 every time, even when CMD exits instantly"
 
 # --- switcher target column (unit-check the row format; fzf needs a tty) ---
 # fields: sid \t wid \t state \t since \t name \t cmd \t path \t glyph \t idleglyph \t %N
@@ -167,3 +237,81 @@ T set-option -p -t "$sib" @agent_state blocked
 out="$("$AMUX" status)"
 assert_contains "$out" "$sib" "status lists the helper pane by its %N"
 assert_contains "$out" "blocked" "status shows each pane's own state"
+
+# --- send verifies its submit ---
+# The failure this guards: a cold TUI swallows the Enter, the text sits in the
+# input box, and send exits 0 anyway — so a caller waits forever on a message
+# that was never delivered.
+
+# a normal shell submits on the first Enter and still exits 0
+"$AMUX" send "$recv" "printf 'VERIFY-%s\n' OK"; rc=$?
+assert_eq "$rc" "0" "send exits 0 when the text submits"
+wait_for "$recv" 'VERIFY-OK' \
+  && assert_eq ok ok "send still delivers normally" \
+  || assert_eq no-exec executed "send still delivers normally"
+
+# a garbage retry count falls back to the default rather than aborting
+T set-option -g @amux-send-retries "not-a-number"
+"$AMUX" send "$recv" "printf 'RETRY-%s\n' OK"; rc=$?
+assert_eq "$rc" "0" "send survives a garbage @amux-send-retries"
+wait_for "$recv" 'RETRY-OK' \
+  && assert_eq ok ok "send still submits with a garbage retry count" \
+  || assert_eq no-exec executed "send still submits with a garbage retry count"
+T set-option -gu @amux-send-retries 2>/dev/null || true
+
+# zero retries is honoured (one Enter, no verification loop) and still works
+T set-option -g @amux-send-retries "0"
+"$AMUX" send "$recv" "printf 'ZERO-%s\n' OK"; rc=$?
+assert_eq "$rc" "0" "send with zero retries exits 0"
+T set-option -gu @amux-send-retries 2>/dev/null || true
+
+# an empty message is a legitimate bare Enter, not "still pending" forever.
+# The bug this guards: `case "$last" in *""*)` collapses to `*)`, which
+# matches ANY pane content, so a naive pending() would call an empty send
+# "still pending" forever and fire every retry (4 Enters instead of 1) before
+# exiting 1 for a message that had nothing to submit in the first place.
+# Prove the exact count with a reader that stamps one countable line per
+# Enter it receives — not just that "an" Enter arrived, but exactly one.
+counter="$(T new-window -P -F '#{pane_id}' -n counter "sh $HERE/tests/fixtures/count-enters.sh")"
+"$AMUX" send "$counter" ""; rc=$?
+assert_eq "$rc" "0" "send with an empty message exits 0"
+wait_for "$counter" 'ENTER-1' \
+  && assert_eq ok ok "send with an empty message delivers a bare Enter" \
+  || assert_eq no-exec executed "send with an empty message delivers a bare Enter"
+sleep 0.5
+out="$(T capture-pane -p -t "$counter")"
+case "$out" in
+  *ENTER-2*) assert_eq extra-enter none "send with an empty message fires exactly one Enter (no ENTER-2)" ;;
+  *)         assert_eq ok ok "send with an empty message fires exactly one Enter (no ENTER-2)" ;;
+esac
+
+# `amux send TARGET` with no text argument at all (not even "") behaves the
+# same way — raw="${2:?...}" only requires the target, so this is reachable.
+"$AMUX" send "$counter"; rc=$?
+assert_eq "$rc" "0" "send with no text argument at all exits 0"
+wait_for "$counter" 'ENTER-2' \
+  && assert_eq ok ok "send with no text argument delivers exactly one more bare Enter" \
+  || assert_eq no-exec executed "send with no text argument delivers exactly one more bare Enter"
+sleep 0.5
+out2="$(T capture-pane -p -t "$counter")"
+case "$out2" in
+  *ENTER-3*) assert_eq extra-enter none "send with no text argument fires exactly one Enter (no ENTER-3)" ;;
+  *)         assert_eq ok ok "send with no text argument fires exactly one Enter (no ENTER-3)" ;;
+esac
+
+# a genuinely swallowed first Enter: a fixture that echoes typed text (like a
+# TUI redrawing its input box) but silently drops exactly the first Enter it
+# receives, leaving the text sitting unsubmitted — the live bug this task
+# fixes, reproduced deterministically instead of asserted by option-plumbing
+# alone. Its confirmation marker never contains the sent text, so a stuck
+# input line can't be mistaken for delivery.
+if command -v python3 >/dev/null 2>&1; then
+  swallow="$(T new-window -P -F '#{pane_id}' -n swallow "python3 -u $HERE/tests/fixtures/swallow-first-enter.py")"
+  "$AMUX" send "$swallow" "hello world"; rc=$?
+  assert_eq "$rc" "0" "send recovers from a genuinely swallowed first Enter (exit 0)"
+  wait_for "$swallow" 'SUBMITTED-OK' \
+    && assert_eq ok ok "send recovers from a genuinely swallowed first Enter (delivered)" \
+    || assert_eq no-exec executed "send recovers from a genuinely swallowed first Enter (delivered)"
+else
+  assert_eq ok ok "swallowed-Enter recovery test skipped (no python3)"
+fi

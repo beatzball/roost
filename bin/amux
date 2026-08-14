@@ -13,10 +13,10 @@
 #   amux session NAME       start/attach a named session (amux session a, ...)
 #   amux new NAME [SESSION] open a new agent window and attach (default session "main")
 #   amux spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
-#   amux split [-h|-v] [-t P] [CMD]  open a helper pane in the current window; prints its %N
+#   amux split [-h|-v] [-t P] [-n NAME] [CMD]  open a helper pane in the current window; prints its %N
 #   amux whoami             print this agent's own pane id (%N)
 #   amux ssh HOST [ARGS]    run amux on a remote host (agents there, driven here)
-#   amux send TGT TEXT      type TEXT + Enter into an agent (TGT = %N pane, @N window, or [SESSION:]WINDOW)
+#   amux send TGT TEXT      type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW)
 #   amux read TGT [N]       print an agent's last N non-blank lines (default 40)
 #   amux wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   amux hooks              print the Claude Code hook config that powers the badges
@@ -71,6 +71,24 @@ attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" atta
 # @N (window-id) / %N (pane-id) / anything with a colon → verbatim; a bare word → default session.
 target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
 
+# A pane/window NAME containing a tab or newline corrupts every consumer that
+# treats a line as one record: `amux status` emits one line PER pane, so a
+# `\n` in the name splits it into two; the switcher's tab-delimited awk rows
+# shift every field after a `\t`, producing a selectable row with empty
+# session/window/pane key fields — selecting it runs `switch-client -t ""`,
+# the exact hazard the comment in scripts/amux-switch warns about. Reject
+# outright rather than silently stripping: a mangled name that still "worked"
+# would be a more confusing surprise later than a loud, immediate error.
+reject_bad_name() {
+  # $'\t' / $'\n' ANSI-C quoting, NOT "$(printf '\t')" — command substitution
+  # strips ALL trailing newlines, so "$(printf '\n')" collapses to the empty
+  # string and the newline arm would then match (and reject) every name.
+  case "$1" in
+    *$'\t'*|*$'\n'*)
+      echo "amux $2: NAME may not contain a tab or newline" >&2; exit 2 ;;
+  esac
+}
+
 case "${1:-up}" in
   up|start|"")
     attach_session "$DEFAULT_SESSION"
@@ -81,6 +99,7 @@ case "${1:-up}" in
     ;;
   new)
     name="${2:-agent}"; sess="${3:-$DEFAULT_SESSION}"
+    reject_bad_name "$name" new
     ensure_session "$sess"
     # `=$sess:` — trailing colon so a numeric session name isn't parsed as a window
     # index (matches spawn; a bare `=0` fails "index 0 in use").
@@ -105,6 +124,7 @@ case "${1:-up}" in
     ;;
   spawn)
     name="${2:?usage: amux spawn NAME [CMD...]}"; shift 2
+    reject_bad_name "$name" spawn
     # Helper lands in the caller's own session when inside amux, else the default.
     if [ -n "${TMUX_PANE:-}" ]; then
       sess="$(t display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
@@ -117,16 +137,24 @@ case "${1:-up}" in
     # session would jump there), and print its pane id target.
     # `=$sess:` — exact-match the session AND the trailing colon avoids tmux parsing
     # a numeric session name as a window index (e.g. `=0` fails "index 0 in use").
-    t new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@"
+    new="$(t new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@")"
+    # Naming is best-effort; the pane id is the contract. A short-lived CMD's
+    # pane can already be gone by the time we set-option — don't let that abort
+    # the command and swallow the id we already have.
+    t set-option -p -t "$new" @amux-name "$name" 2>/dev/null || true
+    printf '%s\n' "$new"
     ;;
   split)
     shift
-    dir=""; from="${TMUX_PANE:-}"
+    dir=""; from="${TMUX_PANE:-}"; name=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -h) dir="-h"; shift ;;
         -v) dir="-v"; shift ;;
-        -t) from="${2:?amux split: -t needs a target}"; shift 2 ;;
+        -t) [ "$#" -ge 2 ] || { echo "amux split: -t needs a target" >&2; exit 2; }
+            from="$2"; shift 2 ;;
+        -n) [ "$#" -ge 2 ] || { echo "amux split: -n needs a name" >&2; exit 2; }
+            name="$2"; reject_bad_name "$name" split; shift 2 ;;
         --) shift; break ;;
         -*) echo "amux split: unknown flag '$1'" >&2; exit 2 ;;
         *)  break ;;
@@ -134,7 +162,14 @@ case "${1:-up}" in
     done
     [ -n "$from" ] || { echo "amux split: not inside an amux session" >&2; exit 1; }
     # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
-    t split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@"
+    new="$(t split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@")"
+    # A label that survives what the process calls itself: #{pane_current_command}
+    # reports a version string for some agents and changes every release.
+    # Naming is best-effort; the pane id is the contract. A short-lived CMD's
+    # pane can already be gone by the time we set-option — don't let that abort
+    # the command and swallow the id we already have.
+    [ -n "$name" ] && { t set-option -p -t "$new" @amux-name "$name" 2>/dev/null || true; }
+    printf '%s\n' "$new"
     ;;
   hooks)
     cat <<JSON
@@ -174,8 +209,36 @@ JSON
     raw="${2:?usage: amux send [SESSION:]WINDOW TEXT...}"; shift 2
     tgt="$(target "$raw")"
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
-    if [ -z "$(t display-message -p -t "$tgt" '#{window_id}' 2>/dev/null)" ]; then
+    # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
+    # has already exited still resolves #{window_id} fine (the pane object is
+    # still there, frozen), but send-keys against it silently no-ops (exit 0)
+    # and the frozen screen never gains the message — so the verification
+    # below would see "not pending" (before == cur, no match in the frozen
+    # last line) and report a clean send that delivered nothing. That is
+    # exactly the silent false-success this command exists to eliminate, and
+    # a dead target is its most likely real-world instance. One
+    # display-message call fetches both fields so the two checks read the
+    # SAME snapshot of the target rather than racing two separate lookups.
+    # Separator is a plain space, NOT a tab: the split below is
+    # `wid="${info%% *}"` / `dead="${info#* }"`, plain parameter expansion
+    # that only splits on the literal character between the quotes. A tab
+    # separator would leave both expansions matching nothing — `wid` becomes
+    # the whole string (non-empty, so a bad target's emptiness check never
+    # fires) and `dead` never equals "1". #{window_id} and #{pane_dead}
+    # never contain a space, so a space is a safe, boring delimiter that
+    # this split actually breaks on.
+    info="$(t display-message -p -t "$tgt" '#{window_id} #{pane_dead}' 2>/dev/null || true)"
+    wid="${info%% *}"
+    dead="${info#* }"
+    if [ -z "$wid" ]; then
       echo "amux send: no such target '$raw'" >&2; exit 2
+    fi
+    # Same exit code as "no such target": a dead pane is unusable for exactly
+    # the reason a nonexistent one is — the caller needs to pick a DIFFERENT
+    # target, not retry this one (retrying is what exit 1 below means).
+    if [ "$dead" = "1" ]; then
+      echo "amux send: target '$raw' is a dead pane (its command has exited); nothing would be delivered" >&2
+      exit 2
     fi
     # Two-step submit: literal text, a beat, then Enter. A single
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
@@ -184,9 +247,84 @@ JSON
     # sleep itself, so NO value can ever abort after the text is typed but before
     # Enter is sent (which would leave the prompt half-delivered in the input box).
     case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
-    t send-keys -t "$tgt" -l -- "$*"
+
+    # An empty message is a legitimate, useful send on its own — a bare Enter,
+    # e.g. to unstick a pane whose TUI already swallowed a previous submit.
+    # There is no text to verify landed, so type nothing, press Enter once,
+    # and stop right here. Do NOT run this through the verification loop
+    # below: an empty pattern collapses `case "$last" in *""*)` to `*)`,
+    # which matches ANY pane content, so `pending()` would always report
+    # "still pending" and fire every retry into a pane that had nothing to
+    # submit in the first place.
+    if [ -z "$*" ]; then
+      t send-keys -t "$tgt" Enter 2>/dev/null || true
+      exit 0
+    fi
+
+    retries="$(t show-options -gqv @amux-send-retries 2>/dev/null)"
+    case "$retries" in ''|*[!0-9]*) retries=3 ;; esac
+    # Clamp to a sane upper bound. Do this by pattern first, not by `[ -gt ]`
+    # alone: an absurd digit string (hundreds of digits) can make the numeric
+    # test itself error out (or take a very long time) before it ever gets to
+    # compare against the cap, so strings of 3+ digits are clamped directly.
+    case "$retries" in ???*) retries=20 ;; esac
+    [ "$retries" -gt 20 ] 2>/dev/null && retries=20 || true
+
+    # Still pending only if BOTH hold:
+    #   1. the pane's last non-blank line still contains the whole message, AND
+    #   2. the pane's full contents are byte-identical to how they looked right
+    #      after typing — before ANY Enter was sent (captured into $before).
+    # The substring check alone is not enough: a blank/empty prompt can leave
+    # the already-scrolled, verbatim command line as the last non-blank row
+    # even after a real submit, and a TUI can echo the submitted message into
+    # its transcript before it clears the input box or renders a response. A
+    # genuine submit almost always changes the screen somehow — prompt
+    # redraw, output, a spinner, the transcript moving — so requiring
+    # "nothing on screen changed at all" makes a false "not submitted" much
+    # harder to reach than the substring check on its own.
+    # Trade-off, accepted on purpose: a TUI that animates continuously (a
+    # clock, a spinner) will never look byte-identical to its own earlier
+    # snapshot, so this retry path will not fire there even for a genuinely
+    # swallowed Enter. That is the side to be wrong on: a false "submitted"
+    # just degrades to the old (pre-fix) behavior, while a false "not
+    # submitted" fires a spurious Enter that can re-run a command.
+    pending() {
+      local cur last
+      cur="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+      [ "$cur" = "$before" ] || return 1
+      last="$(printf '%s\n' "$cur" | grep -v '^[[:space:]]*$' | tail -n 1)"
+      case "$last" in *"$1"*) return 0 ;; *) return 1 ;; esac
+    }
+
+    # This one's status is NOT discarded: unlike the Enters below (where
+    # aborting mid-loop is the worse outcome), a failure HERE means the text
+    # never reached the pane at all — there is nothing to retry or verify, so
+    # let it surface as a loud failure instead of falling through to report
+    # exit 0 for a message that was never typed.
+    if ! t send-keys -t "$tgt" -l -- "$*" 2>/dev/null; then
+      echo "amux send: failed to type text into '$raw' (pane may have died)" >&2
+      exit 1
+    fi
     sleep "$delay" 2>/dev/null || true
-    t send-keys -t "$tgt" Enter
+    before="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+    t send-keys -t "$tgt" Enter 2>/dev/null || true
+
+    n="$retries"
+    while [ "$n" -gt 0 ]; do
+      sleep "$delay" 2>/dev/null || true
+      pending "$*" || break
+      # A cold TUI can swallow the first Enter entirely; try again. Guarded:
+      # a pane that dies mid-loop must not abort the script with tmux's raw
+      # error — it should fall through to the same conservative handling as
+      # any other "can no longer tell" case below.
+      t send-keys -t "$tgt" Enter 2>/dev/null || true
+      n=$((n - 1))
+    done
+
+    if [ "$retries" -gt 0 ] && pending "$*"; then
+      echo "amux send: text typed into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
+      exit 1
+    fi
     ;;
   read)
     raw="${2:?usage: amux read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
@@ -236,7 +374,17 @@ JSON
     if server_running; then
       echo "amux: running (socket=$SOCKET)"
       t list-sessions -F '  session #{session_name} — #{session_windows} windows#{?session_attached, [attached],}'
-      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}/#{pane_current_command}  [#{?@agent_state,#{@agent_state},-}]'
+      # Emptiness test, not truthiness: #{?@amux-name,...} treats the string "0"
+      # as false, so a pane literally named "0" would wrongly fall back to
+      # #{pane_current_command} here.
+      # The "/LABEL" suffix is suppressed when LABEL == window_name: `spawn NAME`
+      # names the window AND the pane from the same NAME, so an unconditional
+      # suffix would print "api-agent/api-agent" — an echo of the window name
+      # where real signal (what's running) belongs. LABEL is inlined twice
+      # (once in the #{==:} test, once as the shown suffix) rather than
+      # factored through a second #{E:} indirection — see tmux/amux.conf's
+      # window-status-format comment for why.
+      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@amux-name},},#{pane_current_command},#{@amux-name}},#{window_name}},,/#{?#{==:#{@amux-name},},#{pane_current_command},#{@amux-name}}}  [#{?@agent_state,#{@agent_state},-}]'
     else echo "amux: not running"; fi
     ;;
   kill|down|stop)
@@ -246,5 +394,5 @@ JSON
       t kill-server 2>/dev/null && echo "amux: server stopped (all sessions)." || echo "amux: not running."
     fi
     ;;
-  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
+  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
 esac
