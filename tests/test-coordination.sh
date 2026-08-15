@@ -299,6 +299,35 @@ case "$out2" in
   *)         assert_eq ok ok "send with no text argument fires exactly one Enter (no ENTER-3)" ;;
 esac
 
+# regression: a command that is genuinely submitted but stays SILENT longer
+# than the retry window must not be reported as "never submitted". Screen
+# text alone can't tell "Enter was never accepted" apart from "Enter was
+# accepted and the command hasn't printed anything yet" — both look like an
+# unchanged screen. The retry loop also fires spurious Enters at the pane
+# while it waits. Delay is shortened here (not the default 0.3s) purely to
+# keep the suite fast.
+# The receiving pane runs a plain `sh`, NOT the tester's own $SHELL: an
+# interactive login shell can carry a decorated prompt (git status, a live
+# clock, timers) that redraws on its own during the silence, which changes
+# the screen for reasons that have nothing to do with the command and masks
+# the very bug this test exists to catch. `sh` gives a static, portable
+# prompt so the only thing that can change the screen is the command itself.
+T set-option -g @amux-send-enter-delay "0.1"
+silent="$(T new-window -P -F '#{pane_id}' -n silent sh)"
+sleep 0.3   # let the freshly-spawned sh settle to its prompt before typing
+# default retries=3 * delay=0.1 = a 0.3s verification window; stay silent
+# for 1.5s (5x that) before printing, well past the margin above.
+"$AMUX" send "$silent" "sh -c 'sleep 1.5; printf \"SILENT-MARK-%s\n\" DONE'"; rc=$?
+assert_eq "$rc" "0" "send does not report false failure for a command silent past the retry window"
+wait_for "$silent" 'SILENT-MARK-DONE' \
+  && assert_eq ok ok "send: the silent command actually executed" \
+  || assert_eq no-exec executed "send: the silent command actually executed"
+sleep 0.5
+out="$(T capture-pane -p -t "$silent")"
+markcount="$(printf '%s\n' "$out" | grep -o 'SILENT-MARK-DONE' | wc -l | tr -d ' ')"
+assert_eq "$markcount" "1" "send: the silent command executed exactly once (no double-run from a caller re-send)"
+T set-option -gu @amux-send-enter-delay 2>/dev/null || true
+
 # a genuinely swallowed first Enter: a fixture that echoes typed text (like a
 # TUI redrawing its input box) but silently drops exactly the first Enter it
 # receives, leaving the text sitting unsubmitted — the live bug this task
