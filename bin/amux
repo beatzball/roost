@@ -263,10 +263,25 @@ JSON
 
     retries="$(t show-options -gqv @amux-send-retries 2>/dev/null)"
     case "$retries" in ''|*[!0-9]*) retries=3 ;; esac
+    # A pathologically long digit string (thousands of chars) is clamped by
+    # length BEFORE anything else touches it: `${#retries}` is an O(1) length
+    # check, so this bound can never itself be slow, and it caps the work the
+    # zero-stripping loop below could ever be asked to do.
+    [ "${#retries}" -gt 40 ] && retries=20
+    # Strip leading zeros so "007" reads as its actual value (7), not as a
+    # 3-character string that the length clamp below mistakes for >= 100.
+    # Bounded to `${#retries}` > 1 so "0" itself (and "000" once fully
+    # stripped) settles on a single "0" rather than an empty string, which
+    # would break the `[ "$n" -gt 0 ]` loop guard further down.
+    while [ "${#retries}" -gt 1 ] && [ "${retries%${retries#?}}" = 0 ]; do
+      retries="${retries#0}"
+    done
     # Clamp to a sane upper bound. Do this by pattern first, not by `[ -gt ]`
     # alone: an absurd digit string (hundreds of digits) can make the numeric
     # test itself error out (or take a very long time) before it ever gets to
     # compare against the cap, so strings of 3+ digits are clamped directly.
+    # Leading zeros are already gone above, so this now only fires for values
+    # that are genuinely >= 100.
     case "$retries" in ???*) retries=20 ;; esac
     [ "$retries" -gt 20 ] 2>/dev/null && retries=20 || true
 
