@@ -270,10 +270,12 @@ JSON
     case "$retries" in ???*) retries=20 ;; esac
     [ "$retries" -gt 20 ] 2>/dev/null && retries=20 || true
 
-    # Still pending only if BOTH hold:
+    # Still pending only if ALL THREE hold:
     #   1. the pane's last non-blank line still contains the whole message, AND
     #   2. the pane's full contents are byte-identical to how they looked right
-    #      after typing — before ANY Enter was sent (captured into $before).
+    #      after typing — before ANY Enter was sent (captured into $before), AND
+    #   3. the cursor position is unchanged from that same moment (captured
+    #      into $cursor_before).
     # The substring check alone is not enough: a blank/empty prompt can leave
     # the already-scrolled, verbatim command line as the last non-blank row
     # even after a real submit, and a TUI can echo the submitted message into
@@ -282,16 +284,32 @@ JSON
     # redraw, output, a spinner, the transcript moving — so requiring
     # "nothing on screen changed at all" makes a false "not submitted" much
     # harder to reach than the substring check on its own.
+    # But text-unchanged is NOT sufficient either: it cannot distinguish "the
+    # Enter was never accepted" from "the Enter was accepted and the command
+    # just hasn't printed anything yet". A command that is silent for the
+    # ~1s retry window (a `sleep`, anything slow to start) looks identical to
+    # a swallowed Enter on screen alone, and reports a false "not submitted"
+    # 100% of the time — this is not a load-dependent flake, it is
+    # deterministic. Cursor position resolves the ambiguity: the tty echoes
+    # the newline through the line discipline the moment Enter is ACCEPTED,
+    # independent of when (or whether) the command produces output. So a
+    # real submit moves the cursor right away even in dead silence, while a
+    # swallowed Enter leaves it exactly where it was.
     # Trade-off, accepted on purpose: a TUI that animates continuously (a
     # clock, a spinner) will never look byte-identical to its own earlier
     # snapshot, so this retry path will not fire there even for a genuinely
     # swallowed Enter. That is the side to be wrong on: a false "submitted"
     # just degrades to the old (pre-fix) behavior, while a false "not
-    # submitted" fires a spurious Enter that can re-run a command.
+    # submitted" fires a spurious Enter that can re-run a command. Adding the
+    # cursor check is an additional conjunct, not a replacement, for the same
+    # reason: requiring one more thing to hold only makes a false "not
+    # submitted" harder to reach, never easier.
     pending() {
-      local cur last
+      local cur last cursor_now
       cur="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
       [ "$cur" = "$before" ] || return 1
+      cursor_now="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+      [ "$cursor_now" = "$cursor_before" ] || return 1
       last="$(printf '%s\n' "$cur" | grep -v '^[[:space:]]*$' | tail -n 1)"
       case "$last" in *"$1"*) return 0 ;; *) return 1 ;; esac
     }
@@ -307,6 +325,15 @@ JSON
     fi
     sleep "$delay" 2>/dev/null || true
     before="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+    # Same call shape as the #{window_id} #{pane_dead} fetch above, and the
+    # same reasoning applies to the separator: #{cursor_x} and #{cursor_y}
+    # are always plain digits, so a plain space can never appear inside
+    # either field and is a safe, boring delimiter. Unlike that earlier call
+    # we never split this value — it is only ever compared for equality
+    # against a later snapshot taken the same way — so there is nothing here
+    # for a wrong separator to silently break; the space is kept anyway for
+    # consistency and so the raw string is readable if ever logged.
+    cursor_before="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
     t send-keys -t "$tgt" Enter 2>/dev/null || true
 
     n="$retries"
