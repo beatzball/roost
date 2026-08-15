@@ -32,7 +32,26 @@ case "$state" in blocked|working|done) ;; *) state="idle" ;; esac
 # then bail before any writes. It MUST carry `|| true`: under `set -e` a bare
 # failing $(...) aborts, and a dead tmux server (agent windows are killable) has
 # to degrade, never break Claude.
-prev="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}' 2>/dev/null || true)"
+#
+# That same read also tells us whether the pane already has a label, so the
+# hot (unchanged-state) path stays a single tmux round trip even though it
+# now decides two things instead of one. A plain separator between the two
+# fields is not safe to add here: @amux-name is free text a human chose (see
+# bin/amux's `send` comment on why an in-band separator breaks), so nothing
+# printable is guaranteed absent from it. Instead we append a fixed marker
+# "X" to the state, but only when @amux-name is non-empty — the same
+# emptiness-ternary idiom bin/amux's `status` branch and tmux/amux.conf's
+# @amux-pane-border already use for this exact check, and deliberately an
+# equality test against "" rather than tmux's `#{?@amux-name,...}`
+# truthiness, which treats a pane literally named "0" as unset. $state is
+# always blocked/working/done/idle, never ending in X, so a trailing X can
+# only have come from the marker and is safe to strip.
+raw="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
+  '#{@agent_state}#{?#{==:#{@amux-name},},,X}' 2>/dev/null || true)"
+case "$raw" in
+  *X) prev="${raw%X}"; has_name=1 ;;
+  *)  prev="$raw";      has_name=0 ;;
+esac
 [ "$state" = "$prev" ] && exit 0
 
 # Stamp the PANE, not the window. Pane scope is what lets two agents share one
@@ -41,6 +60,37 @@ prev="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}' 2>/
 # change is live everywhere with nothing left to go stale.
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
+
+# Label the pane, but only to fill a gap: a name a human chose (`split -n`,
+# `spawn NAME`) always wins, so this never runs when $has_name is 1. Without
+# a label a live Claude pane falls back to #{pane_current_command}, which
+# reports its OWN VERSION STRING (e.g. "2.1.226") — it changes every release
+# and means nothing to a reader of the border or the switcher.
+# @amux-name-default is a global option (in keeping with @amux-glyph-*,
+# @amux-notify-*, etc.) so a user running something other than Claude under
+# amux's hooks can rename the fallback; "claude" is the honest default since
+# this script IS Claude Code's hook.
+if [ "$has_name" != 1 ]; then
+  label="$(tmux -S "$sock" show-options -gqv @amux-name-default 2>/dev/null || true)"
+  # @amux-name-default is user-controlled tmux state (a human can `tmux
+  # set-option -g` it directly), not validated at write time the way every
+  # OTHER @amux-name write site is via bin/amux's reject_bad_name — this hook
+  # is a fourth write site with no gate of its own. A tab shifts `amux
+  # status`'s tab-delimited switcher rows; a newline splits one pane's line
+  # into two — either way a selectable row loses its session/window key
+  # fields and a click runs `switch-client -t ""` silently, the exact
+  # corruption reject_bad_name's own comment documents. Unlike
+  # reject_bad_name (a loud exit 2, fine for an interactive command), this
+  # hook runs on every PostToolUse and Claude blocks on it exiting, so a bad
+  # value must degrade to the built-in default instead of breaking the hook.
+  # ANSI-C $'\t'/$'\n', NOT "$(printf '\n')": command substitution strips ALL
+  # trailing newlines, so that form collapses to the empty string and the
+  # newline arm would then match (and reject) every label — the same hazard
+  # bin/amux's reject_bad_name comment warns about.
+  case "$label" in *$'\t'*|*$'\n'*) label="claude" ;; esac
+  [ -n "$label" ] || label="claude"
+  tmux -S "$sock" set-option -p -t "$TMUX_PANE" @amux-name "$label" 2>/dev/null || true
+fi
 
 # Ping if an off-screen agent just became blocked (needs your input). If the
 # window is on screen the pane is visible, so no ping.

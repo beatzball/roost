@@ -12,7 +12,14 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
+amux_test_server; sock="$AMUX_TEST_SOCK"
+# `other`/`other_dir` (the secondary server further down, for the explicit-seam-
+# outranks-$TMUX case) are unset until that block runs; the ${:-} defaults keep
+# this trap safe to install (and to fire) before they exist, matching the shape
+# test-agent-state.sh uses for its own secondary server. Without this, an early
+# exit or a failed assertion mid-file strands that server and its /tmp/amx.XXXX
+# dir — the happy-path cleanup further down only runs if execution gets there.
+trap 'tmux -S "${other:-}" kill-server 2>/dev/null; rm -rf "${other_dir:-}"; amux_test_teardown' EXIT
 
 # $TMUX is "<socket-path>,<pid>,<session>" — scripts read the first field.
 FAKE_TMUX="$sock,0,0"
