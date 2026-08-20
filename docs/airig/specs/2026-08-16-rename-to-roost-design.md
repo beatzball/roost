@@ -250,8 +250,15 @@ A `roost` server's socket ends in `/roost`, so `amux-agent-state` exits 0 there.
 amux socket.
 
 **Therefore both hooks can be registered in `settings.json` simultaneously and
-will cleanly ignore each other.** No dispatcher, no shim, no flag day. Add the
-`roost` hooks; remove the `amux` hooks when the old session closes.
+will cleanly ignore each other.** No dispatcher and no flag day. Add the `roost`
+hooks; remove the `amux` hooks from *this* machine's `settings.json` when the
+old session closes.
+
+That covers the config we can see. It does **not** cover configs we cannot — a
+second machine, another checkout, or a third party who copied the hook snippet
+from the README. Those are why `scripts/amux-agent-state` still becomes a
+forwarder at Phase 4 rather than disappearing with the rest of the `amux` half.
+See "Compatibility shims".
 
 ### Config migration
 
