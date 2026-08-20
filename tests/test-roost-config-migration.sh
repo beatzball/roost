@@ -21,6 +21,7 @@ set -g @amux-color-active-bg "#ff0000"
 set -g @agent_state "idle"
 set -g @agent_glyph "🟢"
 EOF
+chmod 640 "$legacy"   # deterministic, umask-independent: migration should carry this exact mode
 
 before_sum="$(cksum "$legacy")"
 before_bytes="$(wc -c < "$legacy")"
@@ -46,6 +47,21 @@ case "$(cat "$newconf" 2>/dev/null)" in
   *@amux-*) assert_eq "has-amux-keys" "no-amux-keys" "new file has no leftover @amux- keys" ;;
   *)        assert_eq ok ok "new file has no leftover @amux- keys" ;;
 esac
+
+# The header comment is translated too, not just @amux-* keys — a migrated
+# file should not tell the user to re-run the command that no longer exists.
+assert_contains "$(cat "$newconf" 2>/dev/null)" "roost init" "migrated header mentions roost init, not the old command"
+case "$(cat "$newconf" 2>/dev/null)" in
+  *"amux init"*) assert_eq "mentions-amux-init" "no-amux-init" "migrated header no longer tells the user to re-run amux init" ;;
+  *)             assert_eq ok ok "migrated header no longer tells the user to re-run amux init" ;;
+esac
+
+# File permissions carry across from the legacy file, not umask defaults.
+# GNU-first, same ordering as scripts/lib/roost-config.sh: GNU `stat -f`
+# means "filesystem status" and would not fail, so the fallback must be tried
+# second or it never fires on Linux.
+newmode="$(stat -c '%a' "$newconf" 2>/dev/null || stat -f '%Lp' "$newconf" 2>/dev/null)"
+assert_eq "$newmode" "640" "migrated roost.conf keeps the legacy file's permissions (640)"
 
 after_sum="$(cksum "$legacy")"
 after_bytes="$(wc -c < "$legacy")"
@@ -76,19 +92,51 @@ assert_eq "$after2" "$before2" "HOME-only fallback: legacy amux.conf untouched"
 
 rm -rf "$homedir2"
 
-# --- Case 3: roost.conf already exists -> migration must not overwrite it. -
+# --- Case 3: roost.conf already exists -> migration must not run at all. ---
+# The tty guard now runs first, so to even reach the migration `if` we must
+# clear it with ROOST_INIT_ANSWERS=- and piped stdin — same as Cases 1/2.
+# But here the target ALREADY exists, so the migration condition
+# (`[ ! -f "$target" ]`) is false and the script instead falls through into
+# the normal interactive flow, which legitimately backs up and rewrites an
+# existing roost.conf from the (empty/default) answers. That rewrite is
+# real, correct `roost init` behaviour and is not what this case is testing;
+# a plain "is the file byte-identical" assertion would be vacuously true for
+# the wrong reason before the guard moved, and would flip to a false
+# failure now that clearing the guard is required to reach the code at all.
+# So this case asserts the two things that actually distinguish "migration
+# ran instead" from "the normal ask-flow ran": (a) the normal flow always
+# backs up an existing target before overwriting — migration's code path
+# has no backup step at all, so a missing backup means migration clobbered
+# it directly; (b) migration's output would be byte-identical to a raw,
+# unbackuped sed translation of the legacy file — the interactive flow's
+# output never is, because it always carries the full default key set.
+# Verified against a mutant (`if [ -f "$legacy" ]`, dropping the
+# target-absent check) that both assertions catch: no .bak was written and
+# the resulting file WAS the raw translation.
 cfgdir3="$(mktemp -d /tmp/amx.XXXX)"
 mkdir -p "$cfgdir3/amux" "$cfgdir3/roost"
-printf 'set -g @amux-notify-backend "auto"\n' > "$cfgdir3/amux/amux.conf"
+legacy3="$cfgdir3/amux/amux.conf"
+printf 'set -g @amux-notify-backend "auto"\n' > "$legacy3"
 printf '# already migrated / hand-written\nset -g @roost-notify-backend "tmux"\n' > "$cfgdir3/roost/roost.conf"
-legacy3_before="$(cksum "$cfgdir3/amux/amux.conf")"
-existing_before="$(cksum "$cfgdir3/roost/roost.conf")"
+legacy3_before="$(cksum "$legacy3")"
+naive_translation="$(sed 's/@amux-/@roost-/g' "$legacy3")"
 
-HOME=/nonexistent XDG_CONFIG_HOME="$cfgdir3" "$ROOST_INIT" </dev/null >/dev/null 2>&1
+printf '' | HOME=/nonexistent XDG_CONFIG_HOME="$cfgdir3" ROOST_INIT_ANSWERS=- "$ROOST_INIT" >/dev/null 2>&1
 
-existing_after="$(cksum "$cfgdir3/roost/roost.conf")"
-legacy3_after="$(cksum "$cfgdir3/amux/amux.conf")"
-assert_eq "$existing_after" "$existing_before" "an existing roost.conf is not overwritten by migration"
+if ls "$cfgdir3/roost/"*.bak >/dev/null 2>&1; then
+  assert_eq ok ok "an existing roost.conf is backed up before any rewrite (proves the normal flow ran, not migration)"
+else
+  assert_eq "" backup "an existing roost.conf is backed up before any rewrite (proves the normal flow ran, not migration)"
+fi
+
+actual="$(cat "$cfgdir3/roost/roost.conf" 2>/dev/null)"
+if [ "$actual" = "$naive_translation" ]; then
+  assert_eq "raw-migration-output" "interactive-output" "existing roost.conf's new content is not migration's raw translation of the legacy file"
+else
+  assert_eq ok ok "existing roost.conf's new content is not migration's raw translation of the legacy file"
+fi
+
+legacy3_after="$(cksum "$legacy3")"
 assert_eq "$legacy3_after" "$legacy3_before" "legacy amux.conf untouched even when roost.conf already exists"
 
 rm -rf "$cfgdir3"
@@ -111,3 +159,43 @@ else
 fi
 
 rm -rf "$cfgdir4"
+
+# --- Case 5: an unreadable legacy file fails loudly and leaves nothing -----
+# --- behind, instead of silently writing a truncated/empty roost.conf. -----
+# Migration used to `sed ... > "$target"` directly: the redirect truncates
+# the target before sed ever runs, and sed's exit status was never checked.
+# An unreadable (or otherwise failing-to-read) legacy file produced a
+# zero-byte roost.conf, printed a success message, and exited 0 — and
+# because migration only fires while roost.conf is absent, the loss was
+# permanent; a later run would see the (empty) target and never retry.
+# Root can read a chmod 000 file, so this case is a no-op under root rather
+# than a false failure.
+if [ "$(id -u)" = "0" ]; then
+  printf '  SKIP: unreadable legacy file case (running as root, chmod 000 has no effect)\n'
+else
+  cfgdir5="$(mktemp -d /tmp/amx.XXXX)"
+  mkdir -p "$cfgdir5/amux"
+  legacy5="$cfgdir5/amux/amux.conf"
+  printf 'set -g @amux-notify-backend "auto"\n' > "$legacy5"
+  chmod 000 "$legacy5"
+
+  printf '' | HOME=/nonexistent XDG_CONFIG_HOME="$cfgdir5" ROOST_INIT_ANSWERS=- "$ROOST_INIT" >/dev/null 2>/dev/null
+  rc5=$?
+
+  assert_eq "$rc5" "1" "an unreadable legacy file makes migration exit non-zero, not silently succeed"
+  if [ -e "$cfgdir5/roost/roost.conf" ]; then
+    assert_eq "wrote" "no-write" "an unreadable legacy file leaves no roost.conf behind (no truncated/empty file)"
+  else
+    assert_eq ok ok "an unreadable legacy file leaves no roost.conf behind (no truncated/empty file)"
+  fi
+
+  # Leftover .roost.XXXXXX temp files would also indicate a non-atomic write.
+  if ls "$cfgdir5/roost"/.roost.* >/dev/null 2>&1; then
+    assert_eq "leftover-tmp" "no-tmp" "no leftover migration temp file after a failed migration"
+  else
+    assert_eq ok ok "no leftover migration temp file after a failed migration"
+  fi
+
+  chmod 600 "$legacy5"   # restore before cleanup, in case rm needs to read the dir on some platform
+  rm -rf "$cfgdir5"
+fi
