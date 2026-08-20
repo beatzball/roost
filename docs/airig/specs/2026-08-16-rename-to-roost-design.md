@@ -148,6 +148,58 @@ wrote.
 **Therefore the `roost` half drops the entire migrate path.** The frozen `amux`
 half keeps it untouched, so real legacy servers are still cleaned.
 
+### Known gap this creates — window-scoped state has no recovery on `roost`
+
+**Found 2026-08-20 by the Tasks 5–6 reviewer, after the removal shipped.** The
+reasoning above is sound but incomplete, and the incompleteness is the same
+shape as two earlier errors in this document.
+
+`amux-migrate-state` was doing **two jobs that looked like one**:
+
+1. Clearing legacy window-scoped values written by pre-per-pane versions —
+   genuinely impossible on `roost`, which runs on its own socket. Correctly
+   dropped.
+2. Acting as the **only** mechanism that clears a window-scoped `@agent_state`
+   from *any* source, because it ran on every `source-file` and unconditionally
+   did `set-option -wu` on every window. Still live. Dropped by accident.
+
+Job 2 is the exact argument used a few sections above to *keep*
+`set -gu @agent_state`. That line covers global scope. Nothing now covers window
+scope.
+
+**Concrete case.** A third-party adapter — invited by `roost state` being a
+documented public command — runs:
+
+```sh
+tmux -L roost set-option -w @agent_state working
+```
+
+Option lookup falls back pane → window → global, so every unstamped pane in that
+window badges as an agent via `#{P:#{@agent_state}}`. Neither re-sourcing nor
+`prefix r` clears it. On `amux` the per-source sweep cleared it incidentally.
+There is no recovery short of killing the server.
+
+The comment surviving at `tmux/roost.conf:35` still says a stray value at
+"either outer scope" is inherited, which is now **inaccurate** — only one of the
+two outer scopes is cleared.
+
+**Not yet decided.** Three options, cheapest first:
+
+| option | cost | leaves |
+|---|---|---|
+| Correct the comment to say global only; document the gap | one comment | the gap, honestly labelled |
+| Add a `-w` unset for the current window on source | small | other windows uncovered |
+| Restore a per-source sweep under a name describing its real job — clearing stray outer-scope state, not "migrating" | a script + an `if-shell` | no gap |
+
+The third is the only one that closes it, and the naming matters: calling it
+`migrate-state` is what disguised job 2 as legacy cleanup in the first place.
+
+**The pattern, for whoever reads this next.** Three times now this document has
+grouped two things because they sat together — `@agent_glyph` with
+`@agent_state`, two adjacent `set -gu` lines, and now two jobs inside one
+script. Each time the tell was the same: a shared *location* was mistaken for a
+shared *purpose*.
+
 ### Removal surface in the `roost` half
 
 | File | What goes |
