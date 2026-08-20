@@ -487,17 +487,45 @@ Then `bash tests/run.sh` → all PASS, exit 0.
    `tmux/roost.conf`.
 
 **Check:** the **shim-only grep gate**:
-`grep -rl "amux" bin scripts tmux tests skills adapters` → lists **only** the
-three shims: `bin/amux`, `scripts/amux-agent-state`,
-`adapters/opencode/amux.js`. Nothing else.
+**The gate is an allowlist, not "only the shims".** That earlier wording was
+wrong twice over, and both errors are worth stating so nobody re-derives them:
 
-This is only achievable because **Task 15** migrated `tests/` first. Before
-that task, `tests/` alone holds 498 `amux` references and this gate cannot
-pass. If it fails listing test files, Task 15 was skipped or incomplete —
-fix that rather than loosening the gate. Strict mode does not
-apply until Phase 5, because the shims contain the old name by design.
-Then `bash tests/run.sh` → all PASS, exit 0, and
-`python3 tests/test-contrast.py` → passes.
+1. **`grep -r` does not traverse symlinks.** Two of the three shims
+   (`scripts/amux-agent-state`, `adapters/opencode/amux.js`) are symlinks, so a
+   grep-based gate can never list them. Verify those with `test -L` and
+   `readlink`, not with grep.
+2. **Several files keep `amux` permanently, by design.** They are not debt.
+
+Run:
+
+```sh
+grep -rl "amux" bin scripts tmux tests skills adapters | sort
+```
+
+It must match this list exactly — nothing more, nothing less:
+
+| file | refs | why it keeps `amux` | until |
+|---|---|---|---|
+| `bin/amux` | 2 | the deprecation stub itself | Phase 5 |
+| `scripts/roost-doctor` | 12 | **detects stale `amux` references — this IS the Phase 5 trigger** | permanent |
+| `scripts/roost-init` | 9 | migrates a legacy `~/.config/amux/amux.conf` | permanent |
+| `tests/test-roost-config-migration.sh` | 31 | its *subject* is the legacy amux config | permanent |
+| `tests/test-doctor.sh` | 23 | tests the stale-`amux` detection above | permanent |
+| `tests/test-socket-guard.sh` | 17 | tests the shim forwards correctly | Phase 5 |
+| `tests/test-reload.sh` | 3 | asserts the retired `amux-restamp` is **absent**; the needle must stay literal | permanent |
+| `tests/test-coordination.sh` | 1 | comment citing commit `89a3975` | permanent |
+| `tests/test-settings.sh` | 1 | comment citing a historical `amux-init` bug | permanent |
+
+Then verify the shims separately, since grep cannot:
+
+```sh
+[ "$(readlink scripts/amux-agent-state)" = roost-agent-state ]
+[ "$(readlink adapters/opencode/amux.js)" = roost.js ]
+```
+
+**If a file appears that is not on this list, that is the regression the gate
+exists to catch.** Do not add it to the list to make the gate pass — work out
+why it kept the old name.
 
 **Commit:** `Delete the frozen amux half, keeping the three shims`
 

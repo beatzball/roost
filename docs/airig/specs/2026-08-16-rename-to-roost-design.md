@@ -348,12 +348,25 @@ gate therefore runs in three modes:
 | Mode | From | Allows |
 |---|---|---|
 | off | Phase 1 | the whole frozen `amux` half |
-| shim-only | Phase 4 | `scripts/amux-agent-state`, `bin/amux`, `adapters/opencode/amux.js` — the three shims, and nothing else |
-| strict | Phase 5 | nothing |
+| allowlist | Phase 4 | nine named files, each with a recorded reason — see the plan's Task 13 |
+| reduced allowlist | Phase 5 | six of those nine; the shim-related three go |
 
-Strict mode cannot turn on at Phase 4, because the shims contain the old name
-by design. Conflating "the old half is gone" with "the old name is gone" is
-what the middle mode exists to prevent.
+**Corrected 2026-08-20.** Earlier revisions described Phase 4 as "shim-only"
+and Phase 5 as "strict — nothing". Both were wrong:
+
+- **`grep -r` does not traverse symlinks.** Two of the three shims are
+  symlinks, so a grep gate can never list them however it is worded. They are
+  verified with `test -L` / `readlink` instead.
+- **A "no `amux` anywhere" end state does not exist and never will.**
+  `scripts/roost-doctor` must contain the string to detect stale references —
+  it *is* the Phase 5 trigger — and `scripts/roost-init` must contain it to
+  migrate a legacy `~/.config/amux/amux.conf`. Three tests exist to exercise
+  exactly those paths. Deleting the string would delete the feature.
+
+This matters because an unachievable gate does not fail loudly; it gets
+loosened by whoever meets it under time pressure, and the thing it was
+protecting goes with it. Here that thing is the trigger authorising shim
+deletion.
 
 ## Sequencing — resolved
 
