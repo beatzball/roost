@@ -151,7 +151,17 @@ it fails against today's unfixed test logic.
 - Produces: an executable that exits **non-zero** when the two-read comparison
   disagrees, and prints each disagreement with both values.
 
-- [ ] **Step 1: Write the trigger**
+**Deviation from this plan, made during execution:** as drafted below the
+trigger replicated only the PRE-FIX comparison, so once Task 2 landed it would
+have failed forever and proved nothing. The shipped
+`tests/live/switcher-read-race.sh` runs **two arms** against the same churn
+instead — `CONTROL` (the pre-fix two-read shape, expected to mismatch) and
+`SHIPPED` (the pinned-pane shape, expected to be clean) — and its exit status
+tracks `SHIPPED` only. That gives a before/after from a single run and keeps the
+file useful as a standing regression guard. It also warns when `CONTROL` fails
+to fire, since a blunt trigger is a silent loss of proof.
+
+- [x] **Step 1: Write the trigger**
 
 ```bash
 #!/usr/bin/env bash
@@ -198,7 +208,7 @@ printf 'RESULT: %s mismatches in %s read-pairs\n' "$bad" "$N"
 [ "$bad" -eq 0 ]
 ```
 
-- [ ] **Step 2: Confirm it discriminates**
+- [x] **Step 2: Confirm it discriminates**
 
 Run it five times. It must fail — that is the negative control for Task 2.
 
@@ -230,7 +240,7 @@ where it belongs.
   '#{pane_current_command}'`. `grep -c pane_current_command
   tests/test-switcher.sh` returns `0`.
 
-- [ ] **Step 1: Replace the read-pair**
+- [x] **Step 1: Replace the read-pair**
 
 Today's block, at `tests/test-switcher.sh:114-118`:
 
@@ -280,7 +290,7 @@ Notes for the implementer:
 - `p0` keeps its `@amux-name` unset line because the preceding assertion
   ("a named pane's switcher row shows the name") sets it.
 
-- [ ] **Step 2: Confirm the assertion still discriminates**
+- [x] **Step 2: Confirm the assertion still discriminates**
 
 An assertion that cannot fail is worse than a flaky one. Break the switcher on
 purpose and watch it go red, then revert.
@@ -324,7 +334,7 @@ Check is the full suite.
 - Produces: the initial pane of a test server runs `/bin/sh` with no rc files.
   `#{pane_current_command}` for that pane is `sh` on every machine.
 
-- [ ] **Step 1: Start the session on a neutral shell**
+- [x] **Step 1: Start the session on a neutral shell**
 
 In `amux_test_server`, change:
 
@@ -345,7 +355,7 @@ tmux -S "$AMUX_TEST_SOCK" -f /dev/null new-session -d -x 200 -y 50 \
   'ENV= exec /bin/sh'
 ```
 
-- [ ] **Step 2: Confirm no test assumed an interactive login shell**
+- [x] **Step 2: Confirm no test assumed an interactive login shell**
 
 Measured against the whole suite at `7bd1ed4` with this change applied:
 **349 passed, 0 failed** — the same result as the unchanged harness. If a later
@@ -396,3 +406,45 @@ That works there because the rendered border is itself a tmux format, so tmux
 expands both halves in one snapshot. It cannot work for the switcher, whose row
 is built by an external script that issues its own `list-panes`. Pinning the
 pane is the equivalent guarantee for that case.
+
+
+---
+
+## Execution record
+
+Implemented on `worktree-switcher-flake`, one commit per task. Nothing pushed.
+
+| Commit | Task | Files |
+|---|---|---|
+| `13af7aa` | 1 | Create `tests/live/switcher-read-race.sh` |
+| `c351972` | 2 | Modify `tests/test-switcher.sh` |
+| `90ff464` | 3 | Modify `tests/lib.sh` |
+
+`scripts/amux-switch` is byte-identical to `main`. Every change is confined to
+`tests/`.
+
+### Proof, under the forced trigger rather than the natural rate
+
+20 runs at `N=30` — 600 read-pairs per arm — with all three tasks applied:
+
+| Arm | Runs that mismatched | Mismatched read-pairs |
+|---|---|---|
+| `CONTROL` — the pre-fix shape, two live reads | **20 / 20** | **163 / 600 (27 %)** |
+| `SHIPPED` — the pinned shape, one read | **0 / 20** | **0 / 600** |
+
+An identical sweep taken before Task 2 landed gave `CONTROL` 20/20 and 125/600,
+so the trigger's strength is stable across the change and the fixed shape never
+mismatched in 1200 read-pairs total.
+
+For contrast, the natural rate that this replaces was 3 failures in 400 runs,
+and it swung 3/160 in one batch to 0/240 in the next.
+
+### Other verification
+
+- `tests/test-switcher.sh`: 30/30 clean after Task 2, and again after Task 3.
+- Negative control: replacing `amux-switch`'s `cmd` fallback with a constant
+  turns the new assertion red, so it is not vacuous. `amux-switch` restored.
+- `tests/run.sh`: **350 passed, 0 failed** (349 before; the pinned-pane
+  stability assertion is the extra one).
+- Task 3 at source: 2000 consecutive reads of a fresh initial pane return a
+  single distinct value, against 10 strays in 12 000 for a login-shell pane.
