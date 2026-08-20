@@ -137,20 +137,33 @@ esac
 rm -rf "$gcdir"
 
 # === roost doctor: stale-hook check (Phase 5 trigger) ===
-# roost doctor warns when ~/.claude/settings.json still references the old
+# roost doctor warns when a settings file still references the old
 # amux-agent-state hook path. This is the ONLY signal the author uses to know
 # it is safe to delete the amux compatibility shims later, so it must fire
 # reliably on a stale reference and stay silent on an absent or migrated one.
+# A false negative here is the expensive direction (it green-lights deleting
+# a live shim), so these cases lean toward over-covering rather than under.
 #
-# roost-doctor defaults its settings lookup to $HOME/.claude/settings.json and
-# its config-socket lookup to `-L roost` (a real, possibly-live named server
-# on this machine) when ROOST_CONFIG_SOCK is unset -- mirroring the
-# AMUX_CONFIG_SOCK/XDG_CONFIG_HOME hazard noted above for amux-doctor. Pin
-# HOME to a fresh temp dir for every case below (never the real $HOME) and
-# ROOST_CONFIG_SOCK to an inert path, so this suite never reads the real
-# settings.json and never contacts -L roost.
+# Claude Code merges hooks from three files, not just $HOME/.claude/settings.json
+# (https://code.claude.com/docs/en/settings): user (~/.claude/settings.json),
+# project (.claude/settings.json, read from the directory the session runs
+# in), and local (.claude/settings.local.json, read from the git repository
+# root and resolved through worktrees to the MAIN checkout). roost-doctor's
+# stale-hook check now covers all three, so the cases below do too.
+#
+# roost-doctor's config-socket lookup falls back to `-L roost` (a real,
+# possibly-live named server on this machine) when ROOST_CONFIG_SOCK is
+# unset, and its notify-backend line (scripts/roost-notify --which) falls
+# back through $TMUX and then to that same `-L roost` when ROOST_NOTIFY_SOCK
+# is unset -- mirroring the AMUX_CONFIG_SOCK/XDG_CONFIG_HOME hazard noted
+# above for amux-doctor. Pin HOME to a fresh temp dir for every case below
+# (never the real $HOME), PWD to that same dir where a case needs
+# project/local resolution, and both socket variables to inert paths, so this
+# suite never reads the real settings.json, the real opencode plugin
+# directory, or contacts -L roost.
 RDOC="$HERE/scripts/roost-doctor"
 export ROOST_CONFIG_SOCK="/nonexistent/roost-doctor-test-sock"
+export ROOST_NOTIFY_SOCK="/nonexistent/roost-doctor-test-sock"
 
 # stale: settings.json still names the old amux-agent-state hook command
 stalehome="$(mktemp -d /tmp/amx.XXXX)"
@@ -161,20 +174,26 @@ EOF
 out="$(HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "amux-agent-state" "roost doctor warns when settings.json still references amux-agent-state"
 assert_contains "$out" "roost-agent-state" "roost doctor names the roost-agent-state fix"
+assert_contains "$out" "user settings" "roost doctor labels which settings file is stale (user)"
 HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
 assert_eq "$?" "0" "a stale hook reference does not fail doctor (warning only)"
 rm -rf "$stalehome"
 
-# clean: settings.json present and already migrated -> silent
+# clean: settings.json present and already migrated -> silent.
+# The command path deliberately still contains the substring "amux" (the
+# checkout directory itself is named amux) even though the HOOK COMMAND is
+# roost-agent-state -- pinning that a sloppy `grep -q amux` implementation
+# (which would match on the directory name alone) fails this case, where the
+# correct `grep -q amux-agent-state` stays silent.
 cleanhome="$(mktemp -d /tmp/amx.XXXX)"
 mkdir -p "$cleanhome/.claude"
 cat > "$cleanhome/.claude/settings.json" <<'EOF'
-{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/roost/scripts/roost-agent-state done"}]}]}}
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/roost-agent-state done"}]}]}}
 EOF
 out="$(HOME="$cleanhome" XDG_CONFIG_HOME="$cleanhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 case "$out" in
-  *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent once settings.json is migrated" ;;
-  *) assert_eq ok ok "roost doctor is silent once settings.json is migrated" ;;
+  *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent once settings.json is migrated, even with 'amux' in the checkout path" ;;
+  *) assert_eq ok ok "roost doctor is silent once settings.json is migrated, even with 'amux' in the checkout path" ;;
 esac
 rm -rf "$cleanhome"
 
@@ -187,6 +206,77 @@ case "$out" in
 esac
 rm -rf "$absenthome"
 
+# unreadable: a permission error must not read as "absent" (grep -q exits 2
+# with stderr already discarded, so a naive check would silently miss a
+# stale hook it could not even open -- the exact false negative this whole
+# check exists to avoid). Skipped as root, which can read mode 000 files it
+# owns and so cannot exercise this branch.
+if [ "$(id -u)" = "0" ]; then
+  echo "  SKIP: unreadable-settings.json case skipped when running as root"
+else
+  unreadhome="$(mktemp -d /tmp/amx.XXXX)"
+  mkdir -p "$unreadhome/.claude"
+  printf '{"hooks":{}}' > "$unreadhome/.claude/settings.json"
+  chmod 000 "$unreadhome/.claude/settings.json"
+  out="$(HOME="$unreadhome" XDG_CONFIG_HOME="$unreadhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+  # The specific phrase from the STALE-hook check's own unreadable branch,
+  # not just "not readable" generically -- the pre-existing "Claude hooks
+  # wired" check also says "not readable" for the same file, so a looser
+  # assertion here would pass even if only THAT check were fixed and the new
+  # stale-hook check still silently swallowed the permission error.
+  assert_contains "$out" "could not check it for a stale amux-agent-state hook" "roost doctor's stale-hook check distinguishes an unreadable settings.json from an absent one"
+  chmod 600 "$unreadhome/.claude/settings.json"
+  rm -rf "$unreadhome"
+fi
+
+# --- roost doctor: project settings (.claude/settings.json, cwd-relative) ---
+# Claude Code reads project settings from the directory the session runs in,
+# not from $HOME, so this check must too -- a hook only ever set in the
+# project's checked-in .claude/settings.json is otherwise invisible to it.
+projhome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$projhome/.claude"
+cat > "$projhome/.claude/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
+EOF
+out="$(cd "$projhome" && HOME="$projhome" XDG_CONFIG_HOME="$projhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+assert_contains "$out" "project settings" "roost doctor warns on a stale project .claude/settings.json (cwd-relative, not just \$HOME)"
+rm -rf "$projhome"
+
+# --- roost doctor: local settings (.claude/settings.local.json) ---
+# Outside a git repository, Claude Code resolves the local file to the
+# starting directory too (same as project settings above).
+localhome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$localhome/.claude"
+cat > "$localhome/.claude/settings.local.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
+EOF
+out="$(cd "$localhome" && HOME="$localhome" XDG_CONFIG_HOME="$localhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+assert_contains "$out" "local settings" "roost doctor warns on a stale local .claude/settings.local.json"
+rm -rf "$localhome"
+
+# --- roost doctor: local settings resolve through a worktree to the MAIN checkout ---
+# The subtlest part of the merge rule: inside a git repository,
+# .claude/settings.local.json lives at the git root and, for a linked
+# worktree, resolves to the MAIN checkout's copy -- not a (nonexistent) copy
+# inside the worktree itself. A session started in a worktree must still see
+# the one real file. This repo is entirely fake and thrown away (git init in
+# a temp dir), never the real checkout this suite runs from.
+if command -v git >/dev/null 2>&1; then
+  wtroot="$(mktemp -d /tmp/amx.XXXX)"
+  git -C "$wtroot" init -q -b main main >/dev/null 2>&1
+  ( cd "$wtroot/main" && git -c user.email=t@t.example -c user.name=t commit -q --allow-empty -m init )
+  mkdir -p "$wtroot/main/.claude"
+  cat > "$wtroot/main/.claude/settings.local.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
+EOF
+  git -C "$wtroot/main" worktree add -q "$wtroot/wt" -b wtbranch >/dev/null 2>&1
+  out="$(cd "$wtroot/wt" && HOME="$wtroot" XDG_CONFIG_HOME="$wtroot/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+  assert_contains "$out" "local settings" "roost doctor resolves local settings through a worktree to the main checkout"
+  rm -rf "$wtroot"
+else
+  echo "  SKIP: worktree local-settings resolution case skipped — git not found"
+fi
+
 # --- roost doctor: stale opencode plugin file (amux.js) still present ---
 # Same Phase 5 trigger, for the other artifact a stale install can leave
 # behind: an opencode plugin directory still holding the OLD amux.js after
@@ -196,6 +286,9 @@ mkdir -p "$ocstale/.config/opencode/plugin"
 printf 'not the real plugin\n' > "$ocstale/.config/opencode/plugin/amux.js"
 out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "opencode/plugin/amux.js" "roost doctor warns when the old opencode plugin file still exists"
+assert_contains "$out" "no longer need the amux half" "roost doctor names the exact fix and frames it as expected noise during coexistence"
+assert_contains "$out" "rm \"" "roost doctor prints an exact rm command for the stale plugin file"
+assert_contains "$out" "ln -s \"" "roost doctor prints an exact ln -s command naming roost.js, not just 'relink'"
 
 # and once it's gone, silent
 rm "$ocstale/.config/opencode/plugin/amux.js"

@@ -33,33 +33,102 @@ command -v fzf >/dev/null 2>&1 && ok "fzf present (prefix a switcher)" \
 command -v roost >/dev/null 2>&1 && ok "roost is on PATH" \
   || warn "roost not found on PATH — adapters (e.g. the opencode plugin) cannot report pane state"
 
+# _settings_state FILE -> "absent" | "unreadable" | "ok". A file that exists
+# but cannot be read (wrong mode, wrong owner, ...) must not read as
+# "absent": `grep -q` exits 2 on a permission error with its stderr already
+# discarded below, so treating that silently as "nothing to see" would hide
+# the one case doctor most needs to surface accurately.
+_settings_state() {
+  if [ ! -e "$1" ]; then printf 'absent'
+  elif [ ! -r "$1" ]; then printf 'unreadable'
+  else printf 'ok'
+  fi
+}
+
 settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
-if grep -q roost-agent-state "$settings" 2>/dev/null; then
-  ok "Claude hooks wired in $settings"
-else
-  warn "Claude hooks not found in $settings — run: roost hooks"
-fi
+case "$(_settings_state "$settings")" in
+  ok)
+    if grep -q roost-agent-state "$settings" 2>/dev/null; then
+      ok "Claude hooks wired in $settings"
+    else
+      warn "Claude hooks not found in $settings — run: roost hooks"
+    fi
+    ;;
+  unreadable) warn "$settings exists but is not readable — could not check whether Claude hooks are wired" ;;
+  absent)     warn "Claude hooks not found in $settings — run: roost hooks" ;;
+esac
+
+# roost.js is the target every opencode-plugin symlink should point at (used
+# below, and by the two stale-install checks further down) — computed once,
+# unconditionally, since a leftover amux.js can exist whether or not the
+# opencode binary is currently on this machine.
+ocplug="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/roost.js"
+ocwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/opencode/roost.js"
 
 # --- stale amux references (Phase 5 trigger) ---
 # The amux compatibility shims (amux-agent-state and friends) are deleted
-# once roost doctor reports clean on this pair of checks on every machine the
-# author uses. Warning only, never a hard failure: a stale reference does not
-# break anything today (the shim still exists), it just means this machine
-# was never migrated and the shims cannot be dropped yet.
-if [ -f "$settings" ] && grep -q amux-agent-state "$settings" 2>/dev/null; then
-  warn "$settings still references amux-agent-state — replace those hook commands with the roost-agent-state path"
+# once roost doctor reports clean on these checks on every machine the author
+# uses, so a false negative here is the expensive direction: it green-lights
+# deleting a shim something still depends on. False positives are cheap.
+# Warning only, never a hard failure — a stale reference does not break
+# anything today (the shim still exists), it just means this location was
+# never migrated.
+#
+# Claude Code merges hooks from THREE settings files, not just the user one
+# (https://code.claude.com/docs/en/settings: "Hook entries merge across
+# settings levels rather than replacing each other"):
+#   user    ~/.claude/settings.json
+#   project .claude/settings.json      — read from the directory the session
+#                                         runs in (no upward search)
+#   local   .claude/settings.local.json — read from the git repository root,
+#                                         resolved through worktrees to the
+#                                         MAIN checkout, so a session started
+#                                         in a linked worktree still sees the
+#                                         same local file as the main one;
+#                                         outside a git repo (or one whose
+#                                         root is $HOME) it stays in the
+#                                         starting directory instead.
+# Managed/enterprise settings can also carry hooks but are out of scope: they
+# are administered centrally, not something doctor advises hand-editing.
+_warn_stale_settings() {
+  local f="$1" label="$2"
+  case "$(_settings_state "$f")" in
+    ok) grep -q amux-agent-state "$f" 2>/dev/null && \
+      warn "$f ($label settings) still references amux-agent-state — replace those hook commands with the roost-agent-state path" ;;
+    unreadable) warn "$f ($label settings) exists but is not readable — could not check it for a stale amux-agent-state hook" ;;
+    absent) : ;;
+  esac
+}
+
+proj_settings="$PWD/.claude/settings.json"
+if git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && [ -n "$git_common_dir" ]; then
+  local_root="$(dirname "$git_common_dir")"
+  [ "$local_root" = "$HOME" ] && local_root="$PWD"
+else
+  local_root="$PWD"
 fi
+local_settings="$local_root/.claude/settings.local.json"
+
+_warn_stale_settings "$settings" user
+_warn_stale_settings "$proj_settings" project
+_warn_stale_settings "$local_settings" local
 
 ocplug_old="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/amux.js"
 if [ -e "$ocplug_old" ] || [ -L "$ocplug_old" ]; then
-  warn "$ocplug_old still exists — relink it to adapters/opencode/roost.js (or remove it)"
+  # A user legitimately needs amux.js installed for the whole coexistence
+  # window (the frozen amux half still works and some panes may still use
+  # it), so this is expected noise until they no longer need that half.
+  # "relink" is not a real fix here: `ln -sf ... amux.js` still leaves a file
+  # NAMED amux.js, so this warning would fire forever and the opencode-plugin
+  # check below would still say roost's plugin is not installed. Only
+  # remove-then-create-roost.js clears both, so name that exact command, the
+  # same way its siblings below do.
+  warn "$ocplug_old still exists — once you no longer need the amux half installed, run: rm \"$ocplug_old\" && ln -s \"$ocwant\" \"$ocplug\""
 fi
 
 # opencode adapter — informational. Most users will not have opencode, so a
 # missing plugin is a warning, never a required failure.
 if command -v opencode >/dev/null 2>&1; then
-  ocplug="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/roost.js"
-  ocwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/opencode/roost.js"
   if [ -L "$ocplug" ] && [ ! -e "$ocplug" ]; then
     # -e follows symlinks, so a DANGLING link (target moved/deleted, e.g. an
     # old checkout that got removed) reads as simply absent, and the "not
