@@ -520,9 +520,8 @@ Then `bash tests/run.sh` → all PASS, exit 0.
 ### Task 15 — migrate the test suite to the `roost` half
 
 **Files:** **every file under `tests/` that contains `amux`, whatever its
-extension**, except `tests/test-migrate-state.sh`. Derive the list, do not
-assume it: `grep -rl amux tests/`. At the time of writing that is 25 files —
-22 `.sh`, 2 `.py`, 1 `.mjs`.
+extension**, except the three protected files below. Derive the list, do not
+assume it: `grep -rl amux tests/`. At the time of writing that is 26 files.
 **Depends on:** Task 4
 **Runs before:** Task 5. Numbered last only because it was found after the loop
 started — **execute it in dependency order, immediately after Task 4.**
@@ -534,17 +533,30 @@ started — **execute it in dependency order, immediately after Task 4.**
 > references** under `tests/`.
 
 **Do:**
-1. In every file from that list **except `tests/test-migrate-state.sh`**, repoint:
+1. In every file from that list **except the three protected files**, repoint:
    `scripts/amux-<x>` → `scripts/roost-<x>`; `tmux/amux.conf` →
    `tmux/roost.conf`; `AMUX_*` → `ROOST_*`; `@amux-*` → `@roost-*`.
 2. In `tests/lib.sh`, rename `AMUX_TEST_SOCK`, `AMUX_TEST_SOCKDIR`,
    `AMUX_TESTS_PASS`, `AMUX_TESTS_FAIL` to their `ROOST_*` forms, and update
    every test that reads them.
-3. **Leave `tests/test-migrate-state.sh` pointed at the `amux` half.** It tests
-   `scripts/amux-migrate-state`, which the `roost` half deliberately does not
-   have (Task 6). Task 13 deletes both together.
-4. **Leave `tests/test-reload.sh`'s migration assertions pointed at the `amux`
-   half** for the same reason; Task 13 removes them.
+3. **The three protected files. Do not rename `amux` in any of them.**
+
+   | file | why it must keep `amux` |
+   |---|---|
+   | `tests/test-migrate-state.sh` | tests `scripts/amux-migrate-state`, which the `roost` half deliberately does not have (Task 6). Task 13 deletes both together. |
+   | `tests/test-reload.sh` | its migration assertions target the `amux` half, same reason. Only those assertions — the rest of the file repoints normally. |
+   | `tests/test-roost-config-migration.sh` | **31 deliberate references.** It is a `roost` test whose *subject* is the `amux` config: it seeds a legacy `~/.config/amux/amux.conf` with `@amux-*` keys and asserts they translate to `@roost-*`. |
+
+   **The third one is the dangerous case.** Renaming it does not break the
+   suite — it makes the test seed `@roost-` keys and assert they become
+   `@roost-` keys. Vacuous, and still green. Task 8's entire test would be
+   destroyed with no failing signal.
+
+   The general rule this illustrates: **a file containing `amux` is not
+   automatically a file that needs renaming.** Some reference `amux` because
+   `amux` is what they are about. Before renaming any occurrence, ask whether
+   the string is naming *this project's own thing* (rename it) or *the old half
+   that this test is deliberately exercising* (leave it).
 5. **Do not rename** `@agent_state` or `@agent_since` anywhere.
 
 **Why here:** after this task the suite exercises the `roost` half, which is
