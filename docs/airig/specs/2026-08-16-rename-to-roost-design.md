@@ -75,13 +75,32 @@ functions prefixed `amux_` → `roost_`.
 
 ### Not renamed
 
-`@agent_state`, `@agent_since`, and `@agent_glyph` — the three pane options the
-hook actually stamps — are **already unbranded**. They contain no product name
-and must stay exactly as they are. This is load-bearing: it is why both servers
-can share one hook mechanism.
+`@agent_state` and `@agent_since` — the two pane options the hook actually
+stamps — are **already unbranded**. They contain no product name and must stay
+exactly as they are. This is load-bearing: it is why both servers can share one
+hook mechanism, and renaming either one breaks running agents mid-turn.
 
-(`@agent_glyph` and `@amux-glyph-error` both arrived with the OpenCode adapter
-and its error state. The `@amux-` one renames; the `@agent_` one does not.)
+### `@agent_glyph` is a tombstone, not a live option
+
+Do not group `@agent_glyph` with the two above. **Nothing stamps it.** Glyphs
+are derived at render time. Its only remaining appearances are cleanup:
+
+- `tmux/amux.conf:42` — `set -gu @agent_glyph` (unset)
+- `scripts/amux-migrate-state:27` — `set-option -wu` (unset) on old windows
+- `tests/test-agent-state.sh:50` — asserts it *is never stamped*
+
+It predates the OpenCode adapter and exists only to scrub stale state off
+servers started before glyphs became derived. Preserving the name by reflex
+would carry dead weight into `roost`.
+
+**Decision required at planning time**, not by default: a brand-new `roost`
+server can never have a stale `@agent_glyph`, because no version of `roost`
+ever wrote one. The cleanup is therefore almost certainly droppable from the
+`roost` half — but the frozen `amux` half must keep it, since real old servers
+still carry the option. See Open Questions.
+
+`@amux-glyph-error` is different: it is genuinely new in PR #8, it is live, and
+it renames normally.
 
 ### The `@amux_home` / `@amux-home` inconsistency
 
@@ -169,25 +188,34 @@ and the `docs/superpowers/` → `docs/airig/` move can both proceed.
 What the merge added to this rename's scope:
 
 - A seventh namespace — the OpenCode adapter (row 7 above).
-- Two options: `@amux-glyph-error` (renames) and `@agent_glyph` (does not).
+- One new live option: `@amux-glyph-error`.
 - Two env vars: `AMUX_AGENT_NAME`, `AMUX_LIVE_MODEL`.
 - Six new test files, plus `tests/live/opencode-smoke.sh`.
 
-### The OpenCode adapter is a second external integration point
+### The OpenCode adapter — a second integration point, but not a live one
 
-Like the Claude hook, it lives outside this repo — a user-made symlink:
+The adapter is designed to be reached by a user-made symlink outside this repo:
 
 ```
 ~/.config/opencode/plugin/amux.js  ->  <checkout>/adapters/opencode/amux.js
 ```
 
-Rename the target and the symlink dangles. The plugin also invokes the command
-**by name** (`execFile("amux", ...)`), so it depends on `amux` being on `PATH`.
+**On this machine that symlink does not exist** — `~/.config/opencode/plugin/`
+is absent, though `opencode` itself is installed. So renaming
+`adapters/opencode/amux.js` breaks nothing today. Treat this as a packaging
+concern, not a live hazard.
 
-The fix is the same shape as the Claude hook. `roost.js` is installed alongside
-`amux.js` under a different filename; each delegates to its own command, and
-each command's socket guard makes it a no-op on the wrong server. Both are
-removed from the plugin directory at Phase 4.
+The one live hazard remains `scripts/amux-agent-state`, wired into
+`~/.claude/settings.json` by absolute path and called by every running agent on
+every tool call.
+
+The adapter still needs the coexistence design for anyone who *has* installed
+it: `roost.js` ships alongside `amux.js` under a different filename, each
+invokes its own command by name (`execFile("roost", ...)` vs
+`execFile("amux", ...)`), and each command's socket guard no-ops it on the
+wrong server. `roost doctor` must check the new path. Verify the install status
+again at execution time rather than trusting this paragraph — it records one
+machine on one day.
 
 ## Rollout phases
 
@@ -210,15 +238,23 @@ Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 | `roost init` corrupts a live config | It only ever writes to `~/.config/roost/`; the old file is read-only to it |
 | ~~Conflict with OpenCode~~ | Cleared — merged as PR #8 |
 | GitHub rename breaks `npx skills add beatzball/amux` | GitHub redirects; update the README line in Phase 2 anyway |
-| Dangling `~/.config/opencode/plugin/amux.js` symlink | `roost.js` installed alongside, not over the top; `roost doctor` checks both during transition |
+| Dangling `~/.config/opencode/plugin/amux.js` symlink | Not present on this machine — re-check at execution time. If installed: `roost.js` goes alongside, not over the top |
 | Both OpenCode plugins fire, doubling process spawns per turn | Accepted. Transition-only, one extra `execFile` per state change |
+| Dead `@agent_glyph` cleanup carried into `roost` by reflex | Named as an explicit decision, not a default — see Open Questions |
 | A personal absolute home path leaks into a committed doc | History was rewritten once already to strip these. Grep for the home-directory prefix and the username before every commit |
 
 ## Open questions
 
-None blocking. Two to settle during planning:
+None blocking. Three to settle during planning:
 
 1. Does `bin/roost` keep a `roost migrate-state` equivalent, or is that dropped
-   as amux-only history?
+   as amux-only history? This is the same question as (3), one level up:
+   `migrate-state` exists to clean pre-pane-state servers that `roost` can
+   never have had.
 2. Should Phase 4 leave a stub `bin/amux` that prints "renamed to roost" for a
    release or two, rather than deleting outright?
+3. Does the `roost` half drop the `@agent_glyph` tombstone cleanup entirely
+   (`tmux/roost.conf`'s `set -gu`, the `migrate-state` unset, and the test that
+   asserts it is never stamped)? Recommendation: **yes, drop it.** No `roost`
+   server can carry state no `roost` version ever wrote. The frozen `amux` half
+   keeps it untouched, so real old servers are still cleaned.
