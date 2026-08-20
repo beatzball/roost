@@ -358,9 +358,9 @@ exec "$(dirname "$0")/roost-agent-state" "$@"   # rejected
 ```
 
 A bash forwarder costs an **extra process spawn per hook invocation**,
-interpreter startup included. That is the same order as the tmux round trip the
-script is written to avoid. A symlink costs nothing: the kernel resolves it and
-no second process starts.
+interpreter startup included — measured at **~0.57 of a full tmux round trip**,
+the very cost the script is written to avoid. A symlink costs nothing: the
+kernel resolves it and no second process starts.
 
 #### Prerequisite: the target must resolve symlinks, or notifications die silently
 
@@ -401,22 +401,66 @@ Only `amux-agent-state` is symlinked by this plan, so only it *must* be fixed.
 The others are recorded because the same silent failure appears the moment any
 other old path is ever symlinked.
 
+**`amux-doctor` deserves the most attention of the three left alone.** It has
+four call sites — the most — and `doctor` is what a user runs when something is
+*already* broken. A silent sibling miss there fails at the worst possible
+moment: the diagnostic tool quietly under-reports while the user is trying to
+work out what is wrong. If any of the three gets the `readlink` loop
+pre-emptively, make it that one.
+
+### Record ratios, not milliseconds
+
+The cost table above is deliberately unitless. An earlier draft of this spec
+nearly recorded "≈7.6 ms per tmux round trip" as an established fact. That
+figure came from a PR body written on a different machine under different load
+and **did not reproduce**. Promoting a number that was true once, in a
+document, into a standing fact is the same error this spec has had to correct
+repeatedly.
+
+Two independent runs on this machine — Darwin arm64, tmux 3.6, N=200, isolated
+`-S` socket — landed at:
+
+| | run A | run B |
+|---|---|---|
+| spawn ÷ round trip | 0.55 | 0.57 |
+| round trip ÷ stderr | 32× | 31× |
+| spawn ÷ stderr | 18× | 18× |
+
+**The ratios agree. The absolute milliseconds differed by ~12% between the two
+runs**, minutes apart on the same hardware. Ratios survive a machine change;
+a naked millisecond figure rots and then gets quoted back with confidence.
+
+If a future change needs these numbers, re-measure with a timing loop and
+record the ratio and the method — hardware, tmux version, sample count — never
+a bare figure.
+
 #### Why the shim is silent — and why it is NOT a performance argument
 
 The shim prints nothing. The reason matters, because the wrong reason misleads
 whoever reads this next.
 
-**Not** because stderr is expensive. A write to stderr is microseconds. The
-budget this file protects is **tmux round trips** — fork plus socket, which the
-amux/opencode session measured at roughly 7.6ms per call with a counting shim,
-and which is why the early bail is pinned at exactly one call.
-`scripts/amux-status:32` names the same cost independently ("a fork+roundtrip
-every 2 seconds on a live bar"). A stderr line is three to four orders of
-magnitude cheaper and does not touch that budget.
+**Not** because stderr is expensive. The budget this file protects is **tmux
+round trips** — fork plus socket — which is why the early bail is pinned at
+exactly one call. `scripts/amux-status:32` names the same cost independently
+("a fork+roundtrip every 2 seconds on a live bar").
+
+Measured costs, as ratios (see "Record ratios, not milliseconds" below):
+
+| operation | cost |
+|---|---|
+| tmux round trip | the unit — fork plus socket |
+| bash process spawn | **~0.57** of a round trip |
+| stderr write | **~1/31** of a round trip (≈1.5 orders of magnitude, not 3–4) |
 
 Recording "hot path means no I/O of any kind" would be actively harmful: the
 next person refuses a cheap write that is fine, and waves through an expensive
 tmux call that is not.
+
+The numbers also show the original trade was backwards. The stderr line that
+was cut costs ~1/31 of a round trip; the forwarder spawn that was accepted
+costs ~0.57 — **the rejected thing was ~18× cheaper than the accepted one.**
+Replacing the forwarder with a symlink is the real win here. The silence is
+correct too, but for the transcript-noise reason below, not for cost.
 
 **The real reason:** Claude Code hook stderr can surface into the agent
 transcript and the UI. `PostToolUse` fires on every tool call, so a deprecation
