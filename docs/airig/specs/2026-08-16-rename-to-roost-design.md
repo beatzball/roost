@@ -605,10 +605,40 @@ Replacing an unobservable criterion with an observable one is the point of this
 paragraph.
 
 **The trigger is: `roost doctor` reports clean on every machine the author
-uses.** Concretely — no machine's `~/.claude/settings.json` still references
-`amux-agent-state`, and no `~/.config/opencode/plugin/amux.js` remains. That is
-fully observable by one person in a few minutes, and it is the honest version
-of what the original criterion was reaching for.
+uses.** Concretely — no settings file still references `amux-agent-state`, and
+no `~/.config/opencode/plugin/amux.js` remains. That is fully observable by one
+person in a few minutes, and it is the honest version of what the original
+criterion was reaching for.
+
+#### The trigger is only as good as the files it reads
+
+**Corrected 2026-08-20, found by the Tasks 9–10 reviewer.** An earlier revision
+said "no machine's `~/.claude/settings.json`", and the implementation followed
+it literally. **Claude Code merges hooks from more than that one file** —
+`settings.local.json` and project-level `.claude/settings*.json` among them.
+
+The failure this creates is precise and silent: `~/.claude/settings.json` holds
+a migrated `roost-agent-state` hook, `~/.claude/settings.local.json` still holds
+a stale `amux-agent-state` one. `roost doctor` prints "hooks wired" and no
+warning. **It reads clean while a shim is still load-bearing** — and reading
+clean is exactly what authorises deleting the shims.
+
+A false positive here costs a few seconds of confusion. A false negative deletes
+a shim something still depends on. The check must therefore cover every file
+Claude Code merges, and must name the specific stale file rather than reporting
+"a settings file".
+
+Two smaller versions of the same asymmetry, both worth closing:
+
+- An **unreadable** settings file makes `grep -q` exit 2, which is discarded —
+  so the stale check silently passes. "Absent" and "unreadable" must be
+  distinguished and reported differently.
+- The test fixture for the clean case used a path containing no `amux`
+  substring, while the author's real checkout directory **is** named `amux`. A
+  sloppier check (`grep -q amux` rather than `grep -q amux-agent-state`) would
+  pass the whole suite and then warn forever on the real machine, permanently
+  blocking this trigger. The fixture must contain `amux` in its path so the test
+  pins the distinction.
 
 Third parties are covered by the shims continuing to exist right up until that
 moment, plus the deprecation notice on `bin/amux`. If the project later gains
