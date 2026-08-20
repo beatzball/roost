@@ -135,3 +135,73 @@ case "$out" in
   *) assert_eq ok ok "doctor is silent once the error glyph matches its set" ;;
 esac
 rm -rf "$gcdir"
+
+# === roost doctor: stale-hook check (Phase 5 trigger) ===
+# roost doctor warns when ~/.claude/settings.json still references the old
+# amux-agent-state hook path. This is the ONLY signal the author uses to know
+# it is safe to delete the amux compatibility shims later, so it must fire
+# reliably on a stale reference and stay silent on an absent or migrated one.
+#
+# roost-doctor defaults its settings lookup to $HOME/.claude/settings.json and
+# its config-socket lookup to `-L roost` (a real, possibly-live named server
+# on this machine) when ROOST_CONFIG_SOCK is unset -- mirroring the
+# AMUX_CONFIG_SOCK/XDG_CONFIG_HOME hazard noted above for amux-doctor. Pin
+# HOME to a fresh temp dir for every case below (never the real $HOME) and
+# ROOST_CONFIG_SOCK to an inert path, so this suite never reads the real
+# settings.json and never contacts -L roost.
+RDOC="$HERE/scripts/roost-doctor"
+export ROOST_CONFIG_SOCK="/nonexistent/roost-doctor-test-sock"
+
+# stale: settings.json still names the old amux-agent-state hook command
+stalehome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$stalehome/.claude"
+cat > "$stalehome/.claude/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
+EOF
+out="$(HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+assert_contains "$out" "amux-agent-state" "roost doctor warns when settings.json still references amux-agent-state"
+assert_contains "$out" "roost-agent-state" "roost doctor names the roost-agent-state fix"
+HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
+assert_eq "$?" "0" "a stale hook reference does not fail doctor (warning only)"
+rm -rf "$stalehome"
+
+# clean: settings.json present and already migrated -> silent
+cleanhome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$cleanhome/.claude"
+cat > "$cleanhome/.claude/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/roost/scripts/roost-agent-state done"}]}]}}
+EOF
+out="$(HOME="$cleanhome" XDG_CONFIG_HOME="$cleanhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+case "$out" in
+  *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent once settings.json is migrated" ;;
+  *) assert_eq ok ok "roost doctor is silent once settings.json is migrated" ;;
+esac
+rm -rf "$cleanhome"
+
+# absent: no settings.json at all -> silent, not a crash
+absenthome="$(mktemp -d /tmp/amx.XXXX)"
+out="$(HOME="$absenthome" XDG_CONFIG_HOME="$absenthome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+case "$out" in
+  *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent when settings.json is absent" ;;
+  *) assert_eq ok ok "roost doctor is silent when settings.json is absent" ;;
+esac
+rm -rf "$absenthome"
+
+# --- roost doctor: stale opencode plugin file (amux.js) still present ---
+# Same Phase 5 trigger, for the other artifact a stale install can leave
+# behind: an opencode plugin directory still holding the OLD amux.js after
+# the user meant to move to roost.js.
+ocstale="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$ocstale/.config/opencode/plugin"
+printf 'not the real plugin\n' > "$ocstale/.config/opencode/plugin/amux.js"
+out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+assert_contains "$out" "opencode/plugin/amux.js" "roost doctor warns when the old opencode plugin file still exists"
+
+# and once it's gone, silent
+rm "$ocstale/.config/opencode/plugin/amux.js"
+out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+case "$out" in
+  *"opencode/plugin/amux.js"*) assert_eq "warned" "silent" "roost doctor is silent once the old opencode plugin file is gone" ;;
+  *) assert_eq ok ok "roost doctor is silent once the old opencode plugin file is gone" ;;
+esac
+rm -rf "$ocstale"

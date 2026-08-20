@@ -40,6 +40,21 @@ else
   warn "Claude hooks not found in $settings — run: roost hooks"
 fi
 
+# --- stale amux references (Phase 5 trigger) ---
+# The amux compatibility shims (amux-agent-state and friends) are deleted
+# once roost doctor reports clean on this pair of checks on every machine the
+# author uses. Warning only, never a hard failure: a stale reference does not
+# break anything today (the shim still exists), it just means this machine
+# was never migrated and the shims cannot be dropped yet.
+if [ -f "$settings" ] && grep -q amux-agent-state "$settings" 2>/dev/null; then
+  warn "$settings still references amux-agent-state — replace those hook commands with the roost-agent-state path"
+fi
+
+ocplug_old="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/amux.js"
+if [ -e "$ocplug_old" ] || [ -L "$ocplug_old" ]; then
+  warn "$ocplug_old still exists — relink it to adapters/opencode/roost.js (or remove it)"
+fi
+
 # opencode adapter — informational. Most users will not have opencode, so a
 # missing plugin is a warning, never a required failure.
 if command -v opencode >/dev/null 2>&1; then
