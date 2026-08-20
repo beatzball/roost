@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# amux-next-blocked — select the first blocked agent PANE on the server.
+# amux-next-blocked — select the first pane that needs you: error, else blocked.
 #
 # Bound to `prefix + b`. State lives on the pane, so jumping to the window is
 # not enough: a window can hold several agents and only one of them is stuck.
-# Silent no-op when nothing is blocked.
+# Silent no-op when nothing needs you.
 set -u
 tmx() {
   if [ -n "${AMUX_NEXT_SOCK:-}" ]; then tmux -S "$AMUX_NEXT_SOCK" "$@"
   else tmux "$@"; fi
 }
 
-hit="$(tmx list-panes -a -F '#{@agent_state} #{window_id} #{pane_id}' 2>/dev/null \
-  | awk '$1 == "blocked" { print $2, $3; exit }')"
+# error takes priority over blocked, matching urgency order everywhere else
+# in the codebase (error blocked working done idle) — both states need you,
+# but an errored agent needs you first.
+hit="$(tmx list-panes -a -F '#{@agent_state} #{window_id} #{pane_id}' 2>/dev/null | awk '
+  $1 == "error"   && !e { e = $2 OFS $3 }
+  $1 == "blocked" && !b { b = $2 OFS $3 }
+  END { if (e) print e; else if (b) print b }
+')"
 [ -n "$hit" ] || exit 0
 
 set -f; set -- $hit; set +f

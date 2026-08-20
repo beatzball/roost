@@ -15,7 +15,11 @@ conf="$cfgdir/amux/amux.conf"
 assert_contains "$(cat "$conf")" "@amux-notify-backend" "sets notify-backend"
 assert_contains "$(cat "$conf")" 'tmux' "notify=n → backend tmux"
 assert_contains "$(cat "$conf")" "@amux-color-active-bg" "writes theme colours"
-assert_contains "$(cat "$conf")" "@amux-glyph-blocked" "writes glyph set"
+assert_contains "$(cat "$conf")" 'set -g @amux-glyph-error   "💥"' "writes error glyph with the right value"
+assert_contains "$(cat "$conf")" 'set -g @amux-glyph-blocked "🛑"' "writes blocked glyph with the right value"
+assert_contains "$(cat "$conf")" 'set -g @amux-glyph-working "⏳"' "writes working glyph with the right value"
+assert_contains "$(cat "$conf")" 'set -g @amux-glyph-done    "✅"' "writes done glyph with the right value"
+assert_contains "$(cat "$conf")" 'set -g @amux-glyph-idle    "💤"' "writes idle glyph with the right value"
 
 # the wedge must be written as real UTF-8 bytes, not a literal \u escape
 # (bash 3.2 printf has no \u; a regression would silently corrupt the bar).

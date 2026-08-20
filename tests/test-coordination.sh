@@ -227,6 +227,20 @@ T set-option -p -t "$sib" @agent_state done
 "$AMUX" wait-done "$wid" 1 >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "0" "wait-done on a window returns once all agent panes are done"
 
+# --- wait-done understands the error state ---
+# An errored agent will never become done, so treating it as still-busy would
+# hang to timeout, and falling through to the default arm (as working|blocked's
+# absence used to) reported it as successfully finished — the one wrong answer
+# a coordinating agent cannot recover from.
+T set-option -p -t "$sib" @agent_state done
+"$AMUX" wait-done "$sib" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "wait-done on a done pane exits 0"
+
+T set-option -p -t "$sib" @agent_state error
+errout="$("$AMUX" wait-done "$sib" 1 2>&1)"; rc=$?
+assert_eq "$rc" "1" "wait-done on an errored pane exits non-zero"
+assert_contains "$errout" "error" "wait-done on an errored pane names the state"
+
 # a window with no agents at all returns immediately
 empty="$(T new-window -d -PF '#{window_id}')"
 "$AMUX" wait-done "$empty" 1 >/dev/null 2>&1; rc=$?

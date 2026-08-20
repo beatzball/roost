@@ -4,7 +4,7 @@
 # Your normal `tmux` is untouched: amux uses a separate socket (-L amux) and its
 # own config (tmux/amux.conf), so it never sees or disturbs your regular
 # sessions. Run your AI coding agents inside it; Claude Code hooks badge each
-# pane by state (🛑 blocked · ⏳ working · ✅ done · 💤 idle).
+# pane by state (💥 error · 🛑 blocked · ⏳ working · ✅ done · 💤 idle).
 #
 # All amux sessions share one server, so the status counts and `prefix a`
 # switcher roll up across every session.
@@ -20,6 +20,7 @@
 #   amux read TGT [N]       print an agent's last N non-blank lines (default 40)
 #   amux wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   amux hooks              print the Claude Code hook config that powers the badges
+#   amux state STATE        report this pane's agent state (working|blocked|done|error|idle)
 #   amux doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   amux init               setup wizard: writes ~/.config/amux/amux.conf
 #   amux settings           change theme/glyphs/separator/notifications, live
@@ -105,6 +106,14 @@ case "${1:-up}" in
     # index (matches spawn; a bare `=0` fails "index 0 in use").
     t new-window -t "=$sess:" -n "$name" -c "$PWD"
     exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$sess"
+    ;;
+  state)
+    # The public state-reporting contract. Every state SOURCE calls this: the
+    # Claude Code hooks below, adapters/opencode/amux.js, and anything a user
+    # writes. It reads $TMUX and $TMUX_PANE to find the pane, and is a silent
+    # no-op outside an amux server -- which is what makes an adapter safe to
+    # leave installed when the agent runs somewhere else.
+    exec "$AMUX_HOME/scripts/amux-agent-state" "${2:-idle}"
     ;;
   doctor)
     exec "$AMUX_HOME/scripts/amux-doctor"
@@ -404,7 +413,33 @@ JSON
           ;;
       esac
     }
-    while busy; do
+    # An errored agent will never become done, so treating it as "still busy"
+    # would wait forever, and falling through to the default *) arm (as
+    # working|blocked's absence used to) would report a dead agent as
+    # successfully finished — the one wrong answer a coordinating agent
+    # cannot recover from. Check and stop explicitly instead.
+    errored() {
+      case "$tgt" in
+        %*)
+          case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
+            error) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+        *)
+          states="$(t list-panes -t "$tgt" -F '#{@agent_state}' 2>/dev/null || true)"
+          case "$states" in
+            *error*) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+    }
+    while :; do
+      if errored; then
+        echo "amux: '$raw' is in error state, not done" >&2; exit 1
+      fi
+      busy || break
       sleep 1; waited=$((waited + 1))
       if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
         echo "amux: timed out waiting for '$raw'" >&2; exit 1
@@ -436,5 +471,5 @@ JSON
       t kill-server 2>/dev/null && echo "amux: server stopped (all sessions)." || echo "amux: not running."
     fi
     ;;
-  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
+  *) echo "usage: amux [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
 esac

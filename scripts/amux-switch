@@ -31,6 +31,7 @@ now="$(date +%s)"
 
 # Glyphs come from config, so the switcher and the status bar can never drift —
 # both derive from @amux-glyph-<state>. Hardcoded values are last-resort only.
+ge="$(tmx show-options -gqv @amux-glyph-error   2>/dev/null)"; [ -n "$ge" ] || ge="💥"
 gb="$(tmx show-options -gqv @amux-glyph-blocked 2>/dev/null)"; [ -n "$gb" ] || gb="🛑"
 gw="$(tmx show-options -gqv @amux-glyph-working 2>/dev/null)"; [ -n "$gw" ] || gw="⏳"
 gd="$(tmx show-options -gqv @amux-glyph-done    2>/dev/null)"; [ -n "$gd" ] || gd="✅"
@@ -48,8 +49,9 @@ raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window
 [ -n "$raw" ] || exit 0
 
 # Hidden key fields: session_id, window_id, pane_id (empty on a header row).
-rows="$(printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v gb="$gb" -v gw="$gw" -v gd="$gd" -v gi="$gi" '
+rows="$(printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v ge="$ge" -v gb="$gb" -v gw="$gw" -v gd="$gd" -v gi="$gi" '
   function glyph(s) {
+    if (s == "error")   return ge
     if (s == "blocked") return gb
     if (s == "working") return gw
     if (s == "done")    return gd

@@ -39,10 +39,11 @@ apply_theme() {
 }
 apply_glyphs() {
   set -f; set -- $(amux_glyphset "$1"); set +f
-  amux_cfg_set @amux-glyph-blocked "$1"
-  amux_cfg_set @amux-glyph-working "$2"
-  amux_cfg_set @amux-glyph-done    "$3"
-  amux_cfg_set @amux-glyph-idle    "$4"
+  amux_cfg_set @amux-glyph-error   "$1"
+  amux_cfg_set @amux-glyph-blocked "$2"
+  amux_cfg_set @amux-glyph-working "$3"
+  amux_cfg_set @amux-glyph-done    "$4"
+  amux_cfg_set @amux-glyph-idle    "$5"
 }
 
 # preview_rows TYPE SAVED -> fzf rows (hidden value col + checkmark + label[+icons]).

@@ -7,7 +7,7 @@ amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 
 # defaults exist for the appearance options
-for o in @amux-glyph-blocked @amux-glyph-idle @amux-sep-left @amux-color-bar-bg \
+for o in @amux-glyph-error @amux-glyph-blocked @amux-glyph-idle @amux-sep-left @amux-color-bar-bg \
          @amux-color-active-bg @amux-notify-backend; do
   v="$(T show-options -gqv "$o")"
   [ -n "$v" ] && assert_eq ok ok "default set: $o" || assert_eq "" "non-empty" "default set: $o"

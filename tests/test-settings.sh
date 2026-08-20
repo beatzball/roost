@@ -33,7 +33,57 @@ assert_contains "$(cat "$conf")" 'set -g @amux-notify-backend "tmux"' "cfg_set a
 gs="$(amux_glyphset nerd)"
 case "$gs" in *'\u'*) assert_eq escape bytes "glyphset writes real bytes, not \\u" ;; *) assert_eq ok ok "glyphset writes real bytes, not \\u" ;; esac
 assert_contains "$gs" "$(printf '\xef\x81\xb1')" "glyphset nerd contains U+F071 (blocked)"
-assert_eq "$(amux_glyphset emoji)" "🛑 ⏳ ✅ 💤" "glyphset emoji matches the four state emoji"
+assert_eq "$(amux_glyphset emoji)" "💥 🛑 ⏳ ✅ 💤" "glyphset emoji matches the five state emoji"
+
+# --- the error state's glyph ---
+# Canonical order is urgency order (error blocked working done idle), the same
+# order the tab badge and the status rollup use, so there is one order to
+# remember across the codebase.
+for gs in emoji orbs ascii nerd; do
+  set -f; set -- $(amux_glyphset "$gs"); set +f
+  assert_eq "$#" "5" "glyph set '$gs' has five glyphs"
+done
+
+# Every set's error glyph must differ from its other four, or two states render
+# identically and the badge stops carrying information.
+for gs in emoji orbs ascii nerd; do
+  set -f; set -- $(amux_glyphset "$gs"); set +f
+  dupes=0
+  for g in "$2" "$3" "$4" "$5"; do [ "$g" = "$1" ] && dupes=$((dupes+1)); done
+  assert_eq "$dupes" "0" "glyph set '$gs' error glyph is distinct from the other four"
+done
+
+assert_contains "$(amux_glyphset nerd)" "$(printf '\xef\x83\xa7')" \
+  "glyphset nerd contains U+F0E7 (error)"
+
+# A preview must snapshot and restore the error glyph too, or cancelling out of
+# the glyph menu leaves the previewed set's error glyph behind.
+assert_contains "$(amux_preview_keys glyphs)" "@amux-glyph-error" \
+  "the glyphs preview covers @amux-glyph-error"
+
+# The COMMIT path (picking a glyph set in the menu, not just previewing it)
+# must also write @amux-glyph-error to the config file. amux-settings'
+# apply_glyphs has no CLI seam of its own (unlike amux_preview_apply, which
+# is a testable library function) — the preview path above is covered, the
+# commit path was not, the same shape of gap Commit 1's amux-init bug lived
+# in. Extract the real function body from the source file (not a
+# hand-copied re-implementation, so a future edit to the function is what
+# gets tested) and call it directly against a scratch config.
+apply_glyphs_src="$(sed -n '/^apply_glyphs() {/,/^}/p' "$HERE/scripts/amux-settings")"
+[ -n "$apply_glyphs_src" ] || { echo "FATAL: could not extract apply_glyphs from amux-settings" >&2; exit 1; }
+eval "$apply_glyphs_src"
+agcfg="$(mktemp -d /tmp/amx.XXXX)"
+(
+  export XDG_CONFIG_HOME="$agcfg"
+  apply_glyphs nerd
+)
+agconf="$agcfg/amux/amux.conf"
+set -f; set -- $(amux_glyphset nerd); set +f
+assert_contains "$(cat "$agconf" 2>/dev/null)" "set -g @amux-glyph-error \"$1\"" \
+  "apply_glyphs (commit path) writes @amux-glyph-error"
+assert_contains "$(cat "$agconf" 2>/dev/null)" "set -g @amux-glyph-idle \"$5\"" \
+  "apply_glyphs (commit path) writes the rest of the set too"
+rm -rf "$agcfg"
 
 # sep map
 assert_eq "$(amux_sep none)" "" "sep none is empty"
@@ -45,6 +95,38 @@ original_mode="$(stat -c '%a' "$conf" 2>/dev/null || stat -f '%Lp' "$conf" 2>/de
 amux_cfg_set @amux-color-bar-bg "#333333"
 updated_mode="$(stat -c '%a' "$conf" 2>/dev/null || stat -f '%Lp' "$conf" 2>/dev/null)"
 assert_eq "$updated_mode" "$original_mode" "cfg_set preserves existing file permissions"
+
+# An existing user's config file holds four glyphs and no error glyph. It must
+# still identify as the set they picked, not fall back to "custom" the moment
+# they upgrade.
+#
+# AMUX_CONFIG_SOCK points at a path with no server, so amux_opt falls through
+# to the config file. Without it amux_cfg_tmux would address `-L amux` by name
+# and this assertion would read the DEVELOPER'S LIVE SERVER.
+(
+  export AMUX_CONFIG_SOCK="/nonexistent/amx-no-server"
+  set -f; set -- $(amux_glyphset nerd); set +f
+  amux_cfg_set @amux-glyph-blocked "$2"
+  amux_cfg_set @amux-glyph-working "$3"
+  amux_cfg_set @amux-glyph-done    "$4"
+  amux_cfg_set @amux-glyph-idle    "$5"
+  printf '%s' "$(amux_current_glyphset)"
+) > "$cfgdir/glyphset-out"
+assert_eq "$(cat "$cfgdir/glyphset-out")" "nerd" \
+  "a four-glyph config written before the error state still identifies as its set"
+
+# ...and a genuinely mismatched config is still custom, so the assertion above
+# is not just accepting everything.
+(
+  export AMUX_CONFIG_SOCK="/nonexistent/amx-no-server"
+  amux_cfg_set @amux-glyph-blocked "Q"
+  printf '%s' "$(amux_current_glyphset)"
+) > "$cfgdir/glyphset-out2"
+assert_eq "$(cat "$cfgdir/glyphset-out2")" "custom" \
+  "a config matching no set still reports custom"
+
+# leave the config file clean for the assertions further down this file
+rm -f "$cfgdir/amux/amux.conf"
 
 # reverse-lookup against a running server
 amux_test_server; export AMUX_CONFIG_SOCK="$AMUX_TEST_SOCK"

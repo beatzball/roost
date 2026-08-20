@@ -35,3 +35,19 @@ T set-option -p -t "$w1b" @agent_state working
 T select-window -t "$w0"
 "$NEXT"
 assert_eq "$(T display-message -p '#{window_id}')" "$w0" "a working pane is not a jump target"
+
+# an error pane is also a jump target
+T set-option -p -t "$w1b" @agent_state error
+T select-window -t "$w0"
+"$NEXT"
+assert_eq "$(T display-message -p '#{window_id}')" "$w1" "jumps to the errored pane's window"
+assert_eq "$(T display-message -p '#{pane_id}')" "$w1b" "selects the errored PANE"
+
+# error is preferred over blocked when both exist
+w2p="$(T new-window -d -P -F '#{pane_id}' "$hold")"
+w2="$(T display-message -p -t "$w2p" '#{window_id}')"
+T set-option -p -t "$w2p" @agent_state blocked
+T select-window -t "$w0"
+"$NEXT"
+assert_eq "$(T display-message -p '#{window_id}')" "$w1" "error is preferred over blocked when both exist"
+assert_eq "$(T display-message -p '#{pane_id}')" "$w1b" "error is preferred over blocked (correct pane)"
