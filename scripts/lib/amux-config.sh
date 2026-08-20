@@ -3,16 +3,19 @@
 
 amux_cfg_path() { printf '%s/amux/amux.conf' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
-# amux_glyphset NAME -> "blocked working done idle" (space-separated).
+# amux_glyphset NAME -> "error blocked working done idle" (space-separated).
+# Urgency order, matching the tab badge and the status rollup, so there is a
+# single canonical order for the five states across the codebase.
 # \xHH bytes, not \uXXXX: bash 3.2's printf has no \u. Unknown -> emoji.
 amux_glyphset() {
   case "$1" in
-    orbs)  printf '%s %s %s %s' "🔴" "🟡" "🔵" "🟢" ;;
-    ascii) printf '%s %s %s %s' "[!]" "[~]" "[+]" "[·]" ;;
-    nerd)  printf '%s %s %s %s' \
+    orbs)  printf '%s %s %s %s %s' "🟣" "🔴" "🟡" "🔵" "🟢" ;;
+    ascii) printf '%s %s %s %s %s' "[x]" "[!]" "[~]" "[+]" "[·]" ;;
+    nerd)  printf '%s %s %s %s %s' \
+             "$(printf '\xef\x83\xa7')" \
              "$(printf '\xef\x81\xb1')" "$(printf '\xef\x89\x92')" \
              "$(printf '\xef\x80\x8c')" "$(printf '\xef\x86\x86')" ;;
-    *)     printf '%s %s %s %s' "🛑" "⏳" "✅" "💤" ;;
+    *)     printf '%s %s %s %s %s' "💥" "🛑" "⏳" "✅" "💤" ;;
   esac
 }
 
@@ -93,12 +96,20 @@ amux_current_theme() {
   printf 'custom'
 }
 
-# amux_current_glyphset -> name matching the current 4 glyphs, else "custom".
+# amux_current_glyphset -> name matching the current glyphs, else "custom".
+#
+# Matches on the FOUR original glyphs, not all five. Every config written
+# before the error state existed has no @amux-glyph-error, and tmux/amux.conf
+# supplies the emoji 💥 as the global default whatever set the user picked — so
+# requiring a fifth match would report "custom" for every existing user until
+# they re-picked. The cost is that a hand-customised error glyph alone does not
+# make a set read as "custom"; that is the better trade.
 amux_current_glyphset() {
   local cur g
   cur="$(amux_opt @amux-glyph-blocked) $(amux_opt @amux-glyph-working) $(amux_opt @amux-glyph-done) $(amux_opt @amux-glyph-idle)"
   for g in emoji orbs ascii nerd; do
-    [ "$(amux_glyphset "$g")" = "$cur" ] && { printf '%s' "$g"; return; }
+    set -f; set -- $(amux_glyphset "$g"); set +f
+    [ "$2 $3 $4 $5" = "$cur" ] && { printf '%s' "$g"; return; }
   done
   printf 'custom'
 }
@@ -126,7 +137,7 @@ amux_menu_row() {
 amux_preview_keys() {
   case "$1" in
     theme)     echo "@amux-color-bar-bg @amux-color-bar-fg @amux-color-logo-bg @amux-color-active-bg @amux-color-active-fg @amux-color-idle-fg" ;;
-    glyphs)    echo "@amux-glyph-blocked @amux-glyph-working @amux-glyph-done @amux-glyph-idle" ;;
+    glyphs)    echo "@amux-glyph-error @amux-glyph-blocked @amux-glyph-working @amux-glyph-done @amux-glyph-idle" ;;
     separator) echo "@amux-sep-left @amux-sep-right" ;;
   esac
 }
@@ -147,11 +158,12 @@ amux_preview_apply() {
       ;;
     glyphs)
       set -f; set -- $(amux_glyphset "$value"); set +f
-      [ "$#" -eq 4 ] || return 0
-      amux_cfg_tmux set-option -g @amux-glyph-blocked "$1" 2>/dev/null || true
-      amux_cfg_tmux set-option -g @amux-glyph-working "$2" 2>/dev/null || true
-      amux_cfg_tmux set-option -g @amux-glyph-done    "$3" 2>/dev/null || true
-      amux_cfg_tmux set-option -g @amux-glyph-idle    "$4" 2>/dev/null || true
+      [ "$#" -eq 5 ] || return 0
+      amux_cfg_tmux set-option -g @amux-glyph-error   "$1" 2>/dev/null || true
+      amux_cfg_tmux set-option -g @amux-glyph-blocked "$2" 2>/dev/null || true
+      amux_cfg_tmux set-option -g @amux-glyph-working "$3" 2>/dev/null || true
+      amux_cfg_tmux set-option -g @amux-glyph-done    "$4" 2>/dev/null || true
+      amux_cfg_tmux set-option -g @amux-glyph-idle    "$5" 2>/dev/null || true
       ;;
     separator)
       s="$(amux_sep "$value")"

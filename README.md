@@ -8,7 +8,7 @@ everyday `tmux` (config, sessions, plugins, muscle memory) is **never touched**.
 Launch it with one command, run your agents as panes or windows inside it,
 and each is badged with what its agent is doing:
 
-> 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
+> 💥 error / needs you · 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
 
 State comes from **Claude Code's own lifecycle hooks** — not from scraping
 process names or terminal output — so it's accurate rather than guessed. No
@@ -134,21 +134,23 @@ tmux config, so there's nothing new to learn:
 | `prefix > / <` | swap pane forward / back |
 | `prefix C-c` | new session |
 | `prefix a` | **agent switcher** — fzf popup of all agents + state + elapsed time |
-| `prefix b` | **jump to the next blocked agent** (needs your input) |
+| `prefix b` | **jump to the agent that needs you** (error, else blocked) |
 | `prefix r` | reload amux config |
 | `prefix S` | **settings** — fzf menu to change theme/glyphs/separator/notifications, live |
 
 ### At-a-glance signals
 
 - **Status bar counts** — the top-right shows the whole herd rolled up, e.g.
-  `🛑4 ⏳1 ✅3` (blocked / working / done), so you see the picture even when the
-  window tabs scroll off. Counts are ordered by how much they want your
-  attention, and the glyphs are read back off the windows, so they can never
-  disagree with the tabs.
+  `💥1 🛑4 ⏳1 ✅3` (error / blocked / working / done), so you see the picture
+  even when the window tabs scroll off. Counts are ordered by how much they
+  want your attention, and the glyphs are read back off the windows, so they
+  can never disagree with the tabs.
 - **Desktop notification** — when an agent you're *not* looking at becomes
   blocked (needs input), amux pings you with a native desktop notification. Only
-  `blocked` notifies — `done` fires every turn and would be noise. Delivery is
-  cross-platform, tried in this order: macOS (`osascript`), WSL (`BurntToast` via
+  `blocked` notifies — `done` fires every turn and would be noise.
+  `error` notifies too: an agent that has stopped making progress needs you just
+  as much as one waiting for an answer. Delivery is cross-platform, tried in
+  this order: macOS (`osascript`), WSL (`BurntToast` via
   `powershell.exe`), Linux (`notify-send`, when a display is
   present), falling back to an in-tmux
   `display-message` if nothing else is available (e.g. a headless remote
@@ -271,6 +273,33 @@ nothing. It also returns early when the state is already correct, which keeps it
 cheap on `PostToolUse` (that fires on every single tool call, and Claude waits
 for the hook to exit).
 
+### Other agents
+
+Badges are not Claude-only. Any agent can report its state through one public
+command:
+
+```sh
+amux state working    # or: blocked, done, error, idle
+```
+
+It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside an
+amux session — so it is safe to wire into a global config.
+
+**opencode** has an adapter in this repo. Symlink it into place:
+
+```sh
+mkdir -p ~/.config/opencode/plugin
+ln -s "$HOME/path/to/amux/adapters/opencode/amux.js" ~/.config/opencode/plugin/amux.js
+```
+
+A symlink rather than a copy, so updating amux updates the plugin. `amux doctor`
+prints this exact command with the real path for your checkout, so run that if
+you're unsure what to fill in — it also confirms once the plugin is linked.
+
+`tests/live/opencode-smoke.sh` drives real opencode against a local model to
+check the adapter end to end. It is not part of `tests/run.sh` — run it by hand
+after an opencode upgrade.
+
 ## How it works
 
 - `bin/amux` starts `tmux -L amux -f tmux/amux.conf` — a second tmux server,
@@ -300,7 +329,7 @@ scripts/amux-doctor      # preflight checks (tmux version, truecolor, hooks, not
 scripts/amux-init        # setup wizard (theme, glyphs, separator style, prints hooks)
 scripts/amux-settings    # live settings TUI (prefix S) — change theme/glyphs/separator/notifications
 scripts/amux-migrate-state # clear pre-pane-state window options from a running server (used by reload)
-scripts/amux-next-blocked  # select the next blocked agent pane (prefix b)
+scripts/amux-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
 scripts/amux-themes.sh   # built-in theme palettes
 scripts/lib/amux-config.sh # shared config helpers (surgical writer, glyph/sep maps, live-apply)
 ```

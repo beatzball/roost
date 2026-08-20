@@ -8,7 +8,7 @@
 # inside an `amux` server pane, so it is safe to wire into your GLOBAL Claude
 # hooks — running `claude` anywhere else does nothing.
 #
-#   usage: amux-agent-state <working|blocked|done|idle>
+#   usage: amux-agent-state <working|blocked|error|done|idle>
 set -euo pipefail
 
 state="${1:-idle}"
@@ -25,7 +25,7 @@ case "$sock" in
 esac
 
 # Normalise: anything unrecognised is idle.
-case "$state" in blocked|working|done) ;; *) state="idle" ;; esac
+case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
 
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
 # exiting, so the common case — state already correct — must be cheap: ONE read,
@@ -44,8 +44,8 @@ case "$state" in blocked|working|done) ;; *) state="idle" ;; esac
 # @amux-pane-border already use for this exact check, and deliberately an
 # equality test against "" rather than tmux's `#{?@amux-name,...}`
 # truthiness, which treats a pane literally named "0" as unset. $state is
-# always blocked/working/done/idle, never ending in X, so a trailing X can
-# only have come from the marker and is safe to strip.
+# always error/blocked/working/done/idle, never ending in X, so a trailing X
+# can only have come from the marker and is safe to strip.
 raw="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
   '#{@agent_state}#{?#{==:#{@amux-name},},,X}' 2>/dev/null || true)"
 case "$raw" in
@@ -66,39 +66,61 @@ tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/
 # a label a live Claude pane falls back to #{pane_current_command}, which
 # reports its OWN VERSION STRING (e.g. "2.1.226") — it changes every release
 # and means nothing to a reader of the border or the switcher.
+#
+# AMUX_AGENT_NAME lets a non-Claude harness (e.g. the opencode adapter, which
+# sets it in its execFile env) name itself instead of inheriting the
+# Claude-flavoured default — every opencode pane would otherwise read
+# "claude" on its border and in the switcher. It is preferred over
+# @amux-name-default, but a human-chosen @amux-name (has_name=1) still wins
+# over both, since that branch never runs at all.
 # @amux-name-default is a global option (in keeping with @amux-glyph-*,
 # @amux-notify-*, etc.) so a user running something other than Claude under
 # amux's hooks can rename the fallback; "claude" is the honest default since
 # this script IS Claude Code's hook.
 if [ "$has_name" != 1 ]; then
-  label="$(tmux -S "$sock" show-options -gqv @amux-name-default 2>/dev/null || true)"
-  # @amux-name-default is user-controlled tmux state (a human can `tmux
-  # set-option -g` it directly), not validated at write time the way every
-  # OTHER @amux-name write site is via bin/amux's reject_bad_name — this hook
-  # is a fourth write site with no gate of its own. A tab shifts `amux
-  # status`'s tab-delimited switcher rows; a newline splits one pane's line
-  # into two — either way a selectable row loses its session/window key
-  # fields and a click runs `switch-client -t ""` silently, the exact
-  # corruption reject_bad_name's own comment documents. Unlike
-  # reject_bad_name (a loud exit 2, fine for an interactive command), this
-  # hook runs on every PostToolUse and Claude blocks on it exiting, so a bad
-  # value must degrade to the built-in default instead of breaking the hook.
+  # AMUX_AGENT_NAME is process env from whatever harness invoked us — just as
+  # uncontrolled as @amux-name-default (a human can export anything), so it
+  # gets the identical tab/newline rejection before it is trusted.
   # ANSI-C $'\t'/$'\n', NOT "$(printf '\n')": command substitution strips ALL
   # trailing newlines, so that form collapses to the empty string and the
   # newline arm would then match (and reject) every label — the same hazard
   # bin/amux's reject_bad_name comment warns about.
-  case "$label" in *$'\t'*|*$'\n'*) label="claude" ;; esac
+  label="${AMUX_AGENT_NAME:-}"
+  case "$label" in *$'\t'*|*$'\n'*) label="" ;; esac
+  if [ -z "$label" ]; then
+    label="$(tmux -S "$sock" show-options -gqv @amux-name-default 2>/dev/null || true)"
+    # @amux-name-default is user-controlled tmux state (a human can `tmux
+    # set-option -g` it directly), not validated at write time the way every
+    # OTHER @amux-name write site is via bin/amux's reject_bad_name — this hook
+    # is a fourth write site with no gate of its own. A tab shifts `amux
+    # status`'s tab-delimited switcher rows; a newline splits one pane's line
+    # into two — either way a selectable row loses its session/window key
+    # fields and a click runs `switch-client -t ""` silently, the exact
+    # corruption reject_bad_name's own comment documents. Unlike
+    # reject_bad_name (a loud exit 2, fine for an interactive command), this
+    # hook runs on every PostToolUse and Claude blocks on it exiting, so a bad
+    # value must degrade to the built-in default instead of breaking the hook.
+    case "$label" in *$'\t'*|*$'\n'*) label="claude" ;; esac
+  fi
   [ -n "$label" ] || label="claude"
   tmux -S "$sock" set-option -p -t "$TMUX_PANE" @amux-name "$label" 2>/dev/null || true
 fi
 
-# Ping if an off-screen agent just became blocked (needs your input). If the
-# window is on screen the pane is visible, so no ping.
-if [ "$state" = blocked ]; then
+# Ping if an off-screen agent just became blocked (needs your input) or errored
+# (will not progress without you — for opencode the usual cause is a provider
+# it cannot reach, retrying forever). If the window is on screen the pane is
+# visible, so no ping. `done` deliberately never notifies: it fires every turn
+# and would be noise.
+msg=""
+case "$state" in
+  blocked) msg="needs your input" ;;
+  error)   msg="hit an error" ;;
+esac
+if [ -n "$msg" ]; then
   active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
   if [ "$active" != "1" ]; then
     wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
-    AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "needs your input" || true
+    AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "$msg" || true
   fi
 fi
 

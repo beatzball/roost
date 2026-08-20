@@ -114,13 +114,27 @@ current window. Both are real agents: each has its own state, its own
 border badge, and is addressable by `%N` — including `wait-done %N`, which
 waits on that one pane whether it came from `spawn` or `split`.
 
+## Reporting your own state
+
+If you are an agent running in an amux pane and your harness has no adapter,
+you can badge yourself:
+
+```sh
+amux state working    # or: blocked, done, error, idle
+```
+
+Report `working` when you start a task, `blocked` when you need the human,
+`error` if you cannot continue, and `done` when you finish. Outside an amux
+pane the command does nothing, so it is always safe to call.
+
 ## The coordination idiom
 
 1. `amux whoami` — confirm you're in amux and learn your address.
 2. `amux status` — find a target, or `amux spawn`/`amux split` a helper.
 3. `amux send TARGET "[from <you>] <task>"`.
 4. `amux wait-done TARGET [timeout]` — pane-precise on a `%N`, aggregates
-   the window's agent panes otherwise.
+   the window's agent panes otherwise. Exits 0 when done; exits 1 on error
+   or timeout — check the message to know which.
 5. `amux read TARGET` — collect the result.
 
 Send **one** prompt at a time, then wait — don't fire a second before the first

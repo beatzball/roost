@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # amux-status — one-line summary of agent states for the amux status bar.
 # Rolls every agent pane across the amux server up to badged counts:
-#   🛑3 blocked  ⏳1 working  ✅4 done  💤2 idle
+#   💥1 error  🛑3 blocked  ⏳1 working  ✅4 done  💤2 idle
 # Panes never stamped by a hook (plain shells, log tails) are skipped, not
-# counted as idle. Invoked from status-right on the normal status tick; five
-# tmux calls (four glyph reads + one pane list) — see the separator note below
+# counted as idle. Invoked from status-right on the normal status tick; six
+# tmux calls (five glyph reads + one pane list) — see the separator note below
 # for why the glyph reads cannot be collapsed into one across tmux versions.
 #
 # The glyphs are read back off global config rather than hardcoded here, so
@@ -25,13 +25,13 @@ amux_status_tmux() {
   else tmux -L amux "$@"; fi
 }
 
-b=0 w=0 d=0 i=0
+e=0 b=0 w=0 d=0 i=0
 # Glyphs come from config so the rollup, the tab badge, and the switcher all
 # derive from one source. Hardcoded values are last-resort fallbacks only.
-# One call, not four: this runs on the 2s status tick, so each extra tmux
+# One call, not five: this runs on the 2s status tick, so each extra tmux
 # invocation is a fork+roundtrip every 2 seconds on a live bar.
 #
-# One value per call, deliberately. Reading all four in a single
+# One value per call, deliberately. Reading all five in a single
 # display-message and splitting on an in-band separator does NOT survive the
 # supported tmux range: glyphs are USER-CONFIGURABLE so no printable separator
 # is safe, and a control byte is version-dependent — `#{a:N}` for N<32 is
@@ -41,13 +41,15 @@ b=0 w=0 d=0 i=0
 # the floor). `show-options -gqv` prints one raw value with no quoting and no
 # escaping on every version, which is the only thing that holds.
 #
-# This costs four forks per status tick instead of one. That is the price of
+# This costs five forks per status tick instead of one. That is the price of
 # working on tmux 3.4; see @amux-tab-badge in tmux/amux.conf for the same read
 # done in-process by the format engine, where it is free.
+ge="$(amux_status_tmux show-options -gqv @amux-glyph-error   2>/dev/null)"
 gb="$(amux_status_tmux show-options -gqv @amux-glyph-blocked 2>/dev/null)"
 gw="$(amux_status_tmux show-options -gqv @amux-glyph-working 2>/dev/null)"
 gd="$(amux_status_tmux show-options -gqv @amux-glyph-done    2>/dev/null)"
 gi="$(amux_status_tmux show-options -gqv @amux-glyph-idle    2>/dev/null)"
+[ -n "$ge" ] || ge="💥"
 [ -n "$gb" ] || gb="🛑"
 [ -n "$gw" ] || gw="⏳"
 [ -n "$gd" ] || gd="✅"
@@ -58,6 +60,7 @@ gi="$(amux_status_tmux show-options -gqv @amux-glyph-idle    2>/dev/null)"
 # entirely. The rollup is therefore a count of agents rather than of tabs.
 while IFS= read -r st; do
   case "$st" in
+    error)   e=$((e+1)) ;;
     blocked) b=$((b+1)) ;;
     working) w=$((w+1)) ;;
     done)    d=$((d+1)) ;;
@@ -74,6 +77,7 @@ done < <(amux_status_tmux list-panes -a -F '#{@agent_state}' 2>/dev/null)
 # of characters — the outer gap has to beat the inner gap for each badge to read
 # as a unit. The trailing pair also separates the counts from the session name.
 out=""
+[ "$e" -gt 0 ] && out+="${ge} ${e}  "
 [ "$b" -gt 0 ] && out+="${gb} ${b}  "
 [ "$w" -gt 0 ] && out+="${gw} ${w}  "
 [ "$d" -gt 0 ] && out+="${gd} ${d}  "

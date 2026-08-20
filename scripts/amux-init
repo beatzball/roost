@@ -34,7 +34,7 @@ gset="$(ask 'Glyph set? emoji/orbs/ascii/nerd [emoji]')"; gset="${gset:-emoji}"
 # set -f: the ascii glyphs ([!] [~] [+]) are glob patterns; disable pathname
 # expansion around the word-split so they stay literal.
 set -f; set -- $(amux_glyphset "$gset"); set +f
-gb="$1" gw="$2" gd="$3" gi="$4"
+gerr="$1" gb="$2" gw="$3" gd="$4" gi="$5"
 
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/amux"
 mkdir -p "$cfg"
@@ -52,6 +52,7 @@ target="$cfg/amux.conf"
   echo "set -g @amux-color-active-bg \"$active_bg\""
   echo "set -g @amux-color-active-fg \"$active_fg\""
   echo "set -g @amux-color-idle-fg   \"$idle_fg\""
+  echo "set -g @amux-glyph-error   \"$gerr\""
   echo "set -g @amux-glyph-blocked \"$gb\""
   echo "set -g @amux-glyph-working \"$gw\""
   echo "set -g @amux-glyph-done    \"$gd\""
