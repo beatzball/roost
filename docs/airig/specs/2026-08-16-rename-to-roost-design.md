@@ -262,10 +262,19 @@ server is still reading it.
 
 ### Grep gate allowlist
 
-After the transition completes, `grep -ri amux bin scripts tmux tests skills`
-must return nothing. **During** the transition it legitimately returns the
-frozen `amux` half. The gate therefore runs in two modes, and the strict mode
-turns on at Phase 4.
+`grep -ri amux bin scripts tmux tests skills` must eventually return nothing.
+**During** the transition it legitimately returns the frozen `amux` half. The
+gate therefore runs in three modes:
+
+| Mode | From | Allows |
+|---|---|---|
+| off | Phase 1 | the whole frozen `amux` half |
+| shim-only | Phase 4 | `scripts/amux-agent-state` and `bin/amux` — the two shims, and nothing else |
+| strict | Phase 5 | nothing |
+
+Strict mode cannot turn on at Phase 4, because the shims contain the old name
+by design. Conflating "the old half is gone" with "the old name is gone" is
+what the middle mode exists to prevent.
 
 ## Sequencing — resolved
 
@@ -309,6 +318,76 @@ wrong server. `roost doctor` must check the new path. Verify the install status
 again at execution time rather than trusting this paragraph — it records one
 machine on one day.
 
+## Compatibility shims
+
+These are **two separate decisions**, not one. The original "should `bin/amux`
+linger as a stub?" question was scoped to the less important file.
+
+### `scripts/amux-agent-state` — a forwarder, and it is not optional
+
+`~/.claude/settings.json` references this script by **absolute path, four
+times** — one per hook, verified on this machine:
+
+| hook | argument |
+|---|---|
+| `UserPromptSubmit` | `working` |
+| `Notification` | `blocked` |
+| `PostToolUse` | `working` |
+| `Stop` | `done` |
+
+That file lives outside the repo. **No rename can update it.** Rename or delete
+the script and every running agent fails on its next tool call.
+
+So `scripts/amux-agent-state` stays at its old path as a forwarder:
+
+```sh
+exec "$(dirname "$0")/roost-agent-state" "$@"
+```
+
+This is the difference between a rename and an outage. A `bin/` stub does
+nothing for it.
+
+**The forwarder must be silent.** `PostToolUse` fires on every tool call and
+Claude blocks on the script exiting; the existing comment requires the hot path
+be "ONE read, then bail". A per-invocation deprecation line on stderr would run
+hundreds of times a session against a budget the file is explicitly written to
+protect. The self-closing signal belongs in `doctor`, which runs once and on
+demand — see below.
+
+### `bin/amux` — a stub, but convenience only
+
+`amux` resolves here to a **regular file inside the repo's own `bin/`**
+(install option A — that directory is on `PATH`, it is not a symlink into
+`/usr/local/bin`). So after the rename, `PATH` already points at the right
+directory and `roost` resolves immediately with no stub at all.
+
+A stub therefore buys only muscle memory, shell history, aliases, and any agent
+still holding an old `SKILL.md`. Real, but bounded. Ship it as a courtesy; it
+may print its deprecation freely, since it is interactive and not on a hot path.
+
+### Both shims are self-closing
+
+A silently forwarding shim is **worse than none** — the migration never
+completes, both names are carried indefinitely, and nothing signals who is
+still on the old path.
+
+`roost doctor` gains a check that greps `~/.claude/settings.json` for the old
+`amux-agent-state` path and warns, naming the exact fix. Both shims are deleted
+in a later release once `doctor` stops firing. That check is what makes the
+deletion decidable instead of a guess.
+
+### Keep the dangling-symlink check — it is not OpenCode-specific
+
+PR #8 added a `doctor` branch for a symlink that is present but whose target is
+gone (`[ -L "$p" ] && [ ! -e "$p" ]`), because renaming a file that users have
+symlinked into another program's config directory breaks **silently at the far
+end**.
+
+That is precisely the failure a rename causes, and the pattern generalises past
+OpenCode. The `roost` half keeps it, and the same shape covers the
+`settings.json` check above. Do not treat it as adapter-specific detail to be
+tidied away.
+
 ## Rollout phases
 
 | Phase | Work | Exit criteria |
@@ -317,7 +396,8 @@ machine on one day.
 | 1 | Add the `roost` half alongside the frozen `amux` half, in a worktree | `tests/run.sh` green; both halves present |
 | 2 | Move `docs/superpowers/` → `docs/airig/`; rename `skills/amux/` → `skills/roost/` | Links resolve |
 | 3 | Add `roost` hooks to `settings.json` alongside the `amux` ones; start a `-L roost` server; run new work there | New agents badge correctly on `roost`; old agents still badge on `amux` |
-| 4 | Old `amux` session drains and is killed. Delete the `amux` half, remove the `amux` hooks, rename the GitHub repo | Strict grep gate passes; human-eye batch passes |
+| 4 | Old `amux` session drains and is killed. Delete the `amux` half, **keeping the two shims**. Rename the GitHub repo | Shim-only grep gate passes; human-eye batch passes |
+| 5 | Later release. Delete both shims; drop the `doctor` migration check | `doctor` has stopped firing for real users; strict grep gate passes |
 
 Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 
@@ -337,12 +417,11 @@ Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 
 ## Open questions
 
-One left. Two are now resolved.
+None blocking. All three are resolved.
 
 1. ~~Does `bin/roost` keep a `migrate-state` equivalent?~~ **Resolved: no.**
 2. ~~Does the `roost` half drop the `@agent_glyph` cleanup?~~ **Resolved: yes —
-   and so does the cleanup for `@agent_state` and `@agent_since`.** Both
-   questions were the same question, and Decision 1 (own socket) answers it.
-   See "The migrate path is dead weight in `roost`".
-3. **Open.** Should Phase 4 leave a stub `bin/amux` that prints "renamed to
-   roost" for a release or two, rather than deleting outright?
+   but the `@agent_state` unset stays.** See "The two `set -gu` lines are NOT
+   the same kind of line".
+3. ~~Should Phase 4 leave a `bin/amux` stub?~~ **Resolved, and it was scoped to
+   the wrong file.** See "Compatibility shims" below.
