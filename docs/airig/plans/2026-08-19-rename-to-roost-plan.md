@@ -501,8 +501,10 @@ Then `bash tests/run.sh` → all PASS, exit 0.
 
 ### Task 15 — migrate the test suite to the `roost` half
 
-**Files:** all of `tests/**/*.sh` except `tests/test-migrate-state.sh` — note
-the `**`, this must reach `tests/live/` too; `tests/lib.sh`
+**Files:** **every file under `tests/` that contains `amux`, whatever its
+extension**, except `tests/test-migrate-state.sh`. Derive the list, do not
+assume it: `grep -rl amux tests/`. At the time of writing that is 25 files —
+22 `.sh`, 2 `.py`, 1 `.mjs`.
 **Depends on:** Task 4
 **Runs before:** Task 5. Numbered last only because it was found after the loop
 started — **execute it in dependency order, immediately after Task 4.**
@@ -514,7 +516,7 @@ started — **execute it in dependency order, immediately after Task 4.**
 > references** under `tests/`.
 
 **Do:**
-1. In every `tests/**/*.sh` **except `tests/test-migrate-state.sh`**, repoint:
+1. In every file from that list **except `tests/test-migrate-state.sh`**, repoint:
    `scripts/amux-<x>` → `scripts/roost-<x>`; `tmux/amux.conf` →
    `tmux/roost.conf`; `AMUX_*` → `ROOST_*`; `@amux-*` → `@roost-*`.
 2. In `tests/lib.sh`, rename `AMUX_TEST_SOCK`, `AMUX_TEST_SOCKDIR`,
@@ -532,16 +534,33 @@ what every later task's "all PASS" should mean. The frozen `amux` half becomes
 untested for the remainder of the plan — acceptable, because it is frozen and
 scheduled for deletion, and the two shims are covered by Task 12's own checks.
 
-**Do not miss `tests/live/`.** A `tests/*.sh` glob does not reach it, and it
-holds two files that reference `amux`: `opencode-smoke.sh` (9 references, on
-`main` since PR #8) and `switcher-read-race.sh` (5 references, added by the
-flake fix). An earlier draft of this task scoped itself to `tests/*.sh` and
-silently skipped both.
+**Scope by directory contents, not by extension or glob.** This task's scope
+has been wrong twice, the same way both times:
+
+- First draft: `tests/*.sh` — missed all of `tests/live/`, including
+  `opencode-smoke.sh` (9 references, on `main` since PR #8).
+- Second draft: `tests/**/*.sh` — reached `tests/live/` but missed every
+  non-shell file.
+
+Three non-shell files reference the `amux` half and all three break at Task 13:
+
+| file | what breaks |
+|---|---|
+| `tests/test-contrast.py` | opens `scripts/amux-themes.sh` by hardcoded path (line 28) and calls the `amux_theme_names` / `amux_theme` shell functions (lines 29, 32). **It is a CI step** — `.github/workflows/ci.yml:22` |
+| `tests/opencode-plugin-harness.mjs` | imports `adapters/opencode/amux.js`, names its recording shim `amux`, asserts on `AMUX_AGENT_NAME` |
+| `tests/fixtures/swallow-all-enters.py` | comment referencing `@amux-send-retries` |
+
+`test-contrast.py` is the dangerous one: it is green today, breaks only when the
+`amux` half is deleted, and fails in CI rather than in the suite the tasks
+gate on.
 
 **Check:** `bash tests/run.sh` → all PASS, exit 0.
+`python3 tests/test-contrast.py` → passes (this is the CI step, and the only
+check that exercises the themes path).
 `grep -rl "amux" tests/` → lists **only** `tests/test-migrate-state.sh` and
-`tests/test-reload.sh`. Note `grep -r` recurses, so this check would have
-caught the `tests/live/` omission even though the task text did not.
+`tests/test-reload.sh`. This grep is extension-agnostic and recursive, so it
+is the authority on scope — if it lists anything else, the task is incomplete
+regardless of what the Files line says.
 `grep -c "@agent_state" tests/test-agent-state.sh` → non-zero (must survive).
 
 **Commit:** `Migrate the test suite to the roost half`
