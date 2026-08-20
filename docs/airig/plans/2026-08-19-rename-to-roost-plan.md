@@ -359,7 +359,7 @@ Then `bash tests/run.sh` → all PASS, exit 0.
 
 ---
 
-### Task 12 — the two shims
+### Task 12 — the three shims
 
 **Files:** replace `scripts/amux-agent-state` with a symlink; rewrite
 `bin/amux` as a stub
@@ -375,18 +375,24 @@ drained.** Do not start it unattended. Ask, and wait.
 2. Replace `bin/amux` with a small stub that prints a one-line deprecation to
    stderr ("amux has been renamed to roost; run `roost` instead") and then
    `exec`s `roost` with the same arguments, so it still works.
-3. The symlink must print **nothing**. `PostToolUse` fires on every tool call
+3. `rm adapters/opencode/amux.js && ln -s roost.js adapters/opencode/amux.js`
+   — a **relative** symlink, the third shim. The author's
+   `~/.config/opencode/plugin/amux.js` points at this file; deleting it would
+   dangle that link and OpenCode agents would stop badging **silently**.
+4. Both symlinks must print **nothing**. `PostToolUse` fires on every tool call
    and Claude Code hook stderr can surface into the agent transcript — a line
    per call is context noise injected into the very agent being badged. The
    `bin/amux` stub may print freely; it is interactive and not on a hot path.
 
 **Check:** `readlink scripts/amux-agent-state` → `roost-agent-state`.
+`readlink adapters/opencode/amux.js` → `roost.js`.
+`node --check adapters/opencode/amux.js` → clean (resolves through the link).
 `scripts/amux-agent-state working` run outside tmux → exits 0, prints nothing
 to stdout or stderr (`out=$(scripts/amux-agent-state working 2>&1); [ -z "$out" ]`).
 `bin/amux --help 2>/dev/null` → same output as `bin/roost --help`.
 Then `bash tests/run.sh` → all PASS, exit 0.
 
-**Commit:** `Add the amux-agent-state symlink and the bin/amux stub`
+**Commit:** `Add the three compatibility shims`
 
 ---
 
@@ -396,27 +402,28 @@ Then `bash tests/run.sh` → all PASS, exit 0.
 `scripts/amux-migrate-state`, `scripts/amux-next-blocked`,
 `scripts/amux-notify`, `scripts/amux-settings`, `scripts/amux-status`,
 `scripts/amux-switch`, `scripts/amux-themes.sh`, `scripts/lib/amux-config.sh`,
-`tmux/amux.conf`, `adapters/opencode/amux.js`,
-`tests/test-migrate-state.sh`; edit `tests/test-reload.sh`
+`tmux/amux.conf`, `tests/test-migrate-state.sh`; edit `tests/test-reload.sh`
 **Depends on:** Task 12
 
 **Do:**
-1. `git rm` each file listed. **Keep** `scripts/amux-agent-state` (the symlink)
-   and `bin/amux` (the stub) — those are the two shims and they survive to
-   Phase 5.
+1. `git rm` each file listed. **Keep all three shims** — they survive to
+   Phase 5: `scripts/amux-agent-state` (symlink), `bin/amux` (stub), and
+   `adapters/opencode/amux.js` (symlink). Do **not** delete the adapter: the
+   author's `~/.config/opencode/plugin/` links to it.
 2. Remove the migration assertions from `tests/test-reload.sh` (lines 13–15 and
    22–68 in the pre-rename file) — they test a path that no longer exists.
 3. Retarget any remaining test that sources `tmux/amux.conf` to
    `tmux/roost.conf`.
 
 **Check:** the **shim-only grep gate**:
-`grep -rl "amux" bin scripts tmux tests skills adapters` → lists **only**
-`bin/amux` and `scripts/amux-agent-state`, nothing else. Strict mode does not
+`grep -rl "amux" bin scripts tmux tests skills adapters` → lists **only** the
+three shims: `bin/amux`, `scripts/amux-agent-state`,
+`adapters/opencode/amux.js`. Nothing else. Strict mode does not
 apply until Phase 5, because the shims contain the old name by design.
 Then `bash tests/run.sh` → all PASS, exit 0, and
 `python3 tests/test-contrast.py` → passes.
 
-**Commit:** `Delete the frozen amux half, keeping the two shims`
+**Commit:** `Delete the frozen amux half, keeping the three shims`
 
 ---
 
@@ -452,5 +459,5 @@ If a deferred check fails, that is a new task, not a rewind.
 - Renaming the GitHub repo to `beatzball/roost`.
 - Killing the old `-L amux` server.
 - Registering `roosting.dev`.
-- Phase 5: deleting the two shims and the `doctor` migration check, once
+- Phase 5: deleting the three shims and the `doctor` migration checks, once
   `roost doctor` reports clean on every machine the author uses.

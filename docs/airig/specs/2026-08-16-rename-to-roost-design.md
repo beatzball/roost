@@ -276,7 +276,7 @@ gate therefore runs in three modes:
 | Mode | From | Allows |
 |---|---|---|
 | off | Phase 1 | the whole frozen `amux` half |
-| shim-only | Phase 4 | `scripts/amux-agent-state` and `bin/amux` — the two shims, and nothing else |
+| shim-only | Phase 4 | `scripts/amux-agent-state`, `bin/amux`, `adapters/opencode/amux.js` — the three shims, and nothing else |
 | strict | Phase 5 | nothing |
 
 Strict mode cannot turn on at Phase 4, because the shims contain the old name
@@ -308,14 +308,26 @@ The adapter is designed to be reached by a user-made symlink outside this repo:
 ~/.config/opencode/plugin/amux.js  ->  <checkout>/adapters/opencode/amux.js
 ```
 
-**On this machine that symlink does not exist** — `~/.config/opencode/plugin/`
-is absent, though `opencode` itself is installed. So renaming
-`adapters/opencode/amux.js` breaks nothing today. Treat this as a packaging
-concern, not a live hazard.
+**This symlink now exists on this machine.** An earlier revision of this spec
+recorded it as absent, and that was true when written — it was installed later
+the same day, on `amux doctor`'s recommendation, while this spec was being
+reviewed. The spec's own instruction to "verify the install status at execution
+time rather than trusting this paragraph" was vindicated within hours.
 
-The one live hazard remains `scripts/amux-agent-state`, wired into
-`~/.claude/settings.json` by absolute path and called by every running agent on
-every tool call.
+So there are **two** live integration points, not one:
+
+| path | referenced from | breaks how |
+|---|---|---|
+| `scripts/amux-agent-state` | `~/.claude/settings.json`, absolute, ×4 | every agent, next tool call |
+| `adapters/opencode/amux.js` | `~/.config/opencode/plugin/amux.js` symlink | OpenCode agents stop badging, silently |
+
+Both are outside the repo and neither can be updated by a rename. Both
+therefore need a shim, and `adapters/opencode/amux.js` becomes the **third
+shim** — a symlink to `roost.js`, kept through Phase 4 and deleted at Phase 5
+with the other two.
+
+This is exactly the dangling-symlink failure the `doctor` branch below was
+written to catch, which is why that branch is kept rather than tidied away.
 
 The adapter still needs the coexistence design for anyone who *has* installed
 it: `roost.js` ships alongside `amux.js` under a different filename, each
@@ -482,7 +494,7 @@ A stub therefore buys only muscle memory, shell history, aliases, and any agent
 still holding an old `SKILL.md`. Real, but bounded. Ship it as a courtesy; it
 may print its deprecation freely, since it is interactive and not on a hot path.
 
-### Both shims are self-closing
+### All three shims are self-closing
 
 A silently forwarding shim is **worse than none** — the migration never
 completes, both names are carried indefinitely, and nothing signals who is
@@ -531,8 +543,8 @@ tidied away.
 | 1 | Add the `roost` half alongside the frozen `amux` half, in a worktree | `tests/run.sh` green; both halves present |
 | 2 | Move `docs/superpowers/` → `docs/airig/`; rename `skills/amux/` → `skills/roost/` | Links resolve |
 | 3 | Add `roost` hooks to `settings.json` alongside the `amux` ones; start a `-L roost` server; run new work there | New agents badge correctly on `roost`; old agents still badge on `amux` |
-| 4 | Old `amux` session drains and is killed. Delete the `amux` half, **keeping the two shims**. Rename the GitHub repo | Shim-only grep gate passes; human-eye batch passes |
-| 5 | Later release. Delete both shims; drop the `doctor` migration check | `roost doctor` reports clean on **every machine the author uses** — see below; strict grep gate passes |
+| 4 | Old `amux` session drains and is killed. Delete the `amux` half, **keeping the three shims**. Rename the GitHub repo | Shim-only grep gate passes; human-eye batch passes |
+| 5 | Later release. Delete all three shims; drop the `doctor` migration checks | `roost doctor` reports clean on **every machine the author uses** — see below; strict grep gate passes |
 
 Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 
