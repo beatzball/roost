@@ -18,6 +18,21 @@ Unattended: no
   `tests/test-*.sh` and sums PASS/FAIL. A non-zero exit means a test file died
   mid-run, which the counts alone do not reveal — treat it as failure.
 - **Extra CI step:** `python3 tests/test-contrast.py`.
+- **Known pre-existing flake — do not "fix" it as part of this plan.**
+  `tests/test-switcher.sh` → `an unnamed pane's switcher row falls back to the
+  command` fails roughly **1 run in 30**. Measured on `7bd1ed4` before any
+  rename work: 1 failure in ~31 runs in the worktree, 0 in 25 on the primary
+  checkout — the same code, so it is timing, not location.
+
+  The race is at `tests/test-switcher.sh:115-117`. The switcher reads
+  `pane_current_command` when it builds its rows; the test then reads
+  `pane_current_command` **again**, afterwards, to compute the expected value.
+  Two reads of a live value at different moments, compared as if they were one.
+
+  **Every task's Check says "all PASS".** If exactly this assertion fails and
+  nothing else, re-run the suite before treating it as a real failure. If it
+  fails twice in a row, it is real — investigate. Any other failure is real on
+  the first occurrence.
 - **Tests must use isolated sockets.** Every test drives `tmux -S <tmpsock>`.
   **Never** touch the live `-L amux` server. Do not run `tmux kill-server`
   without `-S`/`-L` naming a test socket.
