@@ -11,6 +11,23 @@
 #   usage: amux-agent-state <working|blocked|error|done|idle>
 set -euo pipefail
 
+# Resolve this script's own directory even when invoked via a symlink — same
+# readlink loop as bin/amux. This hook is wired into ~/.claude/settings.json by
+# ABSOLUTE path, and that path can perfectly well be a symlink (an alias on
+# PATH, a compatibility shim left behind by a rename). Through one, $0 is the
+# symlink, so `dirname "$0"` names the WRONG directory and the amux-notify call
+# below would miss its sibling — silently, since that call carries `|| true`
+# and must keep carrying it. Resolve once here, at the top, where it costs
+# nothing: this is pure shell, no tmux round trip, so the PostToolUse hot path
+# (one tmux read, then bail) is unaffected.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
 state="${1:-idle}"
 
 # Must be inside tmux, in a known pane.
@@ -120,7 +137,12 @@ if [ -n "$msg" ]; then
   active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
   if [ "$active" != "1" ]; then
     wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
-    AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "$msg" || true
+    # $SELF_DIR, not `dirname "$0"`: through a symlink $0 is the symlink's own
+    # path and the sibling lookup would miss. The `|| true` is deliberate and
+    # must stay — a dead tmux server (agent windows are killable) has to
+    # degrade, never break Claude — which is exactly why the miss would be
+    # invisible, and why the path has to be right before it is swallowed.
+    AMUX_NOTIFY_SOCK="$sock" "$SELF_DIR/amux-notify" "amux · ${wname}" "$msg" || true
   fi
 fi
 

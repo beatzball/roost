@@ -6,9 +6,9 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # amux-agent-state only acts on a socket whose path ends in /amux, so build one
 # directly rather than via amux_test_server (whose socket lacks that suffix).
 sdir="$(mktemp -d /tmp/amx.XXXX)"; s="$sdir/amux"
-# deadsdir/ccdir are unset until the blocks below create them; the ${:-}
-# keeps this trap safe to install (and to fire) before that point.
-trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir" "${deadsdir:-}" "${ccdir:-}"' EXIT
+# deadsdir/ccdir/aliasdir are unset until the blocks below create them; the
+# ${:-} keeps this trap safe to install (and to fire) before that point.
+trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir" "${deadsdir:-}" "${ccdir:-}" "${aliasdir:-}"' EXIT
 # -x/-y: a detached server with no attached client defaults to an 80x24
 # window. This file accumulates ten split-window panes across its assertions
 # (sib, named, configured, zero, tabname, nlname, envname, envtab, namedenv,
@@ -191,6 +191,48 @@ tmux -S "$s" set-option -g @amux-notify-cmd "touch $notif3"
 env TMUX="$s,0,0" TMUX_PANE="$errp" "$HERE/scripts/amux-agent-state" done
 [ -f "$notif3" ] && assert_eq fired "" "done does not notify" \
   || assert_eq ok ok "done does not notify"
+
+# reached through a symlink, the hook must still find its REAL sibling. This
+# script is wired into ~/.claude/settings.json by absolute path, and that path
+# can be a symlink (an alias on PATH, a compatibility shim left behind by a
+# rename). $0 is then the SYMLINK, so a plain `$(dirname "$0")/amux-notify`
+# resolves the sibling next to the symlink, misses, and — because the call
+# deliberately carries `|| true` so a dead tmux server can never break Claude —
+# fails silently as far as the caller can tell: the hook still exits 0, so
+# desktop notifications just stop, the only trace a stderr line the harness
+# that invoked the hook discards.
+# Pin it: invoked via an alias in an unrelated directory, the notify still fires.
+aliasdir="$(mktemp -d /tmp/amx.XXXX)"
+ln -s "$HERE/scripts/amux-agent-state" "$aliasdir/agent-state-alias"
+notif4="$sdir/notified-via-symlink"
+tmux -S "$s" set-option -g @amux-notify-cmd "touch $notif4"
+# A fresh pane, because the notify only fires on a real transition INTO
+# blocked and every pane above already carries a state. It gets its OWN window
+# rather than an eleventh split of $pane: that window is already carrying the
+# ten splits the header comment lists, and one more overflows even -y 2000
+# ("no space for new pane"). `new-window -d` leaves window 2 current, so the
+# new window is inactive — which is what the notify path requires.
+aliasp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+env TMUX="$s,0,0" TMUX_PANE="$aliasp" "$aliasdir/agent-state-alias" working
+env TMUX="$s,0,0" TMUX_PANE="$aliasp" "$aliasdir/agent-state-alias" blocked
+[ -f "$notif4" ] && assert_eq ok ok "invoked through a symlink, the hook still finds the real amux-notify" \
+  || assert_eq "" fired "invoked through a symlink, the hook still finds the real amux-notify"
+
+# and through a CHAIN whose first hop is relative. `readlink` hands back the
+# target verbatim, so a relative one is meaningless until it is re-anchored to
+# the link's own directory — the `[[ "$SOURCE" != /* ]]` arm of the resolver
+# loop, which the absolute link above never reaches. Link farms (Homebrew,
+# stow) and an in-place rename shim both produce exactly this shape, and
+# getting it wrong lands SELF_DIR on the alias directory again.
+ln -s agent-state-alias "$aliasdir/agent-state-hop"
+notif5="$sdir/notified-via-symlink-chain"
+tmux -S "$s" set-option -g @amux-notify-cmd "touch $notif5"
+hopp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+env TMUX="$s,0,0" TMUX_PANE="$hopp" "$aliasdir/agent-state-hop" working
+env TMUX="$s,0,0" TMUX_PANE="$hopp" "$aliasdir/agent-state-hop" blocked
+[ -f "$notif5" ] && assert_eq ok ok "a relative symlink hop is re-anchored to the link's own directory" \
+  || assert_eq "" fired "a relative symlink hop is re-anchored to the link's own directory"
+# aliasdir cleanup is handled by the top-of-file EXIT trap.
 
 # never-break-Claude: a dead tmux server must degrade, not abort the hook.
 deadsdir="$(mktemp -d /tmp/amx.XXXX)"; ds="$deadsdir/amux"
