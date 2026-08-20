@@ -25,8 +25,10 @@ Unattended: no
   Live agents are running against it; their Claude hooks call
   `scripts/amux-agent-state` there by absolute path on every tool call.
 - **Do not `git stash`.** The stash stack is shared across worktrees.
-- **Do not push, merge, open a PR, or rename the GitHub repo.** Local commits
-  only. The human handles anything that leaves the working tree.
+- **Do not push, merge, open a PR, or create/rename any GitHub repository.**
+  Local commits only. The human handles anything that leaves the working tree.
+  Note `beatzball/amux` is **private** as of 2026-08-19 and `beatzball/roost`
+  does not exist yet — a stray `git push` will fail or go to the wrong place.
 - **Leak check before every commit:** `grep -rn "/Users/[a-z]" <files you
   touched>` must return nothing. Repo history was rewritten once to strip home
   paths; do not reintroduce them.
@@ -340,12 +342,16 @@ deletion is a guess and the shims live forever.
    `docs/airig/` rather than replacing it. `specs/` and `plans/` already exist
    there; move the historical files in beside them.
 2. `git mv skills/amux skills/roost`, and rename inside `SKILL.md`.
-3. Update `README.md` throughout: `amux` → `roost`, the install snippet, the
-   `npx skills add beatzball/amux --skill amux` line → `beatzball/roost --skill
-   roost`, and the layout section listing `scripts/*`.
-4. Remove the "Upgrading a running server" paragraph — it documents
+3. Update `README.md` throughout: `amux` → `roost`, the install snippet, and
+   the layout section listing `scripts/*`.
+4. **Required, not cosmetic:** change `npx skills add beatzball/amux --skill
+   amux` → `npx skills add beatzball/roost --skill roost`. There is no GitHub
+   redirect — `beatzball/amux` is private and 404s anonymously **today**, so
+   the old command is already broken for everyone. This README edit is the
+   only mitigation that exists, and it only reaches people who re-read it.
+5. Remove the "Upgrading a running server" paragraph — it documents
    `migrate-state`, which the `roost` half no longer has.
-5. Leave the historical spec and plan files' *content* alone. They are a record
+6. Leave the historical spec and plan files' *content* alone. They are a record
    of what was true then; renaming inside them would falsify history. Only
    their location changes.
 
@@ -353,6 +359,7 @@ deletion is a guess and the shims live forever.
 `ls docs/airig/specs docs/airig/plans` → both populated.
 `grep -rn "docs/superpowers" . --exclude-dir=.git` → returns nothing.
 `grep -c "amux" README.md` → `0`.
+`grep -c "beatzball/roost" README.md` → non-zero.
 Then `bash tests/run.sh` → all PASS, exit 0.
 
 **Commit:** `Move docs to docs/airig, rename the skill, update the README`
@@ -427,6 +434,44 @@ Then `bash tests/run.sh` → all PASS, exit 0, and
 
 ---
 
+### Task 14 — archive the PR history before cutover
+
+**Files:** create `docs/airig/history/pull-requests.md`
+**Depends on:** nothing — **run this first**
+
+> **Ordering note:** this is numbered last but has no dependencies, and it is
+> the only task guarding against *irreversible* loss. `beatzball/amux` is
+> private and its deletion is an open decision; if it is deleted before this
+> runs, `#1`–`#8` are gone permanently. Everything else in this plan is
+> reproducible from the working tree. Run it whenever convenient, ideally
+> first.
+
+**Do:**
+1. `gh pr list --state all --limit 100 --json number,title,body,mergedAt,author`
+   against `beatzball/amux`.
+2. Write one Markdown section per PR, newest first: number, title, merge date,
+   then the body verbatim in a fenced block.
+3. Head the file with a note that these PRs live only in the archived
+   `beatzball/amux` repository and do not exist in `beatzball/roost`.
+4. **Scrub before committing.** PR bodies were written before the history
+   rewrite and may contain absolute home paths. Run the leak check over the new
+   file specifically and replace any hit with `/absolute/path/to/amux`.
+
+**Why:** `beatzball/roost` is a **new repository**, not a rename. Renaming
+would have kept the same repo — same objects, same SHAs, same PRs — which is
+precisely why it was rejected: pre-rewrite objects containing the maintainer's
+home path were still being served after the force-push, and a redirect would
+have kept them reachable. The cost of a fresh repo is that `#1`–`#8` (~28.7 KB
+of bodies, 0 issues) vanish unless captured here first.
+
+**Check:** `grep -c '^## PR #' docs/airig/history/pull-requests.md` → `8`.
+`grep -n "/Users/[a-z]" docs/airig/history/pull-requests.md` → returns nothing.
+Then `bash tests/run.sh` → all PASS, exit 0.
+
+**Commit:** `Archive PR #1-#8 bodies before the new-repo cutover`
+
+---
+
 ## Deferred checks — one pass at the end
 
 Run these together, once, after Task 13. Do not block any task on them.
@@ -456,7 +501,12 @@ If a deferred check fails, that is a new task, not a rewind.
 ## Out of scope — the human does these
 
 - Updating `~/.claude/settings.json` to the `roost` hook paths.
-- Renaming the GitHub repo to `beatzball/roost`.
+- Creating the `beatzball/roost` repository and pushing to it. Sequenced
+  **after** Task 14, and after the clean history is ready — not "at any point".
+- Repointing `origin` on both the primary checkout and this worktree. There is
+  no redirect to fall back on. Preserve the SSH host alias:
+  `git remote set-url origin git@github.com-beatzball:beatzball/roost.git`
+- Deciding whether to delete the now-private `beatzball/amux`.
 - Killing the old `-L amux` server.
 - Registering `roosting.dev`.
 - Phase 5: deleting the three shims and the `doctor` migration checks, once

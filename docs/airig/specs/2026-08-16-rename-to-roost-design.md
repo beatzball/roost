@@ -51,10 +51,29 @@ Tests must use isolated `-S` sockets and must never touch the live `-L` server.
 2. **`amux` keeps working during the transition**, and is deleted once the last
    `amux` session is drained and closed.
 3. `docs/superpowers/` becomes `docs/airig/`.
-4. The GitHub repo is renamed `beatzball/amux` → `beatzball/roost` (GitHub
-   redirects the old URL, so this is low-risk and can happen at any point).
+4. **A new `beatzball/roost` repository is created and pushed to. The repo is
+   NOT renamed.** `beatzball/amux` went **private** on 2026-08-19 and stays
+   private; whether it is deleted is a later decision.
 
-## Scope — seven namespaces
+   *Superseded:* an earlier revision said the repo would be renamed and that
+   "GitHub redirects the old URL, so this is low-risk and can happen at any
+   point". Both halves were wrong, and the reason matters. **A GitHub rename
+   keeps the same repository** — same objects, same SHAs, same PRs, plus a
+   redirect. Pre-rewrite objects containing the maintainer's home path were
+   still being served after the force-push, so a rename would have purged
+   nothing and the redirect would have kept the leak reachable at the old URL.
+   Going private 404s both (verified anonymously) and freezes forks at 0, which
+   keeps a clean-delete option open instead of letting it expire on the first
+   fork.
+
+   The cutover is therefore **sequenced, not "any point"**: it happens after
+   the clean history is ready to push and after PR archival (Decision 5).
+
+5. **PR history does not carry to a new repository.** `#1`–`#8` (~28.7 KB of
+   bodies, 0 issues) exist only in `beatzball/amux`. If that history is wanted,
+   it is archived into the tree *before* cutover.
+
+## Scope — eight namespaces
 
 A rename here is not one substitution. These are independent, with different
 blast radii.
@@ -68,6 +87,7 @@ blast radii.
 | 5 | tmux options | `@amux-*` (27) | `@roost-*` | per-server, no collision |
 | 6 | Env vars | `AMUX_*` (21) | `ROOST_*` | internal only |
 | 7 | OpenCode adapter | `adapters/opencode/amux.js` | `adapters/opencode/roost.js` | both symlinked, side by side |
+| 8 | **Git remote** | `beatzball/amux` (private) | **new** `beatzball/roost` | a real substitution — **no redirect** |
 
 Plus: `~/.config/amux/amux.conf` → `~/.config/roost/roost.conf`,
 `skills/amux/SKILL.md` → `skills/roost/SKILL.md`, and 21 internal shell
@@ -556,7 +576,9 @@ Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 | A missed `amux` string in the roost half | Grep gate in strict mode at Phase 4 |
 | `roost init` corrupts a live config | It only ever writes to `~/.config/roost/`; the old file is read-only to it |
 | ~~Conflict with OpenCode~~ | Cleared — merged as PR #8 |
-| GitHub rename breaks `npx skills add beatzball/amux` | GitHub redirects; update the README line in Phase 2 anyway |
+| `npx skills add beatzball/amux` hard-fails | **No mitigation available.** There is no redirect and the repo is already private, so anyone with that command in their own notes gets a 404 *today*. Updating the README is required, not "anyway" — and it only helps people who re-read it |
+| PR history `#1`–`#8` lost at cutover | Archive bodies into the tree before pushing to the new repo — `gh pr list --state all --json number,title,body` |
+| Worktree `origin` still points at the old repo after cutover | Repoint explicitly; no redirect will cover it. Preserve the SSH host alias `git@github.com-beatzball:` |
 | Dangling `~/.config/opencode/plugin/amux.js` symlink | Not present on this machine — re-check at execution time. If installed: `roost.js` goes alongside, not over the top |
 | Both OpenCode plugins fire, doubling process spawns per turn | Accepted. Transition-only, one extra `execFile` per state change |
 | Dead `@agent_glyph` cleanup carried into `roost` by reflex | Named as an explicit decision, not a default — see Open Questions |
