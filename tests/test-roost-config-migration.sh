@@ -25,7 +25,11 @@ EOF
 before_sum="$(cksum "$legacy")"
 before_bytes="$(wc -c < "$legacy")"
 
-out="$(HOME="$homedir" XDG_CONFIG_HOME="$cfgdir" "$ROOST_INIT" 2>&1)"
+# The tty guard runs before migration (a scripted, non-interactive caller
+# must clear it the same way any other roost-init invocation does), so pipe
+# empty scripted stdin and set ROOST_INIT_ANSWERS=- like any other
+# non-interactive caller — migration itself still asks no questions.
+out="$(printf '' | HOME="$homedir" XDG_CONFIG_HOME="$cfgdir" ROOST_INIT_ANSWERS=- "$ROOST_INIT" 2>&1)"
 rc=$?
 
 newconf="$cfgdir/roost/roost.conf"
@@ -63,7 +67,7 @@ legacy2="$homedir2/.config/amux/amux.conf"
 printf 'set -g @amux-glyph-idle "zzz"\n' > "$legacy2"
 before2="$(cksum "$legacy2")"
 
-env -u XDG_CONFIG_HOME HOME="$homedir2" "$ROOST_INIT" >/dev/null 2>&1
+printf '' | env -u XDG_CONFIG_HOME HOME="$homedir2" ROOST_INIT_ANSWERS=- "$ROOST_INIT" >/dev/null 2>&1
 newconf2="$homedir2/.config/roost/roost.conf"
 [ -f "$newconf2" ] && assert_eq ok ok "HOME-only fallback: writes new roost.conf" || assert_eq "" exists "HOME-only fallback: writes new roost.conf"
 assert_contains "$(cat "$newconf2" 2>/dev/null)" 'set -g @roost-glyph-idle "zzz"' "HOME-only fallback: translates key and value"
@@ -88,3 +92,22 @@ assert_eq "$existing_after" "$existing_before" "an existing roost.conf is not ov
 assert_eq "$legacy3_after" "$legacy3_before" "legacy amux.conf untouched even when roost.conf already exists"
 
 rm -rf "$cfgdir3"
+
+# --- Case 4: the tty guard precedes migration -> a non-tty call with no ----
+# --- scripted answers must exit non-zero and write NOTHING, even though ----
+# --- migration's own preconditions (legacy present, new file absent) hold. -
+cfgdir4="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$cfgdir4/amux"
+printf 'set -g @amux-notify-backend "auto"\n' > "$cfgdir4/amux/amux.conf"
+
+HOME=/nonexistent XDG_CONFIG_HOME="$cfgdir4" "$ROOST_INIT" </dev/null >/dev/null 2>&1
+rc4=$?
+
+assert_eq "$rc4" "1" "non-tty call with no scripted answers exits non-zero (guard, not migration, runs first)"
+if [ -e "$cfgdir4/roost" ]; then
+  assert_eq "wrote" "no-write" "a failing non-tty call writes no roost.conf, even though legacy exists and the new file is absent"
+else
+  assert_eq ok ok "a failing non-tty call writes no roost.conf, even though legacy exists and the new file is absent"
+fi
+
+rm -rf "$cfgdir4"

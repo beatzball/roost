@@ -5,6 +5,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/roost-themes.sh"
 . "$HERE/lib/roost-config.sh"
 
+# Answers come from stdin. On a non-tty we require ROOST_INIT_ANSWERS=- (tests).
+# This guard must stay ahead of the migration block below: a command that
+# exits non-zero should never have written a file, and amux-init's guard was
+# always the first thing that script did — the rename does not get to add a
+# pre-guard side effect just because migration is new.
+if [ ! -t 0 ] && [ "${ROOST_INIT_ANSWERS:-}" != "-" ]; then
+  echo "roost init: needs a tty (or ROOST_INIT_ANSWERS=- with scripted stdin)"; exit 1
+fi
+
 # Legacy migration: the first time roost init runs, if roost.conf doesn't
 # exist yet but an old amux.conf does, carry its settings across instead of
 # asking the questions again. @amux-* keys become @roost-* (a plain literal
@@ -13,7 +22,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # the first place, so they pass through unchanged. The old file is only ever
 # read, never written, moved, or deleted — a running amux server may still
 # be reading it. An existing roost.conf always wins; migration never
-# overwrites it. No tty is needed for this path.
+# overwrites it. No tty is *inherently* needed for this path (it asks no
+# questions), but it still runs after the guard above like everything else.
 target="$(roost_cfg_path)"
 legacy="${XDG_CONFIG_HOME:-$HOME/.config}/amux/amux.conf"
 if [ ! -f "$target" ] && [ -f "$legacy" ]; then
@@ -23,10 +33,6 @@ if [ ! -f "$target" ] && [ -f "$legacy" ]; then
   exit 0
 fi
 
-# Answers come from stdin. On a non-tty we require ROOST_INIT_ANSWERS=- (tests).
-if [ ! -t 0 ] && [ "${ROOST_INIT_ANSWERS:-}" != "-" ]; then
-  echo "roost init: needs a tty (or ROOST_INIT_ANSWERS=- with scripted stdin)"; exit 1
-fi
 ask() { printf '%s ' "$1" >&2; IFS= read -r REPLY || REPLY=""; printf '%s' "$REPLY"; }
 
 notify="$(ask 'Enable OS notifications? [y/N]')"
