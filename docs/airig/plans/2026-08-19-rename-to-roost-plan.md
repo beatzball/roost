@@ -18,21 +18,27 @@ Unattended: no
   `tests/test-*.sh` and sums PASS/FAIL. A non-zero exit means a test file died
   mid-run, which the counts alone do not reveal — treat it as failure.
 - **Extra CI step:** `python3 tests/test-contrast.py`.
-- **Known pre-existing flake — do not "fix" it as part of this plan.**
-  `tests/test-switcher.sh` → `an unnamed pane's switcher row falls back to the
-  command` fails roughly **1 run in 30**. Measured on `7bd1ed4` before any
-  rename work: 1 failure in ~31 runs in the worktree, 0 in 25 on the primary
-  checkout — the same code, so it is timing, not location.
+- **Suite stability — what to do about a failure.**
+  The original `tests/test-switcher.sh` flake (`an unnamed pane's switcher row
+  falls back to the command`, ~1 run in 30) has been **fixed** on this branch.
+  Its cause was `tests/lib.sh` starting test panes on the developer's login
+  shell, so `pane_current_command` changed under the test; panes are now pinned.
 
-  The race is at `tests/test-switcher.sh:115-117`. The switcher reads
-  `pane_current_command` when it builds its rows; the test then reads
-  `pane_current_command` **again**, afterwards, to compute the expected value.
-  Two reads of a live value at different moments, compared as if they were one.
+  **However**, the Tasks 9–10 implementer reported one full-suite failure it
+  could not reproduce, unconnected to its own files. I could not reproduce it
+  either: **14 consecutive clean runs — 6 on an idle machine, 8 under
+  concurrent agent load (load average ~4.3)**, all `383 passed, 0 failed`.
+  Fourteen runs is weak evidence against a 1-in-30 event, so treat this as
+  unexplained rather than absent.
 
-  **Every task's Check says "all PASS".** If exactly this assertion fails and
-  nothing else, re-run the suite before treating it as a real failure. If it
-  fails twice in a row, it is real — investigate. Any other failure is real on
-  the first occurrence.
+  **The rule:** if the suite fails, **re-run it once**.
+  - Does not reproduce → record what failed in your report and continue. Do not
+    spend the task chasing it.
+  - Reproduces → it is real. Investigate.
+
+  An earlier draft of this constraint said "a failure is real now, not the old
+  flake". That was too absolute and would send someone hunting a ghost.
+
 - **Tests must use isolated sockets.** Every test drives `tmux -S <tmpsock>`.
   **Never** touch the live `-L amux` server. Do not run `tmux kill-server`
   without `-S`/`-L` naming a test socket.
