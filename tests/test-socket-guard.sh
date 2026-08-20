@@ -65,5 +65,9 @@ assert_eq "$(astate)" "" "amux-agent-state (shim) stamps nothing on a /amux sock
 env TMUX="$rsock,0,0" TMUX_PANE="$rpane" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(rstate)" "working" "roost-agent-state stamps @agent_state on its own /roost socket"
 
-env TMUX="$rsock,0,0" TMUX_PANE="$rpane" "$HERE/scripts/amux-agent-state" working
-assert_eq "$(rstate)" "working" "amux-agent-state (shim) stamps @agent_state on a /roost socket, same as roost-agent-state"
+# A same-state call would exit early via roost-agent-state's own guard
+# (`[ "$state" = "$prev" ] && exit 0`) before ever writing — that would pass
+# even if the shim forwarded to nothing, so it proves nothing about the
+# shim's wiring. Drive a real transition instead: "working" -> "blocked".
+env TMUX="$rsock,0,0" TMUX_PANE="$rpane" "$HERE/scripts/amux-agent-state" blocked
+assert_eq "$(rstate)" "blocked" "amux-agent-state (shim) stamps @agent_state on a /roost socket, same as roost-agent-state"
