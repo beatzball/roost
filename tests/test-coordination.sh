@@ -168,17 +168,17 @@ line="$(printf '%s' "$row" | awk -F'\t' -v now=100 '
 assert_contains "$line" "%7" "switcher row shows the %N send-target"
 assert_contains "$line" "api" "switcher row still shows the window name"
 
-# --- skill integrity: it must reference only real amux subcommands ---
-# Check each `amux <cmd>` the skill names is a real subcommand, by word-matching
-# it in bin/amux (matches its dispatch branch and/or the usage synopsis). This
+# --- skill integrity: it must reference only real roost subcommands ---
+# Check each `roost <cmd>` the skill names is a real subcommand, by word-matching
+# it in bin/roost (matches its dispatch branch and/or the usage synopsis). This
 # sidesteps dispatch-syntax quirks like `wait-done|wait)`.
-SKILL="$HERE/skills/amux/SKILL.md"
-[ -f "$SKILL" ] && assert_eq ok ok "skills/amux/SKILL.md exists" || assert_eq "" exists "skills/amux/SKILL.md exists"
+SKILL="$HERE/skills/roost/SKILL.md"
+[ -f "$SKILL" ] && assert_eq ok ok "skills/roost/SKILL.md exists" || assert_eq "" exists "skills/roost/SKILL.md exists"
 for cmd in whoami spawn split send wait-done read status; do
-  if grep -q "amux $cmd" "$SKILL" 2>/dev/null && grep -qw "$cmd" "$HERE/bin/amux" 2>/dev/null; then
-    assert_eq ok ok "skill uses a real subcommand: amux $cmd"
+  if grep -q "roost $cmd" "$SKILL" 2>/dev/null && grep -qw "$cmd" "$HERE/bin/roost" 2>/dev/null; then
+    assert_eq ok ok "skill uses a real subcommand: roost $cmd"
   else
-    assert_eq "" real "skill uses a real subcommand: amux $cmd"
+    assert_eq "" real "skill uses a real subcommand: roost $cmd"
   fi
 done
 
