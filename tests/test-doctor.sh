@@ -288,7 +288,7 @@ mkdir -p "$ocstale/.config/opencode/plugin"
 printf 'not the real plugin\n' > "$ocstale/.config/opencode/plugin/amux.js"
 out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "opencode/plugin/amux.js" "roost doctor warns when the old opencode plugin file still exists"
-assert_contains "$out" "no longer need the amux half" "roost doctor names the exact fix and frames it as expected noise during coexistence"
+assert_contains "$out" "no reason to keep the old name around" "roost doctor names the exact fix and frames it as a harmless leftover, not a coexistence need"
 assert_contains "$out" "rm \"" "roost doctor prints an exact rm command for the stale plugin file"
 assert_contains "$out" "ln -s \"" "roost doctor prints an exact ln -s command naming roost.js, not just 'relink'"
 

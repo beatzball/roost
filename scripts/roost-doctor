@@ -115,15 +115,17 @@ _warn_stale_settings "$local_settings" local
 
 ocplug_old="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/amux.js"
 if [ -e "$ocplug_old" ] || [ -L "$ocplug_old" ]; then
-  # A user legitimately needs amux.js installed for the whole coexistence
-  # window (the frozen amux half still works and some panes may still use
-  # it), so this is expected noise until they no longer need that half.
+  # There is no frozen amux half left for this to coexist with — it was
+  # deleted, and the in-repo adapters/opencode/amux.js is now itself just a
+  # symlink to roost.js. So a plugin file still named amux.js keeps working
+  # (it forwards to the exact same roost adapter roost.js would), but that
+  # is a leftover, not a reason to keep it: the advice here is unconditional.
   # "relink" is not a real fix here: `ln -sf ... amux.js` still leaves a file
   # NAMED amux.js, so this warning would fire forever and the opencode-plugin
   # check below would still say roost's plugin is not installed. Only
   # remove-then-create-roost.js clears both, so name that exact command, the
   # same way its siblings below do.
-  warn "$ocplug_old still exists — once you no longer need the amux half installed, run: rm \"$ocplug_old\" && ln -s \"$ocwant\" \"$ocplug\""
+  warn "$ocplug_old still exists — it still works (it just forwards to roost.js) but there is no reason to keep the old name around; run: rm \"$ocplug_old\" && ln -s \"$ocwant\" \"$ocplug\""
 fi
 
 # opencode adapter — informational. Most users will not have opencode, so a
