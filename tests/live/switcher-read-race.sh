@@ -8,7 +8,7 @@
 # #{pane_current_command} ~50/50 between "sleep" and "perl", and BOTH shapes of
 # the assertion are then run against that same churn:
 #
-#   CONTROL  the pre-fix shape — read the row from amux-switch, then read
+#   CONTROL  the pre-fix shape — read the row from roost-switch, then read
 #            #{pane_current_command} a second time and compare the two. Two
 #            samples of a live value, taken at different instants. Expected to
 #            MISMATCH. If it ever stops mismatching the trigger has gone blunt
@@ -30,9 +30,9 @@ set -u
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
 N="${N:-30}"
 . "$HERE/tests/lib.sh"
-amux_test_server; trap amux_test_teardown EXIT
-T source-file "$HERE/tmux/amux.conf"
-T set-option -g @amux-home "$HERE"
+roost_test_server; trap roost_test_teardown EXIT
+T source-file "$HERE/tmux/roost.conf"
+T set-option -g @roost-home "$HERE"
 
 p0="$(T display -p '#{pane_id}')"
 T split-window -d -t "$p0" 'sh -c "while :; do sleep 5; done"' >/dev/null
@@ -58,7 +58,7 @@ if [ "$gated" != yes ]; then
   exit 2
 fi
 
-switch_rows() { AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch"; }
+switch_rows() { ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch"; }
 row_for() { printf '%s\n' "$1" | awk -F'\t' -v p="$2" '$3==p'; }
 
 control=0

@@ -3,9 +3,9 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 
-amux_test_server
-sock="$AMUX_TEST_SOCK"
-trap amux_test_teardown EXIT
+roost_test_server
+sock="$ROOST_TEST_SOCK"
+trap roost_test_teardown EXIT
 
 # socket path must be short enough for the ~104-char unix limit
 [ "${#sock}" -lt 100 ] && assert_eq ok ok "socket path is short" \

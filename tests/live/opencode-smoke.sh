@@ -12,10 +12,10 @@
 # stored credential is even reachable. Skips -- never fails -- if either is
 # missing.
 #
-# Isolation: its own tmux socket. The live -L amux server is never contacted.
+# Isolation: its own tmux socket. The live -L roost server is never contacted.
 set -u
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
-MODEL="${AMUX_LIVE_MODEL:-ornith:35b}"
+MODEL="${ROOST_LIVE_MODEL:-ornith:35b}"
 
 skip() { printf '  SKIP: %s\n' "$1"; exit 0; }
 command -v opencode >/dev/null 2>&1 || skip "opencode not installed"
@@ -23,7 +23,7 @@ command -v ollama   >/dev/null 2>&1 || skip "ollama not installed"
 curl -s -m 5 http://localhost:11434/api/tags >/dev/null 2>&1 \
   || skip "ollama is not responding on :11434"
 ollama list 2>/dev/null | grep -q "^${MODEL} " \
-  || skip "model $MODEL not pulled (override with AMUX_LIVE_MODEL)"
+  || skip "model $MODEL not pulled (override with ROOST_LIVE_MODEL)"
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  PASS: %s\n' "$1"; }
@@ -37,9 +37,9 @@ no()  { fail=$((fail+1)); printf '  FAIL: %s\n' "$1"; }
 die() { printf '  FAIL: %s\n' "$1"; printf '\n  %d passed, %d failed\n' "$pass" "$((fail+1))"; exit 1; }
 
 D="$(mktemp -d /tmp/amx.XXXX)"
-# The socket path MUST end in /amux -- amux state is a no-op on any other
+# The socket path MUST end in /roost -- roost state is a no-op on any other
 # socket, which is exactly what keeps it safe to wire into global hooks.
-S="$D/amux"
+S="$D/roost"
 trap 'tmux -S "$S" kill-server 2>/dev/null; rm -rf "$D"' EXIT
 
 export XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" XDG_CACHE_HOME="$D/cache"
@@ -47,7 +47,7 @@ mkdir -p "$XDG_CONFIG_HOME/opencode/plugin" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "
 
 # A SYMLINK, matching how a user installs it -- so this also proves opencode
 # still follows symlinks when discovering plugins.
-ln -s "$HERE/adapters/opencode/amux.js" "$XDG_CONFIG_HOME/opencode/plugin/amux.js"
+ln -s "$HERE/adapters/opencode/roost.js" "$XDG_CONFIG_HOME/opencode/plugin/roost.js"
 
 write_config() {  # write_config <baseURL>
   cat > "$XDG_CONFIG_HOME/opencode/opencode.json" <<JSON
@@ -68,8 +68,8 @@ JSON
 }
 
 tmux -S "$S" -f /dev/null new-session -d -x 160 -y 45
-tmux -S "$S" source-file "$HERE/tmux/amux.conf"
-tmux -S "$S" set-option -g @amux-home "$HERE"
+tmux -S "$S" source-file "$HERE/tmux/roost.conf"
+tmux -S "$S" set-option -g @roost-home "$HERE"
 
 state() { tmux -S "$S" show-options -pqv -t "$1" @agent_state; }
 
@@ -100,7 +100,7 @@ wait_ready() {
   return 1
 }
 
-# amux must be on PATH inside opencode's process, exactly as it is for a real
+# roost must be on PATH inside opencode's process, exactly as it is for a real
 # user whose shell has bin/ on PATH.
 launch() {  # launch -> prints the pane id
   tmux -S "$S" new-window -d -P -F '#{pane_id}' -c "$D/proj" \
@@ -129,9 +129,9 @@ else no "pane reaches done when the turn ends (got '$(state "$p")')"; fi
 
 # the adapter must also label the pane, so the border stops showing a version
 # string -- same gap the Claude hook fills. It must read "opencode", not
-# amux-agent-state's Claude-flavoured "claude" default: the adapter passes
-# AMUX_AGENT_NAME=opencode precisely so this doesn't happen.
-nm="$(tmux -S "$S" show-options -pqv -t "$p" @amux-name)"
+# roost-agent-state's Claude-flavoured "claude" default: the adapter passes
+# ROOST_AGENT_NAME=opencode precisely so this doesn't happen.
+nm="$(tmux -S "$S" show-options -pqv -t "$p" @roost-name)"
 [ "$nm" = "opencode" ] && ok "the adapter labels its pane opencode" || no "the adapter labels its pane opencode (got '$nm')"
 tmux -S "$S" kill-window -t "$p" 2>/dev/null
 

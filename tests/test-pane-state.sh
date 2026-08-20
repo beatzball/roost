@@ -5,17 +5,17 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; trap amux_test_teardown EXIT
-T source-file "$HERE/tmux/amux.conf"
-T set-option -g @amux-home "$HERE"
-T set-option -g @amux-glyph-blocked "B"
-T set-option -g @amux-glyph-working "W"
-T set-option -g @amux-glyph-done    "D"
-T set-option -g @amux-glyph-idle    "I"
+roost_test_server; trap roost_test_teardown EXIT
+T source-file "$HERE/tmux/roost.conf"
+T set-option -g @roost-home "$HERE"
+T set-option -g @roost-glyph-blocked "B"
+T set-option -g @roost-glyph-working "W"
+T set-option -g @roost-glyph-done    "D"
+T set-option -g @roost-glyph-idle    "I"
 
 hold='sh -c "while :; do sleep 5; done"'
-badge() { T list-windows -a -F "#{window_id}|#{E:@amux-tab-badge}" | grep "^$1|" | cut -d'|' -f2; }
-busy()  { T list-windows -a -F "#{window_id}|#{E:@amux-tab-busy}"  | grep "^$1|" | cut -d'|' -f2; }
+badge() { T list-windows -a -F "#{window_id}|#{E:@roost-tab-badge}" | grep "^$1|" | cut -d'|' -f2; }
+busy()  { T list-windows -a -F "#{window_id}|#{E:@roost-tab-busy}"  | grep "^$1|" | cut -d'|' -f2; }
 
 # window 1: a plain shell + one blocked agent
 w1="$(T display-message -p '#{window_id}')"
@@ -54,21 +54,21 @@ assert_eq "$(badge "$w4")" "BWD" "blocked sorts before working before done"
 
 # the tab formats must go through #{E:}, or the option renders as literal text
 fmt="$(T show-options -gqv window-status-format)"
-assert_contains "$fmt" '#{E:@amux-tab-badge}' "window-status-format expands the badge option"
+assert_contains "$fmt" '#{E:@roost-tab-badge}' "window-status-format expands the badge option"
 cfmt="$(T show-options -gqv window-status-current-format)"
-assert_contains "$cfmt" '#{E:@amux-tab-badge}' "active tab format expands the badge option"
+assert_contains "$cfmt" '#{E:@roost-tab-badge}' "active tab format expands the badge option"
 assert_contains "$(T display-message -p -t "$w1" "$fmt")" "B" "the rendered tab carries the badge"
 
 # regression guard: a literal comma inside #{P:...} is parsed as the
 # active/inactive separator, silently changing what the loop emits
-conf="$(cat "$HERE/tmux/amux.conf")"
+conf="$(cat "$HERE/tmux/roost.conf")"
 case "$conf" in
   *'#{P:#{@agent_state},'*) assert_eq comma space "no literal comma inside a #{P:} loop body" ;;
   *)                        assert_eq ok ok       "no literal comma inside a #{P:} loop body" ;;
 esac
 
 # --- pane borders: each pane badges its own state ---
-border() { T list-panes -a -F "#{pane_id}|#{E:@amux-pane-border}" | grep "^$1|" | cut -d'|' -f2; }
+border() { T list-panes -a -F "#{pane_id}|#{E:@roost-pane-border}" | grep "^$1|" | cut -d'|' -f2; }
 
 assert_contains "$(border "$p1b")" "B" "an agent pane's border shows its state glyph"
 assert_contains "$(border "$p1b")" "blocked" "an agent pane's border names its state"
