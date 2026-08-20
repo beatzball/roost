@@ -89,18 +89,64 @@ are derived at render time. Its only remaining appearances are cleanup:
 - `scripts/amux-migrate-state:27` — `set-option -wu` (unset) on old windows
 - `tests/test-agent-state.sh:50` — asserts it *is never stamped*
 
-It predates the OpenCode adapter and exists only to scrub stale state off
-servers started before glyphs became derived. Preserving the name by reflex
-would carry dead weight into `roost`.
+It predates the OpenCode adapter — introduced by `ae9b749` ("Badge windows by
+agent state") — and exists only to scrub stale state off servers started before
+the per-pane-state move.
 
-**Decision required at planning time**, not by default: a brand-new `roost`
-server can never have a stale `@agent_glyph`, because no version of `roost`
-ever wrote one. The cleanup is therefore almost certainly droppable from the
-`roost` half — but the frozen `amux` half must keep it, since real old servers
-still carry the option. See Open Questions.
+**But it is not a special case.** See "The migrate path is dead weight in
+`roost`" below: `@agent_state` and `@agent_since` have window-scoped cleanup for
+exactly the same reason, ending at exactly the same change. Singling out
+`@agent_glyph` would be incoherent. All three go, or none do.
 
 `@amux-glyph-error` is different: it is genuinely new in PR #8, it is live, and
 it renames normally.
+
+## The migrate path is dead weight in `roost`
+
+`scripts/amux-migrate-state` does exactly one thing — unset the three
+window-scoped legacy options on every window:
+
+```sh
+tmx set-option -wu -t "$win" @agent_state
+tmx set-option -wu -t "$win" @agent_glyph
+tmx set-option -wu -t "$win" @agent_since
+```
+
+Every global- and window-scoped appearance of these three options in the tree is
+an **unset** (`-gu` / `-wu`). The only real writes are pane-scoped (`-p`), in the
+hook. `tmux/amux.conf:96` and `:100` are reads inside format strings.
+
+So the question is singular, and Decision 1 already answers it:
+
+> Can a `roost` server inherit a live pre-per-pane `amux` server?
+
+**No.** `roost` runs on its own socket (`-L roost`). A running old `amux` server
+is a different server; `roost` never sees it and cannot reload it into itself.
+No `roost` server can carry window-scoped state that no `roost` version ever
+wrote.
+
+**Therefore the `roost` half drops the entire migrate path.** The frozen `amux`
+half keeps it untouched, so real legacy servers are still cleaned.
+
+### Removal surface in the `roost` half
+
+| File | What goes |
+|---|---|
+| `scripts/roost-migrate-state` | not created at all |
+| `tmux/roost.conf` | the two `set -gu` lines (conf:41–42) |
+| `tmux/roost.conf` | the `if-shell` that runs the migration on every source (conf:58) |
+| `tests/test-migrate-state.sh` | no `roost` counterpart |
+| `tests/test-reload.sh` | the migration assertions (lines 13–15, 22–68) |
+| `scripts/roost-doctor`, `scripts/lib/roost-config.sh` | comment references only |
+| `README.md` | the "Upgrading a running server" paragraph |
+
+There is no `bin/amux migrate-state` subcommand, so the CLI surface is unaffected.
+
+**One residual judgement call:** the two `set -gu` lines are partly defensive —
+they stop a stray outer-scope value from being inherited by unstamped panes.
+On `roost` nothing writes at those scopes, so they guard only against a human
+manually setting a global option. Recommendation: drop them for consistency.
+They are two lines and trivially restored if ever wanted.
 
 ### The `@amux_home` / `@amux-home` inconsistency
 
@@ -245,16 +291,12 @@ Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 
 ## Open questions
 
-None blocking. Three to settle during planning:
+One left. Two are now resolved.
 
-1. Does `bin/roost` keep a `roost migrate-state` equivalent, or is that dropped
-   as amux-only history? This is the same question as (3), one level up:
-   `migrate-state` exists to clean pre-pane-state servers that `roost` can
-   never have had.
-2. Should Phase 4 leave a stub `bin/amux` that prints "renamed to roost" for a
-   release or two, rather than deleting outright?
-3. Does the `roost` half drop the `@agent_glyph` tombstone cleanup entirely
-   (`tmux/roost.conf`'s `set -gu`, the `migrate-state` unset, and the test that
-   asserts it is never stamped)? Recommendation: **yes, drop it.** No `roost`
-   server can carry state no `roost` version ever wrote. The frozen `amux` half
-   keeps it untouched, so real old servers are still cleaned.
+1. ~~Does `bin/roost` keep a `migrate-state` equivalent?~~ **Resolved: no.**
+2. ~~Does the `roost` half drop the `@agent_glyph` cleanup?~~ **Resolved: yes —
+   and so does the cleanup for `@agent_state` and `@agent_since`.** Both
+   questions were the same question, and Decision 1 (own socket) answers it.
+   See "The migrate path is dead weight in `roost`".
+3. **Open.** Should Phase 4 leave a stub `bin/amux` that prints "renamed to
+   roost" for a release or two, rather than deleting outright?
