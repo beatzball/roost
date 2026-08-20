@@ -60,7 +60,7 @@ roost_cfg_set() {
 # roost_cfg_tmux ARGS -> talk to the test socket if set, else the roost server.
 #
 # Deliberately NO "server we are running inside" step, unlike roost-status,
-# roost-switch, roost-notify, roost-next-blocked and roost-migrate-state. Those are
+# roost-switch, roost-notify and roost-next-blocked. Those are
 # only ever invoked from within a roost server (a binding, a popup, the conf),
 # so inheriting $TMUX is always right for them. This lib backs `roost init` and
 # `roost settings`, which a user may legitimately run from a normal terminal —

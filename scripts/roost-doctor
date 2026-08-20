@@ -65,8 +65,8 @@ fi
 # lines and no @roost-glyph-error, so they silently inherit the emoji default
 # (tmux/roost.conf's global 💥) — an emoji in a bar they deliberately chose
 # not to have emoji in. Informational only: this never fails doctor, and it
-# is never auto-migrated (see scripts/roost-migrate-state's comment on why a
-# backfill there could race a deliberate custom glyph).
+# is never auto-backfilled — doing so here could race a deliberate custom
+# glyph the user set themselves.
 . "$(dirname "$0")/roost-themes.sh"
 . "$(dirname "$0")/lib/roost-config.sh"
 if [ -f "$(roost_cfg_path)" ]; then
