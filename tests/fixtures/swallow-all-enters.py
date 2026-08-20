@@ -7,7 +7,7 @@
 #
 # This is the "genuinely never submitted" case `send`'s retry loop and its
 # final failure message exist for. It is used to pin the EXACT number of
-# retries a given @amux-send-retries value expands to, by reading the
+# retries a given @roost-send-retries value expands to, by reading the
 # "tried N extra Enter(s)" count straight out of that failure message —
 # including normalized/clamped values like "007" -> 7, not just "some
 # fallback happened".

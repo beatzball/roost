@@ -1,5 +1,5 @@
-// Fire synthetic opencode events at adapters/opencode/amux.js and assert which
-// `amux state` calls come out, with a recording shim standing in for amux on
+// Fire synthetic opencode events at adapters/opencode/roost.js and assert which
+// `roost state` calls come out, with a recording shim standing in for roost on
 // PATH. Runs offline, in milliseconds, with no model call.
 //
 // Prints "  PASS:" / "  FAIL:" lines so tests/run.sh counts them like any bash
@@ -13,11 +13,11 @@ const HERE = fileURLToPath(new URL(".", import.meta.url))
 // and /tmp/amx.* is the prefix its cleanup tooling knows about.
 const dir = mkdtempSync("/tmp/amx.")
 const log = join(dir, "calls")
-const shim = join(dir, "amux")
-// Record the state ($2) and whether AMUX_AGENT_NAME arrived, tab-separated,
-// so calls() (state only) and envNames() (AMUX_AGENT_NAME only) can each
+const shim = join(dir, "roost")
+// Record the state ($2) and whether ROOST_AGENT_NAME arrived, tab-separated,
+// so calls() (state only) and envNames() (ROOST_AGENT_NAME only) can each
 // read their own column without disturbing the other's assertions.
-writeFileSync(shim, `#!/bin/sh\nprintf '%s\\t%s\\n' "$2" "\${AMUX_AGENT_NAME:-}" >> "${log}"\n`)
+writeFileSync(shim, `#!/bin/sh\nprintf '%s\\t%s\\n' "$2" "\${ROOST_AGENT_NAME:-}" >> "${log}"\n`)
 chmodSync(shim, 0o755)
 const REAL_PATH = process.env.PATH
 process.env.PATH = `${dir}:${REAL_PATH}`
@@ -38,13 +38,13 @@ const rows = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filt
 const calls = () => rows().map((r) => r.split("\t")[0]).join(",")
 const envNames = () => rows().map((r) => r.split("\t")[1])
 
-const { AmuxState } = await import(join(HERE, "..", "adapters", "opencode", "amux.js"))
+const { RoostState } = await import(join(HERE, "..", "adapters", "opencode", "roost.js"))
 
 // A fresh plugin instance per case, so one case's debounce state cannot leak
 // into the next and make a later assertion pass for the wrong reason.
 const fresh = async () => {
   if (existsSync(log)) rmSync(log)
-  const { event } = await AmuxState()
+  const { event } = await RoostState()
   return async (...events) => {
     for (const e of events) await event({ event: e })
   }
@@ -56,7 +56,7 @@ const errored = (name) => ({ type: "session.error", properties: { error: { name 
 let fire = await fresh()
 await fire(status("busy"))
 check(calls(), "working", "session.status busy reports working")
-check(envNames().every((n) => n === "opencode"), true, "amux is called with AMUX_AGENT_NAME=opencode")
+check(envNames().every((n) => n === "opencode"), true, "roost is called with ROOST_AGENT_NAME=opencode")
 
 fire = await fresh()
 await fire(status("busy"), status("busy"), status("busy"))
@@ -98,17 +98,17 @@ fire = await fresh()
 await fire(plain("message.part.delta"), plain("file.edited"), status("idle"))
 check(calls(), "", "unmapped events produce no call at all")
 
-// A missing amux must leave the pane unbadged, never throw into opencode's
+// A missing roost must leave the pane unbadged, never throw into opencode's
 // event loop. PATH without the shim is the honest way to stage that.
-process.env.PATH = "/nonexistent-amux-dir"
+process.env.PATH = "/nonexistent-roost-dir"
 let threw = ""
 try {
-  const { event } = await AmuxState()
+  const { event } = await RoostState()
   await event({ event: status("busy") })
 } catch (e) {
   threw = String(e && e.message ? e.message : e)
 }
-check(threw, "", "a missing amux on PATH does not throw into opencode")
+check(threw, "", "a missing roost on PATH does not throw into opencode")
 process.env.PATH = `${dir}:${REAL_PATH}`
 
 rmSync(dir, { recursive: true, force: true })

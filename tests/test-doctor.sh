@@ -2,16 +2,20 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-DOC="$HERE/scripts/amux-doctor"
+DOC="$HERE/scripts/roost-doctor"
 
-# amux-doctor now reads the saved glyph config, which means it can also
-# reach through amux_opt/amux_cfg_tmux to a LIVE server — and with
-# AMUX_CONFIG_SOCK unset, that defaults to `-L amux`, the developer's real,
-# possibly-live amux server. Pin both to isolated, inert values for every
-# invocation in this file, not just the ones that exercise the new check:
-# a real ~/.config/amux/amux.conf existing on the machine running this
-# suite must never leak in, and this suite must never contact -L amux.
-export AMUX_CONFIG_SOCK="/nonexistent/amx-doctor-test-sock"
+# roost-doctor now reads the saved glyph config, which means it can also
+# reach through roost_opt/roost_cfg_tmux to a LIVE server — and with
+# ROOST_CONFIG_SOCK unset, that defaults to `-L roost`, the developer's real,
+# possibly-live roost server. It also shells out to roost-notify --which for
+# the notify-backend line, which falls back through $TMUX and then to that
+# same `-L roost` when ROOST_NOTIFY_SOCK is unset. Pin all three to isolated,
+# inert values for every invocation in this file, not just the ones that
+# exercise the new check: a real ~/.config/roost/roost.conf existing on the
+# machine running this suite must never leak in, and this suite must never
+# contact -L roost.
+export ROOST_CONFIG_SOCK="/nonexistent/roost-doctor-test-sock"
+export ROOST_NOTIFY_SOCK="/nonexistent/roost-doctor-test-sock"
 export XDG_CONFIG_HOME="$(mktemp -d /tmp/amx.XXXX)"
 trap 'rm -rf "$XDG_CONFIG_HOME"' EXIT
 
@@ -62,22 +66,22 @@ assert_eq "$?" "0" "a missing opencode plugin does not fail doctor"
 
 # plugin linked -> reported as linked, with no install command
 mkdir -p "$ocdir/opencode/plugin"
-ln -s "$HERE/adapters/opencode/amux.js" "$ocdir/opencode/plugin/amux.js"
+ln -s "$HERE/adapters/opencode/roost.js" "$ocdir/opencode/plugin/roost.js"
 out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
 assert_contains "$out" "opencode plugin linked" "doctor confirms a correctly linked plugin"
 
-# a link pointing at some OTHER amux checkout is worse than none -- it silently
+# a link pointing at some OTHER roost checkout is worse than none -- it silently
 # runs a different version's plugin
-rm "$ocdir/opencode/plugin/amux.js"
-printf 'not the real plugin\n' > "$ocdir/opencode/plugin/amux.js"
+rm "$ocdir/opencode/plugin/roost.js"
+printf 'not the real plugin\n' > "$ocdir/opencode/plugin/roost.js"
 out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
 assert_contains "$out" "not this install" "doctor flags a plugin that is not this installation"
 
 # a DANGLING symlink (target moved/deleted) must not read as "not installed":
 # -e follows symlinks, so it reports absent, and the printed `ln -s` fix then
 # fails with "File exists" because the link itself is still there.
-rm "$ocdir/opencode/plugin/amux.js"
-ln -s "$ocdir/opencode/plugin/nonexistent-target.js" "$ocdir/opencode/plugin/amux.js"
+rm "$ocdir/opencode/plugin/roost.js"
+ln -s "$ocdir/opencode/plugin/nonexistent-target.js" "$ocdir/opencode/plugin/roost.js"
 out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
 assert_contains "$out" "dangling" "doctor flags a dangling plugin symlink distinctly"
 COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" >/dev/null 2>&1
@@ -85,50 +89,50 @@ assert_eq "$?" "0" "a dangling plugin symlink does not fail doctor"
 
 rm -rf "$ocdir" "$shimdir"
 
-# --- amux itself must be on PATH ---
-# Adapters (the opencode plugin, and any future one) shell out to `amux
-# state ...` by bare name, so a pane goes silently unbadged if amux is not
+# --- roost itself must be on PATH ---
+# Adapters (the opencode plugin, and any future one) shell out to `roost
+# state ...` by bare name, so a pane goes silently unbadged if roost is not
 # reachable that way. Informational only.
-noamuxdir="$(mktemp -d /tmp/amx.XXXX)"
-cat > "$noamuxdir/tmux" <<'EOF'
+noroostdir="$(mktemp -d /tmp/amx.XXXX)"
+cat > "$noroostdir/tmux" <<'EOF'
 #!/bin/sh
 [ "$1" = "-V" ] && { echo "tmux 3.4"; exit 0; }
 exit 0
 EOF
-chmod +x "$noamuxdir/tmux"
+chmod +x "$noroostdir/tmux"
 # A minimal, explicit PATH (not $PATH-prepended): this machine's real PATH
-# has a real `amux` on it, and prepending would never exercise the "absent"
-# branch. /usr/bin:/bin carries bash/env/grep/sed/etc; $noamuxdir carries
-# only the tmux shim, so no amux is reachable.
-out="$(PATH="$noamuxdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
-assert_contains "$out" "amux not found on PATH" "doctor warns when amux is not on PATH"
-PATH="$noamuxdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" >/dev/null 2>&1
-assert_eq "$?" "0" "amux missing from PATH does not fail doctor (informational only)"
+# has a real `roost` on it, and prepending would never exercise the "absent"
+# branch. /usr/bin:/bin carries bash/env/grep/sed/etc; $noroostdir carries
+# only the tmux shim, so no roost is reachable.
+out="$(PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
+assert_contains "$out" "roost not found on PATH" "doctor warns when roost is not on PATH"
+PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" >/dev/null 2>&1
+assert_eq "$?" "0" "roost missing from PATH does not fail doctor (informational only)"
 
-printf '#!/bin/sh\nexit 0\n' > "$noamuxdir/amux"; chmod +x "$noamuxdir/amux"
-out="$(PATH="$noamuxdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
-assert_contains "$out" "amux is on PATH" "doctor confirms amux is on PATH"
-rm -rf "$noamuxdir"
+printf '#!/bin/sh\nexit 0\n' > "$noroostdir/roost"; chmod +x "$noroostdir/roost"
+out="$(PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
+assert_contains "$out" "roost is on PATH" "doctor confirms roost is on PATH"
+rm -rf "$noroostdir"
 
 # --- an upgraded config predating the error state ---
 # A user who picked ascii before this branch has four saved glyph lines and
-# no @amux-glyph-error, so they silently inherit the emoji default -- an
+# no @roost-glyph-error, so they silently inherit the emoji default -- an
 # emoji in a bar they deliberately chose not to have emoji in.
 gcdir="$(mktemp -d /tmp/amx.XXXX)"
-mkdir -p "$gcdir/amux"
-cat > "$gcdir/amux/amux.conf" <<EOF
-set -g @amux-glyph-blocked "[!]"
-set -g @amux-glyph-working "[~]"
-set -g @amux-glyph-done    "[+]"
-set -g @amux-glyph-idle    "[·]"
+mkdir -p "$gcdir/roost"
+cat > "$gcdir/roost/roost.conf" <<EOF
+set -g @roost-glyph-blocked "[!]"
+set -g @roost-glyph-working "[~]"
+set -g @roost-glyph-done    "[+]"
+set -g @roost-glyph-idle    "[·]"
 EOF
 out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
 assert_contains "$out" "predates the error state" "doctor warns when a saved glyph set has no matching error glyph"
 COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" >/dev/null 2>&1
 assert_eq "$?" "0" "a mismatched error glyph does not fail doctor (informational only)"
 
-# once @amux-glyph-error is added and matches, the warning goes away
-printf 'set -g @amux-glyph-error   "[x]"\n' >> "$gcdir/amux/amux.conf"
+# once @roost-glyph-error is added and matches, the warning goes away
+printf 'set -g @roost-glyph-error   "[x]"\n' >> "$gcdir/roost/roost.conf"
 out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
 case "$out" in
   *"predates the error state"*) assert_eq "warned" "silent" "doctor is silent once the error glyph matches its set" ;;
@@ -155,15 +159,13 @@ rm -rf "$gcdir"
 # possibly-live named server on this machine) when ROOST_CONFIG_SOCK is
 # unset, and its notify-backend line (scripts/roost-notify --which) falls
 # back through $TMUX and then to that same `-L roost` when ROOST_NOTIFY_SOCK
-# is unset -- mirroring the AMUX_CONFIG_SOCK/XDG_CONFIG_HOME hazard noted
-# above for amux-doctor. Pin HOME to a fresh temp dir for every case below
-# (never the real $HOME), PWD to that same dir where a case needs
-# project/local resolution, and both socket variables to inert paths, so this
+# is unset -- the same hazard already pinned above, at the top of this file.
+# Pin HOME to a fresh temp dir for every case below (never the real $HOME),
+# PWD to that same dir where a case needs project/local resolution, and reuse
+# $DOC (both socket variables are already inert, set at the top), so this
 # suite never reads the real settings.json, the real opencode plugin
 # directory, or contacts -L roost.
-RDOC="$HERE/scripts/roost-doctor"
-export ROOST_CONFIG_SOCK="/nonexistent/roost-doctor-test-sock"
-export ROOST_NOTIFY_SOCK="/nonexistent/roost-doctor-test-sock"
+RDOC="$DOC"
 
 # stale: settings.json still names the old amux-agent-state hook command
 stalehome="$(mktemp -d /tmp/amx.XXXX)"

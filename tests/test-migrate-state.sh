@@ -6,8 +6,8 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; trap amux_test_teardown EXIT
-export AMUX_MIGRATE_SOCK="$AMUX_TEST_SOCK"
+roost_test_server; trap roost_test_teardown EXIT
+export AMUX_MIGRATE_SOCK="$ROOST_TEST_SOCK"
 
 w="$(T display-message -p '#{window_id}')"
 p="$(T display-message -p '#{pane_id}')"

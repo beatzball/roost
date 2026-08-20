@@ -2,7 +2,7 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
+roost_test_server; sock="$ROOST_TEST_SOCK"; trap roost_test_teardown EXIT
 T source-file "$HERE/tmux/amux.conf"
 T set-option -g @amux-home "$HERE"
 
@@ -38,7 +38,7 @@ esac
 # `if-shell -F '#{@amux-home}'` guard is false and NO migration is scheduled.
 # Nothing can run until this test arms it, which makes the ordering ours.
 mdir="$(mktemp -d /tmp/amx.XXXX)"; msock="$mdir/s"
-trap 'tmux -S "$msock" kill-server 2>/dev/null; rm -rf "$mdir"; amux_test_teardown' EXIT
+trap 'tmux -S "$msock" kill-server 2>/dev/null; rm -rf "$mdir"; roost_test_teardown' EXIT
 tmux -S "$msock" -f /dev/null new-session -d -x 200 -y 50
 M() { tmux -S "$msock" "$@"; }
 
