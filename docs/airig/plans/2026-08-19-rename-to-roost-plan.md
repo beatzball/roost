@@ -501,7 +501,8 @@ Then `bash tests/run.sh` → all PASS, exit 0.
 
 ### Task 15 — migrate the test suite to the `roost` half
 
-**Files:** all of `tests/*.sh` except `tests/test-migrate-state.sh`; `tests/lib.sh`
+**Files:** all of `tests/**/*.sh` except `tests/test-migrate-state.sh` — note
+the `**`, this must reach `tests/live/` too; `tests/lib.sh`
 **Depends on:** Task 4
 **Runs before:** Task 5. Numbered last only because it was found after the loop
 started — **execute it in dependency order, immediately after Task 4.**
@@ -513,7 +514,7 @@ started — **execute it in dependency order, immediately after Task 4.**
 > references** under `tests/`.
 
 **Do:**
-1. In every `tests/*.sh` **except `tests/test-migrate-state.sh`**, repoint:
+1. In every `tests/**/*.sh` **except `tests/test-migrate-state.sh`**, repoint:
    `scripts/amux-<x>` → `scripts/roost-<x>`; `tmux/amux.conf` →
    `tmux/roost.conf`; `AMUX_*` → `ROOST_*`; `@amux-*` → `@roost-*`.
 2. In `tests/lib.sh`, rename `AMUX_TEST_SOCK`, `AMUX_TEST_SOCKDIR`,
@@ -531,9 +532,16 @@ what every later task's "all PASS" should mean. The frozen `amux` half becomes
 untested for the remainder of the plan — acceptable, because it is frozen and
 scheduled for deletion, and the two shims are covered by Task 12's own checks.
 
+**Do not miss `tests/live/`.** A `tests/*.sh` glob does not reach it, and it
+holds two files that reference `amux`: `opencode-smoke.sh` (9 references, on
+`main` since PR #8) and `switcher-read-race.sh` (5 references, added by the
+flake fix). An earlier draft of this task scoped itself to `tests/*.sh` and
+silently skipped both.
+
 **Check:** `bash tests/run.sh` → all PASS, exit 0.
 `grep -rl "amux" tests/` → lists **only** `tests/test-migrate-state.sh` and
-`tests/test-reload.sh`.
+`tests/test-reload.sh`. Note `grep -r` recurses, so this check would have
+caught the `tests/live/` omission even though the task text did not.
 `grep -c "@agent_state" tests/test-agent-state.sh` → non-zero (must survive).
 
 **Commit:** `Migrate the test suite to the roost half`
