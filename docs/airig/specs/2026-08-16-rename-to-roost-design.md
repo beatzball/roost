@@ -133,7 +133,7 @@ half keeps it untouched, so real legacy servers are still cleaned.
 | File | What goes |
 |---|---|
 | `scripts/roost-migrate-state` | not created at all |
-| `tmux/roost.conf` | the two `set -gu` lines (conf:41–42) |
+| `tmux/roost.conf` | `set -gu @agent_glyph` only (conf:42) — **not** conf:41, see below |
 | `tmux/roost.conf` | the `if-shell` that runs the migration on every source (conf:58) |
 | `tests/test-migrate-state.sh` | no `roost` counterpart |
 | `tests/test-reload.sh` | the migration assertions (lines 13–15, 22–68) |
@@ -142,11 +142,57 @@ half keeps it untouched, so real legacy servers are still cleaned.
 
 There is no `bin/amux migrate-state` subcommand, so the CLI surface is unaffected.
 
-**One residual judgement call:** the two `set -gu` lines are partly defensive —
-they stop a stray outer-scope value from being inherited by unstamped panes.
-On `roost` nothing writes at those scopes, so they guard only against a human
-manually setting a global option. Recommendation: drop them for consistency.
-They are two lines and trivially restored if ever wanted.
+### The two `set -gu` lines are NOT the same kind of line
+
+`tmux/roost.conf` keeps `set -gu @agent_state` and drops `set -gu @agent_glyph`.
+Dropping both "for consistency" is wrong, and the reasoning matters more than
+the outcome:
+
+| | `set -gu @agent_state` (conf:41) | `set -gu @agent_glyph` (conf:42) |
+|---|---|---|
+| Clears | a global from **any** source, including future ones | a value only a known past version wrote |
+| Kind | live self-heal mechanism | tombstone |
+| In `roost` | **keep** | drop, with the tombstone |
+
+The load-bearing text is the conf comment at lines 36–38:
+
+> Deleting these lines is not enough on a server that is already running —
+> re-sourcing only adds and overwrites — so unset them explicitly.
+
+That line is not documentation of a past schema. It is **the only mechanism
+that removes a stray global from a live server.** Delete it and there is no way
+back short of killing the server.
+
+The failure mode survives the rename intact. `roost state` is a *documented
+public command* (`bin/roost` usage, `README.md`, `skills/roost/SKILL.md`), so
+third parties are actively invited to report state — the OpenCode adapter does
+exactly this. A user or third-party integrator writing their own adapter can
+plausibly reach for:
+
+```sh
+tmux set-option -g @agent_state working
+```
+
+Option lookup falls back pane → window → global, so from that moment **every
+unstamped pane in every window badges as an agent** and the decidable predicate
+collapses — silently, and looking plausible, which is this project's worst
+failure shape. With conf:41 present, the next `prefix r` self-heals it.
+
+The cost is asymmetric: keeping is one line with zero runtime cost; dropping
+reintroduces an unrecoverable-without-restart failure in exchange for tidiness.
+
+### Do not add a third unset for `@agent_since`
+
+There is no `set -gu @agent_since` today and there must not be one. Every read
+of `@agent_since` is nested inside an `@agent_state` guard — see the pane-border
+format at conf:164 and its own comment at conf:157:
+
+> Both the glyph and the trailing clause are guarded on `@agent_state`, and the
+> timestamp additionally on `@agent_since`.
+
+A stray global `@agent_since` alone therefore cannot badge anything. The
+asymmetry is deliberate. **If a future change adds a third unset for symmetry,
+that is the tell that this reasoning has drifted.**
 
 ### The `@amux_home` / `@amux-home` inconsistency
 
