@@ -489,9 +489,27 @@ completes, both names are carried indefinitely, and nothing signals who is
 still on the old path.
 
 `roost doctor` gains a check that greps `~/.claude/settings.json` for the old
-`amux-agent-state` path and warns, naming the exact fix. Both shims are deleted
-in a later release once `doctor` stops firing. That check is what makes the
-deletion decidable instead of a guess.
+`amux-agent-state` path and warns, naming the exact fix. That check is what
+makes the deletion decidable instead of a guess.
+
+#### Phase 5 trigger: the author's own configs, not "users"
+
+An earlier draft said "delete once `doctor` stops firing **for real users**".
+That is unfalsifiable — the project has effectively no users yet, so the
+condition can never be observed and the shims would live forever by default.
+Replacing an unobservable criterion with an observable one is the point of this
+paragraph.
+
+**The trigger is: `roost doctor` reports clean on every machine the author
+uses.** Concretely — no machine's `~/.claude/settings.json` still references
+`amux-agent-state`, and no `~/.config/opencode/plugin/amux.js` remains. That is
+fully observable by one person in a few minutes, and it is the honest version
+of what the original criterion was reaching for.
+
+Third parties are covered by the shims continuing to exist right up until that
+moment, plus the deprecation notice on `bin/amux`. If the project later gains
+users whose configs cannot be inspected, this criterion is revisited — but it
+is not written against a hypothetical population today.
 
 ### Keep the dangling-symlink check — it is not OpenCode-specific
 
@@ -514,7 +532,7 @@ tidied away.
 | 2 | Move `docs/superpowers/` → `docs/airig/`; rename `skills/amux/` → `skills/roost/` | Links resolve |
 | 3 | Add `roost` hooks to `settings.json` alongside the `amux` ones; start a `-L roost` server; run new work there | New agents badge correctly on `roost`; old agents still badge on `amux` |
 | 4 | Old `amux` session drains and is killed. Delete the `amux` half, **keeping the two shims**. Rename the GitHub repo | Shim-only grep gate passes; human-eye batch passes |
-| 5 | Later release. Delete both shims; drop the `doctor` migration check | `doctor` has stopped firing for real users; strict grep gate passes |
+| 5 | Later release. Delete both shims; drop the `doctor` migration check | `roost doctor` reports clean on **every machine the author uses** — see below; strict grep gate passes |
 
 Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 
