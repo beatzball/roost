@@ -79,11 +79,18 @@ Everything else depends on it being correct.
 4. Keep the trailing `|| true` exactly as it is. It is deliberate: a dead tmux
    server must degrade, never break Claude.
 
-**Why this matters:** reached through a symlink, `$0` is the *old* path, so
-`dirname` yields the old sibling name. After the rename that file is gone, the
-call misses, and `|| true` swallows it — desktop notifications stop with
-nothing in any log. Task 12 creates exactly that symlink, so this task is its
-prerequisite.
+**Why this matters — corrected 2026-08-20.** Reached through a symlink in a
+*different directory*, `$0` is that other path, `dirname` points away from the
+scripts directory, the sibling call misses, and `|| true` swallows it —
+notifications stop with nothing in any log.
+
+**This is NOT a prerequisite for Task 12.** Task 12's symlink is
+same-directory (`scripts/amux-agent-state → roost-agent-state`), so `dirname`
+resolves correctly with or without this fix; the old code would have survived
+by accident. Verified by direct test. The task is still worth doing first — it
+is cheap, adds no tmux round trip, and closes the different-directory case that
+the install instructions invite — but do not treat the ordering as load-bearing
+or claim a Task 12 outage if it slips.
 
 **Check:** write the test first and see it fail.
 Add to `tests/test-agent-state.sh`: create a temp dir, symlink

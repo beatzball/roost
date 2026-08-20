@@ -394,10 +394,30 @@ interpreter startup included — measured at **~0.57 of a full tmux round trip**
 the very cost the script is written to avoid. A symlink costs nothing: the
 kernel resolves it and no second process starts.
 
-#### Prerequisite: the target must resolve symlinks, or notifications die silently
+#### Symlink resolution: worth doing, but NOT a prerequisite for Task 12
 
-A symlink does not work as the code stands, and it fails **silently** —
-`scripts/amux-agent-state:123`:
+**Corrected 2026-08-20.** An earlier revision of this section claimed the
+symlink shim would break notifications silently unless the target resolved
+symlinks first, and that Task 1 was therefore Task 12's prerequisite. **That
+was wrong**, caught by the Task 1 implementer and confirmed by direct test:
+
+```
+same-directory symlink  (what Task 12 creates)  → sibling found
+different-directory symlink                     → sibling missed
+```
+
+Task 12 creates `scripts/amux-agent-state → roost-agent-state`, both in
+`scripts/`. `dirname "$0"` therefore yields `scripts/` either way, and the
+sibling call resolves correctly **without** any `readlink` loop. The old code
+would have survived by accident.
+
+The fix is still right, and still done first — it is a few lines of pure shell
+with no added tmux round trip, and it closes a real exposure: a symlink from
+*anywhere else*. That is not hypothetical, since the install path invites users
+to symlink these scripts onto a `PATH` directory. But the ordering is
+**preference, not necessity**, and the plan should not claim otherwise.
+
+The underlying hazard in `scripts/amux-agent-state:123` is real regardless:
 
 ```sh
 AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "$msg" || true
