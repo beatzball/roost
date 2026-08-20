@@ -1,8 +1,9 @@
 # Rename `amux` → `roost`
 
-Status: agreed, not started
-Date: 2026-08-16
+Status: agreed, not started — **unblocked**
+Date: 2026-08-16 (revised 2026-08-19)
 Size: **Build** (changes interfaces outside this repo)
+Base: `7bd1ed4` — post-history-rewrite `main`, with the OpenCode adapter merged
 
 ## Why
 
@@ -29,8 +30,8 @@ that is normal and needs no reconciling.
 
 ## Oracle — how we know it worked
 
-**Primarily automated.** The repo has 22 test files under `tests/` plus CI
-(`.github/workflows/ci.yml`).
+**Primarily automated.** The repo has 21 test files under `tests/`, a live
+suite (`tests/live/opencode-smoke.sh`), and CI (`.github/workflows/ci.yml`).
 
 | Check | Type | Asserts |
 |---|---|---|
@@ -64,8 +65,9 @@ blast radii.
 | 2 | Socket | `tmux -L amux` | `tmux -L roost` | separate servers, by design |
 | 3 | Server config | `tmux/amux.conf` | `tmux/roost.conf` | both present |
 | 4 | Scripts | `scripts/amux-*` (11 files) | `scripts/roost-*` | both present |
-| 5 | tmux options | `@amux-*` (25) | `@roost-*` | per-server, no collision |
-| 6 | Env vars | `AMUX_*` (19) | `ROOST_*` | internal only |
+| 5 | tmux options | `@amux-*` (27) | `@roost-*` | per-server, no collision |
+| 6 | Env vars | `AMUX_*` (21) | `ROOST_*` | internal only |
+| 7 | OpenCode adapter | `adapters/opencode/amux.js` | `adapters/opencode/roost.js` | both symlinked, side by side |
 
 Plus: `~/.config/amux/amux.conf` → `~/.config/roost/roost.conf`,
 `skills/amux/SKILL.md` → `skills/roost/SKILL.md`, and 21 internal shell
@@ -73,10 +75,13 @@ functions prefixed `amux_` → `roost_`.
 
 ### Not renamed
 
-`@agent_state` and `@agent_since` — the two pane options the hook actually
-stamps — are **already unbranded**. They contain no product name and must stay
-exactly as they are. This is load-bearing: it is why both servers can share one
-hook mechanism.
+`@agent_state`, `@agent_since`, and `@agent_glyph` — the three pane options the
+hook actually stamps — are **already unbranded**. They contain no product name
+and must stay exactly as they are. This is load-bearing: it is why both servers
+can share one hook mechanism.
+
+(`@agent_glyph` and `@amux-glyph-error` both arrived with the OpenCode adapter
+and its error state. The `@amux-` one renames; the `@agent_` one does not.)
 
 ### The `@amux_home` / `@amux-home` inconsistency
 
@@ -151,35 +156,44 @@ must return nothing. **During** the transition it legitimately returns the
 frozen `amux` half. The gate therefore runs in two modes, and the strict mode
 turns on at Phase 4.
 
-## Sequencing — OpenCode lands first
+## Sequencing — resolved
 
-The branch `worktree-opencode-adapter` (adding an OpenCode harness and an error
-state) currently modifies:
+This spec was originally gated on the OpenCode adapter merging first, because a
+rename deletes and recreates every file that branch was modifying, and git
+resolves that as delete-versus-modify.
+
+**That gate is now cleared.** The adapter merged as PR #8 (`7bd1ed4`), and this
+branch is rebased onto it. There is no longer a competing branch, so the rename
+and the `docs/superpowers/` → `docs/airig/` move can both proceed.
+
+What the merge added to this rename's scope:
+
+- A seventh namespace — the OpenCode adapter (row 7 above).
+- Two options: `@amux-glyph-error` (renames) and `@agent_glyph` (does not).
+- Two env vars: `AMUX_AGENT_NAME`, `AMUX_LIVE_MODEL`.
+- Six new test files, plus `tests/live/opencode-smoke.sh`.
+
+### The OpenCode adapter is a second external integration point
+
+Like the Claude hook, it lives outside this repo — a user-made symlink:
 
 ```
-scripts/amux-agent-state      scripts/lib/amux-config.sh
-scripts/amux-settings         tmux/amux.conf
-scripts/amux-status           tests/test-agent-state.sh
-scripts/amux-switch           tests/test-settings.sh
+~/.config/opencode/plugin/amux.js  ->  <checkout>/adapters/opencode/amux.js
 ```
 
-A rename deletes and recreates every one of those files. Git resolves that as
-delete-versus-modify on 100% of the OpenCode branch — the worst conflict shape
-there is.
+Rename the target and the symlink dangles. The plugin also invokes the command
+**by name** (`execFile("amux", ...)`), so it depends on `amux` being on `PATH`.
 
-**The rename must not start until OpenCode has merged to `main`.** A rename is
-mechanical and cheap to redo against whatever exists; a feature branch rebased
-across a total rename is not.
-
-The same reasoning applies to moving `docs/superpowers/` → `docs/airig/`: the
-OpenCode branch is adding two files *into* `docs/superpowers/`. The move is a
-task in this plan, executed after the merge, not before.
+The fix is the same shape as the Claude hook. `roost.js` is installed alongside
+`amux.js` under a different filename; each delegates to its own command, and
+each command's socket guard makes it a no-op on the wrong server. Both are
+removed from the plugin directory at Phase 4.
 
 ## Rollout phases
 
 | Phase | Work | Exit criteria |
 |---|---|---|
-| 0 | OpenCode branch merges to `main` | `main` green |
+| 0 | ~~OpenCode branch merges to `main`~~ | **Done** — PR #8, `7bd1ed4` |
 | 1 | Add the `roost` half alongside the frozen `amux` half, in a worktree | `tests/run.sh` green; both halves present |
 | 2 | Move `docs/superpowers/` → `docs/airig/`; rename `skills/amux/` → `skills/roost/` | Links resolve |
 | 3 | Add `roost` hooks to `settings.json` alongside the `amux` ones; start a `-L roost` server; run new work there | New agents badge correctly on `roost`; old agents still badge on `amux` |
@@ -194,8 +208,11 @@ Phase 3 is the one that can run for days. Phases 1–2 are a single sitting.
 | Rename touches `main` while agents are live | All work in `.claude/worktrees/rename-to-roost`. `main` untouched until Phase 4. |
 | A missed `amux` string in the roost half | Grep gate in strict mode at Phase 4 |
 | `roost init` corrupts a live config | It only ever writes to `~/.config/roost/`; the old file is read-only to it |
-| Conflict with OpenCode | Phase 0 gate — do not start before it merges |
+| ~~Conflict with OpenCode~~ | Cleared — merged as PR #8 |
 | GitHub rename breaks `npx skills add beatzball/amux` | GitHub redirects; update the README line in Phase 2 anyway |
+| Dangling `~/.config/opencode/plugin/amux.js` symlink | `roost.js` installed alongside, not over the top; `roost doctor` checks both during transition |
+| Both OpenCode plugins fire, doubling process spawns per turn | Accepted. Transition-only, one extra `execFile` per state change |
+| A personal absolute home path leaks into a committed doc | History was rewritten once already to strip these. Grep for the home-directory prefix and the username before every commit |
 
 ## Open questions
 
