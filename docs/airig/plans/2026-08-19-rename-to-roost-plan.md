@@ -440,7 +440,12 @@ Then `bash tests/run.sh` → all PASS, exit 0.
 **Check:** the **shim-only grep gate**:
 `grep -rl "amux" bin scripts tmux tests skills adapters` → lists **only** the
 three shims: `bin/amux`, `scripts/amux-agent-state`,
-`adapters/opencode/amux.js`. Nothing else. Strict mode does not
+`adapters/opencode/amux.js`. Nothing else.
+
+This is only achievable because **Task 15** migrated `tests/` first. Before
+that task, `tests/` alone holds 498 `amux` references and this gate cannot
+pass. If it fails listing test files, Task 15 was skipped or incomplete —
+fix that rather than loosening the gate. Strict mode does not
 apply until Phase 5, because the shims contain the old name by design.
 Then `bash tests/run.sh` → all PASS, exit 0, and
 `python3 tests/test-contrast.py` → passes.
@@ -484,6 +489,47 @@ of bodies, 0 issues) vanish unless captured here first.
 Then `bash tests/run.sh` → all PASS, exit 0.
 
 **Commit:** `Archive PR #1-#8 bodies before the new-repo cutover`
+
+---
+
+### Task 15 — migrate the test suite to the `roost` half
+
+**Files:** all of `tests/*.sh` except `tests/test-migrate-state.sh`; `tests/lib.sh`
+**Depends on:** Task 4
+**Runs before:** Task 5. Numbered last only because it was found after the loop
+started — **execute it in dependency order, immediately after Task 4.**
+
+> **This task was missing from the original plan.** Without it Task 13 is
+> impossible, not merely wrong: it deletes `scripts/amux-*`, and 14 test files
+> invoke those scripts by path. The suite would collapse and Task 13's own
+> Check could never pass. Measured at `2362b00`: **21 files, 498 `amux`
+> references** under `tests/`.
+
+**Do:**
+1. In every `tests/*.sh` **except `tests/test-migrate-state.sh`**, repoint:
+   `scripts/amux-<x>` → `scripts/roost-<x>`; `tmux/amux.conf` →
+   `tmux/roost.conf`; `AMUX_*` → `ROOST_*`; `@amux-*` → `@roost-*`.
+2. In `tests/lib.sh`, rename `AMUX_TEST_SOCK`, `AMUX_TEST_SOCKDIR`,
+   `AMUX_TESTS_PASS`, `AMUX_TESTS_FAIL` to their `ROOST_*` forms, and update
+   every test that reads them.
+3. **Leave `tests/test-migrate-state.sh` pointed at the `amux` half.** It tests
+   `scripts/amux-migrate-state`, which the `roost` half deliberately does not
+   have (Task 6). Task 13 deletes both together.
+4. **Leave `tests/test-reload.sh`'s migration assertions pointed at the `amux`
+   half** for the same reason; Task 13 removes them.
+5. **Do not rename** `@agent_state` or `@agent_since` anywhere.
+
+**Why here:** after this task the suite exercises the `roost` half, which is
+what every later task's "all PASS" should mean. The frozen `amux` half becomes
+untested for the remainder of the plan — acceptable, because it is frozen and
+scheduled for deletion, and the two shims are covered by Task 12's own checks.
+
+**Check:** `bash tests/run.sh` → all PASS, exit 0.
+`grep -rl "amux" tests/` → lists **only** `tests/test-migrate-state.sh` and
+`tests/test-reload.sh`.
+`grep -c "@agent_state" tests/test-agent-state.sh` → non-zero (must survive).
+
+**Commit:** `Migrate the test suite to the roost half`
 
 ---
 
