@@ -5,6 +5,24 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/roost-themes.sh"
 . "$HERE/lib/roost-config.sh"
 
+# Legacy migration: the first time roost init runs, if roost.conf doesn't
+# exist yet but an old amux.conf does, carry its settings across instead of
+# asking the questions again. @amux-* keys become @roost-* (a plain literal
+# substring swap is safe: no other key in the file contains "@amux-"); keys
+# like @agent_state / @agent_since / @agent_glyph have no "amux-" prefix in
+# the first place, so they pass through unchanged. The old file is only ever
+# read, never written, moved, or deleted — a running amux server may still
+# be reading it. An existing roost.conf always wins; migration never
+# overwrites it. No tty is needed for this path.
+target="$(roost_cfg_path)"
+legacy="${XDG_CONFIG_HOME:-$HOME/.config}/amux/amux.conf"
+if [ ! -f "$target" ] && [ -f "$legacy" ]; then
+  mkdir -p "$(dirname "$target")"
+  sed 's/@amux-/@roost-/g' "$legacy" > "$target"
+  echo "roost: migrated legacy config $legacy -> $target (left untouched)" >&2
+  exit 0
+fi
+
 # Answers come from stdin. On a non-tty we require ROOST_INIT_ANSWERS=- (tests).
 if [ ! -t 0 ] && [ "${ROOST_INIT_ANSWERS:-}" != "-" ]; then
   echo "roost init: needs a tty (or ROOST_INIT_ANSWERS=- with scripted stdin)"; exit 1
