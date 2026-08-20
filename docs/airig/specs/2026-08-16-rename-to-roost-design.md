@@ -54,7 +54,7 @@ Tests must use isolated `-S` sockets and must never touch the live `-L` server.
 4. The GitHub repo is renamed `beatzball/amux` → `beatzball/roost` (GitHub
    redirects the old URL, so this is low-risk and can happen at any point).
 
-## Scope — six namespaces
+## Scope — seven namespaces
 
 A rename here is not one substitution. These are independent, with different
 blast radii.
@@ -257,7 +257,7 @@ old session closes.
 That covers the config we can see. It does **not** cover configs we cannot — a
 second machine, another checkout, or a third party who copied the hook snippet
 from the README. Those are why `scripts/amux-agent-state` still becomes a
-forwarder at Phase 4 rather than disappearing with the rest of the `amux` half.
+symlink at Phase 4 rather than disappearing with the rest of the `amux` half.
 See "Compatibility shims".
 
 ### Config migration
@@ -330,7 +330,7 @@ machine on one day.
 These are **two separate decisions**, not one. The original "should `bin/amux`
 linger as a stub?" question was scoped to the less important file.
 
-### `scripts/amux-agent-state` — a forwarder, and it is not optional
+### `scripts/amux-agent-state` — a symlink, and it is not optional
 
 `~/.claude/settings.json` references this script by **absolute path, four
 times** — one per hook, verified on this machine:
@@ -345,21 +345,87 @@ times** — one per hook, verified on this machine:
 That file lives outside the repo. **No rename can update it.** Rename or delete
 the script and every running agent fails on its next tool call.
 
-So `scripts/amux-agent-state` stays at its old path as a forwarder:
+So `scripts/amux-agent-state` stays at its old path. This is the difference
+between a rename and an outage; a `bin/` stub does nothing for it.
+
+**It must be a symlink, not a bash forwarder** — and that requires a fix to the
+target script first.
+
+#### Why not a forwarder
 
 ```sh
-exec "$(dirname "$0")/roost-agent-state" "$@"
+exec "$(dirname "$0")/roost-agent-state" "$@"   # rejected
 ```
 
-This is the difference between a rename and an outage. A `bin/` stub does
-nothing for it.
+A bash forwarder costs an **extra process spawn per hook invocation**,
+interpreter startup included. That is the same order as the tmux round trip the
+script is written to avoid. A symlink costs nothing: the kernel resolves it and
+no second process starts.
 
-**The forwarder must be silent.** `PostToolUse` fires on every tool call and
-Claude blocks on the script exiting; the existing comment requires the hot path
-be "ONE read, then bail". A per-invocation deprecation line on stderr would run
-hundreds of times a session against a budget the file is explicitly written to
-protect. The self-closing signal belongs in `doctor`, which runs once and on
-demand — see below.
+#### Prerequisite: the target must resolve symlinks, or notifications die silently
+
+A symlink does not work as the code stands, and it fails **silently** —
+`scripts/amux-agent-state:123`:
+
+```sh
+AMUX_NOTIFY_SOCK="$sock" "$(dirname "$0")/amux-notify" "amux · ${wname}" "$msg" || true
+```
+
+Reached through a symlink at the old path, `$0` is the *old* path, so `dirname`
+yields the old sibling name. After the rename that file is gone, the call
+misses, and the trailing `|| true` swallows the failure. **Desktop
+notifications simply stop, with nothing in any log.**
+
+`bin/amux:31-38` already carries the loop that fixes this, with the comment
+"Resolve the repo root even when invoked via a symlink on `PATH`". The hook
+script never needed one because nobody had symlinked it yet — the rename is
+what creates that condition.
+
+**Order of work: copy the `readlink` loop into `roost-agent-state` first, then
+symlink.** That also makes the script correct under *any* symlink, which is the
+general condition a rename introduces.
+
+#### Audit: this pattern is repo-wide
+
+Four scripts make sibling calls via `dirname "$0"` and **none** resolve
+symlinks. Only `bin/amux` does.
+
+| file | sibling calls | symlink-safe |
+|---|---|---|
+| `scripts/amux-agent-state` | 1 | no |
+| `scripts/amux-doctor` | 4 | no |
+| `scripts/amux-init` | 1 | no |
+| `scripts/amux-settings` | 1 | no |
+
+Only `amux-agent-state` is symlinked by this plan, so only it *must* be fixed.
+The others are recorded because the same silent failure appears the moment any
+other old path is ever symlinked.
+
+#### Why the shim is silent — and why it is NOT a performance argument
+
+The shim prints nothing. The reason matters, because the wrong reason misleads
+whoever reads this next.
+
+**Not** because stderr is expensive. A write to stderr is microseconds. The
+budget this file protects is **tmux round trips** — fork plus socket, which the
+amux/opencode session measured at roughly 7.6ms per call with a counting shim,
+and which is why the early bail is pinned at exactly one call.
+`scripts/amux-status:32` names the same cost independently ("a fork+roundtrip
+every 2 seconds on a live bar"). A stderr line is three to four orders of
+magnitude cheaper and does not touch that budget.
+
+Recording "hot path means no I/O of any kind" would be actively harmful: the
+next person refuses a cheap write that is fine, and waves through an expensive
+tmux call that is not.
+
+**The real reason:** Claude Code hook stderr can surface into the agent
+transcript and the UI. `PostToolUse` fires on every tool call, so a deprecation
+line is hundreds of lines of **context noise injected into the very agent being
+badged**. That is a correctness and signal-to-noise argument, and it holds even
+if the write were free.
+
+The self-closing signal therefore lives in `doctor`, which runs once and on
+demand.
 
 ### `bin/amux` — a stub, but convenience only
 
