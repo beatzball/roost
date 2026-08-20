@@ -383,7 +383,7 @@ deletion is a guess and the shims live forever.
 ### Task 11 — move docs and the skill
 
 **Files:** `docs/superpowers/**` → `docs/airig/**`; `skills/amux/SKILL.md` →
-`skills/roost/SKILL.md`; `README.md`
+`skills/roost/SKILL.md`; `README.md`; **`tests/test-coordination.sh`**
 **Depends on:** Task 10
 
 **Do:**
@@ -400,7 +400,22 @@ deletion is a guess and the shims live forever.
    only mitigation that exists, and it only reaches people who re-read it.
 5. Remove the "Upgrading a running server" paragraph — it documents
    `migrate-state`, which the `roost` half no longer has.
-6. Leave the historical spec and plan files' *content* alone. They are a record
+6. **Repoint `tests/test-coordination.sh`'s skill-integrity block.** It
+   hardcodes `$HERE/skills/amux/SKILL.md` (line ~175) and greps
+   `$HERE/bin/amux` (line ~178), across 4 assertions. Moving the skill without
+   this makes those assertions fail, so **this task fails its own Check** until
+   they are repointed to `skills/roost/SKILL.md` and `bin/roost`.
+
+   Task 15 deliberately left them alone — at that point `skills/roost/` did not
+   exist, so renaming early would have turned passing assertions into failures
+   against a nonexistent file. This is the task where the move happens, so this
+   is where they get repointed.
+
+   `bin/roost` matters as much as the skill path: Task 12 turns `bin/amux` into
+   a thin stub, and a stub does not contain the subcommand names this block
+   greps for. Left pointed at `bin/amux`, these assertions break again one task
+   later for a different reason.
+7. Leave the historical spec and plan files' *content* alone. They are a record
    of what was true then; renaming inside them would falsify history. Only
    their location changes.
 
