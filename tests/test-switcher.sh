@@ -112,7 +112,31 @@ rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amu
 assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p0" '$3==p')" "planner" \
   "a named pane's switcher row shows the name"
 T set-option -pu -t "$p0" @amux-name
+
+# The fallback is asserted against a pane PINNED to a long-lived command, not
+# against a second read of a live value. This used to read
+# #{pane_current_command} here and compare it to what amux-switch had read
+# moments earlier — two samples of a live value, compared as if they were one.
+# It failed 3 times in 400 runs, in BOTH directions. The churn came from the
+# pane's shell sourcing its rc files, which tests/lib.sh now avoids, but a
+# pane's command is a live value in principle and this assertion should not
+# depend on it holding still. A pane running `exec sleep 600` reported "sleep"
+# on 6000 consecutive
+# reads, so "sleep" can simply be a literal in this file and the comparison
+# needs no second read at all.
+# tests/live/switcher-read-race.sh is the standing proof: under forced churn the
+# old shape mismatched 125 times in 600 read-pairs, this shape 0 times.
+pf="$(T split-window -d -P -F '#{pane_id}' -t "$p0" 'exec sleep 600')"
+# Bounded gate on the exec landing — deterministic, unlike racing it.
+for _ in $(seq 1 50); do
+  [ "$(T display-message -p -t "$pf" '#{pane_current_command}')" = sleep ] && break
+  sleep 0.05
+done
+assert_eq "$(T display-message -p -t "$pf" '#{pane_current_command}')" "sleep" \
+  "the pinned pane reports a stable command"
+# apiwin is not "sleep", so amux-switch's suffix-suppression branch does not
+# fire and the row carries the dot-suffix. Asserting "·sleep" rather than bare
+# "sleep" also stops this passing on some unrelated substring.
 rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
-cmd="$(T display-message -p -t "$p0" '#{pane_current_command}')"
-assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p0" '$3==p')" "$cmd" \
+assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$pf" '$3==p')" "·sleep" \
   "an unnamed pane's switcher row falls back to the command"
