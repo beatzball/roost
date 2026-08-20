@@ -321,8 +321,14 @@ Write the test first and see it fail.
 
 **Check:** `node --check adapters/opencode/roost.js` → clean.
 `grep -c '"amux"' adapters/opencode/roost.js` → `0`.
-`grep -c '\-L ' scripts/roost-doctor` — confirm the dangling branch survives:
-`grep -c 'not.*-e' scripts/roost-doctor` → non-zero.
+Confirm the dangling-symlink branch survives:
+`grep -c '\[ -L "\$ocplug" \] && \[ ! -e "\$ocplug" \]' scripts/roost-doctor` → `1`.
+
+**An earlier draft of this check was `grep -c 'not.*-e'`, which returns 0** —
+the words "not" and "-e" sit on two different comment lines, so no single line
+matches. The implementer correctly reported the check as unsatisfiable rather
+than contorting the code to satisfy it, and verified the requirement another
+way. Match the code, not the prose about it.
 Then `bash tests/run.sh` → all PASS, exit 0.
 
 **Commit:** `Add the roost OpenCode adapter and point roost doctor at it`
