@@ -8,7 +8,16 @@ amux_test_server() {
   AMUX_TEST_SOCKDIR="$(mktemp -d /tmp/amx.XXXX)"
   AMUX_TEST_SOCK="$AMUX_TEST_SOCKDIR/s"
   export AMUX_TEST_SOCK
-  tmux -S "$AMUX_TEST_SOCK" -f /dev/null new-session -d -x 200 -y 50
+  # Start the initial pane on a bare shell, NOT the developer's login shell.
+  # A login shell sources rc files inside the pane, and every external helper
+  # they run becomes #{pane_current_command} for a few milliseconds (observed:
+  # stty, grep, awk, ls, mkdir, diff, printf; the tail reached 0.43s on an idle
+  # machine, and tests/test-switcher.sh finishes at ~0.9s). That churn flaked
+  # the switcher test 3 times in 400 runs. It also makes the reported command
+  # depend on whose machine is running, so a local pass proves little about CI.
+  # `ENV=` stops /bin/sh sourcing a startup file of its own.
+  tmux -S "$AMUX_TEST_SOCK" -f /dev/null new-session -d -x 200 -y 50 \
+    'ENV= exec /bin/sh'
   # Callers read the exported $AMUX_TEST_SOCK; nothing consumes stdout. Emitting
   # the path here would just be noise in every test file's output.
 }
