@@ -236,8 +236,14 @@ versions. `roost` runs on its own socket, so it can never inherit a live
 pre-per-pane `amux` server, and no `roost` version ever wrote those values.
 
 **Check:** `ls scripts/roost-migrate-state` → "No such file".
-`grep -rn "migrate" tmux/roost.conf scripts/roost-* scripts/lib/roost-config.sh`
+`grep -rn "migrate-state\|migrate_state" tmux/roost.conf scripts/roost-* scripts/lib/roost-config.sh`
 → returns nothing.
+
+**Grep for `migrate-state`, not bare `migrate`.** Task 8 legitimately adds the
+word "migrated" to `scripts/roost-init:22` — that is *config-file* migration
+(carrying `~/.config/amux/amux.conf` across), a different concept from the
+*window-scoped state* migration this task removes. A bare `migrate` grep
+false-positives on it and would send someone deleting the wrong thing.
 `ls scripts/amux-migrate-state tests/test-migrate-state.sh` → both still exist.
 Then `bash tests/run.sh` → all PASS, exit 0.
 
