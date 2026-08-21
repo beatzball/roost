@@ -4,13 +4,13 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-NEXT="$HERE/scripts/amux-next-blocked"
-amux_test_server; trap amux_test_teardown EXIT
-export AMUX_NEXT_SOCK="$AMUX_TEST_SOCK"
+NEXT="$HERE/scripts/roost-next-blocked"
+roost_test_server; trap roost_test_teardown EXIT
+export ROOST_NEXT_SOCK="$ROOST_TEST_SOCK"
 hold='sh -c "while :; do sleep 5; done"'
 
-[ -x "$NEXT" ] && assert_eq ok ok "amux-next-blocked is executable" \
-  || assert_eq "" exec "amux-next-blocked is executable"
+[ -x "$NEXT" ] && assert_eq ok ok "roost-next-blocked is executable" \
+  || assert_eq "" exec "roost-next-blocked is executable"
 
 # nothing blocked -> a silent no-op that changes no selection
 w0="$(T display-message -p '#{window_id}')"

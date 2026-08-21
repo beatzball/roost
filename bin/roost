@@ -1,0 +1,475 @@
+#!/usr/bin/env bash
+# roost — launch an on-demand tmux "agent view" on its own isolated server.
+#
+# Your normal `tmux` is untouched: roost uses a separate socket (-L roost) and its
+# own config (tmux/roost.conf), so it never sees or disturbs your regular
+# sessions. Run your AI coding agents inside it; Claude Code hooks badge each
+# pane by state (💥 error · 🛑 blocked · ⏳ working · ✅ done · 💤 idle).
+#
+# All roost sessions share one server, so the status counts and `prefix a`
+# switcher roll up across every session.
+#
+#   roost                    start/attach the default session ("main")
+#   roost session NAME       start/attach a named session (roost session a, ...)
+#   roost new NAME [SESSION] open a new agent window and attach (default session "main")
+#   roost spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
+#   roost split [-h|-v] [-t P] [-n NAME] [CMD]  open a helper pane in the current window; prints its %N
+#   roost whoami             print this agent's own pane id (%N)
+#   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
+#   roost send TGT TEXT      type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW)
+#   roost read TGT [N]       print an agent's last N non-blank lines (default 40)
+#   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
+#   roost hooks              print the Claude Code hook config that powers the badges
+#   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
+#   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
+#   roost init               setup wizard: writes ~/.config/roost/roost.conf
+#   roost settings           change theme/glyphs/separator/notifications, live
+#   roost status             list running sessions + agents
+#   roost kill [SESSION]     kill one session, or the whole server if none given
+set -euo pipefail
+
+# Resolve the repo root even when invoked via a symlink on PATH.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+# Socket: a name (-L, production default "roost") or, for tests, a path (-S).
+SOCKET="${ROOST_SOCKET:-roost}"
+case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
+DEFAULT_SESSION="main"
+CONF="$ROOST_HOME/tmux/roost.conf"
+
+t() { tmux "$_SOCKET_FLAG" "$SOCKET" "$@"; }
+
+server_running()  { t list-sessions >/dev/null 2>&1; }        # ≥1 session exists
+session_exists()  { t has-session -t "=$1" 2>/dev/null; }      # exact-name match
+
+# Create the session if missing. The first session boots the server with our
+# config (server/global options + bindings apply to every later session too).
+ensure_session() {
+  local s="$1"
+  session_exists "$s" && return 0
+  if server_running; then
+    t new-session -d -s "$s" -c "$PWD"
+  else
+    t -f "$CONF" new-session -d -s "$s" -c "$PWD"
+    t set-environment -g ROOST_HOME "$ROOST_HOME"
+    t set-option -g @roost-home "$ROOST_HOME"
+    t set-environment -g PATH "$ROOST_HOME/scripts:$PATH"
+    # User config: sourced AFTER the base conf so it overrides. -q: silent if absent.
+    ROOST_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf"
+    t set-option -g @roost-user-conf "$ROOST_USER_CONF"
+    t source-file -qF "#{@roost-user-conf}"
+  fi
+}
+
+attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$1"; }
+
+# @N (window-id) / %N (pane-id) / anything with a colon → verbatim; a bare word → default session.
+target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
+
+# A pane/window NAME containing a tab or newline corrupts every consumer that
+# treats a line as one record: `roost status` emits one line PER pane, so a
+# `\n` in the name splits it into two; the switcher's tab-delimited awk rows
+# shift every field after a `\t`, producing a selectable row with empty
+# session/window/pane key fields — selecting it runs `switch-client -t ""`,
+# the exact hazard the comment in scripts/roost-switch warns about. Reject
+# outright rather than silently stripping: a mangled name that still "worked"
+# would be a more confusing surprise later than a loud, immediate error.
+reject_bad_name() {
+  # $'\t' / $'\n' ANSI-C quoting, NOT "$(printf '\t')" — command substitution
+  # strips ALL trailing newlines, so "$(printf '\n')" collapses to the empty
+  # string and the newline arm would then match (and reject) every name.
+  case "$1" in
+    *$'\t'*|*$'\n'*)
+      echo "roost $2: NAME may not contain a tab or newline" >&2; exit 2 ;;
+  esac
+}
+
+case "${1:-up}" in
+  up|start|"")
+    attach_session "$DEFAULT_SESSION"
+    ;;
+  session|s)
+    sess="${2:?usage: roost session NAME}"
+    attach_session "$sess"
+    ;;
+  new)
+    name="${2:-agent}"; sess="${3:-$DEFAULT_SESSION}"
+    reject_bad_name "$name" new
+    ensure_session "$sess"
+    # `=$sess:` — trailing colon so a numeric session name isn't parsed as a window
+    # index (matches spawn; a bare `=0` fails "index 0 in use").
+    t new-window -t "=$sess:" -n "$name" -c "$PWD"
+    exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$sess"
+    ;;
+  state)
+    # The public state-reporting contract. Every state SOURCE calls this: the
+    # Claude Code hooks below, adapters/opencode/roost.js, and anything a user
+    # writes. It reads $TMUX and $TMUX_PANE to find the pane, and is a silent
+    # no-op outside a roost server -- which is what makes an adapter safe to
+    # leave installed when the agent runs somewhere else.
+    exec "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
+    ;;
+  doctor)
+    exec "$ROOST_HOME/scripts/roost-doctor"
+    ;;
+  init)
+    exec "$ROOST_HOME/scripts/roost-init"
+    ;;
+  settings)
+    exec "$ROOST_HOME/scripts/roost-settings"
+    ;;
+  whoami)
+    # prints the caller's pane id. $TMUX_PANE identifies the caller's pane.
+    if [ -z "${TMUX_PANE:-}" ]; then echo "roost whoami: not inside a roost session" >&2; exit 1; fi
+    me="$(t display-message -p -t "$TMUX_PANE" '#{pane_id}' 2>/dev/null || true)"
+    [ -n "$me" ] || { echo "roost whoami: not inside a roost session" >&2; exit 1; }
+    printf '%s\n' "$me"
+    ;;
+  spawn)
+    name="${2:?usage: roost spawn NAME [CMD...]}"; shift 2
+    reject_bad_name "$name" spawn
+    # Helper lands in the caller's own session when inside roost, else the default.
+    if [ -n "${TMUX_PANE:-}" ]; then
+      sess="$(t display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
+    else
+      sess="$DEFAULT_SESSION"
+    fi
+    ensure_session "$sess"
+    # Background (-d) + non-attaching: create the window WITHOUT switching the
+    # caller's focus to it (plain new-window selects it, so a client viewing the
+    # session would jump there), and print its pane id target.
+    # `=$sess:` — exact-match the session AND the trailing colon avoids tmux parsing
+    # a numeric session name as a window index (e.g. `=0` fails "index 0 in use").
+    new="$(t new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@")"
+    # Naming is best-effort; the pane id is the contract. A short-lived CMD's
+    # pane can already be gone by the time we set-option — don't let that abort
+    # the command and swallow the id we already have.
+    t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true
+    printf '%s\n' "$new"
+    ;;
+  split)
+    shift
+    dir=""; from="${TMUX_PANE:-}"; name=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -h) dir="-h"; shift ;;
+        -v) dir="-v"; shift ;;
+        -t) [ "$#" -ge 2 ] || { echo "roost split: -t needs a target" >&2; exit 2; }
+            from="$2"; shift 2 ;;
+        -n) [ "$#" -ge 2 ] || { echo "roost split: -n needs a name" >&2; exit 2; }
+            name="$2"; reject_bad_name "$name" split; shift 2 ;;
+        --) shift; break ;;
+        -*) echo "roost split: unknown flag '$1'" >&2; exit 2 ;;
+        *)  break ;;
+      esac
+    done
+    [ -n "$from" ] || { echo "roost split: not inside a roost session" >&2; exit 1; }
+    # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
+    new="$(t split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@")"
+    # A label that survives what the process calls itself: #{pane_current_command}
+    # reports a version string for some agents and changes every release.
+    # Naming is best-effort; the pane id is the contract. A short-lived CMD's
+    # pane can already be gone by the time we set-option — don't let that abort
+    # the command and swallow the id we already have.
+    [ -n "$name" ] && { t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true; }
+    printf '%s\n' "$new"
+    ;;
+  hooks)
+    cat <<JSON
+# Add this to ~/.claude/settings.json (merge into an existing "hooks" block).
+# Then run \`claude\` inside a \`roost\` window and its badge tracks its state.
+# Outside roost these hooks are silent no-ops.
+# "matcher": "permission_prompt" matters — an unmatched Notification hook also
+# fires for idle_prompt/auth_success, which would paint a finished agent red.
+# PostToolUse is what clears the red: no hook fires when you answer a permission
+# dialog, so without it the window stays blocked until the whole turn ends.
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
+    ],
+    "Notification": [
+      { "matcher": "permission_prompt",
+        "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state blocked" } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state done" } ] }
+    ]
+  }
+}
+JSON
+    ;;
+  ssh)
+    host="${2:?usage: roost ssh HOST [ARGS...]}"; shift 2
+    # Run roost on the remote (must be installed there); agents run remote,
+    # you drive them from this terminal. Just SSH + a remote roost — no daemon.
+    exec ssh -t "$host" roost "$@"
+    ;;
+  send)
+    raw="${2:?usage: roost send [SESSION:]WINDOW TEXT...}"; shift 2
+    tgt="$(target "$raw")"
+    # Validate: a typo'd target must fail loudly, not silently deliver nothing.
+    # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
+    # has already exited still resolves #{window_id} fine (the pane object is
+    # still there, frozen), but send-keys against it silently no-ops (exit 0)
+    # and the frozen screen never gains the message — so the verification
+    # below would see "not pending" (before == cur, no match in the frozen
+    # last line) and report a clean send that delivered nothing. That is
+    # exactly the silent false-success this command exists to eliminate, and
+    # a dead target is its most likely real-world instance. One
+    # display-message call fetches both fields so the two checks read the
+    # SAME snapshot of the target rather than racing two separate lookups.
+    # Separator is a plain space, NOT a tab: the split below is
+    # `wid="${info%% *}"` / `dead="${info#* }"`, plain parameter expansion
+    # that only splits on the literal character between the quotes. A tab
+    # separator would leave both expansions matching nothing — `wid` becomes
+    # the whole string (non-empty, so a bad target's emptiness check never
+    # fires) and `dead` never equals "1". #{window_id} and #{pane_dead}
+    # never contain a space, so a space is a safe, boring delimiter that
+    # this split actually breaks on.
+    info="$(t display-message -p -t "$tgt" '#{window_id} #{pane_dead}' 2>/dev/null || true)"
+    wid="${info%% *}"
+    dead="${info#* }"
+    if [ -z "$wid" ]; then
+      echo "roost send: no such target '$raw'" >&2; exit 2
+    fi
+    # Same exit code as "no such target": a dead pane is unusable for exactly
+    # the reason a nonexistent one is — the caller needs to pick a DIFFERENT
+    # target, not retry this one (retrying is what exit 1 below means).
+    if [ "$dead" = "1" ]; then
+      echo "roost send: target '$raw' is a dead pane (its command has exited); nothing would be delivered" >&2
+      exit 2
+    fi
+    # Two-step submit: literal text, a beat, then Enter. A single
+    # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
+    delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null)"
+    # Fall back to 0.3 for unset / non-numeric / multi-dot values, AND guard the
+    # sleep itself, so NO value can ever abort after the text is typed but before
+    # Enter is sent (which would leave the prompt half-delivered in the input box).
+    case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
+
+    # An empty message is a legitimate, useful send on its own — a bare Enter,
+    # e.g. to unstick a pane whose TUI already swallowed a previous submit.
+    # There is no text to verify landed, so type nothing, press Enter once,
+    # and stop right here. Do NOT run this through the verification loop
+    # below: an empty pattern collapses `case "$last" in *""*)` to `*)`,
+    # which matches ANY pane content, so `pending()` would always report
+    # "still pending" and fire every retry into a pane that had nothing to
+    # submit in the first place.
+    if [ -z "$*" ]; then
+      t send-keys -t "$tgt" Enter 2>/dev/null || true
+      exit 0
+    fi
+
+    retries="$(t show-options -gqv @roost-send-retries 2>/dev/null)"
+    case "$retries" in ''|*[!0-9]*) retries=3 ;; esac
+    # A pathologically long digit string (thousands of chars) is clamped by
+    # length BEFORE anything else touches it: `${#retries}` is an O(1) length
+    # check, so this bound can never itself be slow, and it caps the work the
+    # zero-stripping loop below could ever be asked to do.
+    [ "${#retries}" -gt 40 ] && retries=20
+    # Strip leading zeros so "007" reads as its actual value (7), not as a
+    # 3-character string that the length clamp below mistakes for >= 100.
+    # Bounded to `${#retries}` > 1 so "0" itself (and "000" once fully
+    # stripped) settles on a single "0" rather than an empty string, which
+    # would break the `[ "$n" -gt 0 ]` loop guard further down.
+    while [ "${#retries}" -gt 1 ] && [ "${retries%${retries#?}}" = 0 ]; do
+      retries="${retries#0}"
+    done
+    # Clamp to a sane upper bound. Do this by pattern first, not by `[ -gt ]`
+    # alone: an absurd digit string (hundreds of digits) can make the numeric
+    # test itself error out (or take a very long time) before it ever gets to
+    # compare against the cap, so strings of 3+ digits are clamped directly.
+    # Leading zeros are already gone above, so this now only fires for values
+    # that are genuinely >= 100.
+    case "$retries" in ???*) retries=20 ;; esac
+    [ "$retries" -gt 20 ] 2>/dev/null && retries=20 || true
+
+    # Still pending only if ALL THREE hold:
+    #   1. the pane's last non-blank line still contains the whole message, AND
+    #   2. the pane's full contents are byte-identical to how they looked right
+    #      after typing — before ANY Enter was sent (captured into $before), AND
+    #   3. the cursor position is unchanged from that same moment (captured
+    #      into $cursor_before).
+    # The substring check alone is not enough: a blank/empty prompt can leave
+    # the already-scrolled, verbatim command line as the last non-blank row
+    # even after a real submit, and a TUI can echo the submitted message into
+    # its transcript before it clears the input box or renders a response. A
+    # genuine submit almost always changes the screen somehow — prompt
+    # redraw, output, a spinner, the transcript moving — so requiring
+    # "nothing on screen changed at all" makes a false "not submitted" much
+    # harder to reach than the substring check on its own.
+    # But text-unchanged is NOT sufficient either: it cannot distinguish "the
+    # Enter was never accepted" from "the Enter was accepted and the command
+    # just hasn't printed anything yet". A command that is silent for the
+    # ~1s retry window (a `sleep`, anything slow to start) looks identical to
+    # a swallowed Enter on screen alone, and reports a false "not submitted"
+    # 100% of the time — this is not a load-dependent flake, it is
+    # deterministic. Cursor position resolves the ambiguity: the tty echoes
+    # the newline through the line discipline the moment Enter is ACCEPTED,
+    # independent of when (or whether) the command produces output. So a
+    # real submit moves the cursor right away even in dead silence, while a
+    # swallowed Enter leaves it exactly where it was.
+    # Trade-off, accepted on purpose: a TUI that animates continuously (a
+    # clock, a spinner) will never look byte-identical to its own earlier
+    # snapshot, so this retry path will not fire there even for a genuinely
+    # swallowed Enter. That is the side to be wrong on: a false "submitted"
+    # just degrades to the old (pre-fix) behavior, while a false "not
+    # submitted" fires a spurious Enter that can re-run a command. Adding the
+    # cursor check is an additional conjunct, not a replacement, for the same
+    # reason: requiring one more thing to hold only makes a false "not
+    # submitted" harder to reach, never easier.
+    pending() {
+      local cur last cursor_now
+      cur="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+      [ "$cur" = "$before" ] || return 1
+      cursor_now="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+      [ "$cursor_now" = "$cursor_before" ] || return 1
+      last="$(printf '%s\n' "$cur" | grep -v '^[[:space:]]*$' | tail -n 1)"
+      case "$last" in *"$1"*) return 0 ;; *) return 1 ;; esac
+    }
+
+    # This one's status is NOT discarded: unlike the Enters below (where
+    # aborting mid-loop is the worse outcome), a failure HERE means the text
+    # never reached the pane at all — there is nothing to retry or verify, so
+    # let it surface as a loud failure instead of falling through to report
+    # exit 0 for a message that was never typed.
+    if ! t send-keys -t "$tgt" -l -- "$*" 2>/dev/null; then
+      echo "roost send: failed to type text into '$raw' (pane may have died)" >&2
+      exit 1
+    fi
+    sleep "$delay" 2>/dev/null || true
+    before="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+    # Same call shape as the #{window_id} #{pane_dead} fetch above, and the
+    # same reasoning applies to the separator: #{cursor_x} and #{cursor_y}
+    # are always plain digits, so a plain space can never appear inside
+    # either field and is a safe, boring delimiter. Unlike that earlier call
+    # we never split this value — it is only ever compared for equality
+    # against a later snapshot taken the same way — so there is nothing here
+    # for a wrong separator to silently break; the space is kept anyway for
+    # consistency and so the raw string is readable if ever logged.
+    cursor_before="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+    t send-keys -t "$tgt" Enter 2>/dev/null || true
+
+    n="$retries"
+    while [ "$n" -gt 0 ]; do
+      sleep "$delay" 2>/dev/null || true
+      pending "$*" || break
+      # A cold TUI can swallow the first Enter entirely; try again. Guarded:
+      # a pane that dies mid-loop must not abort the script with tmux's raw
+      # error — it should fall through to the same conservative handling as
+      # any other "can no longer tell" case below.
+      t send-keys -t "$tgt" Enter 2>/dev/null || true
+      n=$((n - 1))
+    done
+
+    if [ "$retries" -gt 0 ] && pending "$*"; then
+      echo "roost send: text typed into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
+      exit 1
+    fi
+    ;;
+  read)
+    raw="${2:?usage: roost read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    # Drop the pane's trailing blank rows, keep the last N non-empty lines.
+    t capture-pane -p -t "$(target "$raw")" | grep -v '^[[:space:]]*$' | tail -n "$lines"
+    ;;
+  wait-done|wait)
+    raw="${2:?usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
+    tgt="$(target "$raw")"
+    # A %N target is pane-precise; anything else aggregates the window's agent
+    # panes. The two cases MUST branch on the target form: `list-panes -t %N`
+    # lists that pane's whole WINDOW, not the single pane.
+    # State is a PANE option, so it is read with display-message (which resolves
+    # pane scope). `show-options -wqv` exits 0 with EMPTY output for a pane
+    # option, so a `|| echo idle` fallback never fires and the empty string
+    # matches neither done nor idle — the wait loop would hang until timeout.
+    busy() {
+      case "$tgt" in
+        %*)
+          case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
+            working|blocked) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+        *)
+          # Command substitution, NOT a pipe into `grep -q`: bin/roost runs under
+          # `set -o pipefail`, and grep exiting early can SIGPIPE list-panes, so
+          # the pipeline would report failure even when a pane IS busy — and
+          # wait-done would return immediately on a working agent.
+          states="$(t list-panes -t "$tgt" -F '#{@agent_state}' 2>/dev/null || true)"
+          case "$states" in
+            *working*|*blocked*) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+    }
+    # An errored agent will never become done, so treating it as "still busy"
+    # would wait forever, and falling through to the default *) arm (as
+    # working|blocked's absence used to) would report a dead agent as
+    # successfully finished — the one wrong answer a coordinating agent
+    # cannot recover from. Check and stop explicitly instead.
+    errored() {
+      case "$tgt" in
+        %*)
+          case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
+            error) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+        *)
+          states="$(t list-panes -t "$tgt" -F '#{@agent_state}' 2>/dev/null || true)"
+          case "$states" in
+            *error*) return 0 ;;
+            *) return 1 ;;
+          esac
+          ;;
+      esac
+    }
+    while :; do
+      if errored; then
+        echo "roost: '$raw' is in error state, not done" >&2; exit 1
+      fi
+      busy || break
+      sleep 1; waited=$((waited + 1))
+      if [ "$timeout" -gt 0 ] && [ "$waited" -ge "$timeout" ]; then
+        echo "roost: timed out waiting for '$raw'" >&2; exit 1
+      fi
+    done
+    exit 0
+    ;;
+  status)
+    if server_running; then
+      echo "roost: running (socket=$SOCKET)"
+      t list-sessions -F '  session #{session_name} — #{session_windows} windows#{?session_attached, [attached],}'
+      # Emptiness test, not truthiness: #{?@roost-name,...} treats the string "0"
+      # as false, so a pane literally named "0" would wrongly fall back to
+      # #{pane_current_command} here.
+      # The "/LABEL" suffix is suppressed when LABEL == window_name: `spawn NAME`
+      # names the window AND the pane from the same NAME, so an unconditional
+      # suffix would print "api-agent/api-agent" — an echo of the window name
+      # where real signal (what's running) belongs. LABEL is inlined twice
+      # (once in the #{==:} test, once as the shown suffix) rather than
+      # factored through a second #{E:} indirection — see tmux/roost.conf's
+      # window-status-format comment for why.
+      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{@agent_state},-}]'
+    else echo "roost: not running"; fi
+    ;;
+  kill|down|stop)
+    if [ -n "${2:-}" ]; then
+      t kill-session -t "=$2" 2>/dev/null && echo "roost: session '$2' killed." || echo "roost: no session '$2'."
+    else
+      t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
+    fi
+    ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
+esac

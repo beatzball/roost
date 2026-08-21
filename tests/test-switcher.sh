@@ -2,13 +2,13 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; trap amux_test_teardown EXIT
-T source-file "$HERE/tmux/amux.conf"
-T set-option -g @amux-home "$HERE"
+roost_test_server; trap roost_test_teardown EXIT
+T source-file "$HERE/tmux/roost.conf"
+T set-option -g @roost-home "$HERE"
 
 # prefix a target script exists and is executable
-[ -x "$HERE/scripts/amux-switch" ] && assert_eq ok ok "amux-switch is executable" \
-  || assert_eq "" exec "amux-switch is executable"
+[ -x "$HERE/scripts/roost-switch" ] && assert_eq ok ok "roost-switch is executable" \
+  || assert_eq "" exec "roost-switch is executable"
 
 # rollup: counts AGENT PANES, not windows. Two agents in one window count twice;
 # a plain shell counts not at all.
@@ -20,7 +20,7 @@ T new-window -d              # a window of plain shells — contributes nothing
 T set-option -p -t "$p0"  @agent_state blocked
 T set-option -p -t "$p0b" @agent_state idle
 T set-option -p -t "$p1"  @agent_state working
-out="$(AMUX_STATUS_SOCK="$AMUX_TEST_SOCK" "$HERE/scripts/amux-status" 2>/dev/null || true)"
+out="$(ROOST_STATUS_SOCK="$ROOST_TEST_SOCK" "$HERE/scripts/roost-status" 2>/dev/null || true)"
 assert_contains "$out" "🛑 1" "rollup shows one blocked (🛑 1)"
 assert_contains "$out" "⏳ 1" "rollup shows one working (⏳ 1)"
 assert_contains "$out" "💤 1" "rollup counts the idle AGENT pane, not the plain shells"
@@ -29,10 +29,10 @@ case "$out" in *'#[fg='*) assert_eq "has-codes" "none" "rollup emits no raw colo
   *) assert_eq ok ok "rollup emits no raw colour codes" ;; esac
 
 # --- switcher rows (fzf needs a tty, so dump the composed rows instead) ---
-T set-option -g @amux-glyph-blocked "B"
-T set-option -g @amux-glyph-working "W"
-T set-option -g @amux-glyph-idle    "I"
-rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+T set-option -g @roost-glyph-blocked "B"
+T set-option -g @roost-glyph-working "W"
+T set-option -g @roost-glyph-idle    "I"
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 
 # Field-match with awk rather than grepping for literal tabs — a tab that gets
 # mangled into spaces on edit would make these assertions quietly meaningless.
@@ -68,19 +68,19 @@ T rename-window -t "$w0" apiwin
 # by a later automatic-rename tick. Confirm rather than assume.
 assert_eq "$(T show-options -wqv -t "$w0" automatic-rename)" "off" \
   "an explicit rename-window disables automatic-rename for that window"
-rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 assert_contains "$(prows "$p0b")" "apiwin·" "a pane row names its window, so filtered rows keep context"
 
 # ...and the suffix is SUPPRESSED when the pane's resolved label equals the
-# window name — the pairing `amux spawn NAME` produces, since it names the
+# window name — the pairing `roost spawn NAME` produces, since it names the
 # window and the pane from the same NAME. Reproduce that pairing directly
-# (explicit rename + explicit @amux-name) rather than hoping automatic-rename
+# (explicit rename + explicit @roost-name) rather than hoping automatic-rename
 # happens to land on a matching value.
 w3="$(T new-window -d -PF '#{window_id}')"
 p3="$(T display-message -p -t "$w3" '#{pane_id}')"
 T rename-window -t "$w3" samename
-T set-option -p -t "$p3" @amux-name samename
-rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+T set-option -p -t "$p3" @roost-name samename
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 prow3="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p3" '$3==p')"
 assert_contains "$prow3" "samename" "a pane row whose label equals its window name still shows the name"
 case "$prow3" in
@@ -91,7 +91,7 @@ esac
 # a non-agent pane shows the idle glyph and no state word
 T new-window -d
 plain="$(T list-panes -a -F '#{pane_id} #{@agent_state}' | awk '$2==""{print $1; exit}')"
-rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 prow="$(prows "$plain")"
 assert_contains "$prow" "I" "a non-agent pane row shows the idle glyph"
 case "$prow" in *blocked*|*working*|*done*|*idle*)
@@ -106,16 +106,16 @@ runs="$(printf '%s\n' "$rows" | cut -f2 | uniq | wc -l | tr -d ' ')"
 uniq="$(printf '%s\n' "$rows" | cut -f2 | sort -u | wc -l | tr -d ' ')"
 assert_eq "$runs" "$uniq" "each window's rows form one contiguous run"
 
-# --- switcher prefers @amux-name over the process name ---
-T set-option -p -t "$p0" @amux-name "planner"
-rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+# --- switcher prefers @roost-name over the process name ---
+T set-option -p -t "$p0" @roost-name "planner"
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$p0" '$3==p')" "planner" \
   "a named pane's switcher row shows the name"
-T set-option -pu -t "$p0" @amux-name
+T set-option -pu -t "$p0" @roost-name
 
 # The fallback is asserted against a pane PINNED to a long-lived command, not
 # against a second read of a live value. This used to read
-# #{pane_current_command} here and compare it to what amux-switch had read
+# #{pane_current_command} here and compare it to what roost-switch had read
 # moments earlier — two samples of a live value, compared as if they were one.
 # It failed 3 times in 400 runs, in BOTH directions. The churn came from the
 # pane's shell sourcing its rc files, which tests/lib.sh now avoids, but a
@@ -134,9 +134,9 @@ for _ in $(seq 1 50); do
 done
 assert_eq "$(T display-message -p -t "$pf" '#{pane_current_command}')" "sleep" \
   "the pinned pane reports a stable command"
-# apiwin is not "sleep", so amux-switch's suffix-suppression branch does not
+# apiwin is not "sleep", so roost-switch's suffix-suppression branch does not
 # fire and the row carries the dot-suffix. Asserting "·sleep" rather than bare
 # "sleep" also stops this passing on some unrelated substring.
-rows="$(AMUX_SWITCH_SOCK="$AMUX_TEST_SOCK" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$pf" '$3==p')" "·sleep" \
   "an unnamed pane's switcher row falls back to the command"

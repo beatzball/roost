@@ -2,7 +2,7 @@
 """Fail if any shipped theme violates the readability thresholds.
 Metrics: WCAG contrast for text-on-bg (luminance); CIE76 ΔE for
 'are these two chips distinguishable' (hue+luminance). ΔE >= 20 is
-calibrated from the amux default the user accepted (logo/active = 23.4)."""
+calibrated from the roost default the user accepted (logo/active = 23.4)."""
 import math, subprocess, sys, os
 
 def rgb(h): h=h.lstrip('#'); return tuple(int(h[i:i+2],16) for i in (0,2,4))
@@ -25,11 +25,11 @@ ROLES=["bar-bg","bar-fg","logo-bg","active-bg","active-fg","idle-fg"]
 
 def load_themes():
     here=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src=os.path.join(here,"scripts","amux-themes.sh")
-    names=subprocess.check_output(["sh","-c",f'. "{src}"; amux_theme_names'],text=True).split()
+    src=os.path.join(here,"scripts","roost-themes.sh")
+    names=subprocess.check_output(["sh","-c",f'. "{src}"; roost_theme_names'],text=True).split()
     out={}
     for n in names:
-        vals=subprocess.check_output(["sh","-c",f'. "{src}"; amux_theme {n}'],text=True).split()
+        vals=subprocess.check_output(["sh","-c",f'. "{src}"; roost_theme {n}'],text=True).split()
         out[n]=dict(zip(ROLES,vals))
     return out
 

@@ -1,9 +1,9 @@
-# amux
+# roost
 
 An on-demand tmux **agent view** for wrangling multiple AI coding agents —
 without giving up your normal tmux setup or switching to a different terminal.
 
-`amux` runs on its **own isolated tmux server** with its own config, so your
+`roost` runs on its **own isolated tmux server** with its own config, so your
 everyday `tmux` (config, sessions, plugins, muscle memory) is **never touched**.
 Launch it with one command, run your agents as panes or windows inside it,
 and each is badged with what its agent is doing:
@@ -14,11 +14,11 @@ State comes from **Claude Code's own lifecycle hooks** — not from scraping
 process names or terminal output — so it's accurate rather than guessed. No
 external plugins, no compiled binary, nothing that reaches into `~/.tmux.conf`.
 
-![amux in a real session — the badged agent status bar up top, editor and agent panes below, and the live `amux settings` popup open in the middle](assets/amux-overview.png)
+![roost in a real session — the badged agent status bar up top, editor and agent panes below, and the live `roost settings` popup open in the middle](assets/roost-overview.png)
 
 ## Prior art & credit
 
-Watching agent state from inside tmux is a well-trodden idea; `amux` is a
+Watching agent state from inside tmux is a well-trodden idea; `roost` is a
 deliberately minimal, isolation-first take on it. If you want a richer,
 sidebar-style experience, these projects pioneered the approach and are worth
 your time:
@@ -29,31 +29,31 @@ your time:
 - [craftzdog/tmux-claude-session-manager](https://github.com/craftzdog/tmux-claude-session-manager) — a popup picker across running Claude sessions
 - [flavio87/tap-to-tmux](https://github.com/flavio87/tap-to-tmux) — phone push when an agent needs you
 
-`amux` trades their richness for staying completely out of your primary tmux and
+`roost` trades their richness for staying completely out of your primary tmux and
 owning nothing but a few small shell files you can read end to end.
 
 ## Requirements
 
 - `tmux` ≥ 3.2  (needs pane options, `#{P:}` pane loops, and `display-popup`)
 - `git`
-- A powerline/Nerd Font for the tab separators — or run `amux init` and pick the
+- A powerline/Nerd Font for the tab separators — or run `roost init` and pick the
   plain-separator fallback
 - Claude Code (for the state badges; the view itself works without it)
 - Optional: `fzf` (for the `prefix a` agent switcher)
 
 ## Install
 
-`amux` is just a script — put `bin/` on your `PATH`. Clone it wherever you keep
+`roost` is just a script — put `bin/` on your `PATH`. Clone it wherever you keep
 tools, then either add its `bin/` to `PATH` or symlink the launcher:
 
 ```sh
-git clone <this-repo> amux
+git clone <this-repo> roost
 
 # option A — add bin/ to PATH (in ~/.zshrc):
-echo 'export PATH="$HOME/path/to/amux/bin:$PATH"' >> ~/.zshrc && exec zsh
+echo 'export PATH="$HOME/path/to/roost/bin:$PATH"' >> ~/.zshrc && exec zsh
 
 # option B — symlink onto an existing PATH dir:
-ln -s "$PWD/amux/bin/amux" /usr/local/bin/amux
+ln -s "$PWD/roost/bin/roost" /usr/local/bin/roost
 ```
 
 The launcher resolves its own location (following symlinks), so it finds its
@@ -62,63 +62,57 @@ config and scripts no matter where you run it from.
 ## Setup
 
 ```sh
-amux doctor   # check tmux version, truecolor, fzf, notifier, hooks
-amux init     # pick theme, glyph set, separator style; print the Claude hooks
+roost doctor   # check tmux version, truecolor, fzf, notifier, hooks
+roost init     # pick theme, glyph set, separator style; print the Claude hooks
 ```
 
-`amux init` writes `~/.config/amux/amux.conf` and is safe to re-run (it backs up
-the previous file). Reload a running amux with `prefix + r`.
+`roost init` writes `~/.config/roost/roost.conf` and is safe to re-run (it backs up
+the previous file). Reload a running roost with `prefix + r`.
 
-**Upgrading a running server:** `prefix + r` also migrates any leftover
-window-scoped agent state from before per-pane state existed, so a server you
-started on an older amux upgrades in place — no restart needed. To do it
-without touching a pane (e.g. from outside amux), run
-`scripts/amux-migrate-state` once instead.
-
-**Themes:** `amux`, `catppuccin-mocha`, `catppuccin-latte`, `tokyonight-storm`,
-`tokyonight-day`, `gruvbox`, `nord`, `rose-pine`. Pick one in `amux init`, or
-set `@amux-color-*` options by hand in `~/.config/amux/amux.conf`.
+**Themes:** `roost`, `catppuccin-mocha`, `catppuccin-latte`, `tokyonight-storm`,
+`tokyonight-day`, `gruvbox`, `nord`, `rose-pine`. Pick one in `roost init`, or
+set `@roost-color-*` options by hand in `~/.config/roost/roost.conf`.
 
 ### Changing settings later
 
-`amux settings` opens an fzf menu to change the **theme**, **glyph set**,
+`roost settings` opens an fzf menu to change the **theme**, **glyph set**,
 **separator**, and **notifications** — one at a time. Each pick applies live to
-the running server (no restart) and is saved to `~/.config/amux/amux.conf`.
-Inside amux, press **`prefix S`** (`Ctrl-s S`) to open it right where you are.
+the running server (no restart) and is saved to `~/.config/roost/roost.conf`.
+Inside roost, press **`prefix S`** (`Ctrl-s S`) to open it right where you are.
 
-Unlike `amux init` (which regenerates the whole config), `amux settings` edits
+Unlike `roost init` (which regenerates the whole config), `roost settings` edits
 just the one line it changes, leaving any hand-added config untouched.
 
 The **theme**, **glyph**, and **separator** pickers preview live: as you move through the list
 the bar updates on the running server, **Enter** commits the choice, and **Esc**
 reverts to what you had. The currently-saved option is marked with a `✓`.
 
-![The glyph-set picker drilled down — each set (emoji, orbs, ascii, nerd) shows its own icons, and `✓` marks the one currently saved](assets/amux-settings-glyphs.png)
+![The glyph-set picker drilled down — each set (emoji, orbs, ascii, nerd) shows its own icons, and `✓` marks the one currently saved](assets/roost-settings-glyphs.png)
 
 ## Use
 
 ```sh
-amux             # start/attach the default session ("main")
-amux session a   # start/attach a named session — as many as you like
-amux session b   # a second workspace, sharing the same server
-amux new api     # open a new agent window named "api" and attach
-amux status      # list running sessions + agents and their states
-amux kill a      # kill session "a" (omit the name to stop the whole server)
-amux settings    # change theme/glyphs/separator/notifications, live
+roost             # start/attach the default session ("main")
+roost session a   # start/attach a named session — as many as you like
+roost session b   # a second workspace, sharing the same server
+roost new api     # open a new agent window named "api" and attach
+roost status      # list running sessions + agents and their states
+roost kill a      # kill session "a" (omit the name to stop the whole server)
+roost settings    # change theme/glyphs/separator/notifications, live
 ```
 
-Detach with the prefix then `d`, like any tmux. Inside `amux`, run your agents
+Detach with the prefix then `d`, like any tmux. Inside `roost`, run your agents
 as windows (`claude`, `codex`, `aider`, …) and the status bar shows one badged
 tab per agent — so you can see who's blocked at a glance.
 
 **Sessions** all share one server, so the status counts and the `prefix a`
-switcher roll up across every session — `amux session a` and `amux session b`
+switcher roll up across every session — `roost session a` and `roost session b`
 give you separate workspaces you attach/reattach independently, while still
 seeing the whole herd in one place.
 
 **Window names** auto-follow each agent's project (the basename of its working
 directory), so an agent in `~/work/api` shows up as `api`. Give a window an
-explicit name with `amux new NAME` or the rename key and it sticks.
+explicit name with `roost new NAME` or the rename key and it sticks.
 
 ### Keys
 
@@ -135,7 +129,7 @@ tmux config, so there's nothing new to learn:
 | `prefix C-c` | new session |
 | `prefix a` | **agent switcher** — fzf popup of all agents + state + elapsed time |
 | `prefix b` | **jump to the agent that needs you** (error, else blocked) |
-| `prefix r` | reload amux config |
+| `prefix r` | reload roost config |
 | `prefix S` | **settings** — fzf menu to change theme/glyphs/separator/notifications, live |
 
 ### At-a-glance signals
@@ -146,7 +140,7 @@ tmux config, so there's nothing new to learn:
   want your attention, and the glyphs are read back off the windows, so they
   can never disagree with the tabs.
 - **Desktop notification** — when an agent you're *not* looking at becomes
-  blocked (needs input), amux pings you with a native desktop notification. Only
+  blocked (needs input), roost pings you with a native desktop notification. Only
   `blocked` notifies — `done` fires every turn and would be noise.
   `error` notifies too: an agent that has stopped making progress needs you just
   as much as one waiting for an answer. Delivery is cross-platform, tried in
@@ -154,15 +148,15 @@ tmux config, so there's nothing new to learn:
   `powershell.exe`), Linux (`notify-send`, when a display is
   present), falling back to an in-tmux
   `display-message` if nothing else is available (e.g. a headless remote
-  session with no OS notifier reachable). Set `@amux-notify-backend` to `tmux`
+  session with no OS notifier reachable). Set `@roost-notify-backend` to `tmux`
   to always use the in-tmux message, or `none` to disable notifications
   entirely; the default is `auto`.
 
-  For full control, set `@amux-notify-cmd` to your own command — `%t` is
+  For full control, set `@roost-notify-cmd` to your own command — `%t` is
   replaced with the title and `%s` with the message, e.g.:
 
   ```sh
-  set -g @amux-notify-cmd 'notify-send "%t" "%s"'
+  set -g @roost-notify-cmd 'notify-send "%t" "%s"'
   ```
 
   Reference the placeholders double-quoted (`"%s"`) or bare — never
@@ -177,49 +171,49 @@ tmux config, so there's nothing new to learn:
 
 ## Driving a fleet
 
-amux exposes tmux's scripting as small agent-shaped commands, so you (or a
+roost exposes tmux's scripting as small agent-shaped commands, so you (or a
 script, or one agent) can drive the others:
 
 ```sh
-amux send api "run the tests"   # type a prompt + Enter into the "api" agent
-amux read api 20                # print that agent's last 20 non-blank lines
-amux wait-done api              # block until "api" is done/idle
-amux wait-done api 300          # ...with a 5-minute timeout
+roost send api "run the tests"   # type a prompt + Enter into the "api" agent
+roost read api 20                # print that agent's last 20 non-blank lines
+roost wait-done api              # block until "api" is done/idle
+roost wait-done api 300          # ...with a 5-minute timeout
 ```
 
 Targets are `[SESSION:]WINDOW` — a bare name (`api`) resolves against the
-default `main` session; qualify it (`amux send b:api …`, or by index `b:2`) to
+default `main` session; qualify it (`roost send b:api …`, or by index `b:2`) to
 reach an agent in another session.
 
 Combine them to orchestrate parallel work:
 
 ```sh
-for w in api web worker; do amux send "$w" "update the changelog"; done
-for w in api web worker; do amux wait-done "$w"; done
+for w in api web worker; do roost send "$w" "update the changelog"; done
+for w in api web worker; do roost wait-done "$w"; done
 echo "all three agents finished"
 ```
 
-### Driving agents from inside amux
+### Driving agents from inside roost
 
-An agent (or you) can coordinate the fleet from inside amux. Targets are
+An agent (or you) can coordinate the fleet from inside roost. Targets are
 stable ids (e.g. `%12`) captured from `spawn`/`split`/`whoami` — capture them
 in a variable and reuse them; friendly `session:index`/name forms still work
 too.
 
-- `amux whoami` — this agent's own target (its `%N`)
-- `amux spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
-- `amux split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
-- `amux send TARGET "…"` — reliably type a prompt into an agent and submit it
-- `amux wait-done TARGET` / `amux read TARGET` — wait for it to finish, then read the reply
+- `roost whoami` — this agent's own target (its `%N`)
+- `roost spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
+- `roost split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
+- `roost send TARGET "…"` — reliably type a prompt into an agent and submit it
+- `roost wait-done TARGET` / `roost read TARGET` — wait for it to finish, then read the reply
 
-`amux send` verifies its own submit rather than trusting a fire-and-forget
+`roost send` verifies its own submit rather than trusting a fire-and-forget
 `send-keys`, and its exit code says what went wrong: **exit 2** means the
 target is unusable — it doesn't exist, or its pane is dead — re-resolve the
 target. **Exit 1** means delivery to a valid target failed — either the text
 never reached the pane (typing itself failed) or it was typed but never left
 the input line even after retrying extra Enters — retry the same target or
 inspect the pane, don't re-resolve it. A missing argument also exits 1, but
-as a `usage:` line rather than an `amux send:` one — that's a caller bug, not
+as a `usage:` line rather than a `roost send:` one — that's a caller bug, not
 a delivery failure.
 
 `spawn` (window) is for a co-agent you `wait-done` on independently; `split`
@@ -229,17 +223,17 @@ with its window, so `wait-done` on it isn't per-pane.
 For LLM agents, install the portable skill so they know the loop:
 
 ```sh
-npx skills add beatzball/amux --skill amux    # or copy skills/amux/SKILL.md into your agent's instructions
+npx skills add beatzball/roost --skill roost    # or copy skills/roost/SKILL.md into your agent's instructions
 ```
 
 ### Remote agents
 
 Run agents on another machine and drive them from here — tmux-native, no daemon
-(amux must be installed on the remote):
+(roost must be installed on the remote):
 
 ```sh
-amux ssh devbox         # ssh -t devbox amux  → attach the remote agent view
-amux ssh devbox new api # forward any subcommand to the remote amux
+roost ssh devbox         # ssh -t devbox roost  → attach the remote agent view
+roost ssh devbox new api # forward any subcommand to the remote roost
 ```
 
 ## Enable the state badges (one-time)
@@ -247,7 +241,7 @@ amux ssh devbox new api # forward any subcommand to the remote amux
 The badges are driven by four Claude Code hooks. Print the snippet:
 
 ```sh
-amux hooks
+roost hooks
 ```
 
 Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
@@ -267,7 +261,7 @@ Two of those are subtler than they look:
   dialog, so it's the first observable event after you approve. Without it a
   window stays red from your approval until the whole turn ends.
 
-`scripts/amux-agent-state` is a **no-op unless it runs inside an amux pane**, so
+`scripts/roost-agent-state` is a **no-op unless it runs inside a roost pane**, so
 it's safe in your global Claude settings — running `claude` elsewhere does
 nothing. It also returns early when the state is already correct, which keeps it
 cheap on `PostToolUse` (that fires on every single tool call, and Claude waits
@@ -279,20 +273,20 @@ Badges are not Claude-only. Any agent can report its state through one public
 command:
 
 ```sh
-amux state working    # or: blocked, done, error, idle
+roost state working    # or: blocked, done, error, idle
 ```
 
-It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside an
-amux session — so it is safe to wire into a global config.
+It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside a
+roost session — so it is safe to wire into a global config.
 
 **opencode** has an adapter in this repo. Symlink it into place:
 
 ```sh
 mkdir -p ~/.config/opencode/plugin
-ln -s "$HOME/path/to/amux/adapters/opencode/amux.js" ~/.config/opencode/plugin/amux.js
+ln -s "$HOME/path/to/roost/adapters/opencode/roost.js" ~/.config/opencode/plugin/roost.js
 ```
 
-A symlink rather than a copy, so updating amux updates the plugin. `amux doctor`
+A symlink rather than a copy, so updating roost updates the plugin. `roost doctor`
 prints this exact command with the real path for your checkout, so run that if
 you're unsure what to fill in — it also confirms once the plugin is linked.
 
@@ -302,36 +296,35 @@ after an opencode upgrade.
 
 ## How it works
 
-- `bin/amux` starts `tmux -L amux -f tmux/amux.conf` — a second tmux server,
+- `bin/roost` starts `tmux -L roost -f tmux/roost.conf` — a second tmux server,
   fully separate from your default one (different socket, different config).
-- `tmux/amux.conf` badges each window from its **panes**: one glyph per distinct
+- `tmux/roost.conf` badges each window from its **panes**: one glyph per distinct
   agent state present, urgency-ordered and deduplicated, computed live from
   `#{P:}` so a pane dying never leaves a stale badge. Glyphs are shape-distinct
   (not just colour-distinct), so the bar still reads correctly if you're
   colourblind. Backgrounds mark only which window is **active**, which keeps
   every tab's text high-contrast.
-- Claude hooks call `scripts/amux-agent-state <state>`, which stamps the **pane**
+- Claude hooks call `scripts/roost-agent-state <state>`, which stamps the **pane**
   identified by `$TMUX_PANE`, then repaints. Pane scope is what lets two agents
-  share one window — `amux split` puts a second agent beside the first without
+  share one window — `roost split` puts a second agent beside the first without
   either clobbering the other's badge. A pane is an agent only if it has been
   stamped, so a plain shell or a `tail -f` never badges anything.
 
 ## Layout
 
 ```
-bin/amux                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, doctor, init, settings, status, kill)
-tmux/amux.conf           # the isolated agent-view config
-scripts/amux-agent-state # hook target that records agent state (+ elapsed-time stamp, block notify)
-scripts/amux-status      # status-bar roll-up of agent-pane counts
-scripts/amux-switch      # fzf agent switcher, panes grouped by window (prefix a)
-scripts/amux-notify      # cross-platform desktop notification delivery
-scripts/amux-doctor      # preflight checks (tmux version, truecolor, hooks, notifier)
-scripts/amux-init        # setup wizard (theme, glyphs, separator style, prints hooks)
-scripts/amux-settings    # live settings TUI (prefix S) — change theme/glyphs/separator/notifications
-scripts/amux-migrate-state # clear pre-pane-state window options from a running server (used by reload)
-scripts/amux-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
-scripts/amux-themes.sh   # built-in theme palettes
-scripts/lib/amux-config.sh # shared config helpers (surgical writer, glyph/sep maps, live-apply)
+bin/roost                 # launcher / CLI (up, new, ssh, send, read, wait-done, hooks, doctor, init, settings, status, kill)
+tmux/roost.conf           # the isolated agent-view config
+scripts/roost-agent-state # hook target that records agent state (+ elapsed-time stamp, block notify)
+scripts/roost-status      # status-bar roll-up of agent-pane counts
+scripts/roost-switch      # fzf agent switcher, panes grouped by window (prefix a)
+scripts/roost-notify      # cross-platform desktop notification delivery
+scripts/roost-doctor      # preflight checks (tmux version, truecolor, hooks, notifier)
+scripts/roost-init        # setup wizard (theme, glyphs, separator style, prints hooks)
+scripts/roost-settings    # live settings TUI (prefix S) — change theme/glyphs/separator/notifications
+scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
+scripts/roost-themes.sh   # built-in theme palettes
+scripts/lib/roost-config.sh # shared config helpers (surgical writer, glyph/sep maps, live-apply)
 ```
 
 Requires `fzf` for the `prefix a` switcher (it degrades to a hint if missing);

@@ -9,7 +9,7 @@ and ran fine — deterministically, not as a rare flake, whenever the command
 stayed silent for about a second (`retries × delay`, ~0.9s by default).
 
 Fix: add cursor position as a third conjunct to the existing "still pending"
-check in `pending()` inside the `send)` branch of `bin/amux`.
+check in `pending()` inside the `send)` branch, now `bin/roost:223`.
 
 ## Reproduction before the fix
 
