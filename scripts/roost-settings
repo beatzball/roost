@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# roost settings — fzf TUI to change roost appearance live. Reads current values;
+# each pick writes the config, reloads the running server, and re-stamps glyphs.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+. "$HERE/roost-themes.sh"
+. "$HERE/lib/roost-config.sh"
+
+SELF="$HERE/roost-settings"
+
+# Hidden mode: fzf's focus binding re-invokes us to paint a live preview onto the
+# running server (server-only, no config write). Runs before the fzf check so it
+# works headlessly.
+if [ "${1:-}" = "--apply-preview" ]; then
+  roost_preview_apply "${2:-}" "${3:-}"; exit 0
+fi
+
+FZF="${ROOST_FZF:-fzf}"
+if ! command -v "$FZF" >/dev/null 2>&1; then
+  echo "install fzf to use roost settings" >&2; exit 0
+fi
+
+# fzf >= ~0.30 supports the 'focus' event (fires on cursor move). Probe once so
+# older fzf silently degrades to a plain (non-preview) pick.
+if printf 'x\n' | "$FZF" --sync --filter=x --bind 'focus:ignore' >/dev/null 2>&1; then
+  ROOST_FOCUS=1; else ROOST_FOCUS=0; fi
+
+pick() { "$FZF" --reverse --no-info --prompt="$1 > "; }
+
+apply_theme() {
+  set -f; set -- $(roost_theme "$1"); set +f
+  roost_cfg_set @roost-color-bar-bg    "$1"
+  roost_cfg_set @roost-color-bar-fg    "$2"
+  roost_cfg_set @roost-color-logo-bg   "$3"
+  roost_cfg_set @roost-color-active-bg "$4"
+  roost_cfg_set @roost-color-active-fg "$5"
+  roost_cfg_set @roost-color-idle-fg   "$6"
+}
+apply_glyphs() {
+  set -f; set -- $(roost_glyphset "$1"); set +f
+  roost_cfg_set @roost-glyph-error   "$1"
+  roost_cfg_set @roost-glyph-blocked "$2"
+  roost_cfg_set @roost-glyph-working "$3"
+  roost_cfg_set @roost-glyph-done    "$4"
+  roost_cfg_set @roost-glyph-idle    "$5"
+}
+
+# preview_rows TYPE SAVED -> fzf rows (hidden value col + checkmark + label[+icons]).
+preview_rows() {
+  local type="$1" saved="$2" n icons pad
+  case "$type" in
+    theme)     for n in $(roost_theme_names); do roost_menu_row "$saved" "$n" ""; done ;;
+    glyphs)    for n in emoji orbs ascii nerd; do
+                 icons="$(roost_glyphset "$n")"
+                 pad="$(printf '%*s' "$((7 - ${#n}))" '')"   # align icons across rows
+                 roost_menu_row "$saved" "$n" "$pad$icons"
+               done ;;
+    separator) for n in triangle none; do roost_menu_row "$saved" "$n" ""; done ;;
+  esac
+}
+
+# preview_pick TYPE SAVED -> echo the chosen value on Enter, empty on Esc.
+# With a live server + focus-capable fzf: snapshot, preview on cursor-move, and
+# restore on Esc. Otherwise a plain pick (commit still writes config downstream).
+preview_pick() {
+  local type="$1" saved="$2" snap sel
+  if [ "$ROOST_FOCUS" = 1 ] && roost_cfg_tmux has-session 2>/dev/null; then
+    snap="$(mktemp "${TMPDIR:-/tmp}/roost-snap.XXXXXX")"
+    roost_snapshot "$type" "$snap"
+    sel="$(preview_rows "$type" "$saved" \
+      | "$FZF" --reverse --no-info --delimiter='\t' --with-nth=2 \
+               --bind "focus:execute-silent('$SELF' --apply-preview '$type' {1})" \
+               --prompt="$type > " | cut -f1)"
+    if [ -n "$sel" ]; then rm -f "$snap"
+    else roost_restore "$type" "$snap"; rm -f "$snap"; fi
+  else
+    sel="$(preview_rows "$type" "$saved" \
+      | "$FZF" --reverse --no-info --delimiter='\t' --with-nth=2 --prompt="$type > " | cut -f1)"
+  fi
+  printf '%s' "$sel"
+}
+
+while :; do
+  ct="$(roost_current_theme)"; cg="$(roost_current_glyphset)"
+  cs="$(roost_opt @roost-sep-left)"; [ -n "$cs" ] && cs=triangle || cs=none
+  cn="$(roost_opt @roost-notify-backend)"; [ "$cn" = tmux ] && cn=off || cn=on
+  v=""   # the value picked this iteration; only a real pick triggers apply-live
+  # Hidden field 1 = the key (for cut -f1); field 2 = the display, with the label
+  # padded to a fixed width so the value column aligns. A plain tab here would snap
+  # to 8-col tab stops and misalign long labels ("notifications") vs short ("theme").
+  sel="$(printf '%s\t%-14s%s\n' \
+        theme         theme         "$ct" \
+        glyphs        glyphs        "$cg" \
+        separator     separator     "$cs" \
+        notifications notifications "$cn" \
+        quit          quit          "" \
+        | "$FZF" --reverse --no-info --with-nth=2 --delimiter='\t' --prompt='settings > ' | cut -f1)"
+  case "$sel" in
+    theme)   v="$(preview_pick theme "$ct")"; [ -n "$v" ] && apply_theme "$v" ;;
+    glyphs)  v="$(preview_pick glyphs "$cg")"; [ -n "$v" ] && apply_glyphs "$v" ;;
+    separator) v="$(preview_pick separator "$cs")"
+               [ -n "$v" ] && { s="$(roost_sep "$v")"; roost_cfg_set @roost-sep-left "$s"; roost_cfg_set @roost-sep-right "$s"; } ;;
+    notifications) v="$(printf 'on\noff\n' | pick notifications)"
+               [ -n "$v" ] && { [ "$v" = off ] && nb=tmux || nb=auto; roost_cfg_set @roost-notify-backend "$nb"; } ;;
+    quit|"") break ;;
+  esac
+  # Apply live only when something was actually picked. A cancelled submenu (Esc)
+  # leaves v empty → no needless re-source flicker of the bar.
+  [ -n "$v" ] && roost_apply_live "$ROOT"
+done

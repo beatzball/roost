@@ -5,19 +5,19 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-amux_test_server; sock="$AMUX_TEST_SOCK"; trap amux_test_teardown EXIT
-T source-file "$HERE/tmux/amux.conf"
-T set-option -g @amux-home "$HERE"
-T set-option -g @amux-glyph-error   "E"
-T set-option -g @amux-glyph-blocked "B"
-T set-option -g @amux-glyph-working "W"
-T set-option -g @amux-glyph-done    "D"
-T set-option -g @amux-glyph-idle    "I"
+roost_test_server; sock="$ROOST_TEST_SOCK"; trap roost_test_teardown EXIT
+T source-file "$HERE/tmux/roost.conf"
+T set-option -g @roost-home "$HERE"
+T set-option -g @roost-glyph-error   "E"
+T set-option -g @roost-glyph-blocked "B"
+T set-option -g @roost-glyph-working "W"
+T set-option -g @roost-glyph-done    "D"
+T set-option -g @roost-glyph-idle    "I"
 
 hold='sh -c "while :; do sleep 5; done"'
-badge()  { T list-windows -a -F "#{window_id}|#{E:@amux-tab-badge}" | grep "^$1|" | cut -d'|' -f2; }
-busy()   { T list-windows -a -F "#{window_id}|#{E:@amux-tab-busy}"  | grep "^$1|" | cut -d'|' -f2; }
-border() { T list-panes   -a -F "#{pane_id}|#{E:@amux-pane-border}" | grep "^$1|" | cut -d'|' -f2; }
+badge()  { T list-windows -a -F "#{window_id}|#{E:@roost-tab-badge}" | grep "^$1|" | cut -d'|' -f2; }
+busy()   { T list-windows -a -F "#{window_id}|#{E:@roost-tab-busy}"  | grep "^$1|" | cut -d'|' -f2; }
+border() { T list-panes   -a -F "#{pane_id}|#{E:@roost-pane-border}" | grep "^$1|" | cut -d'|' -f2; }
 # A failed split-window (out of space) prints an EMPTY pane id, not an error,
 # and `set-option -p -t ""` silently resolves to the ACTIVE pane instead of
 # erroring -- with -d keeping $p1 active throughout this file, a lost split
@@ -63,7 +63,7 @@ assert_contains "$(border "$p1")" "E"     "an error pane's border shows the erro
 assert_contains "$(border "$p1")" "error" "an error pane's border names its state"
 
 # --- status rollup ---
-out="$(AMUX_STATUS_SOCK="$sock" "$HERE/scripts/amux-status")"
+out="$(ROOST_STATUS_SOCK="$sock" "$HERE/scripts/roost-status")"
 assert_contains "$out" "E 2" "the rollup counts error panes"
 case "$out" in
   E*) assert_eq ok ok "the rollup lists error first" ;;
@@ -71,5 +71,5 @@ case "$out" in
 esac
 
 # --- switcher ---
-rows="$(AMUX_SWITCH_SOCK="$sock" AMUX_SWITCH_DUMP=1 "$HERE/scripts/amux-switch")"
+rows="$(ROOST_SWITCH_SOCK="$sock" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 assert_contains "$rows" "E error" "the switcher renders the error glyph beside the state"

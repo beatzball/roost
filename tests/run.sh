@@ -8,7 +8,7 @@ for t in test-*.sh; do
   [ -e "$t" ] || continue
   printf '\n== %s ==\n' "$t"
   # each test file sources lib.sh and prints PASS/FAIL lines; capture counts via env
-  out="$(AMUX_TESTS_PASS=0 AMUX_TESTS_FAIL=0 bash "$t" 2>&1)"
+  out="$(ROOST_TESTS_PASS=0 ROOST_TESTS_FAIL=0 bash "$t" 2>&1)"
   rc=$?
   printf '%s\n' "$out"
   pass=$((pass + $(printf '%s' "$out" | grep -c '^  PASS')))
