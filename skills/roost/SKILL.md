@@ -14,6 +14,17 @@ Run `roost whoami`. If it prints an id (e.g. `%7`), that is YOUR address and
 you're inside roost. If it errors ("not inside a roost session"), **stop** —
 you are not in roost; tell the user and do not run the rest.
 
+## You never choose a server
+
+`roost` always talks to its own tmux server. You do **not** pass a socket, do
+not use `-L` or `-S`, and do not try to work out which server you are on. Every
+command below is complete as written.
+
+If a command seems to target the wrong place, the answer is never a socket
+flag — re-check the target id from `roost whoami` or `roost status`. Agents
+that start reasoning about sockets go in circles; there is nothing there to
+solve.
+
 ## Discover the fleet
 
 `roost status` lists every session and pane with its state, e.g.:
