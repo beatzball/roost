@@ -14,16 +14,22 @@ Run `roost whoami`. If it prints an id (e.g. `%7`), that is YOUR address and
 you're inside roost. If it errors ("not inside a roost session"), **stop** —
 you are not in roost; tell the user and do not run the rest.
 
-## You never choose a server
+## Coordinating agents: you never choose a server
 
-`roost` always talks to its own tmux server. You do **not** pass a socket, do
-not use `-L` or `-S`, and do not try to work out which server you are on. Every
+Every `roost` command in this skill already targets the right server. `roost`
+talks to its own, and finds it without help. Do not add a socket argument to
+these commands and do not try to work out which server you are on — every
 command below is complete as written.
 
-If a command seems to target the wrong place, the answer is never a socket
-flag — re-check the target id from `roost whoami` or `roost status`. Agents
-that start reasoning about sockets go in circles; there is nothing there to
-solve.
+If one seems to target the wrong place, the answer is never a socket flag: the
+id is stale. Re-check it with `roost whoami` or `roost status`.
+
+**This applies to driving agents, not to everything you might do with tmux.**
+Writing or running the project's own tests is the opposite case: those must
+always name an isolated socket, because a bare `tmux` command targets the
+*default* server — the user's ordinary tmux, which this tool exists to leave
+alone. See `AGENTS.md`; in particular, never run `tmux kill-server` without
+`-S` or `-L` naming a throwaway socket.
 
 ## Discover the fleet
 
