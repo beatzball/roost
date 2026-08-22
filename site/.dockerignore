@@ -1,0 +1,8 @@
+node_modules
+dist
+.output
+.nitro
+routes.generated.ts
+server/stubs/page-manifest.ts
+*.tsbuildinfo
+.DS_Store
