@@ -10,6 +10,7 @@ import { starlightHead } from '../src/route-meta.js';
 import '../src/components/starlight-header.js';
 import '../src/components/litro-card.js';
 import '../src/components/litro-card-grid.js';
+import '../src/components/litro-footer.js';
 
 export interface SplashData {
   siteTitle: string;
@@ -139,6 +140,7 @@ export class SplashPage extends LitroPage {
             </litro-card-grid>
           </section>
         </main>
+        <litro-footer recipe="starlight"></litro-footer>
       </div>
     `;
   }

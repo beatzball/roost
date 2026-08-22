@@ -25,19 +25,42 @@ State comes from **Claude Code's own lifecycle hooks** — not from scraping pro
 
 ## Install
 
-`roost` is just a script — put `bin/` on your `PATH`. Clone it wherever you keep tools, then either add its `bin/` to `PATH` or symlink the launcher:
+```sh
+curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
+```
+
+That clones roost to `~/.local/share/roost` and adds its `bin/` to your `PATH`.
+
+It works out which startup file your shell actually reads, rather than assuming
+zsh: `.zshrc` for zsh (honouring `ZDOTDIR`), `.bash_profile` or `.bashrc` for
+bash depending on your platform, `config.fish` for fish. Re-running it will not
+add the same line twice, and an unrecognised shell gets a line to paste rather
+than a guess.
+
+### Options
+
+```sh
+./install.sh --dir ~/tools/roost   # clone somewhere else
+./install.sh --symlink             # symlink bin/roost into a PATH dir instead
+./install.sh --symlink ~/bin       # ...or a specific one
+./install.sh --dry-run             # print what it would do, change nothing
+```
+
+`--symlink` with no directory picks the first writable directory already on
+your `PATH`. It checks rather than assuming: `/usr/local/bin` is the
+traditional answer and is frequently root-owned.
+
+### By hand
+
+roost is just a script, so this is all the installer does:
 
 ```sh
 git clone https://github.com/beatzball/roost.git roost
-
-# option A — add bin/ to PATH (in ~/.zshrc):
-echo 'export PATH="$HOME/path/to/roost/bin:$PATH"' >> ~/.zshrc && exec zsh
-
-# option B — symlink onto an existing PATH dir:
-ln -s "$PWD/roost/bin/roost" /usr/local/bin/roost
+export PATH="$PWD/roost/bin:$PATH"   # add to your shell's startup file
 ```
 
-The launcher resolves its own location (following symlinks), so it finds its config and scripts no matter where you run it from.
+The launcher resolves its own location (following symlinks), so it finds its
+config and scripts no matter where you run it from.
 
 ## First run
 

@@ -57,16 +57,28 @@ need to hack on roost itself.
 
 ## Install
 
-`roost` is just a script — put `bin/` on your `PATH`:
+```sh
+curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
+```
+
+That clones roost to `~/.local/share/roost` and adds its `bin/` to your `PATH`.
+It works out which startup file your shell actually reads — `.zshrc` for zsh
+(honouring `ZDOTDIR`), `.bash_profile` or `.bashrc` for bash depending on your
+platform, `config.fish` for fish — and refuses to add the same line twice.
+
+Options:
+
+```sh
+./install.sh --dir ~/tools/roost   # clone somewhere else
+./install.sh --symlink             # symlink bin/roost into a PATH dir instead
+./install.sh --dry-run             # print what it would do, change nothing
+```
+
+Prefer to do it by hand? roost is just a script:
 
 ```sh
 git clone https://github.com/beatzball/roost.git roost
-
-# option A — add bin/ to PATH (in ~/.zshrc):
-echo 'export PATH="$HOME/path/to/roost/bin:$PATH"' >> ~/.zshrc && exec zsh
-
-# option B — symlink onto an existing PATH dir:
-ln -s "$PWD/roost/bin/roost" /usr/local/bin/roost
+export PATH="$PWD/roost/bin:$PATH"   # add to your shell's startup file
 ```
 
 The launcher resolves its own location (following symlinks), so it finds its
