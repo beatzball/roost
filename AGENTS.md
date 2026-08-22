@@ -167,3 +167,19 @@ starting. If something unexpected appears mid-task, stop and ask.
 
 It is always fine to say a task is beyond you. Bad work costs more than no
 work, and escalating is never held against you.
+
+## 11. The documentation site has its own rules
+
+`site/` is the source for **https://roosting.dev**. Before changing anything
+under it, read **[site/AGENTS.md](site/AGENTS.md)** — it covers the page
+format, the sidebar, and how to verify a change.
+
+Two audiences, two files, no duplication:
+
+- `site/content/docs/` is for **users** — install, setup, keys, driving a fleet,
+  badges, troubleshooting.
+- `README.md` is for **contributors** — repo layout, how it works, running the
+  tests, working on the site.
+
+Put a fact in one and link from the other. `docs/known-gaps.md` is
+maintainer-facing and never goes on the site.

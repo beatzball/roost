@@ -20,3 +20,100 @@ jobs:
         run: bash tests/run.sh
       - name: Contrast validator
         run: python3 tests/test-contrast.py
+
+  # Build the exact image Coolify deploys, run it, and probe it the same way
+  # verify-prod probes production. Catches "the site builds" vs "the container
+  # actually serves it" -- two different claims.
+  smoke-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./site
+          load: true
+          tags: roost-docs:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run container
+        run: docker run -d --rm -p 8080:80 --name roost-docs-smoke roost-docs:ci
+      - name: Probe container
+        env:
+          # Asserts the image really baked GIT_SHA into /version.json, so the
+          # production probe below can rely on that signal.
+          ROOST_EXPECT_COMMIT: ${{ github.sha }}
+          ROOST_PROBE_RETRIES: '15'
+          ROOST_PROBE_DELAY: '2'
+        run: sh scripts/verify-site.sh http://localhost:8080
+      - name: Container logs
+        if: always()
+        run: docker logs roost-docs-smoke || true
+      - name: Stop container
+        if: always()
+        run: docker stop roost-docs-smoke || true
+
+  # Deploy only when a push to main actually changed the site. A change to
+  # bin/roost or the tests cannot alter what roosting.dev serves, so it should
+  # not spend a build. (No-op until the Coolify secret is configured.)
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, smoke-image]
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.gate.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - name: Did this push touch the site?
+        id: gate
+        run: |
+          if git rev-parse HEAD~1 >/dev/null 2>&1 &&
+             git diff --quiet HEAD~1 HEAD -- site/; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "site/ unchanged — skipping deploy."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "site/ changed — deploying."
+          fi
+      - name: Trigger Coolify deploy
+        if: steps.gate.outputs.changed == 'true'
+        env:
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          if [ -z "$COOLIFY_WEBHOOK_URL" ]; then
+            echo "COOLIFY_WEBHOOK_URL not set — skipping deploy."
+            exit 0
+          fi
+          curl -fSsL -X POST \
+            -H "Authorization: Bearer ${COOLIFY_API_TOKEN}" \
+            "$COOLIFY_WEBHOOK_URL"
+
+  # Probe the live site after a deploy. The webhook only QUEUES a build, so
+  # this must wait for the new commit to actually be serving --
+  # ROOST_EXPECT_COMMIT makes the probe retry until /version.json reports this
+  # exact SHA. Without it the probe passes against the previous container and a
+  # failed deploy looks green.
+  verify-prod:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.deploy.outputs.changed == 'true'
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe production
+        env:
+          ROOST_EXPECT_COMMIT: ${{ github.sha }}
+          # Coolify builds the image before swapping the container, so allow a
+          # cold, uncached build: 60 x 10s = 10 minutes.
+          ROOST_PROBE_RETRIES: '60'
+          ROOST_PROBE_DELAY: '10'
+        run: |
+          if [ -z "${{ vars.PROD_BASE_URL }}" ]; then
+            echo "PROD_BASE_URL not set — skipping production probe."
+            exit 0
+          fi
+          sh scripts/verify-site.sh "${{ vars.PROD_BASE_URL }}"

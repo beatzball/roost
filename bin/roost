@@ -26,6 +26,7 @@
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status             list running sessions + agents
 #   roost kill [SESSION]     kill one session, or the whole server if none given
+#   roost help               show this text
 set -euo pipefail
 
 # Resolve the repo root even when invoked via a symlink on PATH.
@@ -114,6 +115,16 @@ case "${1:-up}" in
     # no-op outside a roost server -- which is what makes an adapter safe to
     # leave installed when the agent runs somewhere else.
     exec "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
+    ;;
+  help|--help|-h)
+    # The command list is read back out of this file's own header comment
+    # rather than duplicated here. A second copy would drift the first time
+    # someone adds a subcommand and updates only one of them.
+    "$ROOST_HOME/scripts/roost-banner" || true
+    printf '\n'
+    sed -n '2,29p' "$ROOST_HOME/bin/roost" | sed 's/^# \{0,1\}//'
+    printf '\n'
+    exit 0
     ;;
   doctor)
     exec "$ROOST_HOME/scripts/roost-doctor"
@@ -471,5 +482,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

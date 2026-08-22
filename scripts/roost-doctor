@@ -6,6 +6,11 @@ ok()   { printf '  ✓ %s\n' "$1"; }
 warn() { printf '  ! %s\n' "$1"; }
 bad()  { printf '  ✗ %s\n' "$1"; required_fail=1; }
 
+# Banner only on a terminal. `roost doctor | grep ...` and the test suite both
+# capture stdout, and 20 lines of owl in front of the report would be noise
+# there -- the art is for a human looking at the screen.
+[ -t 1 ] && { "$(dirname "$0")/roost-banner" || true; printf '\n'; }
+
 ver="$(tmux -V 2>/dev/null | sed 's/^tmux //')"
 # numeric compare: 3.2 is the floor (#{P:} pane loops, #{E:}, pane options)
 maj="${ver%%.*}"; rest="${ver#*.}"; min="${rest%%[a-z]*}"

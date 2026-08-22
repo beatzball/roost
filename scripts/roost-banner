@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# roost-banner — print the roost owl as text art.
+#
+# Three renderings of the same logo. Which one you get is random, so the tool
+# has a little life in it without anyone having to choose a favourite.
+#
+#   braille   densest detail (2x4 dots per cell), needs a font with U+28xx
+#   blocks    shaded, uses the widely-supported quadrant blocks
+#   outline   hollow line art, plain ASCII only
+#
+# Braille is dropped from the draw when the terminal cannot be trusted to have
+# the glyphs -- a missing glyph renders as a row of boxes, which looks broken
+# rather than charming. The other two always work.
+#
+# Usage:
+#   roost-banner              # random, capability-aware
+#   roost-banner braille      # force one
+#   ROOST_BANNER=blocks ...   # force one via the environment (used by tests)
+set -u
+
+# Can this terminal draw braille (U+2800..U+28FF)?
+#
+# There is no way to interrogate the font, so this is a proxy: braille needs a
+# UTF-8 locale, and the Linux virtual console has no braille glyphs whatever
+# the locale says. Both checks are cheap and wrong only in the safe direction
+# -- a capable terminal that fails them merely gets one of the other two.
+roost_banner_supports_braille() {
+  case "${ROOST_BANNER_BRAILLE:-}" in
+    1|yes|true) return 0 ;;
+    0|no|false) return 1 ;;
+  esac
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*UTF8*|*utf-8*|*utf8*) ;;
+    *) return 1 ;;
+  esac
+  case "${TERM:-}" in
+    linux|dumb|'') return 1 ;;
+  esac
+  return 0
+}
+
+# Which renderings may be drawn right now, newline separated.
+roost_banner_variants() {
+  if roost_banner_supports_braille; then
+    printf 'braille\nblocks\noutline\n'
+  else
+    printf 'blocks\noutline\n'
+  fi
+}
+
+roost_banner_art() {
+  case "$1" in
+    braille) cat <<'ART'
+⣼⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣧
+⣿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿
+⣿⣿⣿⣷⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⣀⣀⣀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣾⣿⣿⣿
+⢹⣿⣿⣿⣿⣿⣦⣄⠀⠀⠀⠀⣀⣤⣴⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣦⣤⣀⠀⠀⠀⠀⣠⣴⣿⣿⣿⣿⣿⡏
+⠀⢿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣈⠛⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠿⠛⣁⣤⣶⣿⣿⣿⣿⣿⣿⣿⡿⠀
+⠀⠀⠻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣌⡙⠿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠿⢋⣡⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠟⠀⠀
+⠀⠀⠀⠈⢻⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣌⠻⣿⣿⣿⣿⣿⣿⠟⣡⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡟⠁⠀⠀⠀
+⠀⠀⠀⣰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣜⣿⣿⣿⡿⣫⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣆⠀⠀⠀
+⠀⠀⢠⣿⣿⣿⣿⡿⠁⠉⠛⢿⣿⣿⣿⣿⣿⣿⣿⣿⣾⣿⣿⣷⣿⣿⣿⣿⣿⣿⣿⣿⡿⠛⠉⠈⢿⣿⣿⣿⣿⡄⠀⠀
+⠀⠀⣾⣿⣿⣿⣿⠇⠀⠀⢠⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡄⠀⠀⠘⣿⣿⣿⣿⣷⠀⠀
+⠀⠀⣿⣿⣿⣿⣿⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⠀⠀⠀⣿⣿⣿⣿⣿⠀⠀
+⠀⠀⣿⣿⣿⣿⣿⠀⠀⠀⠘⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⠃⠀⠀⠀⣿⣿⣿⣿⣿⠀⠀
+⠀⠀⣿⣿⣿⣿⣿⡀⠀⠀⠀⠈⠛⠿⣿⣿⣿⠿⠛⠻⣿⣿⣿⣿⠟⠛⠿⣿⣿⣿⠿⠟⠁⠀⠀⠀⢀⣿⣿⣿⣿⣿⠀⠀
+⠀⠀⢹⣿⣿⣿⣿⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⣿⣿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⣿⣿⣿⣿⡏⠀⠀
+⠀⠀⠀⢿⣿⣿⣿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿⣿⣿⡿⠀⠀⠀
+⠀⠀⠀⠈⢻⣿⣿⣿⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⣿⡟⠁⠀⠀⠀
+⠀⠀⠀⠀⠀⠙⢿⣿⣿⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⣠⣾⣿⣿⣷⣄⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣿⣿⡿⠋⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠙⠻⣿⣿⣿⣿⣿⣿⣷⣦⣄⣴⣿⣿⣿⣿⣿⣿⣦⣠⣴⣾⣿⣿⣿⣿⣿⣿⠟⠋⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠿⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠿⣿⣿⣿⣿⣿⣿⣿⣿⠿⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠙⢿⣿⣿⡿⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢻⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+ART
+      ;;
+    blocks) cat <<'ART'
+░░                                        ░░
+░░░                                      ░░░
+░░░░░░           ░░░░░░░░░░           ░░░░░░
+░░░░░░░░░   ░░░░░░░░░░░░░░░░░░░░   ░░░░░░░░░
+ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+    ▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░▒
+   ▒▒▒▒▒▒░░░░░░░░░░░░▒▒░░░░░░░░░░░░▒▒▒▒▒▒
+  ▒▒▒▒▒▒   ▒▒▒▒░░░░░░░░░░░░░░▒▒▒▒   ▒▒▒▒▒▒
+  ▒▒▒▒▒   ▒▒▒▓▒▒▒▒░░░░░░░░▒▒▒▒▓▒▒▒   ▒▒▒▒▒
+  ▒▒▒▒▒   ▒▒▒▒▒▓▓▓▒▒░░▒░▒▒▓▓▓▒▒▒▒▒   ▒▒▒▒▒
+  ▒▒▒▒▒    ▒▒▒▒▒▒▓▓▓▒▒▒▒▓▓▓▒▒▒▒▒▒    ▒▒▒▒▒
+  ▒▒▓▒▒▒     ▒▒▒▒▒  ▓▒▒▓  ▒▒▒▒▒     ▒▒▒▓▒▒
+   ▒▒▓▓▓▒            ▒▒            ▒▓▓▓▒▒
+   ▒▒▒▒▒▓▓                        ▓▓▒▒▒▒▒
+     ▒▒▒▒▒▒▒▒       ░░▒▒       ▒▒▒▒▒▒▒▒
+       ▒▒▒░░░▒▒░░ ░░░░▒▒▒░ ░░▒▒░░░▒▒▒
+         ░░░░░░░░░░░░░░░▒▒░░░░░░░░░
+              ░░░░░▒░░░░▒░░░░░
+                   ░▒░░▒░
+                     ░░
+ART
+      ;;
+    outline) cat <<'ART'
+##                                            ##
+# #                                          # #
+#  ##                                      ##  #
+#    ###       ##################       ###    #
+ #      ###  ##                  ##  ###      #
+  ##       ##                      ##       ##
+    #                                      #
+    #                                      #
+   #    ####                        ####    #
+   #   #    #                      #    #   #
+  #    #   #                        #   #    #
+  #    #   #                        #   #    #
+  #    #    ###    ###    ###    ###    #    #
+  #    #       ####   #  #   ####       #    #
+   #    #              ##              #    #
+    #    #                            #    #
+     #    ##           ##           ##    #
+      ###   ####     ##  ##     ####   ###
+         ####   #####      #####   ####
+             #####            #####
+                  ###      ###
+                     ##  ##
+                       ##
+ART
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# roost_banner [VARIANT] -> print one rendering, indented two spaces.
+roost_banner() {
+  variant="${1:-${ROOST_BANNER:-}}"
+  if [ -z "$variant" ]; then
+    # $RANDOM is bash-only but this file is already bash; no external process.
+    set -f; set -- $(roost_banner_variants); set +f
+    shift $(( RANDOM % $# ))
+    variant="$1"
+  fi
+  # Capture first: piping straight into sed would report sed's exit status,
+  # so an unknown variant would print nothing and still claim success.
+  art="$(roost_banner_art "$variant")" || {
+    printf 'roost-banner: unknown variant %s (braille|blocks|outline)\n' "$variant" >&2
+    return 1
+  }
+  printf '%s\n' "$art" | sed 's/^/  /'
+}
+
+# Executed directly rather than sourced: print and exit.
+case "${0##*/}" in
+  roost-banner) roost_banner "${1:-}" ;;
+esac
