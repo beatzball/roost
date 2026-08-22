@@ -19,6 +19,19 @@ FROM nginx:alpine
 COPY --from=builder /app/dist/static /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Which commit is actually being served.
+#
+# A static site has no /api/health to ask, so bake the answer in. Without it a
+# post-deploy probe cannot tell the new container from the old one: it passes
+# against whatever is still running and a failed deploy looks green.
+#
+# Prefer an explicit --build-arg GIT_SHA; fall back to SOURCE_COMMIT, which
+# Coolify sets automatically on every deploy.
+ARG GIT_SHA
+ARG SOURCE_COMMIT
+RUN printf '{"commit":"%s"}\n' "${GIT_SHA:-${SOURCE_COMMIT:-unknown}}" \
+      > /usr/share/nginx/html/version.json
+
 EXPOSE 80
 
 # Coolify (and any orchestrator) uses this to decide whether a deploy actually
