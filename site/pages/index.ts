@@ -12,6 +12,28 @@ import '../src/components/litro-card.js';
 import '../src/components/litro-card-grid.js';
 import '../src/components/litro-footer.js';
 
+/**
+ * The four commands that take someone from nothing to a running agent view.
+ * Kept in step with the Install and First run sections of
+ * content/docs/getting-started.md.
+ */
+const INSTALL_STEPS = [
+  {
+    note: 'install (clones roost and puts it on your PATH)',
+    cmd: 'curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh',
+  },
+  { note: 'check tmux version, truecolor, fzf, notifier, hooks', cmd: 'roost doctor' },
+  { note: 'pick a theme and print the Claude Code hooks', cmd: 'roost init' },
+  { note: 'start (or attach to) the default session', cmd: 'roost' },
+] as const;
+
+/** The bindings that pay for themselves on the first day. */
+const KEY_HINTS = [
+  { keys: 'Ctrl-s a', what: 'Agent switcher — every agent, its state, and how long it has been there' },
+  { keys: 'Ctrl-s b', what: 'Jump straight to the agent that needs you (error first, then blocked)' },
+  { keys: 'Ctrl-s S', what: 'Settings — change theme, glyphs, separator and notifications, live' },
+] as const;
+
 export interface SplashData {
   siteTitle: string;
   description: string;
@@ -125,6 +147,84 @@ export class SplashPage extends LitroPage {
                 text-decoration:none;
                 font-size:var(--sl-text-base);
               ">GitHub</a>
+            </div>
+          </section>
+
+          <!-- Install and first run: the four commands, in order, so the
+               landing page answers "how do I start" without a click. -->
+          <section style="margin-bottom:4rem;">
+            <h2 style="
+              font-size:var(--sl-text-xl);
+              font-weight:700;
+              color:var(--sl-color-text);
+              margin:0 0 1rem;
+              text-align:center;
+            ">Get running</h2>
+            <div style="
+              background:var(--sl-color-bg-inline-code,#f6f6f6);
+              border:1px solid var(--sl-color-border);
+              border-radius:var(--sl-border-radius);
+              padding:1.25rem 1.5rem;
+              overflow-x:auto;
+              max-width:44rem;
+              margin:0 auto;
+            ">
+              <pre style="margin:0;font-size:var(--sl-text-sm);line-height:1.9;"><code>${INSTALL_STEPS.map(
+                (step) => html`<span style="color:var(--sl-color-gray-4);"># ${step.note}</span>
+<span style="color:var(--sl-color-text);">${step.cmd}</span>
+`,
+              )}</code></pre>
+            </div>
+          </section>
+
+          <!-- The three bindings worth knowing on day one. The full table
+               lives in the docs; this is the short answer. -->
+          <section style="margin-bottom:4rem;">
+            <h2 style="
+              font-size:var(--sl-text-xl);
+              font-weight:700;
+              color:var(--sl-color-text);
+              margin:0 0 0.5rem;
+              text-align:center;
+            ">Keys worth knowing</h2>
+            <p style="
+              text-align:center;
+              color:var(--sl-color-gray-4);
+              font-size:var(--sl-text-sm);
+              margin:0 0 1.5rem;
+            ">The prefix is <code>Ctrl-s</code>.</p>
+            <div style="
+              display:grid;
+              gap:0.75rem;
+              max-width:44rem;
+              margin:0 auto;
+            ">
+              ${KEY_HINTS.map(
+                (k) => html`
+                  <div style="
+                    display:flex;
+                    align-items:baseline;
+                    gap:1rem;
+                    padding:0.75rem 1rem;
+                    border:1px solid var(--sl-color-border);
+                    border-radius:var(--sl-border-radius);
+                  ">
+                    <kbd style="
+                      flex-shrink:0;
+                      font-family:var(--sl-font-mono,ui-monospace,monospace);
+                      font-size:var(--sl-text-sm);
+                      background:var(--sl-color-bg-inline-code,#f6f6f6);
+                      border:1px solid var(--sl-color-border);
+                      border-radius:0.25rem;
+                      padding:0.15rem 0.5rem;
+                      white-space:nowrap;
+                    ">${k.keys}</kbd>
+                    <span style="color:var(--sl-color-text);font-size:var(--sl-text-base);">
+                      ${k.what}
+                    </span>
+                  </div>
+                `,
+              )}
             </div>
           </section>
 
