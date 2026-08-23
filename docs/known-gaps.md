@@ -84,20 +84,13 @@ expected on a live dead-provider run first — that is case 2 of the live test.
   names the missing line, the glyph being inherited, and the exact fix
   (`roost settings`, re-pick the set), which is as far as a read-only check
   goes.
-- `tests/test-agent-state.sh` sizes its window with zero headroom: splits
-  repeatedly halve the same pane, so `-y 2000` fits exactly the splits the file
-  makes today and the next one added will fail. Asserting each split's pane id
-  is non-empty is the durable fix — a failed split yields an empty id, and
-  `show-options -t ""` then resolves to the *active* pane, so an assertion can
-  pass for the wrong reason. That exact masking has already been found twice in
-  this suite.
-- `tests/test-error-state.sh` uses `case "$out" in E*)` to assert a prefix,
-  which compares `ok` to `ok` on the pass path. An `assert_prefix` helper would
-  read more directly.
-- `tests/test-doctor.sh` and `tests/test-next-blocked.sh` are mode 644 while
-  other test files are 755. Cosmetic — `tests/run.sh` invokes `bash "$t"`.
-- `tests/test-doctor.sh` assigns `marker="$(mktemp)"` and never uses or removes
-  it.
+- The executable bit on `tests/test-*.sh` is split with nothing distinguishing
+  the two groups: 9 files at mode 644 and 15 at 755, measured with
+  `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at the
+  commit that fixed `test-doctor.sh` and `test-next-blocked.sh`. Cosmetic —
+  `tests/run.sh` invokes `bash "$t"`, so no test has ever needed the bit.
+  Left alone rather than swept, because a `chmod` across nine files that other
+  branches are editing collides for no benefit.
 
 ## Process lesson
 

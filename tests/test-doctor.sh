@@ -24,7 +24,6 @@ out="$("$DOC" 2>&1 || true)"
 assert_contains "$out" "tmux" "doctor reports on tmux"
 
 # a faked old tmux makes the required check fail (non-zero exit)
-marker="$(mktemp)"
 shimdir="$(mktemp -d /tmp/amx.XXXX)"
 cat > "$shimdir/tmux" <<'EOF'
 #!/bin/sh

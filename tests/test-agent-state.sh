@@ -14,11 +14,19 @@ trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir" "${deadsdir:-}" "${cc
 # (sib, named, configured, zero, tabname, nlname, envname, envtab, namedenv,
 # errp) — at 80x24, or even at a merely generous -y 200 (which fits only
 # seven), tmux runs out of room and split-window fails with "no space for new
-# pane" partway through, which some existing assertions mask (a failed split
-# leaves the target pane ID empty, and `-t ""` quietly falls back to the
-# current pane). The error-state assertions below check a specific pane's own
-# state, so they do not get that accidental pass — they need the split to
-# genuinely succeed, so give the window generous room.
+# pane" partway through, which some assertions here would otherwise mask (a
+# failed split leaves the target pane ID empty, and `-t ""` quietly falls back
+# to the current pane). The error-state assertions below check a specific
+# pane's own state, so they do not get that accidental pass — they need the
+# split to genuinely succeed, so give the window generous room.
+#
+# Room alone is not the guard, though. -y 2000 fits exactly the splits this
+# file makes today, so the next one added would fail — and the masking above
+# is what decides whether that failure is visible. Every pane id captured
+# below therefore goes through require_pane (tests/lib.sh), which stops the
+# file at the split that failed rather than letting the assertions after it
+# quietly read the active pane. Raising the number is the fix that expires;
+# checking the id is the fix that does not.
 tmux -S "$s" -f /dev/null new-session -d -x 400 -y 2000
 pane="$(tmux -S "$s" display -p '#{pane_id}')"
 run() { env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" "$1"; }
@@ -41,6 +49,7 @@ assert_eq "$(tmux -S "$s" show-options -wqv -t "$pane" @agent_state)" "" \
 
 # a sibling pane in the same window is untouched
 sib="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$sib" sib
 run blocked
 assert_eq "$(pstate "$sib")" "" "stamping one pane leaves its sibling empty"
 assert_eq "$(pstate "$pane")" "blocked" "the stamped pane holds its own state"
@@ -78,6 +87,7 @@ rm -rf "$ccdir"
 # a pane that already carries a human-chosen @roost-name (split -n, spawn
 # NAME) keeps it — a chosen name always wins over the default
 named="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$named" named
 tmux -S "$s" set-option -p -t "$named" @roost-name "reviewer"
 env TMUX="$s,0,0" TMUX_PANE="$named" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$named" @roost-name)" "reviewer" \
@@ -87,6 +97,7 @@ assert_eq "$(tmux -S "$s" show-options -pqv -t "$named" @roost-name)" "reviewer"
 # as @roost-glyph-* / @roost-notify-*
 tmux -S "$s" set-option -g @roost-name-default "worker"
 configured="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$configured" configured
 env TMUX="$s,0,0" TMUX_PANE="$configured" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$configured" @roost-name)" "worker" \
   "the configured @roost-name-default overrides the built-in default"
@@ -100,6 +111,7 @@ tmux -S "$s" set-option -gu @roost-name-default
 # treated as already-named (has_name=1) and left alone, not overwritten with
 # the default label.
 zero="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$zero" zero
 tmux -S "$s" set-option -p -t "$zero" @roost-name "0"
 env TMUX="$s,0,0" TMUX_PANE="$zero" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$zero" @roost-name)" "0" \
@@ -112,6 +124,7 @@ assert_eq "$(tmux -S "$s" show-options -pqv -t "$zero" @roost-name)" "0" \
 # same way reject_bad_name exists to prevent — so the hook degrades to the
 # built-in default instead.
 tabname="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$tabname" tabname
 tmux -S "$s" set-option -g @roost-name-default "$(printf 'evil\tINJECTED')"
 env TMUX="$s,0,0" TMUX_PANE="$tabname" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$tabname" @roost-name)" "claude" \
@@ -119,6 +132,7 @@ assert_eq "$(tmux -S "$s" show-options -pqv -t "$tabname" @roost-name)" "claude"
 tmux -S "$s" set-option -gu @roost-name-default
 
 nlname="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$nlname" nlname
 tmux -S "$s" set-option -g @roost-name-default "$(printf 'evil\nINJECTED')"
 env TMUX="$s,0,0" TMUX_PANE="$nlname" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$nlname" @roost-name)" "claude" \
@@ -130,6 +144,7 @@ tmux -S "$s" set-option -gu @roost-name-default
 # flavoured default — it must be preferred over @roost-name-default.
 tmux -S "$s" set-option -g @roost-name-default "worker"
 envname="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$envname" envname
 env TMUX="$s,0,0" TMUX_PANE="$envname" ROOST_AGENT_NAME="opencode" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$envname" @roost-name)" "opencode" \
   "ROOST_AGENT_NAME wins over @roost-name-default"
@@ -139,6 +154,7 @@ assert_eq "$(tmux -S "$s" show-options -pqv -t "$envname" @roost-name)" "opencod
 # rejection, degrading to the next fallback (@roost-name-default here) rather
 # than reaching @roost-name verbatim.
 envtab="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$envtab" envtab
 env TMUX="$s,0,0" TMUX_PANE="$envtab" ROOST_AGENT_NAME="$(printf 'evil\tINJECTED')" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$envtab" @roost-name)" "worker" \
   "a tab-bearing ROOST_AGENT_NAME degrades to @roost-name-default"
@@ -147,6 +163,7 @@ tmux -S "$s" set-option -gu @roost-name-default
 # an existing human-chosen @roost-name still wins over BOTH ROOST_AGENT_NAME
 # and @roost-name-default — has_name=1 means this whole branch never runs.
 namedenv="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$namedenv" namedenv
 tmux -S "$s" set-option -p -t "$namedenv" @roost-name "reviewer"
 env TMUX="$s,0,0" TMUX_PANE="$namedenv" ROOST_AGENT_NAME="opencode" "$HERE/scripts/roost-agent-state" working
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$namedenv" @roost-name)" "reviewer" \
@@ -167,6 +184,7 @@ run blocked    # transition → blocked on an inactive window → notify
 # --- the error state ---
 # error is a real state word, not folded into idle by the normaliser.
 errp="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane" 'sh -c "while :; do sleep 5; done"')"
+require_pane "$errp" errp
 env TMUX="$s,0,0" TMUX_PANE="$errp" "$HERE/scripts/roost-agent-state" error
 assert_eq "$(pstate "$errp")" "error" "error is accepted as a state, not normalised to idle"
 
@@ -213,6 +231,7 @@ tmux -S "$s" set-option -g @roost-notify-cmd "touch $notif4"
 # ("no space for new pane"). `new-window -d` leaves window 2 current, so the
 # new window is inactive — which is what the notify path requires.
 aliasp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+require_pane "$aliasp" aliasp
 env TMUX="$s,0,0" TMUX_PANE="$aliasp" "$aliasdir/agent-state-alias" working
 env TMUX="$s,0,0" TMUX_PANE="$aliasp" "$aliasdir/agent-state-alias" blocked
 [ -f "$notif4" ] && assert_eq ok ok "invoked through a symlink, the hook still finds the real roost-notify" \
@@ -228,6 +247,7 @@ ln -s agent-state-alias "$aliasdir/agent-state-hop"
 notif5="$sdir/notified-via-symlink-chain"
 tmux -S "$s" set-option -g @roost-notify-cmd "touch $notif5"
 hopp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+require_pane "$hopp" hopp
 env TMUX="$s,0,0" TMUX_PANE="$hopp" "$aliasdir/agent-state-hop" working
 env TMUX="$s,0,0" TMUX_PANE="$hopp" "$aliasdir/agent-state-hop" blocked
 [ -f "$notif5" ] && assert_eq ok ok "a relative symlink hop is re-anchored to the link's own directory" \
