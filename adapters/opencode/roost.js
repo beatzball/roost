@@ -163,6 +163,37 @@ export const RoostState = async () => {
   // guards the tmux round trip rather than the spawn.
   let last = null
   let retries = 0
+  // Set by this turn's own session.error, and the reason the session.idle that
+  // follows it must not report `done`.
+  //
+  // A turn that dies on the provider does not end quietly. Measured on 1.18.20
+  // against an unreachable provider (tests/live/opencode-smoke.sh case 2):
+  //
+  //    3495ms  session.status  {"type":"retry","attempt":1,...} ... four more ...
+  //   67103ms  session.error   {"name":"APIError",...}
+  //   67103ms  session.idle     <- unfiltered, this stamped `done`
+  //
+  // The pane badged `error` at the second retry and fired the desktop
+  // notification, then overwrote it with `done` a minute later. `done` means
+  // "finished, go look", so the last thing the fleet showed for a turn that
+  // never reached the model was a success. A wrong `done` is the worst wrong
+  // badge there is: every other one makes you look, and this one makes you
+  // stop looking.
+  //
+  // Keyed on session.error and NOT on the badge already reading `error`,
+  // because those are different claims. Two retries that then SUCCEED are a
+  // turn that finished — it had a rough patch, the model answered, and its
+  // session.idle is a real completion that must still report `done`. Only a
+  // turn opencode itself declared failed gets its idle swallowed.
+  //
+  // The mirror risk is a badge stuck on `error` for good, which would be worse
+  // than the bug being fixed — the same shape as the pane that once sat on
+  // `working` forever. The exact condition that clears it is the next turn
+  // starting: a session.status busy below the retry threshold, or a permission
+  // event. A turn cannot begin without one of those, so the next healthy turn
+  // walks working -> done exactly as it always did. Both clears are marked
+  // below.
+  let died = false
   // Session IDs seen carrying a parentID. Never pruned: one entry per subagent
   // a turn spawns is nothing next to a session's own history, and a session
   // that ends can still emit late events.
@@ -254,7 +285,23 @@ export const RoostState = async () => {
             // re-notify on every cycle (a transition into error notifies). A
             // genuine recovery still resolves: the turn ends with
             // session.idle -> done, which resets the counter below.
-            if (retries < RETRY_THRESHOLD) await set("working")
+            //
+            // Clear 1 of 2 for `died`, releasing a pane from the previous
+            // turn's `error`. It is safe here for a reason that does not
+            // depend on the count at all: `died` is set only by session.error,
+            // session.error is followed by session.idle, and that idle ends
+            // the turn — so no busy belonging to the SAME turn can ever reach
+            // this line with `died` already true. A busy that sees it set is
+            // always a later turn.
+            //
+            // Sitting inside the threshold gate is the second line of defence
+            // rather than the argument: releasing on a busy that IS part of a
+            // retry loop would flap the badge, which is the same reason the
+            // `set("working")` it sits next to is gated.
+            if (retries < RETRY_THRESHOLD) {
+              died = false
+              await set("working")
+            }
           } else if (status === "retry") {
             retries += 1
             await set(retries >= RETRY_THRESHOLD ? "error" : "working")
@@ -263,16 +310,31 @@ export const RoostState = async () => {
           // canonical end-of-turn signal.
           return
         }
+        // Clear 2 of 2 for `died`, on both permission branches. A dialog means
+        // the model answered, so the turn reached it — whatever the previous
+        // turn died of is over. This is belt and braces next to the busy
+        // clear: every turn opens with busy, so a permission event should
+        // never be the first thing a new turn shows. It costs one assignment
+        // to guarantee that a badge cannot stick on `error` through a turn
+        // that is demonstrably alive.
         case "permission.asked":
           retries = 0
+          died = false
           await set("blocked")
           return
         case "permission.replied":
           retries = 0
+          died = false
           await set("working")
           return
         case "session.idle":
           retries = 0
+          // The fix. `died` is left set, not cleared: it has to outlive this
+          // idle to hold the badge on `error` until the next turn starts, and
+          // this idle IS the end of the dead turn. Returning without reporting
+          // leaves `last` on `error`, so the pane keeps the badge and no
+          // process is spawned to say otherwise.
+          if (died) return
           // AWAIT the reply before reporting done, and in this order. `roost
           // wait-done` returns the instant the badge stops being
           // working/blocked, and the documented idiom is wait-done then read —
@@ -294,7 +356,13 @@ export const RoostState = async () => {
           // MessageAbortedError is the user pressing Esc. Badging their own
           // keystroke as a crash — and pinging their desktop about it — would
           // be worse than saying nothing.
+          //
+          // It does not set `died` either, and that is the same judgement, not
+          // a second one: an abort during a retry loop still ends `done`,
+          // because the person who ended the turn is sitting right there and
+          // already knows how it went. `died` is for the turns nobody chose.
           const aborted = event.properties?.error?.name === "MessageAbortedError"
+          died = !aborted
           await set(aborted ? "done" : "error")
           return
         }

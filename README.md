@@ -196,6 +196,10 @@ showed; the log is what says why, and it is where the answers to
 [docs/known-gaps.md](docs/known-gaps.md) about opencode came from. A failing
 run keeps its logs in `/tmp/amx-events.*` and prints the path.
 
+`tests/live/tcp-forward.py` is how a run makes a dead provider come back inside
+one opencode process, which the recovery case needs and a config rewrite cannot
+do — the file's docstring has the measurement.
+
 ## Working on the docs site
 
 The site in `site/` builds to static HTML and deploys to
