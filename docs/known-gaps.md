@@ -33,46 +33,61 @@ read that file to coordinate, and one that assumed "non-zero means timeout"
 would retry a corpse. A `set -e` script will now stop on a dead agent rather
 than continuing — the intended improvement, but a change in flow.
 
-Failing loudly is the safe direction. The unsafe direction is the subagent gap
-below, which can return success *early*.
+Failing loudly is the safe direction. The unsafe direction is a wrong success —
+which is what the dead-provider risk below still ends a failed turn with.
+
+### opencode counts retries too, and we still count our own
+
+`adapters/opencode/roost.js` hand-rolls a consecutive-`retry` counter.
+opencode's `SessionStatus` carries `{type: "retry", attempt, message, next}`,
+and `attempt` is upstream's own count. Measured on 1.18.20, two dead-provider
+turns in one TUI session (`tests/live/opencode-smoke.sh` case 2 prints this):
+
+```
+    turn ended: attempts [1, 2, 3, 4, 5]
+    turn ended: attempts [1, 2, 3, 4, 5]
+```
+
+So `attempt` is per session, increments once per retry, and restarts at 1 in
+the next turn — the same rule our counter follows.
+
+**Left as it is, and the entry it replaces overstated the prize.** Reading
+`status.attempt` would not delete the counter: the `busy` branch is gated on
+the count so the badge cannot flap during a retry loop, and `busy` events carry
+no `attempt`, so a local number and its turn-boundary resets have to stay
+either way. The change is one line (`retries += 1` becomes `retries = attempt`)
+in exchange for a dependency on upstream's numbering, in the one code path that
+has already produced a real bug here.
 
 ## Live risks
 
-### An opencode subagent may briefly badge the pane `done`
+### An opencode turn that dies on the provider ends `done`, not `error`
 
-`adapters/opencode/roost.js` does not filter events by `sessionID`. opencode's
-event bus is process-global and every session event carries one; sessions have
-a `parentID`, so child sessions exist (the task/subagent path). A child session
-going idle mid-turn would stamp `done` on the pane while the parent is still
-working, and reset the retry counter with it.
+Measured on opencode 1.18.20 against an unreachable provider, one turn:
 
-A false `done` is the worst wrong badge — it is the one that says "finished, go
-look".
+```
+     3495ms  retry {"attempt": 1, ...}   ... four more, exponential backoff ...
+    67103ms  session.error {"name": "APIError", ...}
+    67103ms  session.idle
+```
 
-**Not fixed because it is unverified and the obvious guard fails in the wrong
-direction.** The guard would be a set of active session IDs, reporting `done`
-only when it empties. If `busy` does not fire per-session as assumed, the set
-never empties, `done` never fires, and the pane sits on `working` forever —
-which is exactly the failure this adapter already shipped once and had to fix.
+`adapters/opencode/roost.js` maps that trailing `session.idle` to `done`, so
+the pane badges `error` at the second retry (the desktop notification does
+fire), and then overwrites it with `done` about a minute later. The last thing
+the fleet shows for a turn that never reached the model is "finished, go look".
 
-**To close it:** drive an opencode turn that spawns a subagent, log every
-event with its `sessionID`, and confirm the interleaving before writing the
-guard. `tests/live/opencode-smoke.sh` drives a single-session turn only.
+Two things changed under the adapter to produce this. opencode used to retry an
+unreachable provider forever and never emit `session.error` (opencode#17648);
+1.18.20 gives up after 5 attempts. And `session.idle` follows `session.error`,
+where the mapping assumes `session.idle` means a turn that ran.
 
-### opencode already has a retry counter we are duplicating
-
-`adapters/opencode/roost.js` hand-rolls a consecutive-`retry` counter with
-explicit reset rules. opencode 1.18.15's `SessionStatus` includes
-`{type: "retry", attempt, message, next}` — `attempt` is upstream's own
-per-session count, which upstream resets.
-
-Reading `status.attempt >= RETRY_THRESHOLD` would delete the counter and every
-reset rule with it, and would be immune to the whole class of bug that produced
-those rules.
-
-**Not done because it is an unverified change to the exact code path that
-produced this adapter's one real bug.** Confirm `attempt` increments as
-expected on a live dead-provider run first — that is case 2 of the live test.
+**Not fixed because the mapping is a behaviour decision, not a test fix.** The
+candidate is to not map `session.idle` to `done` while the last reported state
+is `error`, releasing at the next `busy`. That is a state machine change to the
+adapter's one shared code path, it is the same shape as the bug that once left
+a pane on `working` forever, and it wants its own live run.
+`tests/live/opencode-smoke.sh` case 2 prints the final badge as a `NOTE:` line
+so a run shows the current behaviour rather than asserting it is correct.
 
 ## Small deferred items
 

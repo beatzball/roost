@@ -186,6 +186,13 @@ the same two commands on `ubuntu-latest` and `macos-latest`
 check the adapter end to end. It is **not** part of `tests/run.sh` — run it by
 hand after an opencode upgrade.
 
+It also installs `tests/live/event-log.js` as a second plugin, so a run records
+opencode's whole event stream with each event's `sessionID`, and prints it
+through `tests/live/event-report.py`. The badge assertions say what the pane
+showed; the log is what says why, and it is where the answers to
+[docs/known-gaps.md](docs/known-gaps.md) about opencode came from. A failing
+run keeps its logs in `/tmp/amx-events.*` and prints the path.
+
 ## Working on the docs site
 
 The site in `site/` builds to static HTML and deploys to

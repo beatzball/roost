@@ -53,6 +53,23 @@ const status = (type) => ({ type: "session.status", properties: { status: { type
 const plain = (type) => ({ type, properties: {} })
 const errored = (name) => ({ type: "session.error", properties: { error: { name } } })
 
+// The subagent cases below replay a REAL interleave, captured by
+// tests/live/event-log.js from opencode 1.18.20 driving the `general` subagent
+// through the task tool. The session ids are the recorded ones, kept verbatim
+// so the shapes are the ones opencode actually emits rather than ones invented
+// here — parent and child both carry properties.sessionID, and only the child
+// carries properties.info.parentID.
+const PARENT = "ses_fd0144131ffe4LzGD55GeBuNRE"
+const CHILD = "ses_fd013652effeTt5cu9L5Kbhn8S"
+const from = (sessionID, event) => ({
+  ...event,
+  properties: { ...event.properties, sessionID },
+})
+const born = (sessionID, parentID) => ({
+  type: "session.created",
+  properties: { sessionID, info: { id: sessionID, parentID } },
+})
+
 let fire = await fresh()
 await fire(status("busy"))
 check(calls(), "working", "session.status busy reports working")
@@ -97,6 +114,83 @@ check(calls(), "working,error", "any other session.error reports error")
 fire = await fresh()
 await fire(plain("message.part.delta"), plain("file.edited"), status("idle"))
 check(calls(), "", "unmapped events produce no call at all")
+
+// --- subagents: a child session is a different turn on the same bus ---
+
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  born(CHILD, PARENT),
+  from(CHILD, status("busy")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, status("busy")),
+  from(PARENT, plain("session.idle"))
+)
+check(calls(), "working,done", "a subagent going idle mid-turn does not badge the pane done — only the parent's idle does")
+
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  born(CHILD, PARENT),
+  from(CHILD, errored("APICallError")),
+  from(PARENT, plain("session.idle"))
+)
+check(calls(), "working,done", "a subagent's session.error does not badge the pane error")
+
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  from(PARENT, status("retry")),
+  born(CHILD, PARENT),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, status("busy")),
+  from(PARENT, status("retry"))
+)
+check(calls(), "working,error", "a subagent's idle does not reset the parent's retry counter")
+
+// The pane's own session must keep working even when a child has been seen —
+// the guard must filter by session id, not switch itself off once a subagent
+// has ever run.
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  born(CHILD, PARENT),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, status("busy")),
+  from(PARENT, plain("permission.asked")),
+  from(PARENT, plain("permission.replied")),
+  from(PARENT, plain("session.idle"))
+)
+check(calls(), "working,blocked,working,done", "the parent's own events are still mapped after a subagent has run")
+
+// The one thing a subagent DOES speak for the pane with. Its permission dialog
+// is answered by the human at this pane, so the badge has to say so — a pane
+// reading `working` while it waits for a keypress is the silently stuck case.
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  born(CHILD, PARENT),
+  from(CHILD, plain("permission.asked")),
+  from(CHILD, plain("permission.replied")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, plain("session.idle"))
+)
+check(calls(), "working,blocked,working,done", "a subagent's permission dialog still badges the pane blocked")
+
+// message.updated carries properties.info too, but that info is a MESSAGE. Its
+// parentID (a message id, in a thread) must never be mistaken for a session
+// parent, or the pane's own session would be filtered out and never badged.
+fire = await fresh()
+await fire(
+  { type: "message.updated", properties: { sessionID: PARENT, info: { id: "msg_1", parentID: "msg_0" } } },
+  from(PARENT, status("busy")),
+  from(PARENT, plain("session.idle"))
+)
+check(calls(), "working,done", "a message with a parentID does not make its session look like a subagent")
 
 // A missing roost must leave the pane unbadged, never throw into opencode's
 // event loop. PATH without the shim is the honest way to stage that.

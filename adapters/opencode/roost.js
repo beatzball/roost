@@ -37,6 +37,57 @@
 // are genuine progress signals.
 const RETRY_THRESHOLD = 2
 
+// opencode's event bus is process-global, and a task/subagent turn does NOT
+// run inside the pane's session: opencode creates a CHILD session for it, so
+// the child's own busy/idle/error events arrive here interleaved with the
+// parent's. A child going idle mid-turn is not the end of the pane's turn.
+//
+// Measured on opencode 1.18.20, a parent turn that called the task tool with
+// the `general` subagent (tests/live/opencode-smoke.sh case 1b logs exactly
+// this):
+//
+//   56331ms  child   session.created   (info.parentID = the parent session)
+//   56423ms  child   session.status    busy
+//   72396ms  child   session.idle       <- unfiltered, this stamped `done`
+//   72430ms  parent  session.status    busy
+//   77346ms  parent  session.idle       <- the real end of the turn
+//
+// So the pane read `done` for 34ms while the parent was still working, and
+// the child's idle also zeroed the retry counter mid-turn. `done` is the badge
+// that means "finished, go look", and the two `roost state` calls 34ms apart
+// are separate processes that can land out of order, so the wrong one can be
+// the last writer and the pane stays `done` for the rest of the turn.
+//
+// The guard is to ignore the child's LIFECYCLE rather than to track which
+// sessions are still busy. A set of active sessions that fails to empty leaves
+// the pane on `working` forever — the exact bug this adapter already shipped
+// once. Ignoring a child's lifecycle cannot get stuck: the parent's own events
+// are always mapped, and a child we somehow never learned about only degrades
+// to the old behaviour.
+//
+// Only these three. A subagent asks for permission under its OWN sessionID —
+// measured on 1.18.20, a subagent told to run bash under `"bash": "ask"`:
+//
+//   30540ms  child   session.created
+//   47589ms  child   permission.asked   <- the human has to answer this
+//   47622ms  child   session.idle
+//
+// and the pane must show `blocked` for it. Filtering that out would leave the
+// fleet reading `working` while the agent sits waiting for a keypress, which
+// is the "silently stuck" failure, not a cosmetic one.
+const CHILD_MUTED = new Set(["session.status", "session.idle", "session.error"])
+
+// Learn which sessions are children. Only session.created / session.updated
+// carry a session in properties.info — message.updated's info is a MESSAGE,
+// whose parentID is another message and would poison the set.
+const learnChild = (event, children) => {
+  const type = event?.type
+  const info = event?.properties?.info
+  if ((type === "session.created" || type === "session.updated") && info?.id && info?.parentID) {
+    children.add(info.id)
+  }
+}
+
 // node:child_process, not opencode's Bun `$` shell. It behaves identically
 // under Bun (which runs the plugin) and under plain Node (which runs the
 // offline test), so the test exercises the real invocation path instead of a
@@ -71,6 +122,10 @@ export const RoostState = async () => {
   // guards the tmux round trip rather than the spawn.
   let last = null
   let retries = 0
+  // Session IDs seen carrying a parentID. Never pruned: one entry per subagent
+  // a turn spawns is nothing next to a session's own history, and a session
+  // that ends can still emit late events.
+  const children = new Set()
 
   const set = async (state) => {
     if (state === last) return
@@ -80,6 +135,12 @@ export const RoostState = async () => {
 
   return {
     event: async ({ event }) => {
+      // Before the mapping, not inside it: a subagent's turn is a different
+      // turn on the same bus, and its start and end are not this pane's.
+      // A child's session.created arrives before its first session.status
+      // (92ms apart in the run above), so the set is populated in time.
+      learnChild(event, children)
+      if (CHILD_MUTED.has(event?.type) && children.has(event?.properties?.sessionID)) return
       switch (event?.type) {
         case "session.status": {
           const status = event.properties?.status?.type
