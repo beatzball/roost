@@ -49,13 +49,17 @@ The agent switcher needs `fzf`. Without it, the binding degrades to a hint. Inst
 
 You need a powerline or Nerd Font. Or run `roost settings` and pick the plain-separator style — it applies live, no restart.
 
-## doctor warns about a glyph mismatch
+## doctor warns about the error glyph
 
-If you picked `ascii` or `nerd` glyphs before the `error` state existed, your config has four glyph lines and no `@roost-glyph-error`, so it inherits the default 💥 — an emoji in a bar you chose not to have emoji in.
+There are two different warnings here, and each says only what it found in your config.
 
-Fix: re-pick your glyph set in `roost settings`, which writes all five.
+**"has no `@roost-glyph-error` line"** — you picked `ascii` or `nerd` glyphs before the `error` state existed, so your config has four glyph lines and the error badge falls back to the built-in 💥: an emoji in a bar you chose not to have emoji in. Fix: re-pick your glyph set in `roost settings`, which writes all five.
 
-This warning names one likely cause and can be wrong for you — if you set a custom error glyph on purpose, it is a warning, not a failure.
+**"sets `@roost-glyph-error` to ... where the set's own error glyph is ..."** — your config has an error glyph that is not the one your set uses. If you chose it yourself, there is nothing to fix. If you did not, re-pick your glyph set in `roost settings`.
+
+Neither ever fails doctor.
+
+`roost init` fills the missing glyph in for you when it migrates an old `~/.config/amux/amux.conf` — but only when your other four glyphs exactly match one of the named sets, so a hand-picked set is never overwritten with something you did not choose.
 
 ## Notifications never fire
 

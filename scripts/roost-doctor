@@ -151,23 +151,53 @@ if command -v opencode >/dev/null 2>&1; then
   fi
 fi
 
-# --- an upgraded config may predate the error state ---
-# A user who picked ascii/nerd/orbs before this branch has four saved glyph
-# lines and no @roost-glyph-error, so they silently inherit the emoji default
-# (tmux/roost.conf's global 💥) — an emoji in a bar they deliberately chose
-# not to have emoji in. Informational only: this never fails doctor, and it
-# is never auto-backfilled — doing so here could race a deliberate custom
-# glyph the user set themselves.
+# --- the saved error glyph doesn't match the saved glyph set ---
+# Two different situations reach this check, and the old single message named
+# one of them as the cause for both:
+#
+#   1. The config predates the `error` state. It has four glyph lines and no
+#      @roost-glyph-error at all, so the bar inherits tmux/roost.conf's global
+#      💥 — an emoji in a bar the user deliberately chose not to have emoji in.
+#   2. The user set a custom error glyph on an otherwise-standard set. Nothing
+#      is wrong; roost_glyphset_match ignores the fifth glyph when naming a
+#      set, so this is exactly as expected.
+#
+# Telling case 2 that their config "predates the error state" is simply false.
+# So the branches are split and each says only what was OBSERVED, leaving the
+# cause to the person who knows it. Both stay warnings, and neither ever fails
+# doctor.
+#
+# The presence of the LINE is what separates them, not the value — which is
+# why this reads the saved file through roost_cfg_file_has/roost_cfg_file_opt
+# rather than roost_opt. roost_opt answers from a running server first, and a
+# server has already filled the missing option in with the global default, so
+# case 1 and case 2 look identical through it. The advice is about the config
+# file, so the observation must be too.
+#
+# `roost init`'s legacy migration now backfills case 1 for the configs it
+# creates (roost_backfill_glyph_error). This check is still live for the ones
+# it cannot reach: a roost.conf migrated before that fix, or a hand-edited
+# one. doctor itself still never writes config.
 . "$(dirname "$0")/roost-themes.sh"
 . "$(dirname "$0")/lib/roost-config.sh"
-if [ -f "$(roost_cfg_path)" ]; then
+cfgfile="$(roost_cfg_path)"
+if [ -f "$cfgfile" ]; then
   cur="$(roost_current_glyphset)"
   if [ "$cur" != "custom" ]; then
     set -f; set -- $(roost_glyphset "$cur"); set +f
     want="$1"
-    have="$(roost_opt @roost-glyph-error)"
-    if [ "$have" != "$want" ]; then
-      warn "your saved '$cur' glyph set predates the error state — the error glyph doesn't match; run: roost settings, and re-pick your glyph set"
+    # The fallback is the emoji set's error glyph because that is literally
+    # what tmux/roost.conf sets globally; naming it beats printing the empty
+    # string roost_cfg_file_opt returns for a line that isn't there.
+    set -f; set -- $(roost_glyphset emoji); set +f
+    fallback="$1"
+    if ! roost_cfg_file_has "$cfgfile" @roost-glyph-error; then
+      warn "$cfgfile has no @roost-glyph-error line, so your saved '$cur' glyph set falls back to the built-in '$fallback' for the error badge — run: roost settings, and re-pick '$cur' to write all five"
+    else
+      have="$(roost_cfg_file_opt "$cfgfile" @roost-glyph-error)"
+      if [ "$have" != "$want" ]; then
+        warn "$cfgfile sets @roost-glyph-error to '$have', where the '$cur' set's own error glyph is '$want' — if you chose that yourself there is nothing to fix; otherwise run: roost settings, and re-pick '$cur'"
+      fi
     fi
   fi
 fi

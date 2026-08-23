@@ -72,18 +72,43 @@ roost_cfg_tmux() {
   else tmux -L roost "$@"; fi
 }
 
-# roost_opt KEY -> current value: from the running server, else the config file.
-roost_opt() {
-  local key="$1" target line v
-  if roost_cfg_tmux has-session 2>/dev/null; then
-    roost_cfg_tmux show-options -gqv "$key" 2>/dev/null; return
-  fi
-  target="$(roost_cfg_path)"; [ -f "$target" ] || return 0
-  line="$(grep "^set -g $key " "$target" 2>/dev/null | tail -1)"
+# roost_cfg_file_opt FILE KEY -> the value of the last `set -g KEY "VALUE"` line
+# in FILE; empty when FILE or the line is absent.
+#
+# File-scoped on purpose, and not just an inlined half of roost_opt: the
+# migration in roost-init has to read a config that is not the user's live one
+# yet (it is still a temp file), and doctor has to say what the SAVED file
+# holds rather than what a running server happens to be showing. roost_opt
+# answers from the server first, so neither caller can use it.
+roost_cfg_file_opt() {
+  local file="$1" key="$2" line v
+  [ -f "$file" ] || return 0
+  line="$(grep "^set -g $key " "$file" 2>/dev/null | tail -1)"
   case "$line" in
     *\"*) v="${line#*\"}"; v="${v%\"}"; printf '%s' "$v" ;;
     *) : ;;
   esac
+}
+
+# roost_cfg_file_has FILE KEY -> success when FILE carries a `set -g KEY ` line
+# at all.
+#
+# Distinct from roost_cfg_file_opt returning empty, and the distinction is the
+# whole point: a key that was never written and a key deliberately set to ""
+# both read as an empty value, and only the presence of the LINE tells you
+# which one happened. Everything below that decides "this config predates the
+# error state" depends on that difference.
+roost_cfg_file_has() {
+  [ -f "$1" ] && grep -q "^set -g $2 " "$1" 2>/dev/null
+}
+
+# roost_opt KEY -> current value: from the running server, else the config file.
+roost_opt() {
+  local key="$1"
+  if roost_cfg_tmux has-session 2>/dev/null; then
+    roost_cfg_tmux show-options -gqv "$key" 2>/dev/null; return
+  fi
+  roost_cfg_file_opt "$(roost_cfg_path)" "$key"
 }
 
 # roost_current_theme -> name matching the current 6 colours, else "custom".
@@ -96,7 +121,8 @@ roost_current_theme() {
   printf 'custom'
 }
 
-# roost_current_glyphset -> name matching the current glyphs, else "custom".
+# roost_glyphset_match BLOCKED WORKING DONE IDLE -> the name of the set those
+# four glyphs come from, else "custom".
 #
 # Matches on the FOUR original glyphs, not all five. Every config written
 # before the error state existed has no @roost-glyph-error, and tmux/roost.conf
@@ -104,14 +130,63 @@ roost_current_theme() {
 # requiring a fifth match would report "custom" for every existing user until
 # they re-picked. The cost is that a hand-customised error glyph alone does not
 # make a set read as "custom"; that is the better trade.
-roost_current_glyphset() {
-  local cur g
-  cur="$(roost_opt @roost-glyph-blocked) $(roost_opt @roost-glyph-working) $(roost_opt @roost-glyph-done) $(roost_opt @roost-glyph-idle)"
+#
+# Takes the four values as arguments rather than reading them itself, because
+# there are two sources that matter: the live server / user config (see
+# roost_current_glyphset) and an arbitrary file (see
+# roost_backfill_glyph_error). One matcher, so the two can never drift.
+roost_glyphset_match() {
+  local cur="$1 $2 $3 $4" g
   for g in emoji orbs ascii nerd; do
     set -f; set -- $(roost_glyphset "$g"); set +f
     [ "$2 $3 $4 $5" = "$cur" ] && { printf '%s' "$g"; return; }
   done
   printf 'custom'
+}
+
+# roost_current_glyphset -> name matching the current glyphs, else "custom".
+roost_current_glyphset() {
+  roost_glyphset_match \
+    "$(roost_opt @roost-glyph-blocked)" "$(roost_opt @roost-glyph-working)" \
+    "$(roost_opt @roost-glyph-done)"    "$(roost_opt @roost-glyph-idle)"
+}
+
+# roost_backfill_glyph_error FILE -> append the error glyph that FILE's own
+# glyph set implies, when FILE predates the error state. No-op otherwise.
+#
+# The error state shipped after the four original glyphs, so a config written
+# before it has four glyph lines and no @roost-glyph-error, and the bar falls
+# back to tmux/roost.conf's global 💥 — an emoji in a bar the user chose not to
+# have emoji in, or a 2-cell glyph among 1-cell ones.
+#
+# The safety argument is the whole design, so read it before changing this:
+#
+#   - It only ever APPENDS the fifth glyph. The four existing lines are never
+#     rewritten, so nothing the user already chose can be lost.
+#   - It only fires when those four are an exact match for a named set, so the
+#     value appended is derived from what the file already says — never
+#     invented. A hand-customised set matches nothing, reads as "custom", and
+#     is left exactly as it was.
+#   - It only fires when there is no @roost-glyph-error line at all. A user who
+#     deliberately set a custom error glyph keeps it: roost_cfg_file_has, not
+#     an empty value, is what decides that (a key set to "" is a choice too).
+#
+# Returns 0 when there was nothing to do; non-zero only when the append itself
+# failed, so a caller building a temp file can abort rather than promote a
+# half-written config.
+roost_backfill_glyph_error() {
+  local file="$1" name
+  roost_cfg_file_has "$file" @roost-glyph-error && return 0
+  name="$(roost_glyphset_match \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-blocked)" \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-working)" \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-done)" \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-idle)")"
+  [ "$name" = custom ] && return 0
+  # Same column alignment roost-init's own heredoc uses, so a migrated file and
+  # a freshly written one are indistinguishable to a human reading them.
+  set -f; set -- $(roost_glyphset "$name"); set +f
+  printf 'set -g @roost-glyph-error   "%s"\n' "$1" >> "$file"
 }
 
 # roost_apply_live HOME -> reload the running server. No server -> no-op.
