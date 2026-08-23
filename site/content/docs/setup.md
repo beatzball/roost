@@ -28,6 +28,13 @@ Unlike `roost init` (which regenerates the whole config), `roost settings` edits
 
 The **theme**, **glyph**, and **separator** pickers preview live: as you move through the list the bar updates on the running server, **Enter** commits the choice, and **Esc** reverts to what you had. The currently-saved option is marked with a `✓`.
 
+![The roost settings menu: theme, glyphs, separator and notifications](/roost-settings.png)
+
+Drilling into **glyphs** shows each set with its own icons, and `✓` marks the
+one currently saved:
+
+![The glyph-set picker showing the emoji, orbs, ascii and nerd sets](/roost-settings-glyphs.png)
+
 ## Notifications
 
 When an agent you are *not* looking at becomes blocked (needs input), roost pings you with a native desktop notification. Only `blocked` notifies — `done` fires every turn and would be noise. `error` notifies too: an agent that has stopped making progress needs you just as much as one waiting for an answer.

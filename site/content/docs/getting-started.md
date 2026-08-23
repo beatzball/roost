@@ -72,6 +72,10 @@ roost          # start/attach the default session ("main")
 
 Detach with the prefix then `d`, like any tmux. The prefix is `Ctrl-s`.
 
+`roost help` prints the full command list, with the owl on top:
+
+![The roost help output: an ASCII owl above the full command list](/roost-help.png)
+
 Next: [Setup and settings](/docs/setup), then [Enable the state badges](/docs/state-badges).
 
 ## Prior art and credit

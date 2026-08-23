@@ -38,7 +38,7 @@ State comes from **Claude Code's own lifecycle hooks** — not from scraping
 process names or terminal output — so it's accurate rather than guessed. No
 external plugins, no compiled binary, nothing that reaches into `~/.tmux.conf`.
 
-![roost in a real session — the badged agent status bar up top, editor and agent panes below, and the live `roost settings` popup open in the middle](assets/roost-overview.png)
+![Three agents in one roost session: the test suite running on the left, a Claude Code pane and an opencode pane stacked on the right, each badged with what its agent is doing](assets/roost-overview.png)
 
 ## 📖 Full documentation: [roosting.dev](https://roosting.dev)
 
