@@ -58,14 +58,42 @@ const RETRY_THRESHOLD = 2
 // are separate processes that can land out of order, so the wrong one can be
 // the last writer and the pane stays `done` for the rest of the turn.
 //
-// The guard is to ignore the child's LIFECYCLE rather than to track which
-// sessions are still busy. A set of active sessions that fails to empty leaves
-// the pane on `working` forever — the exact bug this adapter already shipped
-// once. Ignoring a child's lifecycle cannot get stuck: the parent's own events
-// are always mapped, and a child we somehow never learned about only degrades
-// to the old behaviour.
+// The guard is to ignore the child's LIFECYCLE and its SPEECH rather than to
+// track which sessions are still busy. A set of active sessions that fails to
+// empty leaves the pane on `working` forever — the exact bug this adapter
+// already shipped once. Ignoring a child's events cannot get stuck: the
+// parent's own events are always mapped, and a child we somehow never learned
+// about only degrades to the old behaviour.
 //
-// Only these three. A subagent asks for permission under its OWN sessionID —
+// The two message events are here for the reply channel, and they were NOT
+// needed while this filter only had to protect the badge. A child session's
+// messages carry a different assistant message id, and unfiltered they break
+// `roost read` two ways at once:
+//
+//   1. the child's `message.updated` (role assistant) takes over assistantID
+//      and clears the pending reply, so the child's text parts are collected
+//      as if they were the pane's own answer, and the parent's `session.idle`
+//      publishes them;
+//   2. the parent's own later text parts are then REJECTED for not matching
+//      the hijacked id — so the wrong answer does not merely appear, it
+//      crowds out the right one.
+//
+// Muting them here, rather than keeping assistantID/pending in a per-session
+// map, is deliberate. The map would be a second unbounded structure that has
+// to be looked up on the parent's idle to mean anything, and it buys nothing:
+// with the child muted, assistantID keeps pointing at the parent's message and
+// (2) is fixed by the same line as (1). Fewer moving parts, and it reuses a
+// mechanism that is already load-bearing and already tested.
+//
+// The over-filtering trap is real and this stays clear of it. A pane whose own
+// turn produced no text of its own now publishes NOTHING rather than the
+// child's text, and `roost read` falls back to the screen with its notice.
+// That is the honest outcome — the pane's agent genuinely did not answer — and
+// it is the outcome for a session that is never added to `children`, because
+// only an id carrying a parentID is ever added and a pane's own session has
+// none.
+//
+// Only these five. A subagent asks for permission under its OWN sessionID —
 // measured on 1.18.20, a subagent told to run bash under `"bash": "ask"`:
 //
 //   30540ms  child   session.created
@@ -75,7 +103,13 @@ const RETRY_THRESHOLD = 2
 // and the pane must show `blocked` for it. Filtering that out would leave the
 // fleet reading `working` while the agent sits waiting for a keypress, which
 // is the "silently stuck" failure, not a cosmetic one.
-const CHILD_MUTED = new Set(["session.status", "session.idle", "session.error"])
+const CHILD_MUTED = new Set([
+  "session.status",
+  "session.idle",
+  "session.error",
+  "message.updated",
+  "message.part.updated",
+])
 
 // Learn which sessions are children. Only session.created / session.updated
 // carry a session in properties.info — message.updated's info is a MESSAGE,

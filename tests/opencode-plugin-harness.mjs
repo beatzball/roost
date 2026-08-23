@@ -302,6 +302,90 @@ fire = await fresh()
 await fire(status("busy"), plain("session.idle"))
 check(verbs(), "state,state", "an idle with no text produces no reply call")
 
+// --- the reply channel meets subagents --------------------------------------
+//
+// Neither the subagent filter nor the reply channel is wrong on its own; the
+// interaction is. A child session's message events are on the same bus, and
+// they carry a DIFFERENT assistant message id. Left unfiltered they take over
+// `assistantID`, which does two bad things at once: the child's text becomes
+// the pane's reply, and the parent's own later text is then rejected for not
+// matching the id — so the wrong answer also crowds out the right one.
+//
+// The interleave replayed here is the real one: the parent starts, answers a
+// bit, calls the task tool, the child runs and answers, then the parent
+// finishes.
+
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  from(PARENT, assistant("msg_p")),
+  born(CHILD, PARENT),
+  from(CHILD, status("busy")),
+  from(CHILD, assistant("msg_c")),
+  from(CHILD, part("msg_c", "text", "SUBAGENT OUTPUT")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, status("busy")),
+  from(PARENT, part("msg_p", "text", "THE PARENT ANSWER")),
+  from(PARENT, plain("session.idle"))
+)
+check(replies().join("|"), "THE PARENT ANSWER", "a subagent's text is not published as the pane's reply")
+check(calls(), "working,done", "...and the subagent's idle still does not badge the pane done")
+
+// The compounding half, asserted on its own: the parent's answer must survive a
+// subagent running in the middle of its message. Before the fix `assistantID`
+// pointed at the child's message by this point, so the parent's own text part
+// was dropped and the pane published the child's text instead.
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  from(PARENT, assistant("msg_p")),
+  from(PARENT, part("msg_p", "text", "let me delegate that")),
+  born(CHILD, PARENT),
+  from(CHILD, assistant("msg_c")),
+  from(CHILD, part("msg_c", "text", "SUBAGENT OUTPUT")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, part("msg_p", "text", "done: the answer is 42")),
+  from(PARENT, plain("session.idle"))
+)
+check(replies().join("|"), "done: the answer is 42", "a subagent does not hijack the parent's assistant message id")
+
+// A turn where only the subagent spoke publishes NOTHING rather than the
+// child's text. That leaves `roost read` falling back to the screen with its
+// notice, which is the honest outcome: the pane's own agent did not answer.
+// Publishing the child's output instead would be a confident wrong answer,
+// which is the failure this whole mechanism exists to remove.
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  born(CHILD, PARENT),
+  from(CHILD, assistant("msg_c")),
+  from(CHILD, part("msg_c", "text", "SUBAGENT OUTPUT")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, plain("session.idle"))
+)
+check(replies().join("|"), "", "a turn where only the subagent spoke publishes no reply")
+check(verbs(), "state,state", "...and fires no reply call at all")
+
+// The mute must be scoped to child sessions, not to the event type: the
+// parent's own message events have to keep working after a subagent has run,
+// or the pane would never publish a reply again for the rest of its life.
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  born(CHILD, PARENT),
+  from(CHILD, assistant("msg_c")),
+  from(CHILD, part("msg_c", "text", "SUBAGENT OUTPUT")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, status("busy")),
+  from(PARENT, assistant("msg_p")),
+  from(PARENT, part("msg_p", "text", "a later, unrelated turn")),
+  from(PARENT, plain("session.idle"))
+)
+check(replies().join("|"), "a later, unrelated turn", "the parent can still publish a reply after a subagent has run")
+
 // A missing roost must leave the pane unbadged, never throw into opencode's
 // event loop. PATH without the shim is the honest way to stage that.
 process.env.PATH = "/nonexistent-roost-dir"

@@ -493,6 +493,49 @@ The implementation follows the design; this note exists so that the next person
 tempted by the "just strip the continuation bytes" version knows it was
 considered and is wrong.
 
+## Found after the rebase: subagents
+
+This branch was rebased onto a `main` that had gained a subagent filter for the
+opencode adapter (`CHILD_MUTED`). Both changes are correct alone; their
+interaction was not, and no test covered it because each side tested only its
+own half.
+
+`CHILD_MUTED` covered `session.status`, `session.idle` and `session.error` —
+the child's *lifecycle*, which is all the badge cares about. It did not cover
+`message.updated` or `message.part.updated`, so a child session's *speech* fell
+straight through into the reply collector. Two failures, not one:
+
+1. the child's `message.updated` took over `assistantID` and cleared `pending`,
+   so the child's text was collected and the parent's `session.idle` published
+   it; and
+2. the parent's own later text parts were then rejected for not matching the
+   hijacked id — the wrong answer did not merely appear, it crowded out the
+   right one.
+
+**Input:** an opencode turn that calls the `task` tool and then answers.
+**Wrong output:** `roost read` returned `SUBAGENT OUTPUT` instead of the
+parent's answer. Reproduced offline in
+`tests/opencode-plugin-harness.mjs` before the fix (4 failing cases), and the
+fix backed out again afterwards to confirm the cases fail without it.
+
+The fix adds both message events to `CHILD_MUTED` rather than keying
+`assistantID`/`pending` by session. A per-session map is a second unbounded
+structure that has to be consulted on the parent's idle to mean anything, and
+it buys nothing here: muting the child leaves `assistantID` pointing at the
+parent's message, so one line fixes both failures.
+
+A turn where **only** the subagent spoke now publishes nothing, and `read`
+falls back to the screen with its notice. That is the intended outcome, not an
+over-filter: the pane's own agent did not answer, and a subagent's output was
+never addressed to the caller. Only a session id carrying a `parentID` is ever
+added to `children`, and a pane's own session has none, so the pane's own
+speech can never be muted by this.
+
+The general lesson matches the pattern the rename spec keeps recording: two
+things sitting in one set are not automatically the same kind of thing.
+`CHILD_MUTED` was named and reasoned about as a *lifecycle* filter, so the
+reply channel's events were never weighed against it — until the two met.
+
 ## Non-goals
 
 - No change to `@agent_state` or `@agent_since`, in name or in scope.

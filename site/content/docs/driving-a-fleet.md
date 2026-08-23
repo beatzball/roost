@@ -57,6 +57,7 @@ The notice goes to stderr, so `roost read api | grep …` and loops over several
 
 - **The target is not an agent** — a shell, a log tail, a pager. Nothing is wrong; use `roost screen` for those.
 - **The target is an agent that cannot record.** Its harness has no roost adapter, or its Claude `Stop` hook predates this feature. Run `roost doctor` on that machine — it names the exact fix.
+- **The target answered only through a subagent.** A subagent's output is never published as the pane's reply — it was not addressed to the caller — so a turn that delegated and then said nothing itself records nothing.
 
 Never treat a fallback result as an agent's answer. If the notice appeared, the reply was not collected.
 

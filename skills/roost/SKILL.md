@@ -120,6 +120,9 @@ responses:
   hook was wired before the reply channel existed. Its human should run `roost
   doctor`, which names the fix. You will get TUI furniture — an input box and
   status bars — not the answer, so do not treat what comes back as its reply.
+- **The target answered only through a subagent** and wrote nothing itself. A
+  subagent's output is deliberately never published as the pane's reply — it
+  was not addressed to you. Ask the agent to summarise its own result.
 
 Never quote a fallback result as an agent's answer. If the notice appeared, you
 do not have the reply; say so rather than reading meaning into box-drawing
