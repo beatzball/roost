@@ -5,6 +5,7 @@ import { definePageData } from '@beatzball/litro';
 import { getGlobalData } from 'litro:content';
 import { siteConfig } from '../server/starlight.config.js';
 import { starlightHead } from '../src/route-meta.js';
+import { buildSeoHead, buildSeoTitle } from '../src/seo.js';
 
 // Register components used in render()
 import '../src/components/starlight-header.js';
@@ -23,7 +24,7 @@ const INSTALL_STEPS = [
     cmd: 'curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh',
   },
   { note: 'check tmux version, truecolor, fzf, notifier, hooks', cmd: 'roost doctor' },
-  { note: 'pick a theme and print the Claude Code hooks', cmd: 'roost init' },
+  { note: 'pick a theme and print the agent hooks', cmd: 'roost init' },
   { note: 'start (or attach to) the default session', cmd: 'roost' },
 ] as const;
 
@@ -34,18 +35,59 @@ const KEY_HINTS = [
   { keys: 'Ctrl-s S', what: 'Settings — change theme, glyphs, separator and notifications, live' },
 ] as const;
 
+/**
+ * Which harnesses drive the badges today, and how.
+ *
+ * Claude Code and opencode have code in this repo; everything else reports
+ * through `roost state`, which any harness can call. Kept in step with
+ * content/docs/state-badges.md.
+ */
+const AGENTS = [
+  {
+    name: 'Claude Code',
+    how: 'Four lifecycle hooks. Print them with',
+    cmd: 'roost hooks',
+  },
+  {
+    name: 'opencode',
+    how: 'A plugin adapter ships in the repo. Link it with',
+    cmd: 'roost doctor',
+  },
+  {
+    name: 'Anything else',
+    how: 'One command, from any harness, in any language.',
+    cmd: 'roost state working',
+  },
+] as const;
+
+/** Harnesses with an adapter planned, but not written yet. */
+const AGENTS_PLANNED = ['Codex', 'GitHub Copilot CLI', 'pi'] as const;
+
 export interface SplashData {
   siteTitle: string;
   description: string;
   nav: Array<{ label: string; href: string }>;
   features: Array<{ title: string; description: string; icon?: string }>;
+  /**
+   * Raw <head> HTML. Litro injects this and strips it from the JSON payload
+   * before serializing — it contains no </script>, but the framework treats
+   * the key specially regardless. See src/seo.ts.
+   */
+  seoHead: string;
+  /** Overrides routeMeta.title, which cannot vary per request. */
+  seoTitle: string;
 }
 
 export const pageData = definePageData(async (_event) => {
   const metadata = await getGlobalData();
+  const siteTitle = String(metadata.title ?? siteConfig.title);
+  const description = String(metadata.description ?? siteConfig.description);
+
   return {
-    siteTitle: String(metadata.title ?? siteConfig.title),
-    description: String(metadata.description ?? siteConfig.description),
+    siteTitle,
+    description,
+    seoTitle: buildSeoTitle(siteTitle),
+    seoHead: buildSeoHead({ title: siteTitle, description, path: '/' }),
     nav: siteConfig.nav,
     features: [
       {
@@ -56,7 +98,7 @@ export const pageData = definePageData(async (_event) => {
       {
         icon: '🚦',
         title: 'Honest badges',
-        description: 'State comes from Claude Code lifecycle hooks, not from scraping output. Accurate, not guessed.',
+        description: 'State is reported by the agent itself — hooks, not screen-scraping. Accurate, not guessed.',
       },
       {
         icon: '🎛️',
@@ -226,6 +268,75 @@ export class SplashPage extends LitroPage {
                 `,
               )}
             </div>
+          </section>
+
+          <!-- Which harnesses this works with. The badges are the whole
+               point of roost, so "does it work with my agent" has to be
+               answerable without opening the docs. -->
+          <section style="margin-bottom:4rem;">
+            <h2 style="
+              font-size:var(--sl-text-xl);
+              font-weight:700;
+              color:var(--sl-color-text);
+              margin:0 0 0.5rem;
+              text-align:center;
+            ">Works with your agent</h2>
+            <p style="
+              text-align:center;
+              color:var(--sl-color-gray-4);
+              font-size:var(--sl-text-sm);
+              margin:0 0 1.5rem;
+            ">Badges come from the agent, so any harness can drive them.</p>
+            <div style="
+              display:grid;
+              /* 13rem, not 15rem: at the 44rem cap that is the difference
+                 between three cards on one row and two plus an orphan. */
+              grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));
+              gap:0.75rem;
+              max-width:44rem;
+              margin:0 auto;
+            ">
+              ${AGENTS.map(
+                (a) => html`
+                  <div style="
+                    padding:1rem;
+                    border:1px solid var(--sl-color-border);
+                    border-radius:var(--sl-border-radius);
+                    display:flex;
+                    flex-direction:column;
+                    gap:0.5rem;
+                  ">
+                    <span style="
+                      font-weight:700;
+                      color:var(--sl-color-text);
+                      font-size:var(--sl-text-base);
+                    ">${a.name}</span>
+                    <span style="
+                      color:var(--sl-color-gray-4);
+                      font-size:var(--sl-text-sm);
+                      line-height:1.5;
+                    ">${a.how}</span>
+                    <code style="
+                      font-family:var(--sl-font-mono,ui-monospace,monospace);
+                      font-size:var(--sl-text-sm);
+                      background:var(--sl-color-bg-inline-code,#f6f6f6);
+                      border:1px solid var(--sl-color-border);
+                      border-radius:0.25rem;
+                      padding:0.25rem 0.5rem;
+                      align-self:flex-start;
+                    ">${a.cmd}</code>
+                  </div>
+                `,
+              )}
+            </div>
+            <p style="
+              text-align:center;
+              color:var(--sl-color-gray-4);
+              font-size:var(--sl-text-sm);
+              margin:1.25rem 0 0;
+            ">
+              Dedicated adapters planned for ${AGENTS_PLANNED.join(', ')}.
+            </p>
           </section>
 
           <section>

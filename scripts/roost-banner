@@ -1,22 +1,58 @@
 #!/usr/bin/env bash
 # roost-banner — print the roost owl as text art.
 #
-# Three renderings of the same logo. Which one you get is random, so the tool
+# Four renderings of the same logo. Which one you get is random, so the tool
 # has a little life in it without anyone having to choose a favourite.
 #
+#   color     the logo in full colour, half-block cells, 24-bit
 #   braille   densest detail (2x4 dots per cell), needs a font with U+28xx
 #   blocks    shaded, uses the widely-supported quadrant blocks
 #   outline   hollow line art, plain ASCII only
 #
-# Braille is dropped from the draw when the terminal cannot be trusted to have
-# the glyphs -- a missing glyph renders as a row of boxes, which looks broken
-# rather than charming. The other two always work.
+# Two are dropped from the draw when the terminal cannot be trusted to render
+# them: braille needs the U+28xx glyphs, and colour needs 24-bit support.
+# A missing glyph renders as a row of boxes and 24-bit escapes on an 8-colour
+# terminal render as mud -- both look broken rather than charming. blocks and
+# outline always work, so the draw is never empty.
 #
 # Usage:
 #   roost-banner              # random, capability-aware
 #   roost-banner braille      # force one
 #   ROOST_BANNER=blocks ...   # force one via the environment (used by tests)
 set -u
+
+# Directory holding this script, so the colour art -- the one rendering too
+# large to inline -- is found no matter where roost was invoked from.
+# BASH_SOURCE rather than $0, so this still works when the file is sourced.
+roost_banner_dir() {
+  CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd
+}
+
+ROOST_BANNER_COLOR_FILE_NAME=roost-banner-color.ans
+
+# Can this terminal draw 24-bit colour?
+#
+# COLORTERM is the only signal that is widely set and widely honoured. Unset
+# does not prove the terminal cannot -- it proves we cannot tell, and guessing
+# wrong here produces a smear of the eight nearest colours.
+#
+# NO_COLOR is respected: someone who asked for no colour gets one of the plain
+# renderings instead.
+roost_banner_supports_color() {
+  case "${ROOST_BANNER_TRUECOLOR:-}" in
+    1|yes|true) ;;
+    0|no|false) return 1 ;;
+    *)
+      [ -z "${NO_COLOR:-}" ] || return 1
+      case "${COLORTERM:-}" in
+        truecolor|24bit) ;;
+        *) return 1 ;;
+      esac
+      ;;
+  esac
+  [ -f "$(roost_banner_dir)/$ROOST_BANNER_COLOR_FILE_NAME" ] || return 1
+  return 0
+}
 
 # Can this terminal draw braille (U+2800..U+28FF)?
 #
@@ -41,15 +77,20 @@ roost_banner_supports_braille() {
 
 # Which renderings may be drawn right now, newline separated.
 roost_banner_variants() {
-  if roost_banner_supports_braille; then
-    printf 'braille\nblocks\noutline\n'
-  else
-    printf 'blocks\noutline\n'
-  fi
+  roost_banner_supports_color   && printf 'color\n'
+  roost_banner_supports_braille && printf 'braille\n'
+  printf 'blocks\noutline\n'
 }
 
 roost_banner_art() {
   case "$1" in
+    # The only rendering kept out of line: 44x22 cells of 24-bit escapes is
+    # 20 KB, which would bury the three readable ones underneath it.
+    color)
+      f="$(roost_banner_dir)/$ROOST_BANNER_COLOR_FILE_NAME"
+      [ -f "$f" ] || return 1
+      cat "$f"
+      ;;
     braille) cat <<'ART'
 ⣼⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣧
 ⣿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⣿
@@ -141,7 +182,7 @@ roost_banner() {
   # Capture first: piping straight into sed would report sed's exit status,
   # so an unknown variant would print nothing and still claim success.
   art="$(roost_banner_art "$variant")" || {
-    printf 'roost-banner: unknown variant %s (braille|blocks|outline)\n' "$variant" >&2
+    printf 'roost-banner: unknown variant %s (color|braille|blocks|outline)\n' "$variant" >&2
     return 1
   }
   printf '%s\n' "$art" | sed 's/^/  /'

@@ -10,6 +10,7 @@ import { siteConfig } from '../../server/starlight.config.js';
 import { extractHeadings, addHeadingIds } from '../../src/extract-headings.js';
 import { applyHighlighting } from '../../src/highlight.js';
 import { starlightHead } from '../../src/route-meta.js';
+import { buildSeoHead, buildSeoTitle } from '../../src/seo.js';
 
 // Register components used in render()
 import '../../src/components/starlight-page.js';
@@ -25,6 +26,13 @@ export interface DocPageData {
   nextDoc: { label: string; href: string } | null;
   nav: typeof siteConfig.nav;
   editUrl: string | null;
+  /** Raw <head> HTML for this doc. See src/seo.ts. */
+  seoHead: string;
+  /**
+   * Overrides routeMeta.title. routeMeta is static per FILE, and this file
+   * serves every doc, so without this every page would share one title.
+   */
+  seoTitle: string;
 }
 
 function computePrevNext(
@@ -58,6 +66,8 @@ export const pageData = definePageData(async (event) => {
   const toc = extractHeadings(doc.rawBody);
   const body = applyHighlighting(addHeadingIds(doc.body));
   const { prevDoc, nextDoc } = computePrevNext(siteConfig.sidebar, slug);
+  const title = doc.title || slug;
+  const description = doc.description || siteConfig.description;
   const editUrl = siteConfig.editUrlBase
     ? `${siteConfig.editUrlBase}/content/docs/${slug}.md`
     : null;
@@ -73,6 +83,15 @@ export const pageData = definePageData(async (event) => {
     nextDoc,
     nav: siteConfig.nav,
     editUrl,
+    seoTitle: buildSeoTitle(title),
+    seoHead: buildSeoHead({
+      title,
+      description,
+      path: `/docs/${slug}`,
+      // A doc page is a document, not a landing page; og:type drives how
+      // some readers (and Google) treat it.
+      type: 'article',
+    }),
   } satisfies DocPageData;
 });
 
@@ -85,7 +104,7 @@ export async function generateRoutes(): Promise<string[]> {
 
 export const routeMeta = {
   head: starlightHead,
-  title: 'Docs — site',
+  title: 'Docs — roost',
 };
 
 @customElement('page-docs-slug')
