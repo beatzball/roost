@@ -16,7 +16,8 @@
 #   roost split [-h|-v] [-t P] [-n NAME] [CMD]  open a helper pane in the current window; prints its %N
 #   roost whoami             print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
-#   roost send TGT TEXT      type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW)
+#   roost send [--force] TGT TEXT
+#                            type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
 #   roost read TGT [N]       print an agent's last N non-blank lines (default 40)
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   roost hooks              print the Claude Code hook config that powers the badges
@@ -120,9 +121,16 @@ case "${1:-up}" in
     # The command list is read back out of this file's own header comment
     # rather than duplicated here. A second copy would drift the first time
     # someone adds a subcommand and updates only one of them.
+    #
+    # The end of the header is found, not hardcoded: a line number here drifts
+    # the moment the header grows by a line, and it fails by silently dropping
+    # the LAST command from the help -- which is exactly what happened when
+    # --force was documented. Start after the shebang, stop at the first line
+    # that is not a comment.
     "$ROOST_HOME/scripts/roost-banner" || true
     printf '\n'
-    sed -n '2,29p' "$ROOST_HOME/bin/roost" | sed 's/^# \{0,1\}//'
+    awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+      "$ROOST_HOME/bin/roost"
     printf '\n'
     exit 0
     ;;
@@ -226,7 +234,18 @@ JSON
     exec ssh -t "$host" roost "$@"
     ;;
   send)
-    raw="${2:?usage: roost send [SESSION:]WINDOW TEXT...}"; shift 2
+    # --force is accepted only in front of the target. Anywhere later it would
+    # be indistinguishable from a message that happens to begin with the word,
+    # and a send whose first word is swallowed is worse than no flag at all.
+    force=0
+    if [ "${2:-}" = "--force" ]; then
+      force=1
+      # Drop "send" and "--force", then put the subcommand back so every
+      # positional reference below keeps its original number.
+      shift 2
+      set -- send "$@"
+    fi
+    raw="${2:?usage: roost send [--force] [SESSION:]WINDOW TEXT...}"; shift 2
     tgt="$(target "$raw")"
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
     # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
@@ -247,9 +266,23 @@ JSON
     # fires) and `dead` never equals "1". #{window_id} and #{pane_dead}
     # never contain a space, so a space is a safe, boring delimiter that
     # this split actually breaks on.
-    info="$(t display-message -p -t "$tgt" '#{window_id} #{pane_dead}' 2>/dev/null || true)"
+    #
+    # @agent_state joins the same snapshot for the same reason: the blocked
+    # check below must describe the pane that is about to be typed into, not
+    # a pane re-resolved a moment later. With a WINDOW target, display-message
+    # and send-keys both resolve to that window's active pane, so the guard
+    # covers exactly the pane that would receive the keys.
+    #
+    # Three fields now, so the two-field `%% *` / `#* ` split no longer
+    # reaches the last one; peel them off one at a time instead. The state is
+    # last on purpose: it is the only field that can be EMPTY (an agent that
+    # has never reported), and a trailing empty field survives this split
+    # while a middle one would not.
+    info="$(t display-message -p -t "$tgt" '#{window_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
     wid="${info%% *}"
-    dead="${info#* }"
+    rest="${info#* }"
+    dead="${rest%% *}"
+    state="${rest#* }"
     if [ -z "$wid" ]; then
       echo "roost send: no such target '$raw'" >&2; exit 2
     fi
@@ -259,6 +292,26 @@ JSON
     if [ "$dead" = "1" ]; then
       echo "roost send: target '$raw' is a dead pane (its command has exited); nothing would be delivered" >&2
       exit 2
+    fi
+    # A blocked pane is showing a permission dialog. send types the text and
+    # then presses Enter; against a dialog the text goes into the dialog and
+    # the Enter activates whatever option is highlighted. One agent driving
+    # another would then ANSWER a prompt that existed to ask a human — with
+    # neither the sender nor the human intending it, and silently, because
+    # the dialog consumes the text and the submit verification below sees a
+    # clean send.
+    #
+    # This is why the check is on state rather than on screen content: roost
+    # already stamps @agent_state=blocked from the agent's own hook, so the
+    # signal is exact and needs no scraping.
+    #
+    # Exit 3, distinct from 2 (wrong target) and 1 (submit failed): the
+    # target is right and retrying later is the correct response, once the
+    # human has answered. A caller can tell those three apart.
+    if [ "$state" = "blocked" ] && [ "$force" -eq 0 ]; then
+      echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be typed into it" >&2
+      echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
+      exit 3
     fi
     # Two-step submit: literal text, a beat, then Enter. A single
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
@@ -482,5 +535,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

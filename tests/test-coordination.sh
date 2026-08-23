@@ -58,6 +58,57 @@ assert_eq "$rc" "2" "send to a dead pane exits 2, not a false 0"
 assert_contains "$out" "dead pane" "send to a dead pane explains why"
 T set-option -gu remain-on-exit 2>/dev/null || true
 
+# --- blocked target ------------------------------------------------------
+#
+# A blocked pane is showing a permission dialog. send types text, then presses
+# Enter; against a dialog the text lands IN the dialog and the Enter activates
+# whatever option is highlighted -- so one agent driving another could answer a
+# prompt that existed to ask a human. The old behaviour was a clean exit 0,
+# because the dialog consumes the text and the submit verification is satisfied.
+recvpane="$(T display-message -p -t "$recv" '#{pane_id}')"
+T set-option -p -t "$recvpane" @agent_state blocked
+
+out="$("$ROOST" send "$recv" "echo SHOULD-NOT-RUN" 2>&1)"; rc=$?
+assert_eq "$rc" "3" "send to a blocked pane exits 3 (not a false 0)"
+assert_contains "$out" "permission dialog" "send to a blocked pane explains why"
+# Exit 3 is distinct from 2 on purpose: the target is RIGHT and retrying later
+# is correct, whereas 2 means pick a different target.
+assert_eq "$("$ROOST" send "nope:99" x >/dev/null 2>&1; echo $?)" "2" \
+  "a bad target still exits 2, so the caller can tell the two apart"
+
+# refusing is only defensible if it delivered nothing at all
+sleep 0.5
+T capture-pane -p -t "$recv" 2>/dev/null | grep -q 'SHOULD-NOT-RUN' \
+  && assert_eq delivered nothing "a refused send types nothing into the pane" \
+  || assert_eq nothing nothing "a refused send types nothing into the pane"
+
+# --force is the escape hatch: same target, same state, now it goes through
+"$ROOST" send --force "$recv" "printf 'FORCED-%s\n' OK"; rc=$?
+assert_eq "$rc" "0" "send --force overrides the blocked guard"
+wait_for "$recv" 'FORCED-OK' \
+  && assert_eq ok ok "send --force still delivers and submits" \
+  || assert_eq no-exec executed "send --force still delivers and submits"
+
+# --force must not be mistaken for the target
+out="$("$ROOST" send --force "nope:99" x 2>&1)"; rc=$?
+assert_eq "$rc" "2" "send --force still validates the target after it"
+
+T set-option -pu -t "$recvpane" @agent_state 2>/dev/null || true
+
+# every other state is fine to send into -- only `blocked` means a dialog.
+# Without this the guard could silently widen and break normal fleet driving.
+for st in working done error idle; do
+  T set-option -p -t "$recvpane" @agent_state "$st"
+  "$ROOST" send "$recv" "printf 'ST-%s\n' $st" >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" "0" "send into a '$st' pane is allowed"
+done
+T set-option -pu -t "$recvpane" @agent_state 2>/dev/null || true
+
+# an agent that has never reported has NO @agent_state at all; an empty value
+# must read as "not blocked", not trip the guard.
+"$ROOST" send "$recv" "printf 'UNSET-%s\n' OK" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "send into a pane with no reported state is allowed"
+
 # a non-numeric @roost-send-enter-delay must NOT break send — it falls back to 0.3
 # and still submits (no abort with the text left unsent).
 T set-option -g @roost-send-enter-delay "not-a-number"

@@ -33,7 +33,7 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 - `roost whoami` — this agent's own target (its `%N`)
 - `roost spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
 - `roost split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
-- `roost send TARGET "…"` — reliably type a prompt into an agent and submit it
+- `roost send TARGET "…"` — reliably type a prompt into an agent and submit it (refuses a 🛑 blocked target; see below)
 - `roost wait-done TARGET` / `roost read TARGET` — wait for it to finish, then read the reply
 
 `spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place — a pane's state is shared with its window, so `wait-done` on it is not per-pane.
@@ -44,9 +44,41 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 
 | exit | meaning | what to do |
 |------|---------|------------|
+| `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
 | `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, or it was typed but never left the input line even after retrying extra Enters | retry the same target or inspect the pane; do **not** re-resolve |
 | `1` (`usage:` message) | a missing argument | caller bug, not a delivery failure |
+
+### Why a blocked target is refused
+
+`send` types your text, waits a beat, then presses Enter. If a permission
+dialog is open at that moment, the text goes **into the dialog** and the Enter
+activates whatever option is highlighted. One agent driving another could
+therefore answer a prompt that existed to ask *you* — silently, because the
+dialog swallows the text and the submit verification is satisfied.
+
+So `send` refuses when the target's badge is 🛑 `blocked`. That is not screen
+scraping: the agent reports its own state through a hook, so the signal is
+exact.
+
+```sh
+roost send api "run the tests"          # exits 3 if api is blocked
+roost send --force api "run the tests"  # send anyway
+```
+
+`--force` must come **before** the target. Anywhere later it would be
+indistinguishable from a message that happens to start with that word.
+
+In a loop, exit 3 is the one code worth retrying on:
+
+```sh
+while :; do
+  roost send api "run the tests" && break
+  rc=$?
+  [ "$rc" -eq 3 ] || exit "$rc"   # 1 and 2 will not fix themselves
+  sleep 10                        # blocked: wait for the human, then retry
+done
+```
 
 ### `roost wait-done` and errors
 

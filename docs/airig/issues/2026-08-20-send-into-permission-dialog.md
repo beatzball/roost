@@ -1,8 +1,12 @@
-# `amux send` can type into a permission dialog and answer it
+# `roost send` could type into a permission dialog and answer it
+
+**FIXED.** `roost send` now refuses a target whose badge is `blocked` and exits
+3; `--force` overrides. See "How it was fixed" at the bottom.
 
 Found 2026-08-20 by the `switcher-flake` session, while trying to report to
-another agent. Confirmed by reading `bin/amux`. **Not fixed. Out of scope for
-the rename — recorded so it is not lost.**
+another agent. Confirmed by reading `bin/amux` (as it was then named). Recorded
+here rather than fixed at the time, because the rename it was found during was
+meant to change no behaviour at all.
 
 ## What happens
 
@@ -70,3 +74,29 @@ already computes correctly rather than adding new screen-scraping.
 This is a bug in behaviour, not in naming. Whatever `send` becomes in `roost`
 inherits it unchanged. Fixing it is a separate piece of work and should not be
 folded into the rename, which is meant to change no behaviour at all.
+
+## How it was fixed
+
+The third direction, as predicted — it reused a signal the project already
+computed correctly instead of adding screen-scraping.
+
+`roost send` reads `#{@agent_state}` in the SAME `display-message` call that
+already fetches `#{window_id}` and `#{pane_dead}`, so all three checks describe
+one snapshot of the target rather than racing separate lookups. When the state
+is `blocked` it prints why and exits **3** — deliberately distinct from 2 (wrong
+target: pick a different one) and 1 (submit failed: retry or inspect). Exit 3
+means the target is right and retrying later, once a human has answered, is the
+correct response.
+
+`--force` overrides, and is accepted only in front of the target: anywhere later
+it could not be told apart from a message that happens to begin with that word.
+
+With a WINDOW target, `display-message` and `send-keys` both resolve to that
+window's active pane, so the guard covers exactly the pane that would have
+received the keys.
+
+Verified against the pre-fix binary from `main`: sending into a `blocked` pane
+exited **0**. It now exits 3, and the pane receives nothing. Tests in
+`tests/test-coordination.sh` cover the refusal, the empty delivery, `--force`,
+the distinct exit codes, every non-blocked state, and an agent that has never
+reported a state at all.
