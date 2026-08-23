@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { ssgPreset } from '@beatzball/litro/config';
 import pagesPlugin from '@beatzball/litro/plugins';
 import ssgPlugin from '@beatzball/litro/plugins/ssg';
+import ogPlugin, { ogPrerenderHook } from '@beatzball/litro/plugins/og';
 import contentPlugin from '@beatzball/litro/content/plugin';
 
 export default defineNitroConfig({
@@ -19,7 +20,7 @@ export default defineNitroConfig({
     { dir: '../node_modules/@shoelace-style/shoelace/dist/themes', baseURL: '/shoelace/themes/', maxAge: 604800 },
   ],
 
-  externals: { inline: ['@lit-labs/ssr', '@lit-labs/ssr-client'] },
+  externals: { inline: ['@lit-labs/ssr', '@lit-labs/ssr-client', 'satori'] },
 
   esbuild: {
     options: {
@@ -42,10 +43,15 @@ export default defineNitroConfig({
   ],
 
   hooks: {
+    // Must be registered here, at config level, and NOT inside build:before:
+    // Nitro's CLI runs prerender() before build(), so a hook added later
+    // never fires and no OG image is ever written.
+    'prerender:routes': ogPrerenderHook(),
     'build:before': async (nitro: Nitro) => {
       await contentPlugin(nitro);
       await pagesPlugin(nitro);
       await ssgPlugin(nitro);
+      await ogPlugin(nitro, { siteName: 'roost' });
     },
   },
 

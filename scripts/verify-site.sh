@@ -82,7 +82,11 @@ cat /tmp/verify-site-pages.$$
 grep -q '✗' /tmp/verify-site-pages.$$ && fail=1
 rm -f /tmp/verify-site-pages.$$
 
-for asset in /logo.png /_litro/app.js; do
+# /favicon.ico and the OG card are referenced from every page's <head>, so a
+# deploy that drops them breaks the tab icon and every shared link while the
+# pages themselves still return 200.
+for asset in /logo.png /_litro/app.js /favicon.ico /favicon-32.png \
+             /apple-touch-icon.png /__og/index.png /__og/docs/setup.png; do
   code=$(status "$BASE$asset")
   if [ "$code" = "200" ]; then note "200  $asset"; else bad "$code  $asset"; fi
 done
