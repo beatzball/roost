@@ -114,10 +114,27 @@ out="$(PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
 assert_contains "$out" "roost is on PATH" "doctor confirms roost is on PATH"
 rm -rf "$noroostdir"
 
-# --- an upgraded config predating the error state ---
-# A user who picked ascii before this branch has four saved glyph lines and
-# no @roost-glyph-error, so they silently inherit the emoji default -- an
-# emoji in a bar they deliberately chose not to have emoji in.
+# --- the saved error glyph does not match the saved glyph set ---
+# Two different situations reach this check and they need two different
+# messages, because the single old message ("your saved set predates the error
+# state") asserted a cause that is simply false for the second:
+#
+#   1. No @roost-glyph-error LINE at all. The config was written before the
+#      `error` state existed, so the bar falls back to tmux/roost.conf's
+#      global 💥 -- an emoji in a bar the user chose not to have emoji in.
+#   2. An @roost-glyph-error line holding a value the set does not use. The
+#      user set a custom error glyph on purpose; nothing is wrong.
+#
+# So each case below asserts the message names what was OBSERVED -- and
+# asserts the actual glyph VALUES it printed, not just that a warning fired.
+# The process lesson in docs/known-gaps.md is that the init test asserted an
+# option NAME only, so a bug that shifted every glyph by one position passed
+# throughout; a message naming the wrong set's glyph would do the same here.
+#
+# HOME is pinned to a throwaway dir for every invocation, alongside the
+# XDG_CONFIG_HOME each case sets: doctor reads $HOME/.claude/settings.json,
+# and this suite must never touch the real one.
+gchome="$(mktemp -d /tmp/amx.XXXX)"
 gcdir="$(mktemp -d /tmp/amx.XXXX)"
 mkdir -p "$gcdir/roost"
 cat > "$gcdir/roost/roost.conf" <<EOF
@@ -126,19 +143,46 @@ set -g @roost-glyph-working "[~]"
 set -g @roost-glyph-done    "[+]"
 set -g @roost-glyph-idle    "[·]"
 EOF
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
-assert_contains "$out" "predates the error state" "doctor warns when a saved glyph set has no matching error glyph"
-COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" >/dev/null 2>&1
-assert_eq "$?" "0" "a mismatched error glyph does not fail doctor (informational only)"
+out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
+assert_contains "$out" "has no @roost-glyph-error line" "doctor reports the missing line as missing, rather than asserting a cause"
+assert_contains "$out" "'ascii'" "doctor names the set it actually matched (ascii)"
+assert_contains "$out" "falls back to the built-in '💥'" "doctor names the exact glyph being inherited, not just 'the default'"
+HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" >/dev/null 2>&1
+assert_eq "$?" "0" "a missing error glyph does not fail doctor (informational only)"
 
 # once @roost-glyph-error is added and matches, the warning goes away
 printf 'set -g @roost-glyph-error   "[x]"\n' >> "$gcdir/roost/roost.conf"
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
+out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
 case "$out" in
-  *"predates the error state"*) assert_eq "warned" "silent" "doctor is silent once the error glyph matches its set" ;;
+  *"@roost-glyph-error"*) assert_eq "warned" "silent" "doctor is silent once the error glyph matches its set" ;;
   *) assert_eq ok ok "doctor is silent once the error glyph matches its set" ;;
 esac
 rm -rf "$gcdir"
+
+# Case 2: a deliberate custom error glyph on an otherwise-standard set. The
+# old message told this user their config "predates the error state", which is
+# false -- they wrote that line themselves. The new one states both values and
+# leaves the cause to the person who knows it.
+cudir="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$cudir/roost"
+cat > "$cudir/roost/roost.conf" <<EOF
+set -g @roost-glyph-error   "(X)"
+set -g @roost-glyph-blocked "[!]"
+set -g @roost-glyph-working "[~]"
+set -g @roost-glyph-done    "[+]"
+set -g @roost-glyph-idle    "[·]"
+EOF
+out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" 2>&1)"
+assert_contains "$out" "sets @roost-glyph-error to '(X)'" "doctor quotes the custom error glyph the config actually holds"
+assert_contains "$out" "the 'ascii' set's own error glyph is '[x]'" "doctor quotes the set's own error glyph for comparison"
+assert_contains "$out" "if you chose that yourself there is nothing to fix" "doctor offers the deliberate-choice reading instead of asserting a cause"
+case "$out" in
+  *"has no @roost-glyph-error line"*) assert_eq "claimed-missing" "described-mismatch" "doctor does not tell a user with a custom error glyph that the line is missing" ;;
+  *) assert_eq ok ok "doctor does not tell a user with a custom error glyph that the line is missing" ;;
+esac
+HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" >/dev/null 2>&1
+assert_eq "$?" "0" "a custom error glyph does not fail doctor (informational only)"
+rm -rf "$cudir" "$gchome"
 
 # === roost doctor: stale-hook check (Phase 5 trigger) ===
 # roost doctor warns when a settings file still references the old

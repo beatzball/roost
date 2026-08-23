@@ -74,47 +74,16 @@ those rules.
 produced this adapter's one real bug.** Confirm `attempt` increments as
 expected on a live dead-provider run first — that is case 2 of the live test.
 
-## Upgrade wart
-
-### A pre-existing config inherits the emoji error glyph
-
-A user who picked `ascii` or `nerd` before the `error` state existed has four
-glyph lines and no `@roost-glyph-error`, so they inherit the default 💥 — an
-emoji in a bar they chose not to have emoji in, or a 2-cell glyph among 1-cell
-ones. This now applies to `~/.config/roost/roost.conf` too, not just the old
-`~/.config/amux/amux.conf`: `roost init`'s legacy migration
-(`scripts/roost-init:37-53`) carries a pre-existing `amux.conf` over by
-renaming `@amux-*` keys to `@roost-*` verbatim, so a config that predates the
-error state still predates it after migration.
-
-`roost doctor` warns and tells them to re-pick their glyph set in
-`roost settings`, which writes all five.
-
-**Deliberately not auto-backfilled, and the old reasoning for that no longer
-applies.** It used to be that the natural place to backfill was
-`scripts/amux-migrate-state`, which ran async via `run-shell -b` while
-`bin/amux` sourced the user config afterwards, so a backfill there could
-clobber a deliberate custom glyph depending on ordering. That whole mechanism
-is gone — the script was deleted, its `if-shell` removed from the conf, and
-`bin/roost` is now a small `exec` stub that sources nothing.
-
-The current reason is simpler: nothing in the live code writes this value on
-the user's behalf. `roost init`'s migration block is a pure key rename over
-the old file's existing lines, not a value decision, so it never has the
-information to invent a glyph the old config didn't have. And `roost doctor`
-itself never writes config — its check is read-only and advisory, same as
-every other check in the file — so filling the gap silently isn't its job
-either; it only names the fix (`roost settings`) and leaves the choice to the
-user.
-
-The same four-glyph match means `roost doctor` will also warn at someone who
-deliberately set a custom error glyph on an otherwise-standard set. The message
-names a cause that may be false for them. It is a warning, not a failure.
-
 ## Small deferred items
 
-- `scripts/roost-doctor`'s glyph-mismatch warning asserts a cause that can be
-  wrong (see above).
+- A `roost.conf` produced by the legacy migration **before** it learned to
+  backfill `@roost-glyph-error` still predates the error state, and migration
+  cannot re-fire on it (it only runs while `roost.conf` is absent — an
+  existing one always wins, because a running amux server may still be reading
+  the old file). Nothing writes that value on their behalf. `roost doctor` now
+  names the missing line, the glyph being inherited, and the exact fix
+  (`roost settings`, re-pick the set), which is as far as a read-only check
+  goes.
 - `tests/test-agent-state.sh` sizes its window with zero headroom: splits
   repeatedly halve the same pane, so `-y 2000` fits exactly the splits the file
   makes today and the next one added will fail. Asserting each split's pane id
