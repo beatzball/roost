@@ -8,7 +8,10 @@
 # inside a `roost` server pane, so it is safe to wire into your GLOBAL Claude
 # hooks — running `claude` anywhere else does nothing.
 #
-#   usage: roost-agent-state <working|blocked|error|done|idle>
+#   usage: roost-agent-state <working|blocked|error|done|idle> [--stop-hook]
+#
+# --stop-hook additionally reads Claude Code's Stop payload from stdin and
+# records that turn's reply on the pane, which is what `roost read` returns.
 set -euo pipefail
 
 # Resolve this script's own directory even when invoked via a symlink — same
@@ -29,6 +32,12 @@ done
 SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 state="${1:-idle}"
+# Only the Stop hook passes this, and only Stop carries a reply to record.
+# It is a flag rather than an always-on stdin read because `roost state` is a
+# documented public command: a human typing `roost state done` at a terminal
+# would hang forever on a `cat` that never sees EOF.
+stop_hook=0
+[ "${2:-}" = "--stop-hook" ] && stop_hook=1
 
 # Must be inside tmux, in a known pane.
 [ -n "${TMUX:-}" ] || exit 0
@@ -43,6 +52,63 @@ esac
 
 # Normalise: anything unrecognised is idle.
 case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
+
+# Record the turn's reply, for `roost read`.
+#
+# This sits ABOVE the unchanged-state early bail below, and that placement is
+# load-bearing twice over:
+#
+#  1. A Stop arriving when the pane already reads `done` — a turn with no
+#     UserPromptSubmit, a re-entrant stop — would otherwise bail out before
+#     recording anything, and `roost read` would silently serve the PREVIOUS
+#     turn's reply.
+#  2. The reply must be stamped BEFORE @agent_state, which happens further
+#     down. `roost wait-done` returns the instant the state stops being
+#     working/blocked, and the documented idiom is `wait-done` then `read`, so
+#     stamping the state first opens a window where read lands between the two
+#     and falls back to the screen. That would reintroduce the original bug
+#     intermittently, which is harder to diagnose than reintroducing it
+#     consistently.
+#
+# Gated on --stop-hook AND done, so PostToolUse — which fires on every tool
+# call, and which Claude blocks on — never reaches any of this and keeps its
+# one-read-then-bail cost.
+if [ "$stop_hook" = 1 ] && [ "$state" = "done" ]; then
+  # A tty here means a human typed the flag by hand; `cat` would wait for them
+  # to press ^D. Skip rather than hang.
+  if [ ! -t 0 ]; then
+    payload="$(cat 2>/dev/null || true)"
+    # last_assistant_message is a JSON string: it WILL contain \n, and it can
+    # contain \", \\ and \uXXXX. Unescaping that in pure bash is a meaningful
+    # amount of shell whose failure mode is a subtly corrupted reply — wrong,
+    # plausible, and silent, which is the worst shape a bug takes here. A
+    # process spawn once per turn is the cheaper side of that trade: by this
+    # repo's own measurements a spawn is ~0.57 of a tmux round trip, and this
+    # script already makes several.
+    #
+    # But neither reader may be REQUIRED. scripts/roost-doctor records the
+    # standing decision that python3 is not a runtime dependency, so a machine
+    # with neither python3 nor jq records nothing and `roost read` falls back
+    # to the screen — the path that already exists and already announces
+    # itself. The feature degrades; it never breaks the agent.
+    reply=""
+    if command -v python3 >/dev/null 2>&1; then
+      reply="$(printf '%s' "$payload" | python3 -c \
+        'import sys,json; sys.stdout.write(json.load(sys.stdin).get("last_assistant_message") or "")' \
+        2>/dev/null || true)"
+    elif command -v jq >/dev/null 2>&1; then
+      reply="$(printf '%s' "$payload" | jq -r '.last_assistant_message // ""' 2>/dev/null || true)"
+    fi
+    if [ -n "$reply" ]; then
+      # Sourced here, inside the branch, rather than at the top of the file:
+      # PostToolUse never gets this far, so the hot path does not pay for a
+      # file read it has no use for.
+      . "$SELF_DIR/lib/roost-reply.sh"
+      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
+        "$(roost_reply_encode "$reply")" 2>/dev/null || true
+    fi
+  fi
+fi
 
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
 # exiting, so the common case — state already correct — must be cheap: ONE read,

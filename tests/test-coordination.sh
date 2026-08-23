@@ -225,7 +225,7 @@ assert_contains "$line" "api" "switcher row still shows the window name"
 # sidesteps dispatch-syntax quirks like `wait-done|wait)`.
 SKILL="$HERE/skills/roost/SKILL.md"
 [ -f "$SKILL" ] && assert_eq ok ok "skills/roost/SKILL.md exists" || assert_eq "" exists "skills/roost/SKILL.md exists"
-for cmd in whoami spawn split send wait-done read status; do
+for cmd in whoami spawn split send wait-done read screen reply status; do
   if grep -q "roost $cmd" "$SKILL" 2>/dev/null && grep -qw "$cmd" "$HERE/bin/roost" 2>/dev/null; then
     assert_eq ok ok "skill uses a real subcommand: roost $cmd"
   else

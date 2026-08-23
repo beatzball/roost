@@ -14,10 +14,28 @@ const HERE = fileURLToPath(new URL(".", import.meta.url))
 const dir = mkdtempSync("/tmp/amx.")
 const log = join(dir, "calls")
 const shim = join(dir, "roost")
-// Record the state ($2) and whether ROOST_AGENT_NAME arrived, tab-separated,
-// so calls() (state only) and envNames() (ROOST_AGENT_NAME only) can each
-// read their own column without disturbing the other's assertions.
-writeFileSync(shim, `#!/bin/sh\nprintf '%s\\t%s\\n' "$2" "\${ROOST_AGENT_NAME:-}" >> "${log}"\n`)
+// Record the subcommand ($1), its argument ($2) and whether ROOST_AGENT_NAME
+// arrived, tab-separated, so calls() (states only), replies() (reply text
+// only) and envNames() (ROOST_AGENT_NAME only) can each read their own column
+// without disturbing the other's assertions.
+//
+// $1 is recorded as well as $2 now that roost is invoked two ways — `roost
+// state <state>` and `roost reply <text>`. Without it a reply whose text
+// happened to be "done" would be indistinguishable from a state report, and
+// the ordering assertions below are entirely about which of the two came
+// first.
+//
+// The argument is newline-escaped before it is written. A reply is genuinely
+// multi-line — that is most of the point of recording one instead of scraping
+// a screen — and a raw newline here would split one call across two log rows,
+// so `roost reply "A\nB"` would read back as a reply of "A" followed by a
+// mystery row "B". Both failures look like adapter bugs and are not.
+// \x1e (ASCII record separator) stands in: it cannot occur in these fixtures,
+// and replies() below maps it back before any assertion sees it.
+writeFileSync(
+  shim,
+  `#!/bin/sh\nesc=\`printf '%s' "$2" | tr '\\n' '\\036'\`\nprintf '%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" >> "${log}"\n`
+)
 chmodSync(shim, 0o755)
 const REAL_PATH = process.env.PATH
 process.env.PATH = `${dir}:${REAL_PATH}`
@@ -35,8 +53,14 @@ const check = (got, want, what) => {
 }
 
 const rows = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [])
-const calls = () => rows().map((r) => r.split("\t")[0]).join(",")
-const envNames = () => rows().map((r) => r.split("\t")[1])
+const cols = () => rows().map((r) => r.split("\t"))
+// Only `state` rows, so every pre-existing assertion below keeps meaning what
+// it meant before `reply` rows could appear in the same log.
+const calls = () => cols().filter((c) => c[0] === "state").map((c) => c[1]).join(",")
+const replies = () => cols().filter((c) => c[0] === "reply").map((c) => c[1].replace(/\x1e/g, "\n"))
+// The verbs in order, which is what the reply-before-done assertions are about.
+const verbs = () => cols().map((c) => c[0]).join(",")
+const envNames = () => cols().map((c) => c[2])
 
 const { RoostState } = await import(join(HERE, "..", "adapters", "opencode", "roost.js"))
 
@@ -52,6 +76,18 @@ const fresh = async () => {
 const status = (type) => ({ type: "session.status", properties: { status: { type } } })
 const plain = (type) => ({ type, properties: {} })
 const errored = (name) => ({ type: "session.error", properties: { error: { name } } })
+// The reply-carrying events, shaped exactly as a live opencode 1.18.20 turn
+// emits them (verified against a real model call, not against the type
+// definitions — which declare a session.next.text.ended event that never
+// fires). message.updated announces the assistant message id BEFORE any of its
+// parts arrive; each part then arrives on message.part.updated carrying the
+// WHOLE text so far, not a delta.
+const assistant = (id) => ({ type: "message.updated", properties: { info: { role: "assistant", id } } })
+const user = (id) => ({ type: "message.updated", properties: { info: { role: "user", id } } })
+const part = (messageID, type, text, extra = {}) => ({
+  type: "message.part.updated",
+  properties: { part: { messageID, type, text, ...extra } },
+})
 
 // The subagent cases below replay a REAL interleave, captured by
 // tests/live/event-log.js from opencode 1.18.20 driving the `general` subagent
@@ -191,6 +227,80 @@ await fire(
   from(PARENT, plain("session.idle"))
 )
 check(calls(), "working,done", "a message with a parentID does not make its session look like a subagent")
+// --- the reply channel ------------------------------------------------------
+
+// The full shape of a real turn, in the order a live run produced it.
+fire = await fresh()
+await fire(
+  status("busy"),
+  assistant("msg_a"),
+  part("msg_a", "reasoning", "the user wants two lines, let me…"),
+  part("msg_a", "text", ""),
+  part("msg_a", "text", "PLUM-ONE\nPLUM-TWO"),
+  plain("session.idle")
+)
+check(replies().join("|"), "PLUM-ONE\nPLUM-TWO", "the assistant's text part is published as the reply")
+check(verbs(), "state,reply,state", "the reply is published BEFORE done is reported")
+check(calls(), "working,done", "publishing a reply does not disturb the state machine")
+
+// Reasoning arrives on the SAME event with a different part type. Publishing it
+// would post the model's private thinking as its answer to another agent.
+fire = await fresh()
+await fire(status("busy"), assistant("msg_a"), part("msg_a", "reasoning", "thinking out loud"), plain("session.idle"))
+check(replies().join("|"), "", "a reasoning part is never published as the reply")
+
+// The USER's own prompt arrives on the same event with the same part type
+// "text" — only the message id tells them apart.
+fire = await fresh()
+await fire(status("busy"), user("msg_u"), part("msg_u", "text", "the human's prompt"), plain("session.idle"))
+check(replies().join("|"), "", "a text part belonging to the user's message is not the reply")
+
+// The same part id is re-sent as it grows, so the last one is the whole text.
+fire = await fresh()
+await fire(
+  status("busy"), assistant("msg_a"),
+  part("msg_a", "text", "PLU"), part("msg_a", "text", "PLUM-O"), part("msg_a", "text", "PLUM-ONE"),
+  plain("session.idle")
+)
+check(replies().join("|"), "PLUM-ONE", "a growing text part is replaced, not appended")
+
+// Several text parts split by a tool call: keep the LAST, which is what Claude
+// Code's last_assistant_message returns for the same shape.
+fire = await fresh()
+await fire(
+  status("busy"), assistant("msg_a"),
+  part("msg_a", "text", "let me check that"),
+  part("msg_a", "tool", ""),
+  part("msg_a", "text", "the answer is 42"),
+  plain("session.idle")
+)
+check(replies().join("|"), "the answer is 42", "with several text parts, the last one is the reply")
+
+// synthetic parts are opencode's own injected text, not something the agent said
+fire = await fresh()
+await fire(status("busy"), assistant("msg_a"), part("msg_a", "text", "injected", { synthetic: true }), plain("session.idle"))
+check(replies().join("|"), "", "a synthetic text part is not published as the reply")
+
+// A turn that errors has no answer, and holding the half-built one would let it
+// attach to the NEXT turn — a stale reply served as if it were fresh.
+fire = await fresh()
+await fire(status("busy"), assistant("msg_a"), part("msg_a", "text", "half an ans"), errored("APICallError"))
+check(replies().join("|"), "", "a turn that errors publishes no reply")
+
+// A new assistant message drops whatever the previous one left pending, so one
+// turn's text can never be published as the next turn's reply.
+fire = await fresh()
+await fire(
+  status("busy"), assistant("msg_a"), part("msg_a", "text", "first turn"), plain("session.idle"),
+  status("busy"), assistant("msg_b"), plain("session.idle")
+)
+check(replies().join("|"), "first turn", "a second turn with no text of its own publishes nothing")
+
+// An idle with nothing pending must not fire a `roost reply` at all: an empty
+// reply would be stored, read as present, and returned as the agent's answer.
+fire = await fresh()
+await fire(status("busy"), plain("session.idle"))
+check(verbs(), "state,state", "an idle with no text produces no reply call")
 
 // A missing roost must leave the pane unbadged, never throw into opencode's
 // event loop. PATH without the shim is the honest way to stage that.

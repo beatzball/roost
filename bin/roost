@@ -18,7 +18,9 @@
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
 #                            type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
-#   roost read TGT [N]       print an agent's last N non-blank lines (default 40)
+#   roost read TGT [N]       print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr
+#   roost screen TGT [N]     print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
+#   roost reply TEXT...      record TEXT as this pane's reply, for another agent's `roost read`
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   roost hooks              print the Claude Code hook config that powers the badges
 #   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
@@ -90,6 +92,16 @@ reject_bad_name() {
     *$'\t'*|*$'\n'*)
       echo "roost $2: NAME may not contain a tab or newline" >&2; exit 2 ;;
   esac
+}
+
+# What `roost screen` returns, and what `roost read` falls back to. Drop the
+# pane's trailing blank rows, keep the last N non-empty lines.
+#
+# This is a RENDERING, not content: for a full-screen TUI the bottom of the
+# pane is an input box and status bars, not the reply. That is the whole reason
+# @roost-reply exists — see docs/airig/issues/2026-08-21-read-returns-tui-chrome.md.
+screen_dump() {
+  t capture-pane -p -t "$1" | grep -v '^[[:space:]]*$' | tail -n "$2"
 }
 
 case "${1:-up}" in
@@ -208,6 +220,10 @@ case "${1:-up}" in
 # fires for idle_prompt/auth_success, which would paint a finished agent red.
 # PostToolUse is what clears the red: no hook fires when you answer a permission
 # dialog, so without it the window stays blocked until the whole turn ends.
+# --stop-hook on the Stop entry is what powers \`roost read\`: it lets the hook
+# read Stop's JSON payload, whose last_assistant_message field carries the
+# turn's reply. Leave it off and everything still badges correctly — \`roost
+# read\` just falls back to scraping the pane's screen, and tells you it did.
 {
   "hooks": {
     "UserPromptSubmit": [
@@ -221,7 +237,7 @@ case "${1:-up}" in
       { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state done" } ] }
+      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state done --stop-hook" } ] }
     ]
   }
 }
@@ -443,8 +459,100 @@ JSON
     ;;
   read)
     raw="${2:?usage: roost read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
-    # Drop the pane's trailing blank rows, keep the last N non-empty lines.
-    t capture-pane -p -t "$(target "$raw")" | grep -v '^[[:space:]]*$' | tail -n "$lines"
+    tgt="$(target "$raw")"
+    # Prefer what the agent SAID over what its pane is DRAWING. An adapter
+    # (the Claude Stop hook, adapters/opencode/roost.js) stamps @roost-reply
+    # with the turn's last assistant message before it stamps the state, so a
+    # caller following the documented `wait-done` then `read` idiom cannot land
+    # in the gap between the two and miss it.
+    #
+    # show-options -p, NOT display-message '#{@roost-reply}': -p reads PANE
+    # scope only, where the adapters write. A format lookup falls back
+    # pane -> window -> global, so a stray outer-scope @roost-reply — the exact
+    # accident that @agent_state has a `set -gu` in tmux/roost.conf to undo —
+    # would be served here as if it were this agent's own reply.
+    #
+    # Verified on tmux 3.6: a stored value containing newlines, a tab,
+    # `#{pane_id}`, `#[fg=red]` and a literal `%` comes back byte-identical
+    # under od -c. tmux does not re-expand a substituted option value, so an
+    # agent reply containing tmux format syntax is safe here.
+    reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+    if [ -n "$reply" ]; then
+      # A reply recorded at the end of turn N is still on the pane during turn
+      # N+1. It is not cleared at the turn start — that would throw away a
+      # reply the caller was merely slow to collect — so say when it is not
+      # current instead. @agent_state already answers this exactly: a pane that
+      # is working or blocked has not finished the turn whose reply this would
+      # be, so whatever is stored came from an earlier one.
+      state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+      case "$state" in
+        working|blocked)
+          echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
+      esac
+      # $lines is deliberately NOT applied. A recorded reply is returned whole:
+      # `tail -n` on it would chop the BEGINNING off a long answer, and
+      # skills/roost/SKILL.md passes 40 today, which would silently truncate
+      # anything longer. N describes the screen, and only the screen.
+      printf '%s\n' "$reply"
+      exit 0
+    fi
+    # Never return nothing. An empty result would be a worse failure than the
+    # chrome this command was fixed to stop returning — the caller cannot tell
+    # "no reply recorded" from "the agent said nothing". Fall back to the
+    # screen, and say so: a SILENT fallback would re-create the original bug
+    # quietly, which is the one outcome ruled out.
+    #
+    # stderr, not stdout, for three reasons that all have callers today:
+    # tests/test-coordination.sh:242 and tests/test-panes.sh:31 both pipe this
+    # into `grep -q`; the site's `for w in api web worker; do roost read "$w";
+    # done` idiom would gain a notice per agent; and a shell pane — which
+    # legitimately has no reply channel at all — would otherwise have this
+    # prepended to every single read.
+    echo "roost read: no recorded reply for '$raw' — showing the pane's screen instead." >&2
+    echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
+    screen_dump "$tgt" "$lines"
+    ;;
+  screen)
+    # What `read` did before it learned to prefer a recorded reply, under a
+    # name that promises only what capture-pane can deliver. AGENTS.md section 7
+    # and the issue doc both argue `read` over-promises; this is the honest
+    # half. skills/roost/SKILL.md's "roost read it to see what's stuck"
+    # guidance points here, because a stuck TUI is exactly the case where the
+    # rendering IS the thing you want, chrome included.
+    raw="${2:?usage: roost screen [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    screen_dump "$(target "$raw")" "$lines"
+    ;;
+  reply)
+    shift
+    # The public write end of the reply channel: an agent records what it just
+    # said, so a sibling's `roost read` gets content instead of a screen. The
+    # adapters use it (adapters/opencode/roost.js), and it completes the story
+    # `roost state` already tells a harness with no adapter — badge yourself,
+    # and post your reply.
+    #
+    # Text comes from argv, never stdin. `roost reply` is a documented public
+    # command a human can type, and an unconditional stdin read would block
+    # forever on a terminal. The Claude hook path reads stdin instead, but only
+    # behind an explicit flag — see scripts/roost-agent-state.
+    [ -n "${TMUX:-}" ] || exit 0
+    [ -n "${TMUX_PANE:-}" ] || exit 0
+    # Silent no-op unless the caller is a pane on THIS server — same contract as
+    # `roost state`, so an adapter is safe to leave installed when its agent
+    # runs somewhere else.
+    #
+    # The check is on the server PID, not on the socket path. $TMUX is
+    # "<socket-path>,<pid>,<session>", so the pid is exact and needs no
+    # normalising; comparing paths instead would have to reconcile a socket
+    # NAME (-L roost) against the absolute path tmux reports, and on macOS
+    # /tmp vs /private/tmp on top of that. Getting that wrong fails in the
+    # worst direction: $TMUX_PANE from another server is a perfectly valid
+    # pane id HERE, so an unguarded write lands on a real, unrelated pane and
+    # nothing reports an error.
+    caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
+    our_pid="$(t display-message -p '#{pid}' 2>/dev/null || true)"
+    [ -n "$our_pid" ] && [ "$caller_pid" = "$our_pid" ] || exit 0
+    . "$ROOST_HOME/scripts/lib/roost-reply.sh"
+    t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
     ;;
   wait-done|wait)
     raw="${2:?usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
@@ -535,5 +643,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

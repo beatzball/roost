@@ -97,7 +97,7 @@ import { execFile } from "node:child_process"
 // Never throws. A missing roost, a dead tmux server, or a pane that went away
 // must leave the pane unbadged, never break the agent being badged — the same
 // discipline as the `|| true` on every tmux call in scripts/roost-agent-state.
-const report = (state) =>
+const run = (args) =>
   new Promise((resolve) => {
     try {
       // ROOST_AGENT_NAME tells roost-agent-state's sink what to label an
@@ -106,7 +106,7 @@ const report = (state) =>
       // read "claude" on its border and in the switcher.
       execFile(
         "roost",
-        ["state", state],
+        args,
         { env: { ...process.env, ROOST_AGENT_NAME: "opencode" }, timeout: 5000 },
         () => resolve()
       )
@@ -114,6 +114,13 @@ const report = (state) =>
       resolve()
     }
   })
+
+const report = (state) => run(["state", state])
+
+// The reply goes over argv, not stdin: `roost reply` takes argv precisely so
+// that no public entry point can block waiting for input. roost truncates to
+// its own byte budget, so nothing is capped here — one place decides that.
+const publish = (text) => run(["reply", text])
 
 export const RoostState = async () => {
   // opencode emits session.status busy several times per turn. Holding the
@@ -126,6 +133,12 @@ export const RoostState = async () => {
   // a turn spawns is nothing next to a session's own history, and a session
   // that ends can still emit late events.
   const children = new Set()
+  // The id of the assistant message this turn is building, and the text it has
+  // produced so far. Both are needed because the reply arrives spread across
+  // several events and none of them is both "assistant" and "text" on its own
+  // — see the case comments below.
+  let assistantID = null
+  let pending = null
 
   const set = async (state) => {
     if (state === last) return
@@ -142,6 +155,56 @@ export const RoostState = async () => {
       learnChild(event, children)
       if (CHILD_MUTED.has(event?.type) && children.has(event?.properties?.sessionID)) return
       switch (event?.type) {
+        // Which event carries what was VERIFIED against a live opencode 1.18.20
+        // turn (isolated XDG dirs, a spy plugin, a real model call), not read
+        // off the type definitions. The type definitions would have produced a
+        // different and broken answer: opencode declares a
+        // `session.next.text.ended` event with a required `text` field, and the
+        // string is present in the shipped binary, but it NEVER FIRES on a
+        // normal turn. This is the same shape as the "permission.ask" hook
+        // noted at the top of this file — a declared surface that is not the
+        // live one.
+        //
+        // What actually happens, in order:
+        //   message.updated        role=assistant   <- the id, before any text
+        //   message.part.updated   partType=reasoning
+        //   message.part.updated   partType=text  ""
+        //   message.part.updated   partType=text  "<the whole reply>"
+        //   session.idle
+        case "message.updated": {
+          // Learn the assistant message id BEFORE its parts arrive — verified
+          // above: this fires first. It is the only thing that distinguishes an
+          // assistant text part from the USER's own prompt, which arrives on
+          // the very same message.part.updated event with the very same
+          // partType "text". The message itself carries no text: an
+          // AssistantMessage is id/role/time/cost/tokens with no parts array,
+          // so this event can identify the reply but never supply it.
+          if (event.properties?.info?.role === "assistant") {
+            assistantID = event.properties.info.id
+            pending = null
+          }
+          return
+        }
+        case "message.part.updated": {
+          const part = event.properties?.part
+          if (!part || part.messageID !== assistantID) return
+          // type "text" only. Reasoning is delivered through this identical
+          // event with type "reasoning" — publishing that would post the
+          // model's thinking as its reply. `synthetic` parts are opencode's
+          // own injected text, not something the agent said.
+          if (part.type !== "text" || part.synthetic) return
+          // Replace rather than append: the same part id is re-sent as it
+          // grows ("" then the full text), with message.part.delta carrying
+          // the increments separately. So the last one holds the complete
+          // text and there is nothing to reassemble.
+          //
+          // A turn with several text parts split by tool calls keeps the LAST
+          // one, which is also what Claude Code's last_assistant_message
+          // returns for that shape — so both harnesses agree on what "the
+          // reply" means.
+          if (part.text) pending = part.text
+          return
+        }
         case "session.status": {
           const status = event.properties?.status?.type
           if (status === "busy") {
@@ -176,10 +239,24 @@ export const RoostState = async () => {
           return
         case "session.idle":
           retries = 0
+          // AWAIT the reply before reporting done, and in this order. `roost
+          // wait-done` returns the instant the badge stops being
+          // working/blocked, and the documented idiom is wait-done then read —
+          // so reporting done first opens a window where the reader lands
+          // between the two calls and falls back to scraping the screen. Same
+          // reasoning as the placement note in scripts/roost-agent-state.
+          if (pending) {
+            await publish(pending)
+            pending = null
+          }
           await set("done")
           return
         case "session.error": {
           retries = 0
+          // Drop the half-built reply. A turn that ended in an error has no
+          // answer to publish, and holding it would let it attach to the NEXT
+          // turn — a stale reply served as if it were fresh.
+          pending = null
           // MessageAbortedError is the user pressing Esc. Badging their own
           // keystroke as a crash — and pinging their desktop about it — would
           // be worse than saying nothing.
