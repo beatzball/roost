@@ -1,6 +1,7 @@
 # A real reply channel for `roost read`
 
-Status: **design only — not started, awaiting approval**
+Status: **approved and implemented** — all three open questions resolved as
+recommended (`roost screen`, head truncation, `roost reply` shipped)
 Date: 2026-08-23
 Size: **Build** (adds a subcommand, changes `roost hooks` output, changes what
 an existing command returns)
@@ -460,16 +461,37 @@ so it is recorded here rather than swept into this change.
 | A dead tmux server breaks the agent being badged | Every new tmux call carries `|| true`, matching every existing call in the hook |
 | `roost screen` becomes a second name nobody uses | It is what `SKILL.md`'s stuck-pane guidance is repointed at, so it has a documented caller from day one |
 
-## Open questions — for the human
+## Open questions — all resolved 2026-08-23
 
-1. **`roost screen` as the name.** `peek` and `capture` were the alternatives.
-   `screen` matches the issue doc's own phrasing ("what is on that pane's
-   screen") and is the recommendation.
-2. **Head-truncation at 12 KiB.** Tail-truncation is defensible if replies are
-   expected to end with their conclusion. Head is recommended for readability.
-3. **Whether `roost reply` ships at all**, or the adapters stamp the option
-   directly. It is recommended: it keeps tmux knowledge out of the JS adapter,
-   and it gives adapter-less harnesses the same story `roost state` gives them.
+1. ~~**`roost screen` as the name.**~~ **Resolved: `screen`.** `peek` and
+   `capture` were the alternatives; `screen` matches the issue doc's own
+   phrasing ("what is on that pane's screen").
+2. ~~**Head-truncation at 12 KiB.**~~ **Resolved: head, with a marker.**
+   Tail-truncation was defensible if replies are expected to end with their
+   conclusion; head won on readability.
+3. ~~**Whether `roost reply` ships at all.**~~ **Resolved: it ships.** It keeps
+   tmux knowledge out of the JS adapter, and it gives adapter-less harnesses
+   the same story `roost state` gives them.
+
+## Corrections found during implementation
+
+One thing this document got wrong, recorded rather than quietly edited, because
+the shape of the error is the useful part.
+
+**The multi-byte truncation reasoning was incomplete.** The design said to cut
+at the last newline within the byte budget and, failing that, to accept a raw
+byte cut. That is right, but it omits *why* the newline rule is the one that
+works: a newline is the boundary, not merely a convenient one. Every attempt to
+find the boundary by walking backwards off UTF-8 continuation bytes is
+unsound — a trailing continuation byte belonging to a *complete* character is
+indistinguishable, looking only backwards, from one belonging to a character
+the cut split in half. The newline rule sidesteps that entirely: `\n` is a
+single ASCII byte and can never appear inside a multi-byte sequence, so a cut
+there is provably clean without any lookahead.
+
+The implementation follows the design; this note exists so that the next person
+tempted by the "just strip the continuation bytes" version knows it was
+considered and is wrong.
 
 ## Non-goals
 

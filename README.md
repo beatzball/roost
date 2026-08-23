@@ -129,11 +129,12 @@ Everything below is for people working **on** roost.
 ## Repo layout
 
 ```
-bin/roost                   # launcher / CLI (up, new, ssh, send, read, wait-done,
-                            #   hooks, doctor, init, settings, status, kill)
+bin/roost                   # launcher / CLI (up, new, ssh, send, read, screen, reply,
+                            #   wait-done, hooks, doctor, init, settings, status, kill)
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
-                            #   (+ elapsed-time stamp, block notify)
+                            #   (+ elapsed-time stamp, block notify, and the
+                            #    turn's reply from the Stop payload)
 scripts/roost-status        # status-bar roll-up of agent-pane counts
 scripts/roost-switch        # fzf agent switcher, panes grouped by window (prefix a)
 scripts/roost-notify        # cross-platform desktop notification delivery
@@ -144,7 +145,9 @@ scripts/roost-next-blocked  # select the pane that needs you: error, else blocke
 scripts/roost-themes.sh     # built-in theme palettes
 scripts/lib/roost-config.sh # shared config helpers
                             #   (surgical writer, glyph/sep maps, live-apply)
-adapters/opencode/roost.js  # opencode plugin that reports state
+scripts/lib/roost-reply.sh  # the one place that decides how a reply is
+                            #   truncated to fit tmux's command-length limit
+adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 skills/roost/SKILL.md       # the portable agent skill
 site/                       # the roosting.dev documentation site (Litro, SSG)
 tests/                      # the shell test suite
