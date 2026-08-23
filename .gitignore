@@ -1,10 +1,17 @@
 .DS_Store
 *.log
 
-# Claude Code local settings — machine-specific, may contain local paths.
-# Only a *global* gitignore protects this on the author's machine; contributors
-# cloning this repo have no such protection, so it is ignored here too.
-.claude/settings.local.json
+# Claude Code working directory — machine-specific, and none of it belongs in
+# a public repo. It holds local settings (absolute paths, per-machine tool
+# permissions), agent worktrees, and whatever scratch a session leaves behind.
+#
+# The whole directory, not just settings.local.json as before: nothing here is
+# tracked, this repo is public, and one `git add -A` in a session is all it
+# would take. Only a *global* gitignore protects the author's own machine;
+# a contributor cloning this repo has no such protection.
+#
+# If a file under here ever IS worth sharing, `git add -f` it deliberately.
+.claude/
 
 # SDD scratch (progress ledger, task briefs)
 .superpowers/
