@@ -52,6 +52,32 @@ assert_contains() {
   esac
 }
 
+assert_prefix() {
+  # assert_prefix <string> <expected-prefix> <label>
+  # Written as a helper rather than inline, because the obvious inline form is
+  # a `case "$out" in E*) assert_eq ok ok ...` — which compares "ok" to "ok" on
+  # the pass path, so the PASS line it prints is not evidence of the thing it
+  # names. Here the comparison IS the assertion, and the FAIL line can print
+  # the string that actually arrived.
+  case "$1" in
+    "$2"*) ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "$3" ;;
+    *)     ROOST_TESTS_FAIL=$((ROOST_TESTS_FAIL+1)); printf '  FAIL: %s\n       [%s] does not start with [%s]\n' "$3" "$1" "$2" ;;
+  esac
+}
+
+require_pane() {
+  # require_pane <pane-id> <label>
+  # A split-window (or new-window) that runs out of room prints an EMPTY pane
+  # id on stdout rather than failing visibly, and every `-t ""` that follows
+  # silently resolves to the ACTIVE pane instead of erroring. An assertion
+  # aimed at the pane that was never created then reads some other pane's
+  # state and can pass for the wrong reason — masking that has already been
+  # found twice in this suite. So check the id at the point of the split
+  # instead of drifting into that trap: exiting non-zero makes tests/run.sh
+  # name the file as died-mid-run, which no PASS/FAIL count would have shown.
+  [ -n "$1" ] || { printf '  FAIL: split for %s produced no pane id\n' "$2"; exit 1; }
+}
+
 with_path_shim() {
   # with_path_shim <name> <marker> -- <cmd...>
   local name="$1" marker="$2"; shift 3   # drop name, marker, and the "--"

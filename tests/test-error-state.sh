@@ -18,13 +18,11 @@ hold='sh -c "while :; do sleep 5; done"'
 badge()  { T list-windows -a -F "#{window_id}|#{E:@roost-tab-badge}" | grep "^$1|" | cut -d'|' -f2; }
 busy()   { T list-windows -a -F "#{window_id}|#{E:@roost-tab-busy}"  | grep "^$1|" | cut -d'|' -f2; }
 border() { T list-panes   -a -F "#{pane_id}|#{E:@roost-pane-border}" | grep "^$1|" | cut -d'|' -f2; }
-# A failed split-window (out of space) prints an EMPTY pane id, not an error,
-# and `set-option -p -t ""` silently resolves to the ACTIVE pane instead of
-# erroring -- with -d keeping $p1 active throughout this file, a lost split
-# would re-stamp $p1 instead of a new pane, and a dedupe assertion downstream
-# could pass for the wrong reason. Fail loudly here instead of drifting into
-# that trap.
-require_pane() { [ -n "$1" ] || { echo "  FAIL: split for $2 produced no pane id"; exit 1; }; }
+# Every split below is guarded by require_pane (tests/lib.sh), which fails the
+# file loudly on an empty pane id. The shape that guard exists for is exactly
+# this file's: with -d keeping $p1 active throughout, a lost split would
+# re-stamp $p1 instead of a new pane via `set-option -p -t ""`, and the dedupe
+# assertion downstream could pass for the wrong reason.
 
 # --- tab badge ---
 w1="$(T display-message -p '#{window_id}')"
@@ -65,10 +63,7 @@ assert_contains "$(border "$p1")" "error" "an error pane's border names its stat
 # --- status rollup ---
 out="$(ROOST_STATUS_SOCK="$sock" "$HERE/scripts/roost-status")"
 assert_contains "$out" "E 2" "the rollup counts error panes"
-case "$out" in
-  E*) assert_eq ok ok "the rollup lists error first" ;;
-  *)  assert_eq "$out" "E first" "the rollup lists error first" ;;
-esac
+assert_prefix "$out" "E" "the rollup lists error first"
 
 # --- switcher ---
 rows="$(ROOST_SWITCH_SOCK="$sock" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
