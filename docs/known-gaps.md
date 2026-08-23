@@ -11,6 +11,11 @@ reads like an alarm when it is merely a note is a bug in this file.
 
 Keep it short. When an entry is fixed, delete it.
 
+There is no **Live risks** section right now, and that absence is the point of
+saying so: the section is missing because the last entry in it was fixed, not
+because nobody has looked. Add the heading back with the first entry that
+earns it.
+
 ## Behaviour changes
 
 ### `roost wait-done` exits non-zero on an errored target
@@ -33,8 +38,10 @@ read that file to coordinate, and one that assumed "non-zero means timeout"
 would retry a corpse. A `set -e` script will now stop on a dead agent rather
 than continuing — the intended improvement, but a change in flow.
 
-Failing loudly is the safe direction. The unsafe direction is a wrong success —
-which is what the dead-provider risk below still ends a failed turn with.
+Failing loudly is the safe direction. The unsafe direction is a wrong success,
+and `wait-done` can only refuse one if nothing upstream of it reports a failed
+turn as `done` in the first place — which is why `adapters/opencode/roost.js`
+swallows the `session.idle` that follows a `session.error`.
 
 ### opencode counts retries too, and we still count our own
 
@@ -58,36 +65,6 @@ no `attempt`, so a local number and its turn-boundary resets have to stay
 either way. The change is one line (`retries += 1` becomes `retries = attempt`)
 in exchange for a dependency on upstream's numbering, in the one code path that
 has already produced a real bug here.
-
-## Live risks
-
-### An opencode turn that dies on the provider ends `done`, not `error`
-
-Measured on opencode 1.18.20 against an unreachable provider, one turn:
-
-```
-     3495ms  retry {"attempt": 1, ...}   ... four more, exponential backoff ...
-    67103ms  session.error {"name": "APIError", ...}
-    67103ms  session.idle
-```
-
-`adapters/opencode/roost.js` maps that trailing `session.idle` to `done`, so
-the pane badges `error` at the second retry (the desktop notification does
-fire), and then overwrites it with `done` about a minute later. The last thing
-the fleet shows for a turn that never reached the model is "finished, go look".
-
-Two things changed under the adapter to produce this. opencode used to retry an
-unreachable provider forever and never emit `session.error` (opencode#17648);
-1.18.20 gives up after 5 attempts. And `session.idle` follows `session.error`,
-where the mapping assumes `session.idle` means a turn that ran.
-
-**Not fixed because the mapping is a behaviour decision, not a test fix.** The
-candidate is to not map `session.idle` to `done` while the last reported state
-is `error`, releasing at the next `busy`. That is a state machine change to the
-adapter's one shared code path, it is the same shape as the bug that once left
-a pane on `working` forever, and it wants its own live run.
-`tests/live/opencode-smoke.sh` case 2 prints the final badge as a `NOTE:` line
-so a run shows the current behaviour rather than asserting it is correct.
 
 ## Small deferred items
 

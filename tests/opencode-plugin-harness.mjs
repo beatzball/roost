@@ -151,6 +151,71 @@ fire = await fresh()
 await fire(plain("message.part.delta"), plain("file.edited"), status("idle"))
 check(calls(), "", "unmapped events produce no call at all")
 
+// --- a turn that died on the provider must not end `done` ---
+//
+// The interleave below is the recorded one: tests/live/opencode-smoke.sh case 2
+// against http://127.0.0.1:1/v1 on opencode 1.18.20, five retries with
+// exponential backoff, each preceded by its own busy, then session.error and a
+// session.idle in the same millisecond. That trailing idle is the whole bug —
+// it used to append `done` to a turn that never reached the model.
+const DEAD_PROVIDER = [
+  status("busy"), status("retry"),   // attempt 1
+  status("busy"), status("retry"),   // attempt 2 — the pane badges error here
+  status("busy"), status("retry"),   // attempt 3
+  status("busy"), status("retry"),   // attempt 4
+  status("busy"), status("retry"),   // attempt 5, the last one
+  errored("APIError"),
+  plain("session.idle"),
+]
+
+fire = await fresh()
+await fire(...DEAD_PROVIDER)
+check(calls(), "working,error", "a turn that died on the provider ends error — its trailing session.idle does not overwrite that with done")
+
+// The other half of the fix, and the more important one to keep green: a badge
+// that sticks on error forever is a worse bug than the one above.
+fire = await fresh()
+await fire(...DEAD_PROVIDER, status("busy"), plain("session.idle"))
+check(calls(), "working,error,working,done", "the very next healthy turn still reaches done — the suppression is released by the turn that follows, not held for the session")
+
+fire = await fresh()
+await fire(...DEAD_PROVIDER, ...DEAD_PROVIDER)
+check(calls(), "working,error,working,error", "a second dead turn badges working at its start and error again at its end, rather than sitting silently on the first turn's error")
+
+// The recovery case the suppression must NOT catch. Two retries badge error,
+// then the provider answers and the turn genuinely completes. There is no
+// session.error, so this idle is a real end-of-turn and still means done.
+// Keying the suppression on the badge instead of on session.error would leave
+// this turn reading error after it succeeded.
+fire = await fresh()
+await fire(status("busy"), status("retry"), status("retry"), status("busy"), plain("session.idle"))
+check(calls(), "working,error,done", "a turn that retried twice and then SUCCEEDED still reports done — retries alone do not suppress it, only session.error does")
+
+// No retries at all: a provider that fails outright still ends error.
+fire = await fresh()
+await fire(status("busy"), errored("APICallError"), plain("session.idle"))
+check(calls(), "working,error", "a session.error with no retries before it also swallows the following idle")
+
+// Esc during a retry loop. session.error carries MessageAbortedError, which
+// does not mark the turn dead, so the turn ends done as it did before — the
+// person who ended it is sitting at the pane.
+fire = await fresh()
+await fire(status("busy"), status("retry"), status("retry"), errored("MessageAbortedError"), plain("session.idle"))
+check(calls(), "working,error,done", "pressing Esc out of a retry loop still ends done, not error")
+
+// The second clear: a permission dialog is proof the turn reached the model,
+// so it releases the badge even though no busy was seen first.
+fire = await fresh()
+await fire(status("busy"), errored("APIError"), plain("session.idle"), plain("permission.asked"), plain("permission.replied"), plain("session.idle"))
+check(calls(), "working,error,blocked,working,done", "a permission dialog after a dead turn also releases the error, and that turn can reach done")
+
+// Repeated idles after a dead turn must stay suppressed. opencode emits one,
+// but a badge that could be un-suppressed by a duplicate would be a bug that
+// only ever appeared in the field.
+fire = await fresh()
+await fire(...DEAD_PROVIDER, plain("session.idle"), plain("session.idle"))
+check(calls(), "working,error", "a repeated session.idle after a dead turn does not leak a done through")
+
 // --- subagents: a child session is a different turn on the same bus ---
 
 fire = await fresh()
@@ -165,6 +230,11 @@ await fire(
 )
 check(calls(), "working,done", "a subagent going idle mid-turn does not badge the pane done — only the parent's idle does")
 
+// This one carries a second job since the dead-turn suppression landed: a
+// child's session.error must not mark the PARENT's turn dead either, or one
+// failing subagent would swallow the `done` of a parent turn that finished
+// fine. The child filter runs before the mapping, so it never reaches `died` —
+// this case is what keeps that true.
 fire = await fresh()
 await fire(
   born(PARENT, undefined),
@@ -173,7 +243,7 @@ await fire(
   from(CHILD, errored("APICallError")),
   from(PARENT, plain("session.idle"))
 )
-check(calls(), "working,done", "a subagent's session.error does not badge the pane error")
+check(calls(), "working,done", "a subagent's session.error does not badge the pane error, and does not suppress the parent's done")
 
 fire = await fresh()
 await fire(

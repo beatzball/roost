@@ -296,7 +296,26 @@ tmux -S "$S" kill-window -t "$p1b" 2>/dev/null
 # session.idle. The pane reaches error long before that -- two retries is the
 # adapter's threshold -- so this case is unchanged, but the run no longer hangs
 # in a retry loop, and the second turn below is only possible because of it.
-write_config "http://127.0.0.1:1/v1"
+#
+# The dead address is a port we picked rather than the fixed 127.0.0.1:1 it used
+# to be, and the reason is case 2b: it has to make this SAME opencode process
+# see the provider come back, and the only lever for that is moving a listener
+# onto an address opencode already knows (see tests/live/tcp-forward.py for the
+# measurement that ruled out rewriting the config). An unbound port refuses a
+# connection exactly the way port 1 did, so case 2 itself is unchanged.
+#
+# Binding port 0 and closing it is the kernel telling us a port that was free a
+# moment ago. Nothing can reserve it in the gap, so if something else does grab
+# it the dead-provider case fails loudly rather than passing for a wrong reason.
+# Without python3 there is nothing to pick a port with and nothing to forward
+# with either, so it falls back to port 1 -- unbindable, therefore permanently
+# dead -- and case 2b skips.
+if command -v python3 >/dev/null 2>&1; then
+  DEADPORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+else
+  DEADPORT=1
+fi
+write_config "http://127.0.0.1:$DEADPORT/v1"
 p2="$(launch case2)"
 wait_ready "$p2" 60 || die "opencode's TUI never became interactive (case 2, waited 60s for the ctrl+p commands footer)"
 tmux -S "$S" send-keys -t "$p2" 'Write a haiku about tmux.'
@@ -335,12 +354,97 @@ wait_turns 2 240 || no "the second dead-provider turn never finished retrying"
 printf '  case 2 retry attempts per turn:\n'
 report attempts "$L/case2.jsonl"
 
-# Not an assertion. A turn that died on an unreachable provider ends with
-# session.error followed by session.idle, and the adapter maps that trailing
-# idle to `done` -- a failed turn finishing as "finished, go look". It is
-# recorded here rather than asserted because changing the mapping is a
-# behaviour decision, not a test fix. docs/known-gaps.md carries it.
-note "final badge after both dead-provider turns: '$(state "$p2")'"
+# A turn that died on an unreachable provider ends with session.error followed
+# by session.idle, and the adapter used to map that trailing idle to `done` --
+# a failed turn finishing as "finished, go look". This was a NOTE: line for one
+# release, printing the badge so a run showed the behaviour without claiming it
+# was right; the mapping now suppresses that idle, so it is an assertion.
+#
+# Both turns above died, and no turn has started since, so nothing can have
+# released the suppression. The pane must still read error.
+b2="$(state "$p2")"
+[ "$b2" = "error" ] \
+  && ok "a dead turn's trailing session.idle does not end the pane on done" \
+  || no "a dead turn's trailing session.idle does not end the pane on done (final badge '$b2')"
+
+# --- case 2b: the pane must still reach done on the next healthy turn ---
+# The other half of the fix, and the half worth the model time: a badge stuck on
+# error forever is worse than the wrong done it replaced. Same pane and same
+# opencode process, so the plugin instance holding the suppression is the one
+# that just badged error -- a fresh pane would prove nothing about it.
+#
+# The provider comes back by putting a forwarder on the port opencode is already
+# pointed at, NOT by rewriting the config. That distinction was measured, not
+# assumed: a run that rewrote opencode.json between turns had the next turn retry
+# the dead address five times anyway. tests/live/tcp-forward.py carries the
+# detail.
+if [ "$DEADPORT" = "1" ]; then
+  skipped "no python3, so the dead provider could not be brought back"
+else
+  python3 "$HERE/tests/live/tcp-forward.py" "$DEADPORT" 11434 >/dev/null 2>&1 &
+  fwd=$!
+  # Killed here as well as in the trap: the trap is the safety net for an early
+  # exit, and leaving a forwarder alive past the case it serves would let a
+  # later change quietly depend on it.
+  trap 'kill '"$fwd"' 2>/dev/null; tmux -S "$S" kill-server 2>/dev/null; rm -rf "$D"; keep_logs' EXIT
+  # A listen() that has not happened yet refuses connections, which would just
+  # look like another dead turn. One second is generous for a python process
+  # that binds before it does anything else.
+  sleep 1
+
+  # The 0.1s sampler, not wait_state, and the reason is a measurement. This turn
+  # is SHORT: the provider is local, the model is resident after case 2 kept
+  # ollama warm, and the recovery turn ran busy at 130747ms to session.idle at
+  # 133972ms -- 3.2 seconds for the whole thing. An earlier revision asked for
+  # one word instead, which took 937ms, and wait_state's one-second poll read
+  # the badge only after done and reported a working that had genuinely
+  # happened as missing.
+  #
+  # A longer prompt widened that to 3.2s, which wait_state does catch, but a
+  # badge assertion whose margin is the model's mood is a flake waiting for a
+  # faster machine. watch_badges samples ten times a second and records every
+  # CHANGE, so the evidence does not depend on how fast the turn is at all.
+  badges2="$L/case2b.badges"
+  : > "$badges2"
+  sampler2="$(watch_badges "$p2" "$badges2")"
+
+  tmux -S "$S" send-keys -t "$p2" 'Write a haiku about tmux, then explain each line in a sentence.'
+  sleep 1
+  tmux -S "$S" send-keys -t "$p2" Enter
+
+  # approve_until_done rather than wait_state for the end: the model may decide
+  # it wants a tool for this, and a dialog nobody answers would stall the case.
+  turn2_ended=1
+  if approve_until_done "$p2" 240; then turn2_ended=0; fi
+  kill "$sampler2" 2>/dev/null
+  wait "$sampler2" 2>/dev/null
+  kill "$fwd" 2>/dev/null
+  wait "$fwd" 2>/dev/null
+
+  # The sampler's first line is the badge it found on arrival, which is the
+  # error left by the two dead turns. So the sequence must OPEN with
+  # error,working: the very next change out of error is the release, happening
+  # where it was designed to, at the start of the next turn. A `blocked` from a
+  # tool the model chose to call would come after that and is not excluded.
+  seq2="$(tr '\n' ',' < "$badges2")"
+  case "$seq2" in
+    error,working*) ok "the next turn releases the error and the pane reports working" ;;
+    *) no "the next turn releases the error and the pane reports working (badges: $seq2)" ;;
+  esac
+
+  # The other direction, and the one that says the suppression is not a one-way
+  # door: the case above already proved it was applied, so a done here can only
+  # mean it released.
+  [ "$turn2_ended" -eq 0 ] \
+    && ok "the pane still reaches done on the healthy turn after a dead one" \
+    || no "the pane still reaches done on the healthy turn after a dead one (got '$(state "$p2")')"
+fi
+tmux -S "$S" kill-window -t "$p2" 2>/dev/null
+
+# Printed last, not between the cases, so the one stream covers all three turns
+# on this pane: the two that died and the one that recovered. The two
+# session.error/session.idle pairs and the busy that follows the second of them
+# are the whole state machine this fix added, in the order it really arrives.
 printf '  case 2 event stream:\n'
 report summary "$L/case2.jsonl"
 
