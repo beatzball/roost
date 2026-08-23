@@ -13,14 +13,14 @@ noticed.
 
 ## 1. This is a public repository
 
-It is private today only while a rename is in progress. Assume everything you
-commit becomes public.
+Not "will be" — it is. Everything you commit is visible to anyone, immediately
+and permanently, including in the history after you delete it.
 
 **Never commit:**
 
 - Real names, usernames, or email addresses
 - Absolute home paths — `/Users/<name>/...`, `/home/<name>/...`. Use
-  repo-relative paths, `$HOME`, or a placeholder like `/absolute/path/to/amux`
+  repo-relative paths, `$HOME`, or a placeholder like `/absolute/path/to/roost`
 - Provenance trailers of any kind: session links, agent attribution,
   `Co-Authored-By` for a tool, "generated with" footers. The concrete case that
   keeps recurring is a `Claude-Session:` line appended by a harness default —
@@ -39,14 +39,14 @@ get past either.
 
 ## 2. Never disturb a running agent server
 
-A live `tmux -L amux` server usually holds the author's real working agents.
+A live `tmux -L roost` server usually holds the author's real working agents.
 
 - **Never** run `tmux kill-server` without `-S` or `-L` naming a *test* socket
 - Never kill or restart the live server to "get a clean state"
 - Tests create their own servers via `mktemp -d` in `tests/lib.sh`. Use that.
   Every test drives `tmux -S "$ROOST_TEST_SOCK"`, never a bare `tmux`
 
-`scripts/amux-agent-state` (and its `roost` successor) is wired into
+`scripts/roost-agent-state` is wired into
 `~/.claude/settings.json` by **absolute path** and runs on every tool call of
 every live agent. Renaming, moving, or breaking it takes down real work in
 seconds, with no keypress involved.
