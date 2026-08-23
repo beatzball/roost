@@ -64,7 +64,7 @@ me="$(roost whoami)"
 helper="$(roost spawn claude)"        # a co-agent in its own window → its %N
 roost send "$helper" "[from $me] review the diff and reply with issues"
 roost wait-done "$helper" 120
-roost read "$helper" 40
+roost read "$helper"                  # its actual reply
 ```
 
 `roost spawn NAME [CMD]` creates a window WITHOUT attaching and prints its
@@ -90,7 +90,9 @@ above). Exit codes tell you WHAT to do next, so branch on `$?`:
   reached the pane (typing itself failed, e.g. the pane died mid-send) or it
   was typed but never left the input line even after retrying extra Enters
   (a cold TUI swallowed the submit). Do NOT re-resolve the target — `roost
-  send` the same target again, or `roost read` it to see what's stuck. A
+  send` the same target again, or `roost screen` it to see what's stuck
+  (`screen`, not `read`: a stuck pane's problem is on its screen, and its
+  last recorded reply is from whatever turn finished before it got stuck). A
   missing TARGET/TEXT argument also exits 1, but with a `usage:` message
   instead of a `roost send:` one — that's a caller bug, not a delivery
   failure; fix the call instead of retrying.
@@ -100,8 +102,39 @@ above). Exit codes tell you WHAT to do next, so branch on `$?`:
 
 ```sh
 roost wait-done "$helper" 120     # block until $helper is done/idle (120s timeout)
-roost read "$helper" 40           # print its last 40 non-blank lines
+roost read "$helper"              # print the reply it just gave
 ```
+
+`roost read` returns **what the agent said**, not a screenshot of its terminal.
+Each agent records its last message on its own pane as the turn ends, and `read`
+returns that recording whole — so no line count is needed and none is applied.
+
+When there is no recorded reply, `read` falls back to scraping the pane's screen
+and **says so on stderr**. Two things cause that, and they need different
+responses:
+
+- **The target is not an agent** — a shell, a log tail, a pager. Nothing is
+  wrong; a screen scrape is all such a pane has. Use `roost screen` and stop
+  expecting a reply.
+- **The target is an agent whose harness has no roost adapter**, or whose Stop
+  hook was wired before the reply channel existed. Its human should run `roost
+  doctor`, which names the fix. You will get TUI furniture — an input box and
+  status bars — not the answer, so do not treat what comes back as its reply.
+- **The target answered only through a subagent** and wrote nothing itself. A
+  subagent's output is deliberately never published as the pane's reply — it
+  was not addressed to you. Ask the agent to summarise its own result.
+
+Never quote a fallback result as an agent's answer. If the notice appeared, you
+do not have the reply; say so rather than reading meaning into box-drawing
+characters.
+
+```sh
+roost screen "$helper" 40         # what is ON its screen: last 40 non-blank lines
+```
+
+`roost screen` is the honest name for the old behaviour. Use it to see what a
+pane is *showing* — which is what you want when an agent looks stuck, and what
+you want for any pane that is not an agent.
 
 ## Helpers in your current window
 
@@ -111,8 +144,11 @@ than a full co-agent:
 
 ```sh
 logs="$(roost split htop)"            # a helper pane beside you → its %N
-roost send "$logs" "…" ; roost read "$logs"
+roost send "$logs" "…" ; roost screen "$logs"
 ```
+
+`screen`, not `read`, for a shell helper: it has no reply channel to record
+into, so `read` would fall back to the same scrape and add a notice each time.
 
 Compose layouts by splitting a specific pane with `-t`:
 
@@ -151,6 +187,24 @@ Report `working` when you start a task, `blocked` when you need the human,
 `error` if you cannot continue, and `done` when you finish. Outside a roost
 pane the command does nothing, so it is always safe to call.
 
+## Posting your own reply
+
+The other half of the same story. If your harness has no adapter, record what
+you just said so a sibling's `roost read` returns it instead of your terminal:
+
+```sh
+roost reply "the tests pass; two lint warnings in src/api.ts"
+roost state done                # reply FIRST, then done — see below
+```
+
+Record the reply **before** you report `done`. `roost wait-done` returns the
+instant your badge stops being `working`, so a coordinator can read you in the
+gap between the two commands and get a screen scrape instead of your answer.
+
+Like `roost state`, this does nothing outside a roost pane, so it is always safe
+to call. Agents running under Claude Code or opencode with the roost adapter
+installed do not need it — their adapter already does this every turn.
+
 ## The coordination idiom
 
 1. `roost whoami` — confirm you're in roost and learn your address.
@@ -159,7 +213,9 @@ pane the command does nothing, so it is always safe to call.
 4. `roost wait-done TARGET [timeout]` — pane-precise on a `%N`, aggregates
    the window's agent panes otherwise. Exits 0 when done; exits 1 on error
    or timeout — check the message to know which.
-5. `roost read TARGET` — collect the result.
+5. `roost read TARGET` — collect the result. If it warns that it fell back to
+   the screen, you did **not** get a reply; report that rather than guessing at
+   what came back.
 
 Send **one** prompt at a time, then wait — don't fire a second before the first
 completes. Don't message yourself. Don't spam.

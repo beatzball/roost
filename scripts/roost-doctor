@@ -30,6 +30,16 @@ command -v fzf >/dev/null 2>&1 && ok "fzf present (prefix a switcher)" \
   || warn "fzf missing — the prefix a switcher will be unavailable"
 : # python3 is not required at runtime — roost init prints the hooks for you to
   # merge by hand; only the test suite uses python3.
+  #
+  # It IS used, optionally, by one path: the Claude Stop hook parses that
+  # event's JSON payload to pull out the turn's reply for `roost read`. With
+  # neither python3 nor jq present nothing is recorded and read falls back to
+  # scraping the pane's screen — degraded, announced on every read, and never
+  # an error. So this warns; it does not fail, and it does not make python3 a
+  # dependency.
+command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1 \
+  && ok "a JSON reader is present (roost read can collect Claude replies)" \
+  || warn "neither python3 nor jq found — roost read will fall back to the pane's screen for Claude agents"
 
 # roost itself must be on PATH: adapters (the opencode plugin, and any future
 # one) shell out to `roost state ...` by bare name via execFile, so a pane
@@ -55,6 +65,20 @@ case "$(_settings_state "$settings")" in
   ok)
     if grep -q roost-agent-state "$settings" 2>/dev/null; then
       ok "Claude hooks wired in $settings"
+      # A config copied from `roost hooks` before the reply channel existed
+      # badges perfectly and records no reply, so the only symptom is that
+      # `roost read` scrapes the screen forever. That notice appears on the
+      # READER's terminal, which may be a different agent or a different
+      # machine from the one that needs fixing — so name it here too, where
+      # the person who can fix it is looking.
+      #
+      # The test is for the flag anywhere in the file rather than for the Stop
+      # entry specifically: matching a JSON key's own array with grep is how
+      # a check ends up quietly wrong, and the false positive here (someone
+      # who wired the other three hooks and deliberately skipped Stop) costs a
+      # line of advice, while the false negative costs the feature.
+      grep -q -- --stop-hook "$settings" 2>/dev/null \
+        || warn "$settings has no --stop-hook on the Stop hook — roost read will fall back to the pane's screen; re-run: roost hooks"
     else
       warn "Claude hooks not found in $settings — run: roost hooks"
     fi
