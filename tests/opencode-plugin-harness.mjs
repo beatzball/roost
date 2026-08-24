@@ -372,6 +372,85 @@ fire = await fresh()
 await fire(status("busy"), plain("session.idle"))
 check(verbs(), "state,state", "an idle with no text produces no reply call")
 
+// --- the assistant message is re-announced AFTER its text ------------------
+//
+// Every fixture above announces the assistant message once, before its parts.
+// A real turn does not stop there: opencode re-emits `message.updated` for the
+// SAME message id after the text parts land, twice, carrying the finished
+// totals — and it does that immediately before session.idle.
+//
+// Recorded live from opencode 1.18.20 on ollama/ornith:35b (spy plugin,
+// isolated XDG dirs, headless `opencode serve`), with the log line numbers:
+//
+//    7: message.updated      role=assistant id=msg_03109117f001ocItAeO3Y3b7ZH
+//   88: message.part.updated type=text messageID=msg_031091... text=""
+//   95: message.part.updated type=text messageID=msg_031091... text="SPY-ECHO-ONE"
+//   97: message.updated      role=assistant id=msg_03109117f001ocItAeO3Y3b7ZH
+//   98: message.updated      role=assistant id=msg_03109117f001ocItAeO3Y3b7ZH
+//  100: session.status idle
+//       session.idle
+//
+// Clearing the pending reply on EVERY assistant message.updated therefore
+// wipes it a moment before the only line that would have published it, and the
+// reply channel never fires for opencode at all — the single-agent case
+// included, with nothing to do with subagents.
+//
+// This shape is why the bug survived a green suite: no fixture replayed the
+// trailing events, so the harness passed identically against the broken file
+// and against the fix. A regression test for this MUST include lines 97/98.
+fire = await fresh()
+await fire(
+  status("busy"),
+  assistant("msg_a"),
+  part("msg_a", "reasoning", "the user is asking me to…"),
+  part("msg_a", "text", ""),
+  part("msg_a", "text", "SPY-ECHO-ONE"),
+  part("msg_a", "step-finish", ""),
+  assistant("msg_a"), // <- the re-announcement, same id
+  assistant("msg_a"), // <- and again, exactly as recorded
+  plain("session.idle")
+)
+check(replies().join("|"), "SPY-ECHO-ONE", "a re-announced assistant message does not discard the collected reply")
+check(verbs(), "state,reply,state", "...and the reply is still published before done")
+
+// The same shape with a subagent in the middle, which is how it actually
+// arrives: both the re-announcement AND the child's events have to be survived
+// at once, or the live case still fails while this file stays green.
+fire = await fresh()
+await fire(
+  born(PARENT, undefined),
+  from(PARENT, status("busy")),
+  from(PARENT, assistant("msg_p")),
+  born(CHILD, PARENT),
+  from(CHILD, assistant("msg_c")),
+  from(CHILD, part("msg_c", "text", "SUBAGENT OUTPUT")),
+  from(CHILD, assistant("msg_c")),
+  from(CHILD, plain("session.idle")),
+  from(PARENT, part("msg_p", "text", "THE PARENT ANSWER")),
+  from(PARENT, assistant("msg_p")),
+  from(PARENT, assistant("msg_p")),
+  from(PARENT, plain("session.idle"))
+)
+check(replies().join("|"), "THE PARENT ANSWER", "a re-announced message and a subagent together still publish the parent's answer")
+
+// The clear must still happen when it SHOULD. Surviving a re-announcement is
+// only correct because the id is unchanged; a genuinely NEW assistant message
+// is a new answer, and last turn's text must not ride along into it.
+fire = await fresh()
+await fire(
+  status("busy"),
+  assistant("msg_a"),
+  part("msg_a", "text", "FIRST TURN ANSWER"),
+  assistant("msg_a"),
+  plain("session.idle"),
+  status("busy"),
+  assistant("msg_b"), // <- a DIFFERENT id: this one must clear
+  assistant("msg_b"),
+  plain("session.idle")
+)
+check(replies().join("|"), "FIRST TURN ANSWER", "a new assistant message id still clears the previous turn's pending reply")
+check(verbs(), "state,reply,state,state,state", "...and the second turn publishes nothing of its own")
+
 // --- the reply channel meets subagents --------------------------------------
 //
 // Neither the subagent filter nor the reply channel is wrong on its own; the

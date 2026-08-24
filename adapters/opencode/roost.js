@@ -244,9 +244,27 @@ export const RoostState = async () => {
           // partType "text". The message itself carries no text: an
           // AssistantMessage is id/role/time/cost/tokens with no parts array,
           // so this event can identify the reply but never supply it.
+          // Clear the pending reply only when the id CHANGES. This event is not
+          // emitted once per message — opencode re-announces the same assistant
+          // message after its text parts land, twice, immediately before
+          // session.idle (verified live on 1.18.20 / ollama; the recorded
+          // interleave is replayed in tests/opencode-plugin-harness.mjs). An
+          // unconditional `pending = null` here therefore wiped the collected
+          // reply a moment before session.idle could publish it, and the
+          // opencode reply channel never fired at all — the single-agent case
+          // included, nothing to do with subagents.
+          //
+          // The clear itself is still needed, and is still correct on a new id:
+          // a genuinely different assistant message is a different answer, so
+          // last turn's text must not ride along into it. The id is the thing
+          // that distinguishes "the same message, told again" from "a new
+          // message", and it is already the value this case exists to learn.
           if (event.properties?.info?.role === "assistant") {
-            assistantID = event.properties.info.id
-            pending = null
+            const id = event.properties.info.id
+            if (id !== assistantID) {
+              assistantID = id
+              pending = null
+            }
           }
           return
         }
