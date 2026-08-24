@@ -84,7 +84,9 @@ has already produced a real bug here.
   Left alone rather than swept, because a `chmod` across nine files that other
   branches are editing collides for no benefit.
 
-## Process lesson
+## Process lessons
+
+### Blast radius enumerated from memory misses consumers
 
 The `error` state's blast radius was enumerated from recall and missed two
 consumers. One of them, `scripts/roost-init` (then `amux-init`), shifted every
@@ -97,3 +99,46 @@ target.
 For the next harness increment: derive the blast radius from `grep` over the
 state vocabulary and the glyph accessor, not from memory. `grep -rn
 roost_glyphset` finds all five positional consumers in one second.
+
+### A fixture that stops where the feature does proves nothing (#12, #14)
+
+`#12` shipped the opencode reply channel, and it published nothing on **any**
+turn — not an edge case, every agent, straight back to `roost read` scraping the
+screen. It sat on `main` through `#13` before anyone noticed.
+
+The suite did not merely miss it. It could not see it:
+
+```
+tests/opencode-plugin-harness.mjs against the BROKEN adapter -> 44 passed, 0 failed
+tests/opencode-plugin-harness.mjs against the FIXED  adapter -> 44 passed, 0 failed
+```
+
+Identical. 529 assertions green across the repo, feature dead.
+
+The fixtures were built from a real recorded opencode turn, which is the right
+instinct — and they were trimmed to the events the feature reads: the assistant
+`message.updated`, its text parts, then `session.idle`. The live stream does not
+stop there. opencode **re-announces** the assistant message twice *after* the
+text parts, and the handler cleared the collected reply on every announcement,
+so it was wiped a moment before the line that would have published it. The two
+events that broke it were the two the fixture left out, because at fixture-writing
+time they looked like noise after the interesting part.
+
+Only the live two-pane check found it, and only after the merge.
+
+**Two rules, both cheap:**
+
+- A fixture derived from a recording replays the **whole recorded turn**, in
+  order, trailing events included. Trimming a recording to the events you
+  believe matter encodes the belief you are trying to test. Keep the recorded
+  log line numbers in a comment so the next reader can check the fixture against
+  the capture rather than against the code.
+- A regression test is **run against the unfixed code first**, and its failure
+  output goes in the pull request. A test written after the fix, that has never
+  been seen red, is an assertion that the code does what it does. `#14` does
+  this: five fixtures, 5 failed before the one-line change, 0 after.
+
+The wider point is the one the entry above already makes in a different key:
+green is evidence about the tests, not about the feature. When a mechanism has
+never been exercised end to end outside its own harness, say so plainly at
+review time rather than reading the count as coverage.
