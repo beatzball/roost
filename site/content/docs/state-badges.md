@@ -138,3 +138,36 @@ roost state working && pi -p "…" && roost state done
 ```
 
 `tests/live/pi-smoke.sh` drives real pi against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after a pi upgrade. It needs no account: it points pi at a local ollama.
+## OpenAI Codex CLI
+
+**Codex** has an adapter in this repo. Unlike the two above it is not a symlink — codex is wired through hooks, like Claude Code. Print the config:
+
+```sh
+roost hooks codex
+```
+
+Write the JSON object it prints (not the comment lines — `hooks.json` is strict JSON) into `~/.codex/hooks.json`. Then start `codex` once and answer **"Trust all and continue"** at its `Hooks need review` prompt.
+
+**That second step is not optional, and skipping it looks exactly like success.** Until you answer it, codex skips every hook and says nothing about having done so — your turns run normally and the pane simply never badges. `roost doctor` reads the trust entries and tells you which of the four are missing.
+
+| codex hook | state |
+|------------|-------|
+| `UserPromptSubmit` | ⏳ working |
+| `PostToolUse` | ⏳ working |
+| `PermissionRequest` | 🛑 blocked |
+| `Stop` | ✅ done, plus the turn's reply |
+
+**`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission dialog, so it is the first observable event afterwards — the same mechanism as Claude Code's.
+
+`roost read` returns the agent's own last answer rather than a scrape of its screen: codex's `Stop` payload carries `last_assistant_message`, spelled exactly as Claude Code spells it.
+
+**Two things this adapter cannot do, and you should know both before you trust the badge.**
+
+1. **A dead turn shows as ✅ done, not 💥 error.** Codex has twelve hook events and none of them reports an error, so a turn that cannot reach its model ends looking finished. If a codex pane goes ✅ suspiciously fast, look at it.
+2. **A codex pane never shows 💤 idle.** That is deliberate: an unbadged pane already renders as idle, and codex's `SessionEnd` fires within milliseconds of `Stop` under `codex exec`, so reporting it would erase the ✅ that turn just earned.
+
+**Changing the config yourself will switch the badges off.** Codex stores a hash of each hook entry when you trust it and silently skips any entry that no longer matches — a changed command, or even a changed `timeout`. If you edit `hooks.json`, run `codex` and re-trust through `/hooks`. For the same reason, what `roost hooks codex` prints will not change between roost releases; roost changes `adapters/codex/roost-codex-hook` instead, which codex re-reads every run.
+
+One thing that trust prompt does *not* do: it approves a **path**, not the code at that path. Anyone who can write `adapters/codex/roost-codex-hook` changes what runs, with no second review. That is codex's model, not something roost adds.
+
+`tests/live/codex-smoke.sh` drives real codex against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after a codex upgrade. It needs no OpenAI account: it points codex at a local ollama through a small proxy, which turns off the requirement.

@@ -287,6 +287,69 @@ if command -v pi >/dev/null 2>&1; then
   esac
 fi
 
+# OpenAI Codex CLI adapter — informational, like the two above, but it checks
+# one more thing than they do and the extra check is the point of it.
+#
+# Codex is the one adapted harness that PINS its registration: it stores a hash
+# of each handler in config.toml and skips any handler whose hash does not
+# match, or that was never trusted at all. "The hooks are installed" and "the
+# hooks will run" are therefore different claims (AGENTS.md §9), and codex will
+# never tell the user they differ — measured on 0.150.1, a `codex exec` turn
+# with eight untrusted hooks wired printed warnings about hook timeouts and
+# about model metadata, and NOT ONE WORD about the hooks being skipped. Codex's
+# own docs promise a startup warning pointing at `/hooks`; that is true of the
+# TUI and false of `exec`, which is where automation lives.
+#
+# So this checks the trust entries rather than inferring them, in the same
+# warn-with-a-fix shape as the stale-hook and dangling-symlink checks above.
+cxhome="${CODEX_HOME:-$HOME/.codex}"
+cxhooks="$cxhome/hooks.json"
+cxconfig="$cxhome/config.toml"
+cxwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/codex/roost-codex-hook"
+if command -v codex >/dev/null 2>&1; then
+  # grep -F throughout: every needle here is a filesystem path, and a path is
+  # full of regex metacharacters (`.` in a dotted directory is the common one).
+  # A basic-regex `.` matching any character would make a check that looks
+  # strict quietly permissive.
+  if [ ! -e "$cxhooks" ]; then
+    warn "codex found, roost hooks not written — run: roost hooks codex, and copy the JSON object into $cxhooks"
+  elif [ ! -r "$cxhooks" ]; then
+    warn "$cxhooks exists but is not readable — could not check whether codex hooks are wired"
+  elif ! grep -qF roost-codex-hook "$cxhooks" 2>/dev/null; then
+    warn "$cxhooks does not reference roost-codex-hook — run: roost hooks codex"
+  elif ! grep -qF "$cxwant" "$cxhooks" 2>/dev/null; then
+    warn "$cxhooks wires a roost-codex-hook from a different checkout — this one is $cxwant; re-run: roost hooks codex"
+  else
+    ok "codex hooks wired in $cxhooks"
+    # The trust key is "<absolute hooks.json path>:<snake_case event>:<group>:<handler>",
+    # one entry per handler, verified live. Counting the four roost registers
+    # separates "never trusted" (0) from "trusted, then hooks.json was edited by
+    # hand and re-prompted for only some" (1-3), which are different problems
+    # with different fixes.
+    trusted=0
+    for _ev in user_prompt_submit post_tool_use permission_request stop; do
+      grep -qF "$cxhooks:$_ev:0:0" "$cxconfig" 2>/dev/null && trusted=$((trusted + 1))
+    done
+    case "$trusted" in
+      4) ok "codex has trusted all four roost hooks" ;;
+      0) warn "codex has trusted NONE of the four roost hooks, so every badge is silently skipped — run: codex, then answer \"Trust all and continue\" at \"Hooks need review\"" ;;
+      *) warn "codex has trusted only $trusted of the four roost hooks — the rest are silently skipped; a trust entry records a HASH of the handler, so hand-editing $cxhooks after trusting it invalidates that entry. Run: codex, then /hooks, and trust the remainder" ;;
+    esac
+    # What this check CANNOT see, recorded here rather than printed on every
+    # healthy run. The stored value is a hash of the normalised handler, and
+    # roost does not know codex's normalisation, so four present entries are
+    # not proof that four hooks will fire: a hooks.json hand-edited after trust
+    # was granted keeps its entries and loses its hooks. Nothing on this machine
+    # can tell those two apart from the outside.
+    #
+    # It is left as a comment because roost's answer to it is upstream of
+    # doctor: `roost hooks codex` emits handler objects frozen at v1 that never
+    # change again, so a roost upgrade can never be the cause — and a standing
+    # warning on a correct install is the "cries wolf" failure this file's own
+    # error-glyph check was split in two to avoid.
+  fi
+fi
+
 # --- the saved error glyph doesn't match the saved glyph set ---
 # Two different situations reach this check, and the old single message named
 # one of them as the cause for both:

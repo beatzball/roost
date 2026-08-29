@@ -38,9 +38,9 @@ const KEY_HINTS = [
 /**
  * Which harnesses drive the badges today, and how.
  *
- * Claude Code, opencode, GitHub Copilot CLI and pi have code in this repo;
- * everything else reports through `roost state`, which any harness can call.
- * Kept in step with content/docs/state-badges.md.
+ * Claude Code, opencode, GitHub Copilot CLI, pi and Codex have code in this
+ * repo; everything else reports through `roost state`, which any harness can
+ * call. Kept in step with content/docs/state-badges.md.
  */
 const AGENTS = [
   {
@@ -64,6 +64,11 @@ const AGENTS = [
     cmd: 'roost doctor',
   },
   {
+    name: 'Codex',
+    how: 'Four hooks, plus one trust prompt. Print them with',
+    cmd: 'roost hooks codex',
+  },
+  {
     name: 'Anything else',
     how: 'One command, from any harness, in any language.',
     cmd: 'roost state working',
@@ -71,7 +76,7 @@ const AGENTS = [
 ] as const;
 
 /** Harnesses with an adapter planned, but not written yet. */
-const AGENTS_PLANNED = ['Codex'] as const;
+const AGENTS_PLANNED = [] as const;
 
 export interface SplashData {
   siteTitle: string;
@@ -339,14 +344,22 @@ export class SplashPage extends LitroPage {
                 `,
               )}
             </div>
-            <p style="
+            ${
+              // Every harness that was ever on this list now ships, so the list
+              // is empty and the sentence would read "planned for ." Rendered
+              // conditionally rather than deleted: the array stays as the one
+              // place to name the next one, and the paragraph comes back with it.
+              AGENTS_PLANNED.length
+                ? `<p style="
               text-align:center;
               color:var(--sl-color-gray-4);
               font-size:var(--sl-text-sm);
               margin:1.25rem 0 0;
             ">
               Dedicated adapters planned for ${AGENTS_PLANNED.join(', ')}.
-            </p>
+            </p>`
+                : ''
+            }
           </section>
 
           <section>

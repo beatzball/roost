@@ -168,6 +168,11 @@ adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 adapters/pi/roost.ts        # pi extension, same two jobs (.ts: pi loads it
                             #   through jiti, so there is no build step)
+adapters/codex/roost-codex-hook # OpenAI Codex hook shim: maps four codex hook
+                            #   events onto roost-agent-state. Exists because
+                            #   codex HASHES what you register and skips a
+                            #   handler that changes, so the registration is
+                            #   frozen and all churn lives behind this file
 skills/roost/SKILL.md       # the portable agent skill
 site/                       # the roosting.dev documentation site (Litro, SSG)
 tests/                      # the shell test suite
@@ -234,6 +239,17 @@ the other two runs do, plus `tests/live/pi-gate.ts` — a stand-in permission ga
 that exists only so the `blocked` case has a dialog to see. pi ships no
 permission prompts of its own; that gate is a **test fixture and not part of the
 adapter**, and nothing outside `tests/live/` installs it.
+`tests/live/codex-smoke.sh` is the same thing for OpenAI Codex CLI, and it needs
+more scaffolding than either. Codex cannot drive ollama out of the box — it
+sends tool definitions ollama rejects, and reports the resulting HTTP 500 as
+"We're currently experiencing high demand" — so everything goes through
+`tests/live/codex-tool-proxy.py`, which strips them. It also drives codex's hook
+trust prompt for real rather than passing
+`--dangerously-bypass-hook-trust`, because an untrusted hook is exactly the
+failure that leaves no trace anywhere else. Read its header before running it:
+codex has upgraded this machine's own binary from inside a run, and the test
+carries a setting that asks it not to
+([docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md](docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md)).
 
 `tests/live/tcp-forward.py` is how a run makes a dead provider come back inside
 one opencode, copilot or pi process, which the recovery cases need and a config

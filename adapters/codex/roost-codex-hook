@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# roost-codex-hook — report an OpenAI Codex CLI agent's state onto its tmux pane.
+#
+# Install by printing the registration and trusting it once:
+#
+#   roost hooks codex          # prints the JSON, with the real path for your copy
+#   # write the JSON object into ~/.codex/hooks.json, then:
+#   codex                      # answer "Trust all and continue" at "Hooks need review"
+#
+# `roost doctor` prints both steps with the real paths, and checks that the
+# second one was actually done — see the T6 note below for why it has to.
+#
+# --- why this file exists at all ---------------------------------------------
+#
+# It maps four codex hook events onto four `roost state` calls and does nothing
+# else. scripts/roost-agent-state — Claude Code's hook — already does every hard
+# part, unchanged: codex's Stop payload spells the reply field
+# `last_assistant_message`, exactly as Claude Code spells it (verified live on
+# codex-cli 0.150.1 and again on 0.151.0), so that script's JSON reader parses a
+# codex payload with no change at all.
+#
+# The obvious question is then why there is a file here instead of four
+# hooks.json commands pointing straight at scripts/roost-agent-state. The answer
+# is codex's registration model, and it is the whole design (spec §4):
+#
+#   Codex stores a hash of each normalised handler object in
+#   $CODEX_HOME/config.toml and SKIPS any handler whose hash no longer matches.
+#   Not warns — skips, with nothing printed on stdout, on stderr, or in the TUI.
+#
+# Measured on 0.150.1, both directions: appending one argument to a command
+# string took 8 of 8 hooks down while the turn still succeeded; changing a
+# single `timeout` from 10 to 11 took 7 of 8 down. Rewriting the SCRIPT the
+# command points at changed nothing — all four kept firing, running the new
+# code, with no re-prompt.
+#
+# So the four command strings roost emits are frozen forever, and this file is
+# where roost is allowed to change its mind. Wiring hooks.json directly at
+# roost-agent-state would have spent that one-shot budget on an argument list
+# ("done --stop-hook") that could then never be revised.
+#
+# Two rules fall out of that and neither is optional:
+#
+#   - The event name is the ONLY argument. Everything else — which state, which
+#     flags, whether an event is used at all — is decided here, where it can
+#     still be changed.
+#   - Never tune the timeout in `roost hooks codex`. Pick one, keep it. To a
+#     user, a changed timeout and a changed command are the same silent
+#     breakage.
+#
+# Adding a NEW event to hooks.json later is safe: measured on 0.151.0, a
+# four-event file was trusted, a fifth event was added, and the four already
+# trusted kept firing on the next run (the new one did not, until trusted).
+# Growing the registration is allowed; editing it is not.
+#
+# --- T6: untrusted is completely silent --------------------------------------
+#
+# Until a human answers "Trust all and continue", every hook here is skipped and
+# codex says nothing about it. This is the whole, unedited stderr of a
+# `codex exec` turn with untrusted hooks wired: warnings about hook timeouts,
+# a warning about model metadata, and not one word about the hooks being
+# skipped. Codex's own docs promise a startup warning pointing at `/hooks` —
+# true in the TUI, false in `codex exec`, which is where automation lives.
+# `roost doctor` therefore CHECKS for the trust entries rather than inferring
+# them from hooks.json being in place.
+#
+# --- what is NOT here --------------------------------------------------------
+#
+# `error`. Codex has exactly twelve hook events — PreToolUse PermissionRequest
+# PostToolUse PreCompact PostCompact SessionStart SessionEnd UserPromptSubmit
+# SubagentStart SubagentStop Stop Interrupt — and none of them reports an error.
+# A turn that dies on the provider still fires Stop, so a codex pane badges a
+# dead turn ✅ done. That is recorded as a Live risk in docs/known-gaps.md and
+# named in the user-facing install stanza, rather than papered over with a
+# heuristic: the only candidate signal is an unmatched PreToolUse, and a
+# heuristic that mislabels a healthy turn `error` pings the human's desktop for
+# nothing (spec §1).
+#
+# `idle`, and this one is a measured trap rather than a missing feature. Mapping
+# SessionEnd -> idle reads correctly in a TUI, where SessionEnd fires only when
+# codex exits — a two-turn TUI session fired Stop twice and SessionEnd once, on
+# ^C. Under `codex exec` it is a different event: SessionEnd lands 22ms, 25ms
+# and 40ms after Stop in three separate captures, in the same process. It would
+# overwrite the ✅ that turn just earned with 💤 a frame later, and 💤 is the
+# badge that says "nothing here to look at". spec §1 settles it from the other
+# side too: idle is a DEFAULT, not a report — an unstamped pane already renders
+# as idle, and neither shipped adapter has ever reported it.
+#
+# `SubagentStop`. A child's end is announced on its own event, which is what
+# keeps Stop meaning the pane's own turn (spec §5 T1). Not registering it is the
+# filter.
+set -u
+
+# The event name codex was told to pass, and the only thing it passes.
+event="${1:-}"
+
+# The mapping table. Every arm was observed firing on this machine against
+# codex-cli 0.150.1 and 0.151.0; nothing here comes from a schema.
+#
+#   UserPromptSubmit  a turn starts                       -> working
+#   PostToolUse       a tool returned, so the turn is live -> working
+#   PermissionRequest a human is being waited on          -> blocked
+#   Stop              the turn ended                      -> done + the reply
+#
+# PostToolUse is doing two jobs, and the second is the important one: it is what
+# CLEARS 🛑. No hook fires when the human answers a permission dialog, so
+# PostToolUse is the first observable event afterwards — measured on 0.151.0,
+# one second after "1. Yes, proceed", with the dialog on screen until then. The
+# order is PreToolUse -> PermissionRequest -> (human) -> PostToolUse, so the
+# badge goes working then blocked, never the reverse.
+#
+# PreToolUse is deliberately not registered even though it is the natural
+# partner of PostToolUse: UserPromptSubmit has already reported `working` by
+# then, so it would spend a process spawn per tool call to report a state the
+# pane is already in.
+#
+# Anything else exits 0 having done nothing. roost registers four events, so
+# codex never invokes this with another name — but a user is free to add one to
+# their own hooks.json, and a badge from a signal nobody measured is worse than
+# no badge.
+stop_hook=0
+case "$event" in
+  UserPromptSubmit|PostToolUse) state="working" ;;
+  PermissionRequest)            state="blocked" ;;
+  Stop)                         state="done"; stop_hook=1 ;;
+  *) exit 0 ;;
+esac
+
+# Resolve this script's own directory even when invoked via a symlink — the same
+# readlink loop as bin/roost and scripts/roost-agent-state. hooks.json holds an
+# ABSOLUTE path to this file, and that path can perfectly well be a symlink (a
+# checkout aliased somewhere stable so the frozen registration survives a move).
+# Through one, `dirname "$0"` names the symlink's directory, and the sibling
+# lookup below would miss — silently, because the call carries `|| true` and
+# must keep carrying it.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+# ROOST_AGENT_NAME, or every codex pane's border and switcher row reads
+# "claude": scripts/roost-agent-state's fallback is @roost-name-default, whose
+# honest built-in value is "claude" because that script IS Claude Code's hook
+# (spec §5 T9). A name the human chose still outranks this.
+#
+# --stop-hook only on Stop, and only Stop carries a reply. It makes
+# roost-agent-state read the payload on stdin — which codex has already written
+# there — and stamp @roost-reply BEFORE @agent_state, so a caller following the
+# documented `roost wait-done` then `roost read` idiom cannot land in the gap
+# between the two (spec §2).
+#
+# `|| true` and the bare `exit 0` are the same rule stated twice, and it is not
+# defensive padding here the way it would be in a plugin. Codex READS this
+# script's exit code: its own error strings name the contract — "UserPromptSubmit
+# hook exited with code 2 but did not write a blocking reason to stderr",
+# "PreToolUse hook returned unsupported continue:false". A non-zero exit out of a
+# status-bar adapter is a veto on the user's tool call. So a missing sink, a dead
+# tmux server or a pane that went away must leave the agent working and the pane
+# unbadged, which is spec's "it must never throw" applied to a process.
+#
+# This is why the script is not `exec`ed: through `exec` there is no frame left
+# to convert a failure into a 0, and a checkout moved after hooks.json was
+# written would exit 126 straight into codex.
+#
+# stderr is deliberately NOT swallowed. Every tmux call in roost-agent-state is
+# already quiet by construction, so anything that reaches stderr from here is a
+# real fault (a missing file, an unreadable script) — and it is the only
+# diagnostic a user will ever get, since codex only acts on a hook's stderr when
+# the exit code is 2, which this never returns.
+sink="$SELF_DIR/../../scripts/roost-agent-state"
+if [ "$stop_hook" = 1 ]; then
+  ROOST_AGENT_NAME=codex "$sink" "$state" --stop-hook || true
+else
+  ROOST_AGENT_NAME=codex "$sink" "$state" || true
+fi
+exit 0
