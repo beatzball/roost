@@ -148,6 +148,7 @@ scripts/lib/roost-config.sh # shared config helpers
 scripts/lib/roost-reply.sh  # the one place that decides how a reply is
                             #   truncated to fit tmux's command-length limit
 adapters/opencode/roost.js  # opencode plugin that reports state and the reply
+adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 skills/roost/SKILL.md       # the portable agent skill
 site/                       # the roosting.dev documentation site (Litro, SSG)
 tests/                      # the shell test suite
@@ -196,9 +197,17 @@ showed; the log is what says why, and it is where the answers to
 [docs/known-gaps.md](docs/known-gaps.md) about opencode came from. A failing
 run keeps its logs in `/tmp/amx-events.*` and prints the path.
 
+`tests/live/copilot-smoke.sh` is the same thing for GitHub Copilot CLI, and it
+needs no GitHub account: it points copilot at a local ollama through
+`COPILOT_PROVIDER_BASE_URL`, which copilot's own `copilot help providers` says
+removes the authentication requirement, and redirects `COPILOT_HOME` to a
+scratch directory so no stored credential is reachable. It installs
+`tests/live/copilot-event-log.mjs` as a second extension for the same reason the
+opencode run installs a spy plugin.
+
 `tests/live/tcp-forward.py` is how a run makes a dead provider come back inside
-one opencode process, which the recovery case needs and a config rewrite cannot
-do — the file's docstring has the measurement.
+one opencode or copilot process, which the recovery cases need and a config
+rewrite cannot do — the file's docstring has the measurement.
 
 ## Working on the docs site
 

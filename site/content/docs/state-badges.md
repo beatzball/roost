@@ -51,3 +51,42 @@ ln -s "$HOME/path/to/roost/adapters/opencode/roost.js" ~/.config/opencode/plugin
 A symlink rather than a copy, so updating roost updates the plugin. `roost doctor` prints this exact command with the real path for your checkout, so run that if you are unsure what to fill in — it also confirms once the plugin is linked.
 
 `tests/live/opencode-smoke.sh` drives real opencode against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after an opencode upgrade.
+
+## GitHub Copilot CLI
+
+**GitHub Copilot CLI** has an adapter in this repo. Symlink it into place:
+
+```sh
+mkdir -p ~/.copilot/extensions/roost
+ln -s "$HOME/path/to/roost/adapters/copilot/extension.mjs" ~/.copilot/extensions/roost/extension.mjs
+```
+
+A symlink rather than a copy, so updating roost updates the extension. `roost doctor` prints this exact command with the real path for your checkout.
+
+The directory name is yours; the file name is not — copilot looks for `extension.mjs` and nothing else. User scope (`~/.copilot/`) rather than a project's `.github/extensions/` matters: only user scope is loaded in both interactive and `copilot -p` mode.
+
+**Two things gate it, and both are silent when they are not met.** `roost doctor` checks the first and reminds you of the second.
+
+1. **Extensions are off by default.** Either launch your panes as `copilot --experimental`, or put this in `~/.copilot/settings.json`:
+
+   ```json
+   { "enabledFeatureFlags": { "EXTENSIONS": true } }
+   ```
+
+   Without one of them copilot never reads the adapter, and says nothing about having skipped it.
+
+2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading; there is no global pre-approval, so a new worktree asks again.
+
+That second dialog is the price of the 🛑 badge, and it is worth being clear about why. Copilot only tells an extension a permission dialog has opened if that extension registers a permission handler — so without one, a pane sits on ⏳ working while you stare at a prompt, and `roost send` will happily type into it. roost registers the handler and returns the SDK's observe-only result: it sees the dialog and badges the pane, and **your dialog still opens and you still choose**. roost never answers a permission prompt.
+
+| copilot signal | state |
+|----------------|-------|
+| `assistant.turn_start` | ⏳ working |
+| a permission dialog, or an `ask_user` question | 🛑 blocked |
+| your answer to either | ⏳ working |
+| `session.error` | 💥 error |
+| `session.idle` | ✅ done |
+
+`roost read` returns the agent's own last answer, not a scrape of its screen — copilot is a full-screen TUI, so a scrape returns its input box and footer.
+
+`tests/live/copilot-smoke.sh` drives real copilot against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after a copilot upgrade. It needs no GitHub account: it points copilot at a local ollama, which turns off the requirement.
