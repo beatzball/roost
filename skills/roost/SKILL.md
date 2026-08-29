@@ -202,8 +202,15 @@ instant your badge stops being `working`, so a coordinator can read you in the
 gap between the two commands and get a screen scrape instead of your answer.
 
 Like `roost state`, this does nothing outside a roost pane, so it is always safe
-to call. Agents running under Claude Code or opencode with the roost adapter
-installed do not need it — their adapter already does this every turn.
+to call. Agents running under Claude Code, opencode or GitHub Copilot CLI with
+the roost adapter installed do not need it — their adapter already does this
+every turn.
+
+If you are on one of those three and unsure whether the adapter is actually
+installed, calling `roost reply` anyway is the safe move: the adapter overwrites
+your recording at the end of the turn, so the worst case is one wasted command,
+and the worst case of NOT calling it is a coordinator reading your input box
+instead of your answer.
 
 ## The coordination idiom
 

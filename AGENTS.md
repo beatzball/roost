@@ -144,8 +144,17 @@ python3 tests/test-contrast.py   # also a CI step — run it too
   while a whole file silently stopped running. Check per-file output
 - If the suite fails, **re-run once**. Not reproducible → record it and move
   on. Reproducible → it is real
-- Tests must never read or write the real `~/.claude/`, `~/.config/amux/`, or
-  `~/.config/opencode/`. Point `HOME` and `XDG_CONFIG_HOME` at temp dirs
+- Tests must never read or write the real `~/.claude/`, `~/.config/amux/`,
+  `~/.config/opencode/`, or `~/.copilot/`. Point `HOME` and `XDG_CONFIG_HOME`
+  at temp dirs
+- **Check what a harness actually reads before trusting `XDG_CONFIG_HOME` to
+  isolate it.** That variable is a convention, not a guarantee, and one shipped
+  harness ignores it: copilot keeps credentials, settings, session history and
+  its extension directory under `COPILOT_HOME`, which defaults to `~/.copilot`
+  and is the only override. A test that redirected only the XDG dirs would read
+  and write the author's real account while looking isolated —
+  `tests/live/copilot-smoke.sh` sets `COPILOT_HOME` for exactly this reason. The
+  rule is per harness: find its own home variable, do not assume the XDG one
 
 ## 9. Verify rather than assert
 

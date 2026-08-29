@@ -11,7 +11,7 @@ sidebar:
 roost doctor
 ```
 
-It checks your tmux version, truecolor support, `fzf`, the notifier, the Claude hooks, and the opencode plugin link — and prints the exact fix command for your checkout.
+It checks your tmux version, truecolor support, `fzf`, the notifier, the Claude hooks, the opencode plugin link, and the GitHub Copilot CLI extension link — and prints the exact fix command for your checkout. For copilot it also checks the feature flag that extensions sit behind, and reminds you of a consent prompt it cannot check from disk (see below).
 
 ## Badges never appear
 
@@ -19,7 +19,17 @@ The view works without badges; badges need a hook. Check, in order:
 
 1. `roost hooks` output is merged into `~/.claude/settings.json` under `"hooks"`. See [State Badges](/docs/state-badges).
 2. You are running the agent **inside** a roost pane. `scripts/roost-agent-state` is a deliberate no-op outside one.
-3. For a non-Claude agent, it must call `roost state <state>` itself.
+3. For opencode or GitHub Copilot CLI, the adapter is linked — run `roost doctor`, which prints the exact `ln -s` for your checkout. See [State Badges](/docs/state-badges).
+4. For any other agent, it must call `roost state <state>` itself.
+
+## A copilot pane never badges, and copilot says nothing
+
+Two gates stand in front of the copilot extension, and **neither one tells you when it is not met** — the turn runs normally and the pane just stays blank. `roost doctor` checks the first; the second it can only remind you about.
+
+1. **Extensions are off by default.** Launch your panes as `copilot --experimental`, or put `{"enabledFeatureFlags": {"EXTENSIONS": true}}` in `~/.copilot/settings.json`. Without one of them copilot never reads the adapter.
+2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading, and choosing "Yes" persists nothing, so a new worktree asks again. There is no global pre-approval.
+
+Take the blank badge seriously rather than living with it. `roost send` refuses a 🛑 blocked target so one agent cannot type into another's permission dialog — and an unbadged pane is not blocked, so that refusal never fires. A copilot pane whose extension never loaded, sitting at a permission prompt, will take a `roost send` straight into that dialog.
 
 ## A finished agent shows red
 

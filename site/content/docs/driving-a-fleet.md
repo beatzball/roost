@@ -43,9 +43,9 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 
 ## `read` returns the reply, not the screen
 
-`roost read` is not a screenshot. Each agent records its last message onto its own pane as the turn ends — the Claude Code hook and the opencode plugin both do this — and `read` returns that recording, whole. No line count is needed, and none is applied.
+`roost read` is not a screenshot. Each agent records its last message onto its own pane as the turn ends — the Claude Code hook, the opencode plugin and the GitHub Copilot CLI extension all do this — and `read` returns that recording, whole. No line count is needed, and none is applied.
 
-This matters because a full-screen agent draws furniture. The bottom of a Claude Code or opencode pane is an input box and status bars, so scraping the last few lines returns those, not the answer.
+This matters because a full-screen agent draws furniture. The bottom of a Claude Code, opencode or copilot pane is an input box and status bars, so scraping the last few lines returns those, not the answer. A copilot pane is the starkest case: it draws on the alternate screen, so its last visible lines are a box outline and the footer `← open sidebar · / commands · ? help · tab next tab`, with the agent's answer scrolled out of reach above.
 
 When nothing has been recorded, `read` falls back to scraping the screen and **says so on stderr**:
 
