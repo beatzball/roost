@@ -8,6 +8,15 @@ Size: **Doc** (no code, no site change, no new command)
 Base: `35919d3` — `main` at "live test: default to granite4.2:3b instead of
 ornith:35b (#16)"
 
+**Since written, at `9738321`:** the GitHub Copilot CLI adapter shipped (`#18`),
+so there are now **three** shipped adapters, not two, and `AGENTS_PLANNED` at
+`site/pages/index.ts:69` reads `['Codex', 'pi']`. §3's table below is updated;
+the "Why" and "Non-goals" sections are left as they were written, because they
+record the situation that prompted this document. `#21` also moved the socket
+rule into `scripts/lib/roost-socket.sh`, which shifted the line numbers this
+document cites into `bin/roost` and `scripts/roost-agent-state`; those citations
+were re-checked and corrected against `9738321`.
+
 ## Why
 
 `site/pages/index.ts:64` promises three more harnesses:
@@ -107,7 +116,7 @@ and it is the one reply-channel test that never sets `ROOST_SOCKET`.
 
 The vocabulary is fixed: `error blocked working done idle`, in that order of
 urgency (`scripts/roost-next-blocked:13-18`). `roost state` normalises anything
-it does not recognise to `idle` (`scripts/roost-agent-state:54`), so a typo
+it does not recognise to `idle` (`scripts/roost-agent-state:63`), so a typo
 degrades quietly rather than erroring — which means a typo is also invisible.
 
 | state | what it claims **at a turn boundary** | Claude Code | opencode |
@@ -134,7 +143,7 @@ It is load-bearing in three places, which is why the precision matters:
   *into the dialog* and Enter activates whatever is highlighted. One agent
   would silently answer a prompt that existed to ask the human.
 - `scripts/roost-next-blocked` jumps to it.
-- `scripts/roost-agent-state:192-213` fires a desktop notification for it when
+- `scripts/roost-agent-state:201-222` fires a desktop notification for it when
   the window is off-screen.
 
 So a `blocked` that fires for anything else — a long tool call, a network wait —
@@ -144,7 +153,7 @@ the "silently stuck" failure, and `adapters/opencode/roost.js:96-105` calls it
 out explicitly for the subagent case: a subagent's permission dialog must badge
 the pane, because a human still has to answer it.
 
-Claude Code needs one extra rule here, recorded at `bin/roost:220` and in
+Claude Code needs one extra rule here, recorded at `bin/roost:238-240` and in
 `site/content/docs/state-badges.md`: the `Notification` hook **must** be scoped
 to `permission_prompt`. Unmatched, it also fires for `idle_prompt` and
 `auth_success`, so a finished agent goes red.
@@ -160,7 +169,7 @@ clearing event; opencode's is `permission.replied`.
 Not "a tool failed" — an agent that recovers from a failed tool is working.
 `error` claims the turn ended, produced no answer, and will not without you.
 `roost wait-done` acts on that claim: it exits 1 with *"is in error state, not
-done"* rather than reporting success (`bin/roost:588-600`, and the
+done"* rather than reporting success (`bin/roost:619-638`, and the
 `docs/known-gaps.md` entry on it).
 
 Two derived rules, both from live measurement:
@@ -209,8 +218,12 @@ A harness that *can* say it directly should, and the shape varies. pi carries
 `stopReason === "error"` with an `errorMessage` on the settled assistant message
 (`reports/scout-pi.md`, VERIFIED against a dead port), so `error` is a field
 read with none of opencode's retry counting. Copilot declares a `session.error`
-event and an `onErrorOccurred` hook — **UNVERIFIED**; that scout did not induce
-a failing turn and flagged it as read-not-run.
+event and an `onErrorOccurred` hook. That was **UNVERIFIED** here — the scout
+did not induce a failing turn and flagged it read-not-run — and `#18` then
+induced one: `adapters/copilot/extension.mjs:132-165` carries the timestamped
+trace. `session.error` is the single end-of-turn declaration and is what the
+shipped adapter keys on; `onErrorOccurred` fires once **per failed attempt**
+(six times in that run), so it is not evidence the turn is over.
 
 ### `idle` is a default, not a report
 
@@ -235,7 +248,7 @@ both:
   `tests/opencode-plugin-harness.mjs:116` locks it: *"repeated busy events are
   debounced to one call"*.
 - **In `roost state` itself**, to avoid a tmux round trip.
-  `scripts/roost-agent-state:138` bails when the state already matches. This is
+  `scripts/roost-agent-state:147` bails when the state already matches. This is
   the hot path — `PostToolUse` fires on *every* tool call and Claude blocks on
   the hook exiting — so the unchanged case is one tmux read and nothing else.
 
@@ -294,7 +307,7 @@ roost read "$helper"
 ```
 
 `roost wait-done` returns **the instant** `@agent_state` stops being
-`working`/`blocked` (`bin/roost:567-573`). So if the state is stamped first,
+`working`/`blocked` (`bin/roost:593-613`). So if the state is stamped first,
 `read` can land in the gap before the reply is written and fall back to
 scraping the screen.
 
@@ -303,15 +316,15 @@ Both adapters therefore write the reply first:
 - `adapters/opencode/roost.js:356-366` **awaits** `publish(pending)` and only
   then calls `set("done")`. The `await` is part of the rule, not tidiness — the
   publish is a process spawn.
-- `scripts/roost-agent-state:76-109` writes `@roost-reply` before the
-  `@agent_state` write at line 144.
+- `scripts/roost-agent-state:85-120` writes `@roost-reply` before the
+  `@agent_state` write at line 153.
 
 `tests/opencode-plugin-harness.mjs:313` asserts the order directly:
 `verbs()` must be `state,reply,state`.
 
 In the Claude hook there is a second placement rule that is easy to miss: the
 reply write sits **above** the unchanged-state early bail at
-`scripts/roost-agent-state:138`. A `Stop` arriving when the pane already reads
+`scripts/roost-agent-state:147`. A `Stop` arriving when the pane already reads
 `done` — a turn with no `UserPromptSubmit`, a re-entrant stop — would otherwise
 bail before recording anything, and `roost read` would silently serve the
 **previous** turn's reply.
@@ -327,7 +340,7 @@ turn — a stale reply served as fresh.
 If nothing is recorded, `roost read` falls back to the pane's screen and
 **says so on stderr**. An adapter that records no reply is a real adapter at a
 lower tier, not a broken one. This is also why no JSON reader is a hard
-dependency: `scripts/roost-agent-state:94-101` prefers `python3`, then `jq`, and
+dependency: `scripts/roost-agent-state:104-109` prefers `python3`, then `jq`, and
 records nothing if neither exists — `scripts/roost-doctor:31` holds the standing
 decision that python3 is not a runtime dependency.
 
@@ -404,7 +417,9 @@ for landing on one.
 
 ### Where each harness stands
 
-Two shipped, three scouted live in August 2026. **Live-verified** means that
+Three shipped and two still scouted-only, at `9738321`. Copilot CLI was the
+third to ship (`#18`), from the scout in the row below it. **Live-verified**
+means that
 scout drove a real turn and pasted the output; **source-only** means they read
 it and labelled it unverified. The labels are theirs and are carried through
 unchanged.
@@ -414,7 +429,7 @@ unchanged.
 | **Claude Code** | **2, shipped** | live | **no hook** | `Stop` payload | 4 hooks in `~/.claude/settings.json`, by absolute path |
 | **opencode** | **2, shipped** | live | 2 retries / `session.error` | `message.part.updated` | symlink into `~/.config/opencode/plugin/` |
 | **Codex** | 2 reachable | live-verified, and does **not** over-fire on auto-approved calls | **no event at all** | `last_assistant_message`, live-verified | frozen `hooks.json` + a shim; needs a doctor trust check |
-| **Copilot CLI** | 2 reachable | live-verified, via a gated handler | `session.error` / `onErrorOccurred`, **source-only** | `assistant.message.content`, live-verified | symlink into `~/.copilot/extensions/roost/extension.mjs` |
+| **Copilot CLI** | **2, shipped** | live, via a gated handler | `session.error` (not `onErrorOccurred` — it fires per failed attempt) | `assistant.message.content` | symlink into `~/.copilot/extensions/roost/extension.mjs` |
 | **pi** | 2 reachable | implementable and live-verified, but **never fires on a stock install** | `stopReason === "error"`, live-verified | `message_end` flushed at `agent_settled`, live-verified | symlink into `~/.pi/agent/extensions/` |
 
 Four things in that table are not details.
@@ -773,7 +788,7 @@ nothing.
 `roost` with (`adapters/opencode/roost.js:137-144`), so the pane falls back to
 the harness's name rather than to `@roost-name-default`'s Claude-flavoured
 `"claude"`. A human-chosen `@roost-name` still wins over both
-(`scripts/roost-agent-state:163-190`). The harness locks it:
+(`scripts/roost-agent-state:172-199`). The harness locks it:
 `tests/opencode-plugin-harness.mjs:112`.
 
 ### T10 — a blast radius enumerated from memory

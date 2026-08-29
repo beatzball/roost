@@ -8,7 +8,7 @@ sidebar:
 ## The setup wizard
 
 ```sh
-roost doctor   # check tmux version, truecolor, fzf, notifier, hooks
+roost doctor   # check tmux version, truecolor, fzf, hooks, adapter links, notifier
 roost init     # pick theme, glyph set, separator style; print the Claude hooks
 ```
 

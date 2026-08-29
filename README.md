@@ -44,9 +44,11 @@ and each is badged with what its agent is doing:
 
 > 💥 error / needs you · 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
 
-State comes from **Claude Code's own lifecycle hooks** — not from scraping
-process names or terminal output — so it's accurate rather than guessed. No
-external plugins, no compiled binary, nothing that reaches into `~/.tmux.conf`.
+State comes from **each agent's own lifecycle events** — Claude Code hooks, the
+opencode plugin, the GitHub Copilot CLI extension, or one `roost state` call
+from anything else — not from scraping process names or terminal output, so it's
+accurate rather than guessed. No compiled binary, nothing that reaches into
+`~/.tmux.conf`.
 ![Three agents in one roost session: the test suite running on the left, a Claude Code pane and an opencode pane stacked on the right, each badged with what its agent is doing](assets/roost-overview.png)
 
 ## 📖 Full documentation: [roosting.dev](https://roosting.dev)
@@ -61,7 +63,9 @@ need to hack on roost itself.
 - `git`
 - A powerline/Nerd Font for the tab separators — or run `roost init` and pick
   the plain-separator fallback
-- Claude Code (for the state badges; the view itself works without it)
+- An agent that can report its state, for the badges — Claude Code, opencode or
+  GitHub Copilot CLI have adapters in this repo; anything else calls `roost
+  state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
 
 ## Install
@@ -96,7 +100,7 @@ config and scripts no matter where you run it from.
 ## Quick start
 
 ```sh
-roost doctor   # check tmux version, truecolor, fzf, notifier, hooks
+roost doctor   # check tmux version, truecolor, fzf, hooks, adapter links, notifier
 roost init     # pick theme, glyph set, separator style; print the Claude hooks
 roost          # start/attach the default session ("main")
 ```
@@ -138,8 +142,9 @@ Everything below is for people working **on** roost.
 ## Repo layout
 
 ```
-bin/roost                   # launcher / CLI (up, new, ssh, send, read, screen, reply,
-                            #   wait-done, hooks, doctor, init, settings, status, kill)
+bin/roost                   # launcher / CLI (up, session, new, spawn, split, whoami,
+                            #   ssh, send, read, screen, reply, wait-done, state,
+                            #   hooks, doctor, init, settings, status, kill)
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the
@@ -147,7 +152,8 @@ scripts/roost-agent-state   # hook target that records agent state
 scripts/roost-status        # status-bar roll-up of agent-pane counts
 scripts/roost-switch        # fzf agent switcher, panes grouped by window (prefix a)
 scripts/roost-notify        # cross-platform desktop notification delivery
-scripts/roost-doctor        # preflight checks (tmux version, truecolor, hooks, notifier)
+scripts/roost-doctor        # preflight checks (tmux version, truecolor, fzf, JSON
+                            #   reader, hooks, adapter links, notifier)
 scripts/roost-init          # setup wizard (theme, glyphs, separator style, prints hooks)
 scripts/roost-settings      # live settings TUI (prefix S)
 scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
@@ -156,6 +162,8 @@ scripts/lib/roost-config.sh # shared config helpers
                             #   (surgical writer, glyph/sep maps, live-apply)
 scripts/lib/roost-reply.sh  # the one place that decides how a reply is
                             #   truncated to fit tmux's command-length limit
+scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
+                            #   in?", for bin/roost and roost-agent-state alike
 adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 skills/roost/SKILL.md       # the portable agent skill
@@ -178,10 +186,12 @@ switcher (it degrades to a hint if missing).
   colourblind. Backgrounds mark only which window is **active**, which keeps
   every tab's text high-contrast.
 - Claude hooks call `scripts/roost-agent-state <state>`, which stamps the **pane**
-  identified by `$TMUX_PANE`, then repaints. Pane scope is what lets two agents
-  share one window — `roost split` puts a second agent beside the first without
-  either clobbering the other's badge. A pane is an agent only if it has been
-  stamped, so a plain shell or a `tail -f` never badges anything.
+  identified by `$TMUX_PANE`, then repaints. The opencode and copilot adapters
+  reach the same stamp through the public `roost state` / `roost reply`
+  commands, so no adapter carries tmux knowledge of its own. Pane scope is what
+  lets two agents share one window — `roost split` puts a second agent beside
+  the first without either clobbering the other's badge. A pane is an agent only
+  if it has been stamped, so a plain shell or a `tail -f` never badges anything.
 
 ## Running the tests
 
