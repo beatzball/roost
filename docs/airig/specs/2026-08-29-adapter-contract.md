@@ -2,7 +2,8 @@
 
 Status: **reference** — describes what already ships, so a new adapter can be
 written without reverse-engineering the two that exist
-Date: 2026-08-29
+Date: 2026-08-29, revised the same day to fold in three live harness scouts
+(Codex, GitHub Copilot CLI, pi)
 Size: **Doc** (no code, no site change, no new command)
 Base: `35919d3` — `main` at "live test: default to granite4.2:3b instead of
 ornith:35b (#16)"
@@ -29,9 +30,27 @@ the working code; they were simply not written down anywhere a new
 implementation would look.
 
 This document is that place. **Everything below is derived from the two
-shipped adapters, their tests, and the two bug-fix commits against them** —
-not from a view about what a good plugin API looks like. Where a rule exists
-because something broke, the breakage is named.
+shipped adapters, their tests, the two bug-fix commits against them, and three
+live harness scouts** — not from a view about what a good plugin API looks like.
+Where a rule exists because something broke, the breakage is named.
+
+The scouts matter to the shape of this document, not just its content. Two of
+the traps in §5 and the whole of §4 come from harnesses roost has **not**
+adapted yet, found by driving live turns against them. That is the cheap place
+to find a trap: §4's rule in particular could not have been recovered after the
+fact, because breaking it produces a successful-looking turn on every machine
+that had already trusted the adapter. Scout findings are labelled as they were
+labelled — **live-verified** or **source-only** — and are not laundered into
+fact here.
+
+Where a claim below cites `scout-codex.md`, `scout-copilot.md` or
+`scout-pi.md`, that is one of those three reports. **They live in the session
+scratchpad and are not in this repository**, so the measurements they contain
+are quoted here rather than linked — this document is the durable record, and a
+number that is only in a scratchpad is a number that is gone. Versions tested:
+`codex-cli 0.150.1`, `GitHub Copilot CLI 1.0.81`, `pi
+(@earendil-works/pi-coding-agent) 0.81.1`, all on darwin-arm64 against local
+ollama.
 
 ## What an adapter is
 
@@ -146,10 +165,44 @@ Two derived rules, both from live measurement:
   badging someone's own keystroke as a crash, and pinging their desktop about
   it, is worse than saying nothing.
 
-Claude Code reports `error` from **no hook at all** — there is no Claude hook
-in `roost hooks` that maps to it. That is honest and worth stating plainly: a
-tier is not all-or-nothing per state, and an adapter may ship with `error`
-unreachable.
+### When the harness cannot say `error` at all
+
+Claude Code reports `error` from **no hook at all** — there is no Claude hook in
+`roost hooks` that maps to it. Codex is the same: the scout enumerated all
+twelve of its hook events live and **none of them is an error event**
+(`reports/scout-codex.md` §4, VERIFIED). A tier is not all-or-nothing per state,
+and an adapter may ship with `error` unreachable.
+
+But be exact about what that costs, because it is not a missing badge. A turn
+that dies on the provider still ends, and the harness still fires whatever it
+fires at the end of a turn — so an adapter with no `error` signal maps that
+ending to `done`. **The pane then reports a dead turn as finished.** That is the
+`#13` bug, shipped deliberately instead of by accident, and this project has now
+fixed a false `done` twice (`#13`, `#14`).
+
+So the rule is not "skip `error` quietly":
+
+- **Say it in `docs/known-gaps.md`**, in that file's own shape — which severity
+  heading it sits under, what the wrong output is, and why it was shipped
+  anyway. A false `done` is a **Live risk**, not a Behaviour change. The file
+  currently has no Live risks section, and its own preamble says the heading
+  comes back with the first entry that earns it. This earns it.
+- **Say it in the harness's section of `site/content/docs/state-badges.md`**, so
+  a user reading the install stanza learns it before they trust the badge.
+- **Do not invent one from a weak signal.** The Codex scout found the only
+  candidate — a live turn whose tool call failed showed five `PreToolUse`
+  against four `PostToolUse`, so an unmatched `PreToolUse` means a failed or
+  denied call (VERIFIED). They recommended against building `error` on it, and
+  that is right: a heuristic that mislabels a healthy turn `error` re-notifies
+  the human's desktop for nothing, and a heuristic that misses is no better than
+  the gap it replaced.
+
+A harness that *can* say it directly should, and the shape varies. pi carries
+`stopReason === "error"` with an `errorMessage` on the settled assistant message
+(`reports/scout-pi.md`, VERIFIED against a dead port), so `error` is a field
+read with none of opencode's retry counting. Copilot declares a `session.error`
+event and an `onErrorOccurred` hook — **UNVERIFIED**; that scout did not induce
+a failing turn and flagged it as read-not-run.
 
 ### `idle` is a default, not a report
 
@@ -341,11 +394,150 @@ rung it is on. `site/content/docs/driving-a-fleet.md` already documents the
 fallback for the rungs below the top, so an adapter does not have to apologise
 for landing on one.
 
-## 4. The traps a new adapter must be tested against
+### Where each harness stands
+
+Two shipped, three scouted live in August 2026. **Live-verified** means that
+scout drove a real turn and pasted the output; **source-only** means they read
+it and labelled it unverified. The labels are theirs and are carried through
+unchanged.
+
+| harness | tier | `blocked` | `error` | reply | install |
+|---|---|---|---|---|---|
+| **Claude Code** | **2, shipped** | live | **no hook** | `Stop` payload | 4 hooks in `~/.claude/settings.json`, by absolute path |
+| **opencode** | **2, shipped** | live | 2 retries / `session.error` | `message.part.updated` | symlink into `~/.config/opencode/plugin/` |
+| **Codex** | 2 reachable | live-verified, and does **not** over-fire on auto-approved calls | **no event at all** | `last_assistant_message`, live-verified | frozen `hooks.json` + a shim; needs a doctor trust check |
+| **Copilot CLI** | 2 reachable | live-verified, via a gated handler | `session.error` / `onErrorOccurred`, **source-only** | `assistant.message.content`, live-verified | symlink into `~/.copilot/extensions/roost/extension.mjs` |
+| **pi** | 2 reachable | implementable and live-verified, but **never fires on a stock install** | `stopReason === "error"`, live-verified | `message_end` flushed at `agent_settled`, live-verified | symlink into `~/.pi/agent/extensions/` |
+
+Four things in that table are not details.
+
+**Codex would ship a false `done`.** It has no error event, so a dead-provider
+turn ends as "finished, go look". See "When the harness cannot say `error` at
+all" above — it is a known-gaps entry, not an omission.
+
+**Codex's `blocked` was the one worth checking and it passed.** The worry was a
+false `blocked` on every auto-approved tool call. Measured: a real tool call
+under `approval: never` fired six hooks and **no** `PermissionRequest`, and a
+genuine escalation request in the TUI did fire it, with the dialog on screen at
+that moment. Order was `PreToolUse` → `PermissionRequest` → human →
+`PostToolUse`, so `working` then `blocked`, never the reverse — and
+`PostToolUse` clears it by the identical mechanism `state-badges.md` already
+documents for Claude.
+
+**pi's `blocked` gap is a product decision, not a defect.** pi ships no
+permission prompts at all, by design — its own docs list "permission popups"
+among the things it intentionally omits. So the state is fully implementable and
+was demonstrated live end to end (`idle → working → blocked → working → done`,
+with the tmux pane option read back at each step), and a **stock pi pane will
+never enter it**, because nothing asks. For a fleet view that means a pi pane
+never triggers `send`'s exit-3 refusal — not because roost cannot see the
+dialog, but because there is no dialog. Whether roost should also ship a
+permission gate so pi panes *can* block is a call for the human, not for an
+adapter author; the scout recommended shipping four states first.
+
+**Codex cannot drive ollama out of the box, and that changes its smoke test.**
+It sends tool definitions ollama rejects (`type: "namespace"`,
+`type: "web_search"`; `--disable multi_agent` removes the first,
+`[tools] web_search = false` did **not** remove the second), so a live rig needs
+a local proxy that strips every tool whose `type` is not `"function"`. Worse,
+ollama's HTTP 500 with a precise parse error is reported by Codex as *"We're
+currently experiencing high demand, which may cause temporary errors"* — so
+anyone debugging it chases the wrong thing. opencode needed no proxy at all.
+Budget for it: a Codex smoke test is more scaffolding than
+`tests/live/opencode-smoke.sh` was, and `codex exec` additionally blocks on
+stdin (pass `< /dev/null`) and forces `approval: never`, so `blocked` can only
+be exercised through the TUI, with a model strong enough to request escalation
+(`granite4.2:3b` never does; `granite4.2:8b` does).
+
+## 4. How an adapter is registered decides how it can ever be changed
+
+Two shipped adapters made this look like a settled question, because both are
+installed the same way: a symlink out of the roost checkout, so **updating roost
+updates the adapter for free**. `adapters/opencode/roost.js:3-8` says so in its
+own install instructions, and `scripts/roost-doctor:160-174` checks the link is
+this checkout rather than a stale copy.
+
+The Codex scout found the opposite model, and it is a different contract, not a
+detail of one harness.
+
+### Pinned registration: the harness hashes what you registered
+
+Codex writes a trust entry per handler into `$CODEX_HOME/config.toml`, keyed by
+`<hooks.json path>:<event>:<group index>:<handler index>` and holding a
+`trusted_hash`. A handler whose hash does not match is **skipped**. Measured
+live on `codex-cli 0.150.1`, both directions:
+
+| change | result |
+|---|---|
+| rewrote the **script body**, `hooks.json` untouched (md5 printed, unchanged) | all 4 fired, running the **new** code, no re-prompt |
+| appended ` --extra-arg` to the **command string** | **0 of 8 fired**, the turn still succeeded, Codex said nothing |
+| reverted the command string | 4 fired again — trust is hash-keyed and was never revoked |
+| changed **only a `timeout`**, 10 → 11 | **7 of 8 broke** |
+
+The last row is the one that settles it. The lone survivor was `SessionEnd`,
+which Codex was already clamping to 3s — so its *effective* definition never
+changed. The exception proves the rule: **the hash covers the whole normalised
+handler object, not just its `command`.**
+
+### The rule
+
+**Where a harness pins its registration, the adapter freezes the entire
+registration at v1 and puts every future change inside a shim script.**
+
+The registration becomes a permanent public interface, on the same footing as
+`@agent_state`'s name (`AGENTS.md` §6). What roost emits on day one it emits
+forever; all churn lives behind it.
+
+For Codex concretely, `roost hooks codex` emits handler objects that never
+change again:
+
+```json
+{"type": "command", "command": "/abs/path/to/roost-codex-hook Stop", "timeout": 10}
+```
+
+and `roost-codex-hook` is where behaviour is allowed to move. Two consequences
+fall out of the timeout row above:
+
+- **Never tune a timeout in a later release.** Pick one now. Changing it is
+  indistinguishable, to the user, from changing the command — and it breaks
+  every handler at once.
+- **Emit whatever the harness would clamp to.** Codex silently clamps
+  `SessionEnd` and `Interrupt` to 3s and warns about it on every single run.
+  Emit `3` for those two, so the warning never appears **and** the stored hash
+  matches the definition the user actually sees.
+
+### The two models are opposites, and a contributor must know which they are in
+
+| | symlinked (opencode, Copilot, pi) | pinned (Codex) |
+|---|---|---|
+| a roost update reaches the adapter | automatically | only inside the shim |
+| changing the registered definition | there is none to change | breaks trust for every handler |
+| what must stay stable forever | nothing | the whole registration object |
+| how a break announces itself | `roost doctor` names a dangling or foreign link | **it does not** — see T6 |
+
+Writing a pinned adapter with the symlinked model's habits — tuning a timeout,
+adding a flag to the command in a later release — silently disables every hook
+on every machine that has already granted trust.
+
+### One security property, stated plainly
+
+The first row of the table is a feature for roost and a fact users deserve:
+trusting a Codex hook trusts a **path**, not the code at that path. Anyone who
+can write `roost-codex-hook` changes what runs, with no re-review. That is
+Codex's model rather than something roost introduces, but roost's install docs
+must not imply the trust prompt vouches for the script's contents.
+
+## 5. The traps a new adapter must be tested against
 
 These are not hypotheticals. Each one shipped, or nearly shipped, in an adapter
-that looked correct. A new adapter should carry a fixture for every one that
-applies to its harness.
+that looked correct — or, for T5 and T6, was caught by a live scout in a harness
+roost has not adapted yet, which is the cheaper place to catch it. A new adapter
+should carry a fixture for every one that applies to its harness.
+
+T4, T5 and T6 are three **different** shapes of one failure: the harness's own
+documentation describes a signal that does not reach you. They are separated
+because the fix is different in each, and reading only T4 would leave the other
+two undiagnosed.
 
 ### T1 — a subagent's events arrive on the same bus
 
@@ -444,7 +636,95 @@ Drive a real turn, log every event, and wire the adapter to what you observed.
 If the harness is not installed, say the answer is documentation-only and
 unverified rather than dressing it up.
 
-### T5 — `busy` is not evidence of progress
+**Before concluding an event is dead, check T5 and T6.** A signal that does not
+arrive may be genuinely absent (this trap), switched off until you register
+something (T5), or waiting on a human's consent (T6). The observation is
+identical in all three; the fix is not.
+
+### T5 — a gated event: real, documented, and off until you register a handler
+
+**Input:** an adapter written from the harness's schema *and* its own SDK docs.
+**Wrong output:** the badge never shows `blocked`; the fleet reads `working`
+while a human stares at a permission dialog.
+
+GitHub Copilot CLI's `permission.requested` is declared in the shipped
+`schemas/session-events.schema.json` **and** documented in the shipped SDK docs
+under "Top 10 Most Useful Event Types", described as *"Agent needs permission
+(shell, file write, etc.)"*. Both sources say to subscribe with `session.on`.
+
+Measured (VERIFIED, `reports/scout-copilot.md`): with a permission dialog open on
+screen and a probe subscribed to every event, 12 events arrived and **none of
+them was `permission.requested`**. Only `permission.completed` ever fired, and
+only *after* the human answered — the badge would light up at the exact moment
+the human stopped being blocked.
+
+The event is real. It is **gated on registering an `onPermissionRequest`
+handler**; registering one turns it on for `session.on` as well.
+
+**The objection, and the escape.** Registering a permission handler sounds like
+becoming the permission *decider*, which roost must never be. The SDK defines an
+explicit pass-through — `{ kind: "no-result" }` — that observes without
+answering. Verified end to end: the handler fired, the badge could flip, the
+normal TUI dialog still opened, the human still chose, and the command ran on
+their approval.
+
+```
+05:00:41.780  ON_PERMISSION_REQUEST  shell   <-- handler fires, badge -> blocked
+05:00:41.780  EVENT permission.requested     <-- and now the event fires too
+              ... dialog on screen, human thinking for 35s ...
+05:01:16.041  EVENT permission.completed     <-- badge -> working
+```
+
+**The rule:** when a documented event does not fire, do not conclude it is dead
+(that is T4) until you have checked whether something *enables* it. And when the
+enabler is a handler that could change the agent's behaviour, look for the
+harness's observe-only return value before deciding the state is unreachable.
+
+### T6 — a consent-gated adapter that fails completely silently
+
+**Input:** an adapter installed correctly, whose registration a human has not
+yet trusted.
+**Wrong output:** every hook is skipped, the turn succeeds normally, and
+**nothing anywhere says so**.
+
+Codex requires a human to trust its hooks through a TUI prompt. Until then they
+do not run. That is reasonable. What is not obvious is how quiet it is: this is
+the complete, unedited stderr of a `codex exec` turn with eight untrusted hooks
+wired (VERIFIED, `reports/scout-codex.md` §2):
+
+```
+Reading additional input from stdin...
+OpenAI Codex v0.150.1
+--------
+workdir: <scratch>/work
+model: granite4.2:3b
+...
+warning: clamping SessionEnd hook timeout to 3s in <scratch>/cxhome/hooks.json
+warning: clamping Interrupt hook timeout to 3s in <scratch>/cxhome/hooks.json
+warning: Model metadata for `granite4.2:3b` not found. ...
+codex
+alpha
+```
+
+It warns about timeouts. It warns about model metadata. It says **nothing** about
+eight hooks being skipped, and `HOOKS FIRED: 0`.
+
+Codex's own docs claim it prints a startup warning telling you to open `/hooks`.
+That is **true of the TUI and false of `codex exec`** — a real doc-versus-
+behaviour gap, and `exec` is where automation lives.
+
+The same silence is what makes the registration breakage in §4 undetectable:
+change a registered timeout in a later release and every machine that had
+already granted trust goes quiet, one successful-looking turn at a time.
+
+**The rule:** `roost doctor` must **check** consent, never infer it from the
+files being in place. "The hooks are installed" and "the hooks will run" are
+different claims (`AGENTS.md` §9), and here nothing else will ever tell the user
+they differ. The check has a fix to print — run `codex`, then `/hooks` — so it
+is a `warn`, in the same shape as the existing stale-hook and dangling-symlink
+checks at `scripts/roost-doctor:160-174`.
+
+### T7 — `busy` is not evidence of progress
 
 **Input:** a turn against a dead provider, with a retry counter that resets on
 `busy`.
@@ -461,7 +741,7 @@ The same interleave produces a second failure if `busy` unconditionally reports
 re-notifies on every cycle. Hence the threshold gate at
 `adapters/opencode/roost.js:294-319`.
 
-### T6 — a latch that can stick
+### T8 — a latch that can stick
 
 Every fix above is a latch, and each one carries the mirror risk: a badge stuck
 forever is **worse** than the bug it fixed. `adapters/opencode/roost.js:186-195`
@@ -474,7 +754,7 @@ no event from the same turn can. Assert **both** directions offline: that the
 latch holds, and that the next healthy turn walks `working -> done` as it always
 did.
 
-### T7 — a pane that names itself after the harness's version
+### T9 — a pane that names itself after the harness's version
 
 **Input:** an unnamed Claude pane.
 **Wrong output:** the border and switcher read `2.1.226` — Claude's own version
@@ -488,7 +768,7 @@ the harness's name rather than to `@roost-name-default`'s Claude-flavoured
 (`scripts/roost-agent-state:163-190`). The harness locks it:
 `tests/opencode-plugin-harness.mjs:112`.
 
-### T8 — a blast radius enumerated from memory
+### T10 — a blast radius enumerated from memory
 
 From `docs/known-gaps.md`: the `error` state's blast radius was enumerated from
 recall and missed two consumers. One shifted every glyph by one position for
@@ -499,7 +779,7 @@ option *name* was present, never its value, so it passed throughout.
 the glyph accessor, not from memory. `grep -rn roost_glyphset` finds all five
 positional consumers in one second.
 
-## 5. What "done" means for a new adapter
+## 6. What "done" means for a new adapter
 
 An adapter is finished when all of the following are true. This list is the
 acceptance criteria; it is short on purpose, and none of it is optional.
@@ -527,7 +807,7 @@ Four properties it must have:
   counts it like a bash test and a non-zero exit still means a crash.
 
 Cases must cover, at minimum: every state transition the adapter can reach; the
-debounce; each trap in §4 that applies; and the reply-before-`done` ordering as
+debounce; each trap in §5 that applies; and the reply-before-`done` ordering as
 an assertion on the **verb order**, not just on the values.
 
 ### A regression fixture is run against the **unfixed** code first
@@ -560,8 +840,15 @@ against a local model and asserts the badges that actually appeared. Its rules:
   any other socket — the same property that makes it safe in a global config.
 - **Isolated `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_CACHE_HOME`**, so no
   stored credential is even reachable and no account or quota is needed.
-- **Installs the adapter as a symlink**, matching how a user installs it — which
-  also proves the harness still follows symlinks when discovering plugins.
+- **Installs the adapter the way a user installs it.** For a symlinked harness
+  that means a real symlink, which also proves the harness still follows one
+  when discovering plugins. For a pinned harness (§4) it means writing the
+  frozen registration and granting consent, so the test exercises the path that
+  can silently fail rather than a shortcut around it.
+- **Budget for the rig.** The scaffolding is not uniform: opencode needed none
+  beyond isolated XDG dirs, while Codex needs a proxy that strips tools ollama
+  cannot parse, `< /dev/null` on `codex exec`, and the TUI plus a larger model
+  before `blocked` can be exercised at all.
 - **Skips, never fails**, when the harness or model is missing. A case the local
   model refused to set up (it answered instead of calling the tool) is a `SKIP`
   too, or the suite cries wolf about code that was never exercised.
@@ -583,6 +870,12 @@ pull a model to run at all (`tests/live/opencode-smoke.sh:18-32`).
   pointing at a different checkout, each with the exact fix command
   (`scripts/roost-doctor:160-174`). Informational, not a failure — most users
   will not have that harness.
+- **If the harness gates on consent, doctor checks the consent too**, not just
+  the files (T6). Nothing else will tell the user, and a `codex exec` run with
+  every hook skipped looks exactly like a healthy one.
+- **If the harness pins its registration, the registration is frozen at v1**
+  (§4), and whatever roost emits is reviewed as a permanent interface before it
+  ships — because the second release cannot change it.
 - `site/content/docs/state-badges.md` gains the install stanza, and names the
   tier honestly if the adapter cannot reach `blocked` or the reply channel.
   `site/AGENTS.md` governs that edit.
@@ -602,9 +895,16 @@ no site page.
 ## Non-goals
 
 - **It does not decide which harness gets an adapter next.**
-  `AGENTS_PLANNED` at `site/pages/index.ts:64` is untouched; three scouts are
-  investigating Codex, GitHub Copilot CLI and pi, and their findings decide
-  that.
+  `AGENTS_PLANNED` at `site/pages/index.ts:64` is untouched — and now known to
+  be accurate, since all three scouts came back with "build it". Which one is
+  built first, and when, is still not this document's call.
+- **It does not commit roost to any of the three.** The costings the scouts
+  produced (~150-250 lines for Copilot, ~120-160 for pi, a shim plus a doctor
+  check for Codex) are recorded so the work can be sized, not because it is
+  scheduled.
+- **It does not settle pi's `blocked` question.** Whether roost should ship a
+  permission gate so pi panes can block is a product decision for the human;
+  the table in §3 states the position without taking it.
 - No new roost command, and no change to the `roost state` / `roost reply`
   contract.
 - No change to `@agent_state` or `@agent_since`, in name or in scope — they are
