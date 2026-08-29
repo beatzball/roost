@@ -114,6 +114,66 @@ states the consent gate rather than inferring an answer to it (`AGENTS.md` §9,
 and the same discipline the adapter contract's T6 sets out). The install stanza
 in `site/content/docs/state-badges.md` names both before a user trusts the badge.
 
+### pi's `blocked` rides on an undocumented internal, and would fail silently
+
+`adapters/pi/roost.ts` reaches `blocked` by wrapping the four blocking dialog
+methods on `ctx.ui`. That works — and reaches *other* extensions' dialogs, which
+is the whole point, since pi raises none of its own — only because `ctx.ui` is a
+getter returning **one shared object** for every loaded extension
+(`dist/core/extensions/runner.js:458`, pi 0.81.1). Verified live end to end: a
+separate gate extension called `ctx.ui.confirm`, and the adapter badged the pane
+`blocked` with the dialog on screen.
+
+**That sharing is not a documented contract.** If pi ever gives each extension
+its own `ctx.ui` — a reasonable isolation change — the wrap keeps working for
+dialogs roost itself raises (none) and stops seeing everyone else's. There is no
+crash and no error. The badge simply never appears again.
+
+**What that costs, precisely.** Only users who have installed a permission gate
+of their own are exposed, because a stock pi has no dialogs at all. For them the
+failure is the "silently stuck" one the adapter contract's §3 names: the pane
+reads `working` while a human stares at a prompt, `roost next-blocked` does not
+find it, and `roost send` types into the dialog and presses Enter on whatever is
+highlighted.
+
+**Why it shipped anyway.** The alternative is not to offer `blocked` for pi at
+all, and the mechanism was verified working against the shipped build rather
+than inferred. `tests/live/pi-smoke.sh` asserts `blocked` against a real dialog
+raised by a real second extension, so a pi upgrade that breaks it turns a silent
+gap into a red test — that test is the mitigation, and it has to be run after
+every pi upgrade for the mitigation to be real. The durable fix is upstream: a
+`dialog_open` / `dialog_close` event would make this a supported integration
+point rather than a reach into an internal.
+
+### A `pi -p` or `--mode json` pane is never badged, on purpose
+
+`adapters/pi/roost.ts` reports nothing unless `ctx.hasUI` is true — interactive
+and RPC mode only. A pane where a human types `pi -p "…"` themselves stays
+unstamped, which roost renders exactly like a shell.
+
+**Why.** pi's sub-agent pattern (its shipped `examples/extensions/subagent/`)
+runs each sub-agent as a **separate `pi --mode json -p --no-session` process**,
+and a child inherits the parent's `$TMUX_PANE` and loads the same global
+extensions. Measured live on 0.81.1 from inside a roost pane: the child logged
+`TMUX_PANE=%114`, `mode=json`, `hasUI=false`. Ungated, every sub-agent badges
+its **parent's** pane — `working` when it starts and `done` when it finishes,
+while the parent is still working — and publishes its own answer as the pane's
+reply. That is the adapter contract's T1 with two OS processes instead of one,
+so no in-process filter can see across it.
+
+**What the trade costs.** A `pi -p` pane reads as "not an agent": `roost
+wait-done` against it returns immediately because it is never `working`, and
+`roost read` falls back to scraping the screen with its stderr notice. A
+coordinating agent that treats `pi -p` as a fleet member gets chrome where it
+expected an answer.
+
+**Why it shipped this way.** A wrong `done` from a sub-agent is worse than a
+missing badge from a one-shot command, and there is no third signal available:
+the child is indistinguishable from a hand-typed `pi -p` except by the one
+property that says a human is attached. Tier 0 covers the gap —
+`roost state working && pi -p "…" && roost state done` — and
+`site/content/docs/state-badges.md` prints that line in the pi section.
+
 ## Behaviour changes
 
 ### `bin/roost` now addresses the roost server you are inside
@@ -190,6 +250,15 @@ has already produced a real bug here.
   names the missing line, the glyph being inherited, and the exact fix
   (`roost settings`, re-pick the set), which is as far as a read-only check
   goes.
+- `tests/pi-extension-harness.mjs` imports the adapter's `.ts` directly, which
+  needs node >= 22.18 (or >= 23.6) for unflagged type stripping. On an older
+  node the whole file prints one `SKIP` line and exits 0 — the honest degrade,
+  but a whole harness quietly not running is exactly the shape this file's own
+  "green is evidence about the tests" lesson warns about. `.github/workflows/ci.yml`
+  pins node so CI cannot land there; a contributor on an older node can still
+  skip it without noticing. Shipping the adapter as `.js` was the alternative and
+  was rejected: pi's discovery glob only looks for `*.ts` and `*/index.ts`, so a
+  `.js` adapter is a file pi never loads.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at

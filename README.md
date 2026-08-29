@@ -166,6 +166,8 @@ scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
                             #   in?", for bin/roost and roost-agent-state alike
 adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
+adapters/pi/roost.ts        # pi extension, same two jobs (.ts: pi loads it
+                            #   through jiti, so there is no build step)
 skills/roost/SKILL.md       # the portable agent skill
 site/                       # the roosting.dev documentation site (Litro, SSG)
 tests/                      # the shell test suite
@@ -224,8 +226,17 @@ scratch directory so no stored credential is reachable. It installs
 `tests/live/copilot-event-log.mjs` as a second extension for the same reason the
 opencode run installs a spy plugin.
 
+`tests/live/pi-smoke.sh` is the same thing for pi, and it needs no account
+either: `PI_CODING_AGENT_DIR` points pi at a scratch config directory holding a
+single local-ollama provider, so the real `~/.pi` is neither read nor written.
+It installs `tests/live/pi-event-log.ts` as a spy extension for the same reason
+the other two runs do, plus `tests/live/pi-gate.ts` — a stand-in permission gate
+that exists only so the `blocked` case has a dialog to see. pi ships no
+permission prompts of its own; that gate is a **test fixture and not part of the
+adapter**, and nothing outside `tests/live/` installs it.
+
 `tests/live/tcp-forward.py` is how a run makes a dead provider come back inside
-one opencode or copilot process, which the recovery cases need and a config
+one opencode, copilot or pi process, which the recovery cases need and a config
 rewrite cannot do — the file's docstring has the measurement.
 
 ## Working on the docs site
