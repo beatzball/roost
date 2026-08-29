@@ -94,6 +94,17 @@ esac
 ocplug="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/roost.js"
 ocwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/opencode/roost.js"
 
+# Same for the copilot extension. Copilot does NOT use the XDG directories:
+# `copilot help environment` documents COPILOT_HOME as the one override, with
+# $HOME/.copilot as its default.
+#
+# The directory under extensions/ is ours to name; the FILE is not — copilot
+# discovers <dir>/extension.mjs and nothing else.
+cphome="${COPILOT_HOME:-$HOME/.copilot}"
+cpext="$cphome/extensions/roost/extension.mjs"
+cpwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/copilot/extension.mjs"
+cpsettings="$cphome/settings.json"
+
 # --- stale amux references (Phase 5 trigger) ---
 # The amux compatibility shims (amux-agent-state and friends) are deleted
 # once roost doctor reports clean on these checks on every machine the author
@@ -173,6 +184,54 @@ if command -v opencode >/dev/null 2>&1; then
   else
     warn "opencode plugin at $ocplug is not this install — relink it to $ocwant"
   fi
+fi
+
+# GitHub Copilot CLI adapter — informational, in the same shape as the opencode
+# check above. Most users will not have copilot, so a missing extension is a
+# warning, never a required failure.
+if command -v copilot >/dev/null 2>&1; then
+  if [ -L "$cpext" ] && [ ! -e "$cpext" ]; then
+    # -e follows symlinks, so a DANGLING link (an old checkout that got removed)
+    # reads as simply absent, and the "not installed" branch's `ln -s` then
+    # fails with "File exists". Name the real fix.
+    warn "copilot extension symlink at $cpext is dangling — run: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\""
+  elif [ ! -e "$cpext" ]; then
+    warn "copilot found, roost extension not installed — run: mkdir -p \"$(dirname "$cpext")\" && ln -s \"$cpwant\" \"$cpext\""
+  elif [ "$cpext" -ef "$cpwant" ]; then
+    ok "copilot extension linked"
+  else
+    warn "copilot extension at $cpext is not this install — relink it to $cpwant"
+  fi
+
+  # "The extension is installed" and "the extension will run" are different
+  # claims, and copilot makes them differ TWICE — so a linked-and-silent
+  # extension is the normal case, not an exotic one, and doctor has to check
+  # rather than infer (AGENTS.md §9).
+  #
+  # First gate: extensions are behind a feature flag that is off by default.
+  # Verified on 1.0.81, both directions — without it copilot does not read the
+  # first line of the adapter, and says nothing about having skipped it.
+  #
+  # This is checked with grep rather than a JSON parser on purpose:
+  # scripts/roost-doctor:31 holds the standing decision that python3 is not a
+  # runtime dependency, and jq is not one either. The cost is that a file whose
+  # flag is set to false, or set inside a comment, reads as set — so the message
+  # says what was FOUND ("names EXTENSIONS") rather than claiming the flag is
+  # on, and the fix it prints works either way.
+  if [ -f "$cpsettings" ] && grep -q '"EXTENSIONS"' "$cpsettings" 2>/dev/null; then
+    ok "copilot settings.json names the EXTENSIONS feature flag"
+  else
+    warn "copilot extensions are off by default — launch panes as \"copilot --experimental\", or add {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}} to $cpsettings"
+  fi
+
+  # Second gate, and this one cannot be checked from disk at all. In interactive
+  # mode copilot asks the human to approve the extension's elevated permissions
+  # — "wants to: handle permission requests" — once per directory, and denying
+  # prevents it from loading. Choosing "Yes" rather than "Yes, and always allow
+  # in this directory" persists nothing, so there is no file to read and no way
+  # to distinguish "not yet asked" from "denied". Say so plainly instead of
+  # inferring an answer: an unanswered gate looks exactly like a healthy pane.
+  warn "copilot asks once per directory to approve the roost extension (\"wants to: handle permission requests\") — answer Yes, or the badges stay silent with nothing reported"
 fi
 
 # --- the saved error glyph doesn't match the saved glyph set ---

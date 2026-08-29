@@ -11,10 +11,74 @@ reads like an alarm when it is merely a note is a bug in this file.
 
 Keep it short. When an entry is fixed, delete it.
 
-There is no **Live risks** section right now, and that absence is the point of
-saying so: the section is missing because the last entry in it was fixed, not
-because nobody has looked. Add the heading back with the first entry that
-earns it.
+## Live risks
+
+### A copilot pane can be badge-less, and nothing says so
+
+`adapters/copilot/extension.mjs` only runs once **two** gates are past, and
+neither one announces itself when it is not:
+
+1. Copilot's extension system is behind a feature flag that is off by default.
+   Without `copilot --experimental` or `{"enabledFeatureFlags":
+   {"EXTENSIONS": true}}` in `~/.copilot/settings.json`, copilot does not read
+   the first line of the adapter.
+2. In interactive mode copilot asks the human, **once per directory**, to
+   approve the extension — *"wants to: handle permission requests"*. Denying it
+   prevents the extension loading. There is no global pre-approval, so every new
+   worktree asks again.
+
+In both cases the turn runs normally and copilot prints nothing about having
+skipped anything. The pane simply stays unstamped, which roost renders exactly
+like a shell.
+
+**What that costs, precisely.** It is not only a missing badge. `roost send`
+refuses a `blocked` target with exit 3 so that one agent cannot type into
+another's permission dialog — and an unbadged pane is not blocked, so the
+refusal never fires. A copilot pane whose extension never loaded, sitting at a
+permission prompt, will take a `roost send` straight into that dialog and press
+Enter on whatever is highlighted.
+
+**Why it shipped anyway.** Both gates are copilot's, not roost's, and neither
+can be worked around from this side: the feature flag is a preview switch in the
+user's own config, and the consent is a TUI answer that persists nothing unless
+the human picks "always allow in this directory". `roost doctor` does what can
+be done — it reads `settings.json` for the flag and prints the exact fix, and it
+states the consent gate rather than inferring an answer to it (`AGENTS.md` §9,
+and the same discipline the adapter contract's T6 sets out). The install stanza
+in `site/content/docs/state-badges.md` names both before a user trusts the badge.
+
+### `roost reply` writes to the default socket, `roost state` writes to the pane's
+
+The two halves of an adapter's contract resolve their tmux server differently,
+and the mismatch is silent.
+
+`scripts/roost-agent-state:47` takes the socket out of `$TMUX`, so `roost state`
+always stamps the server the calling pane is actually in. `bin/roost`'s `reply`
+branch goes through `SOCKET="${ROOST_SOCKET:-roost}"` (`bin/roost:45`) and then
+refuses to write unless that server's pid matches the pid in `$TMUX`
+(`bin/roost:552`) — a deliberate guard against stamping a same-numbered pane on
+an unrelated server.
+
+So on any roost server that is **not** the default `-L roost`, badges work and
+replies do not. Measured, one throwaway server, two panes:
+
+```
+no ROOST_SOCKET   -> state=[working] reply=[]
+with ROOST_SOCKET -> state=[working] reply=[HELLO-WITH-SOCKET]
+```
+
+**What it costs:** `roost read` on such a pane falls back to scraping the screen
+and says so on stderr, so nothing is silently wrong for the reader — but the
+cause named there is "no reply was recorded", which points at the adapter rather
+than at the socket. It cost a debugging session on this branch to find, which is
+why it is written down.
+
+**Who hits it:** anyone running roost with `ROOST_SOCKET` set to a path, which
+today is the live smoke tests and anyone running two roost servers side by side.
+The default single-server install is unaffected. `tests/live/copilot-smoke.sh`
+exports `ROOST_SOCKET` into every pane it launches and says why at that line;
+`tests/live/opencode-smoke.sh` does not need to, because it never asserts a
+reply.
 
 ## Behaviour changes
 
