@@ -24,6 +24,16 @@
                      ░░
 ```
 
+<div align="center">
+
+[![ci](https://img.shields.io/github/actions/workflow/status/beatzball/roost/ci.yml?branch=main&label=ci&logo=github&style=for-the-badge)](https://github.com/beatzball/roost/actions/workflows/ci.yml)
+[![tmux 3.2+](https://img.shields.io/badge/tmux-3.2+-1a7f37.svg?style=for-the-badge)](https://github.com/tmux/tmux/wiki)
+[![license MIT](https://img.shields.io/github/license/beatzball/roost?color=0a66c2&style=for-the-badge)](LICENSE)
+[![status beta](https://img.shields.io/badge/status-beta-a1591a.svg?style=for-the-badge)](docs/known-gaps.md)
+[![docs roosting.dev](https://img.shields.io/badge/docs-roosting.dev-5b4fc4.svg?style=for-the-badge)](https://roosting.dev)
+
+</div>
+
 An on-demand tmux **agent view** for wrangling multiple AI coding agents —
 without giving up your normal tmux setup or switching to a different terminal.
 
@@ -37,13 +47,6 @@ and each is badged with what its agent is doing:
 State comes from **Claude Code's own lifecycle hooks** — not from scraping
 process names or terminal output — so it's accurate rather than guessed. No
 external plugins, no compiled binary, nothing that reaches into `~/.tmux.conf`.
-
-[![ci](https://img.shields.io/github/actions/workflow/status/beatzball/roost/ci.yml?branch=main&label=ci&logo=github&style=for-the-badge)](https://github.com/beatzball/roost/actions/workflows/ci.yml)
-[![tmux 3.2+](https://img.shields.io/badge/tmux-3.2+-1a7f37.svg?style=for-the-badge)](https://github.com/tmux/tmux/wiki)
-[![license MIT](https://img.shields.io/github/license/beatzball/roost?color=0a66c2&style=for-the-badge)](LICENSE)
-[![status beta](https://img.shields.io/badge/status-beta-a1591a.svg?style=for-the-badge)](docs/known-gaps.md)
-[![docs roosting.dev](https://img.shields.io/badge/docs-roosting.dev-5b4fc4.svg?style=for-the-badge)](https://roosting.dev)
-
 ![Three agents in one roost session: the test suite running on the left, a Claude Code pane and an opencode pane stacked on the right, each badged with what its agent is doing](assets/roost-overview.png)
 
 ## 📖 Full documentation: [roosting.dev](https://roosting.dev)
