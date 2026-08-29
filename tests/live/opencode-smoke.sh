@@ -15,7 +15,22 @@
 # Isolation: its own tmux socket. The live -L roost server is never contacted.
 set -u
 HERE="$(cd "$(dirname "$0")/../.." && pwd)"
-MODEL="${ROOST_LIVE_MODEL:-ornith:35b}"
+# Default picked for SIZE, then checked for fitness: granite4.2:3b is 2.2 GB and
+# loads cold in ~3s, against ornith:35b's 21.2 GB and ~11s. That matters here
+# because this file is the one test a contributor has to pull a model to run at
+# all, and a 21 GB pull is most of the reason not to bother.
+#
+# It is not merely small. Driven through real opencode panes it echoed exact
+# text 3 runs out of 3, reported its own pane id with the `%` intact, relayed
+# another pane's reply verbatim, and sent to a peer that received the message —
+# and it passes every assertion below, subagent interleaving included. Models
+# that failed that bar: ministral-3:8b invented an error rather than relay,
+# ornith-1.5:9b dropped the `%` from a pane id, and everything else at 3b or
+# below mangled a two-line echo.
+#
+# Override for a bigger model when the ANSWER matters rather than the plumbing:
+#   ROOST_LIVE_MODEL=ornith-1.5:35b bash tests/live/opencode-smoke.sh
+MODEL="${ROOST_LIVE_MODEL:-granite4.2:3b}"
 
 skip() { printf '  SKIP: %s\n' "$1"; exit 0; }
 command -v opencode >/dev/null 2>&1 || skip "opencode not installed"
