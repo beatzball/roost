@@ -26,11 +26,11 @@
 
 <div align="center">
 
-[![ci](https://img.shields.io/github/actions/workflow/status/beatzball/roost/ci.yml?branch=main&label=ci&logo=github&style=for-the-badge)](https://github.com/beatzball/roost/actions/workflows/ci.yml)
-[![tmux 3.2+](https://img.shields.io/badge/tmux-3.2+-1a7f37.svg?style=for-the-badge)](https://github.com/tmux/tmux/wiki)
-[![license MIT](https://img.shields.io/github/license/beatzball/roost?color=0a66c2&style=for-the-badge)](LICENSE)
-[![status beta](https://img.shields.io/badge/status-beta-a1591a.svg?style=for-the-badge)](docs/known-gaps.md)
-[![docs roosting.dev](https://img.shields.io/badge/docs-roosting.dev-5b4fc4.svg?style=for-the-badge)](https://roosting.dev)
+[![ci](https://img.shields.io/github/actions/workflow/status/beatzball/roost/ci.yml?branch=main&label=ci&logo=github&style=flat-square)](https://github.com/beatzball/roost/actions/workflows/ci.yml)
+[![tmux 3.2+](https://img.shields.io/badge/tmux-3.2+-1a7f37.svg?style=flat-square)](https://github.com/tmux/tmux/wiki)
+[![license MIT](https://img.shields.io/github/license/beatzball/roost?color=0a66c2&style=flat-square)](LICENSE)
+[![status beta](https://img.shields.io/badge/status-beta-a1591a.svg?style=flat-square)](docs/known-gaps.md)
+[![docs roosting.dev](https://img.shields.io/badge/docs-roosting.dev-5b4fc4.svg?style=flat-square)](https://roosting.dev)
 
 </div>
 
