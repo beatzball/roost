@@ -43,9 +43,31 @@ Your `PostToolUse` hook is missing. No hook fires when you answer a permission d
 
 The exit code tells you which failure it is:
 
+- **exit 3** — the target's badge says 🛑 blocked, so `send` refused rather than typing into a permission dialog. Answer the dialog and retry the same target. If the pane has no dialog on it, see [A pane refuses every send but has no dialog](#a-pane-refuses-every-send-but-has-no-dialog) below.
 - **exit 2** — the target does not exist or its pane is dead. Re-resolve the target.
 - **exit 1** with a `roost send:` message — delivery to a valid target failed. Retry the same target or look at the pane; do not re-resolve.
 - **exit 1** with a `usage:` message — a missing argument. That is a caller bug.
+
+## A pane refuses every send but has no dialog
+
+`roost send` exits 3 and says a permission dialog is open, but the pane is sitting at an empty prompt.
+
+The badge is stale. A Claude Code turn that ends **at** a permission dialog — you answered `No`, or pressed Esc — fires no `PostToolUse` and no `Stop`, so the 🛑 that the `Notification` hook stamped is never cleared. Answering **Yes** does clear it, because the tool then runs and `PostToolUse` fires.
+
+Check it rather than assuming, and read the badge and the screen in the *same* moment — a badge you read seconds before a screen tells you nothing:
+
+```sh
+roost status | grep '%12'    # the badge
+roost screen %12 20          # what is actually on the pane
+```
+
+If there is no dialog on the screen, any of these clears it:
+
+- type anything into the pane yourself — the next `UserPromptSubmit` re-stamps it
+- `roost send --force %12 "…"` — safe *once you have looked* and seen no dialog
+- `roost state working` from inside that pane
+
+`roost wait-done` will not rescue you here: it counts `blocked` as busy, so it waits out its timeout. This is a known gap, recorded in `docs/known-gaps.md` in the repo.
 
 ## `roost wait-done` exits non-zero
 

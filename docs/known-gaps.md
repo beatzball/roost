@@ -13,6 +13,73 @@ Keep it short. When an entry is fixed, delete it.
 
 ## Live risks
 
+### A turn that ends at a permission dialog leaves `blocked` stamped forever
+
+Answering **No** to a Claude Code permission dialog, or pressing Esc at one,
+ends the turn without firing `PostToolUse` or `Stop`. `@agent_state` was
+stamped `blocked` by the `Notification` hook and **nothing ever unstamps it**.
+
+**Input:** a Claude Code pane at a permission dialog; the human answers `4. No`
+(or presses Esc).
+**Wrong output:** the dialog closes and the pane sits idle at an empty prompt,
+but `roost send` still refuses it with exit 3 and the message *"a permission
+dialog is open, and this text would be typed into it"* — when none is. The
+target is unreachable to every roost coordination command until something else
+stamps that pane.
+
+Measured on Claude Code 2.1.251, on a throwaway `-S <tmpdir>/roost` server,
+badge and screen captured in the same second:
+
+```
+t0=1788043147 t1=1788043147 span=0s  badge=[blocked]
+grep 'Do you want'   -> 0
+grep 'Esc to cancel' -> 0
+  ⎿  Interrupted · What should Claude do instead?
+❯
+```
+
+`@agent_since` stays frozen at the instant the `Notification` hook fired, which
+is how a stale badge is told apart from a live one. Both triggers were re-run:
+Esc held `blocked` for 97 s, `4. No` for 46 s, neither self-healing. Answering
+**Yes** does clear it — the tool runs, `PostToolUse` fires, the pane goes
+`working` then `done` — so the surviving hole is exactly *decline* and
+*interrupt*, which the `roost hooks` comment in `bin/roost:240-241` and
+`site/content/docs/state-badges.md` both describe only for the approve path.
+
+**Three consumers read that badge, and all three are wrong on a stale one:**
+
+- `roost send` — exit 3, forever (`bin/roost:346-350`).
+- `roost wait-done` — `busy()` counts `blocked` as busy (`bin/roost:593-613`),
+  so it blocks to its timeout and exits 1. The retry loop published at
+  `site/content/docs/driving-a-fleet.md:111-117` retries **only** on exit 3, so
+  it spins for as long as the script runs.
+- `roost read` — prints *"is blocked — this reply is from its previous turn"*
+  (`bin/roost:506-509`) about a reply that is in fact the current one.
+
+**Why it is a live risk and not a note.** It needs a human keystroke to create,
+but it bites later and unattended: an orchestrating agent that hands work to a
+pane whose last dialog was declined never reaches it again, and the error text
+it gets tells it to wait for a human who has already answered. Declining a
+permission prompt is an everyday action, not an edge case.
+
+**Why it is not worse than that.** It fails closed, never open: nothing is
+typed into anything, the exit code is distinct, and the message it prints names
+the escape hatch (`roost send --force`) in its own second line. A human typing
+anything into the pane clears it on the next `UserPromptSubmit`.
+
+**Not fixed here, because the fix is a behaviour change to the guard**, and
+that is its own task. Two candidates, neither implemented:
+
+- Have the `send` guard confirm the badge against the pane before refusing —
+  `capture-pane` and look for the dialog — and downgrade to a warning when the
+  screen disagrees. That trades the guard's current "exact, no scraping"
+  property (`bin/roost:338-340`) for freshness, so it needs deciding, not
+  assuming.
+- Have `roost doctor` report it. It reads no live pane state today, so this
+  would be a new kind of check: list panes stamped `blocked` whose visible
+  screen carries no dialog marker, and name them. Cheap, read-only, and it
+  turns an invisible deadlock into a line of output.
+
 ### A copilot pane can be badge-less, and nothing says so
 
 `adapters/copilot/extension.mjs` only runs once **two** gates are past, and
@@ -124,9 +191,10 @@ has already produced a real bug here.
   (`roost settings`, re-pick the set), which is as far as a read-only check
   goes.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
-  the two groups: 9 files at mode 644 and 15 at 755, measured with
-  `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at the
-  commit that fixed `test-doctor.sh` and `test-next-blocked.sh`. Cosmetic —
+  the two groups: 11 files at mode 644 and 16 at 755, re-measured with
+  `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at
+  `9738321`. It was 9 and 15 at the commit that fixed `test-doctor.sh` and
+  `test-next-blocked.sh`, so the split is still growing. Cosmetic —
   `tests/run.sh` invokes `bash "$t"`, so no test has ever needed the bit.
   Left alone rather than swept, because a `chmod` across nine files that other
   branches are editing collides for no benefit.
