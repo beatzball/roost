@@ -89,11 +89,19 @@ carries `|| true`, and `adapters/opencode/roost.js:134-150` wraps `execFile` so
 `run()` resolves and never rejects. `tests/opencode-plugin-harness.mjs:548`
 asserts it: *"a missing roost on PATH does not throw into opencode"*.
 
-An adapter is also a **no-op outside roost**. `scripts/roost-agent-state:43-51`
-exits 0 unless `$TMUX` names a socket path ending in `/roost`. That is what
-makes it safe to wire into a *global* harness config — running the harness
-anywhere else does nothing. A new adapter inherits this for free by going
-through `roost state`, and must not add a check of its own that fails louder.
+An adapter is also a **no-op outside roost**. `roost_self_socket` in
+`scripts/lib/roost-socket.sh` exits both `roost state` and `roost reply` 0
+unless `$TMUX` names a socket path ending in `/roost`. That is what makes it
+safe to wire into a *global* harness config — running the harness anywhere else
+does nothing. A new adapter inherits this for free by going through `roost
+state`, and must not add a check of its own that fails louder.
+
+That helper is **one rule for both halves**, and it has to stay that way.
+`roost state` used to read the socket from `$TMUX` while `roost reply` fell
+through to the production `-L roost` default, so on any other roost server the
+badge landed and the reply silently did not — no adapter sets `ROOST_SOCKET`,
+so every adapter was exposed. `tests/test-reply-socket.sh` is the regression,
+and it is the one reply-channel test that never sets `ROOST_SOCKET`.
 
 ## 1. The five states
 

@@ -47,40 +47,23 @@ states the consent gate rather than inferring an answer to it (`AGENTS.md` §9,
 and the same discipline the adapter contract's T6 sets out). The install stanza
 in `site/content/docs/state-badges.md` names both before a user trusts the badge.
 
-### `roost reply` writes to the default socket, `roost state` writes to the pane's
-
-The two halves of an adapter's contract resolve their tmux server differently,
-and the mismatch is silent.
-
-`scripts/roost-agent-state:47` takes the socket out of `$TMUX`, so `roost state`
-always stamps the server the calling pane is actually in. `bin/roost`'s `reply`
-branch goes through `SOCKET="${ROOST_SOCKET:-roost}"` (`bin/roost:45`) and then
-refuses to write unless that server's pid matches the pid in `$TMUX`
-(`bin/roost:552`) — a deliberate guard against stamping a same-numbered pane on
-an unrelated server.
-
-So on any roost server that is **not** the default `-L roost`, badges work and
-replies do not. Measured, one throwaway server, two panes:
-
-```
-no ROOST_SOCKET   -> state=[working] reply=[]
-with ROOST_SOCKET -> state=[working] reply=[HELLO-WITH-SOCKET]
-```
-
-**What it costs:** `roost read` on such a pane falls back to scraping the screen
-and says so on stderr, so nothing is silently wrong for the reader — but the
-cause named there is "no reply was recorded", which points at the adapter rather
-than at the socket. It cost a debugging session on this branch to find, which is
-why it is written down.
-
-**Who hits it:** anyone running roost with `ROOST_SOCKET` set to a path, which
-today is the live smoke tests and anyone running two roost servers side by side.
-The default single-server install is unaffected. `tests/live/copilot-smoke.sh`
-exports `ROOST_SOCKET` into every pane it launches and says why at that line;
-`tests/live/opencode-smoke.sh` does not need to, because it never asserts a
-reply.
-
 ## Behaviour changes
+
+### `bin/roost` now addresses the roost server you are inside
+
+With `ROOST_SOCKET` unset, every `roost` subcommand used to address the shared
+`-L roost` server no matter which server the caller's own pane was on. It now
+resolves in three steps — `ROOST_SOCKET`, then the server it is running inside,
+then `-L roost` — the same order `roost-status`, `roost-switch` and
+`roost-notify` already used, via `scripts/lib/roost-socket.sh`.
+
+**This is the fix for a live risk, not a new one.** It is what makes `roost
+reply` land on a non-default server, where the badge already did.
+
+Only a socket path ending in `/roost` counts as "inside roost", so `roost
+spawn` typed from a user's everyday tmux still means the roost server. Nothing
+changes for the default single-server install: `-L roost` resolves to a path
+ending in `/roost`, so both steps name the same server.
 
 ### `roost wait-done` exits non-zero on an errored target
 

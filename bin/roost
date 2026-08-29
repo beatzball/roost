@@ -41,8 +41,27 @@ while [ -L "$SOURCE" ]; do
 done
 ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
-# Socket: a name (-L, production default "roost") or, for tests, a path (-S).
-SOCKET="${ROOST_SOCKET:-roost}"
+# Socket, in order: $ROOST_SOCKET (explicit seam — tests, a second server, a
+# `roost ssh` one) -> the roost server we are running inside -> the shared
+# production server by name. The same three steps scripts/roost-status,
+# roost-switch and roost-notify already resolve in, and which
+# tests/test-socket-seams.sh pins for them.
+#
+# The MIDDLE step is the one this file was missing, and its absence was not
+# cosmetic: `roost state` execs scripts/roost-agent-state, which has always
+# taken the socket from $TMUX, while everything here fell straight through to
+# `-L roost`. On any roost server that is not the default one, the badge landed
+# and `roost reply` exited 0 having written nothing — and `read`, `screen`,
+# `send` and `wait-done` addressed the production server instead, where the
+# caller's pane id is a valid id belonging to a stranger. Both halves now ask
+# scripts/lib/roost-socket.sh the same question. Do not re-inline the rule.
+#
+# Note what the middle step deliberately does NOT do: inherit any $TMUX. A user
+# who types `roost spawn` from inside their everyday tmux still means the roost
+# server, so roost_self_socket recognises only a socket path ending /roost.
+. "$ROOST_HOME/scripts/lib/roost-socket.sh"
+roost_self_socket
+SOCKET="${ROOST_SOCKET:-${ROOST_SELF_SOCK:-roost}}"
 case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
 DEFAULT_SESSION="main"
 CONF="$ROOST_HOME/tmux/roost.conf"
@@ -539,6 +558,13 @@ JSON
     # Silent no-op unless the caller is a pane on THIS server — same contract as
     # `roost state`, so an adapter is safe to leave installed when its agent
     # runs somewhere else.
+    #
+    # The guard survives the socket-resolution fix above, and is not made
+    # redundant by it. With $ROOST_SOCKET unset the two now agree by
+    # construction — `t` is already pointed at the caller's own server — but an
+    # explicit $ROOST_SOCKET still outranks $TMUX, so a caller in a pane on
+    # server B with the seam naming server A reaches this line with a pane id
+    # that means something different on each. That is exactly the case below.
     #
     # The check is on the server PID, not on the socket path. $TMUX is
     # "<socket-path>,<pid>,<session>", so the pid is exact and needs no
