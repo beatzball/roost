@@ -173,14 +173,20 @@ watch_badges() {
 
 # launch <logname> <baseURL> -> prints the pane id
 #
-# ROOST_SOCKET is not decoration and it is not something a real user sets. `roost
-# state` reaches this server on its own -- it goes through
-# scripts/roost-agent-state, which finds the server from $TMUX -- but `roost
-# reply` resolves the socket from $ROOST_SOCKET, defaulting to `-L roost`, and
-# then refuses to write because the server pid it finds there is not the pid in
-# this pane's $TMUX (bin/roost's guard against stamping a same-numbered pane on
-# an unrelated server). Without this variable every badge assertion below passes
-# and every reply assertion fails, with nothing printed to say why. Measured.
+# ROOST_SOCKET is belt AND braces here, and it is still not something a real
+# user sets. It used to be load-bearing: `roost state` reached this server on
+# its own -- it goes through scripts/roost-agent-state, which finds the server
+# from $TMUX -- while `roost reply` resolved the socket from $ROOST_SOCKET,
+# defaulted to `-L roost`, and then refused to write because the server pid it
+# found there was not the pid in this pane's $TMUX. Without the variable every
+# badge assertion below passed and every reply assertion failed, with nothing
+# printed to say why. Measured, and recorded as a live risk until it was fixed.
+#
+# bin/roost now resolves the server the same way roost-agent-state does (see
+# scripts/lib/roost-socket.sh), and $S ends in /roost, so this would work
+# without it. It stays because an explicit seam is what the rest of the suite
+# uses and it does not depend on the socket keeping that name --
+# tests/test-reply-socket.sh is what holds the unset case honest.
 launch() {
   tmux -S "$S" new-window -d -P -F '#{pane_id}' -c "$D/proj" \
     "PATH=$HERE/bin:\$PATH ROOST_SOCKET=$S ROOST_EVENT_LOG=$L/$1.jsonl \

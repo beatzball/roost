@@ -43,12 +43,21 @@ stop_hook=0
 [ -n "${TMUX:-}" ] || exit 0
 [ -n "${TMUX_PANE:-}" ] || exit 0
 
-# $TMUX = "<socket-path>,<pid>,<session>"; only act on the roost socket.
-sock="${TMUX%%,*}"
-case "$sock" in
-  */roost) ;;
-  *) exit 0 ;;
-esac
+# Only act on a roost socket. The rule itself lives in lib/roost-socket.sh
+# because bin/roost needs the identical one — `roost state` (this script) and
+# `roost reply` (there) are the two halves of one contract, and they used to
+# answer "which server?" differently: this script from $TMUX, bin/roost from
+# the -L roost default. On any other roost server the badge landed here and the
+# reply silently did not. One copy, so they cannot drift apart again.
+#
+# Sourced at the top, unlike lib/roost-reply.sh below, because the guard is the
+# very first thing every PostToolUse call needs. It costs a file read, no fork:
+# roost_self_socket sets a variable rather than printing one for exactly that
+# reason.
+. "$SELF_DIR/lib/roost-socket.sh"
+roost_self_socket
+sock="$ROOST_SELF_SOCK"
+[ -n "$sock" ] || exit 0
 
 # Normalise: anything unrecognised is idle.
 case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
