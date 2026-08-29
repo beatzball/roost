@@ -13,14 +13,14 @@ It runs on its **own isolated tmux server** with its own config, so your everyda
 
 > 💥 error / needs you · 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
 
-State comes from **Claude Code's own lifecycle hooks** — not from scraping process names or terminal output — so it is accurate rather than guessed. No external plugins, no compiled binary, nothing that reaches into `~/.tmux.conf`.
+State comes from **each agent's own lifecycle events** — Claude Code hooks, the opencode plugin, the GitHub Copilot CLI extension, or one `roost state` call from anything else — not from scraping process names or terminal output, so it is accurate rather than guessed. No compiled binary, nothing that reaches into `~/.tmux.conf`.
 
 ## Requirements
 
 - `tmux` ≥ 3.2 (needs pane options, `#{P:}` pane loops, and `display-popup`)
 - `git`
 - A powerline/Nerd Font for the tab separators — or run `roost init` and pick the plain-separator fallback
-- Claude Code (for the state badges; the view itself works without it)
+- An agent that can report its state, for the badges — Claude Code, opencode and GitHub Copilot CLI have adapters in this repo; anything else calls `roost state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
 
 ## Install
@@ -65,7 +65,7 @@ config and scripts no matter where you run it from.
 ## First run
 
 ```sh
-roost doctor   # check tmux version, truecolor, fzf, notifier, hooks
+roost doctor   # check tmux version, truecolor, fzf, hooks, adapter links, notifier
 roost init     # pick theme, glyph set, separator style; print the Claude hooks
 roost          # start/attach the default session ("main")
 ```

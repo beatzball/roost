@@ -23,7 +23,7 @@ const INSTALL_STEPS = [
     note: 'install (clones roost and puts it on your PATH)',
     cmd: 'curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh',
   },
-  { note: 'check tmux version, truecolor, fzf, notifier, hooks', cmd: 'roost doctor' },
+  { note: 'check tmux version, truecolor, fzf, hooks, adapter links, notifier', cmd: 'roost doctor' },
   { note: 'pick a theme and print the agent hooks', cmd: 'roost init' },
   { note: 'start (or attach to) the default session', cmd: 'roost' },
 ] as const;
@@ -38,9 +38,9 @@ const KEY_HINTS = [
 /**
  * Which harnesses drive the badges today, and how.
  *
- * Claude Code and opencode have code in this repo; everything else reports
- * through `roost state`, which any harness can call. Kept in step with
- * content/docs/state-badges.md.
+ * Claude Code, opencode and GitHub Copilot CLI have code in this repo;
+ * everything else reports through `roost state`, which any harness can call.
+ * Kept in step with content/docs/state-badges.md.
  */
 const AGENTS = [
   {
