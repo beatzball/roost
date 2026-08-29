@@ -38,7 +38,7 @@ const KEY_HINTS = [
 /**
  * Which harnesses drive the badges today, and how.
  *
- * Claude Code, opencode and GitHub Copilot CLI have code in this repo;
+ * Claude Code, opencode, GitHub Copilot CLI and pi have code in this repo;
  * everything else reports through `roost state`, which any harness can call.
  * Kept in step with content/docs/state-badges.md.
  */
@@ -59,6 +59,11 @@ const AGENTS = [
     cmd: 'roost doctor',
   },
   {
+    name: 'pi',
+    how: 'An extension adapter ships in the repo. Link it with',
+    cmd: 'roost doctor',
+  },
+  {
     name: 'Anything else',
     how: 'One command, from any harness, in any language.',
     cmd: 'roost state working',
@@ -66,7 +71,7 @@ const AGENTS = [
 ] as const;
 
 /** Harnesses with an adapter planned, but not written yet. */
-const AGENTS_PLANNED = ['Codex', 'pi'] as const;
+const AGENTS_PLANNED = ['Codex'] as const;
 
 export interface SplashData {
   siteTitle: string;

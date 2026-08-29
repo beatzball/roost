@@ -90,3 +90,51 @@ That second dialog is the price of the 🛑 badge, and it is worth being clear a
 `roost read` returns the agent's own last answer, not a scrape of its screen — copilot is a full-screen TUI, so a scrape returns its input box and footer.
 
 `tests/live/copilot-smoke.sh` drives real copilot against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after a copilot upgrade. It needs no GitHub account: it points copilot at a local ollama, which turns off the requirement.
+
+## pi
+
+**pi** has an adapter in this repo. Symlink it into place:
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+ln -s "$HOME/path/to/roost/adapters/pi/roost.ts" ~/.pi/agent/extensions/roost.ts
+```
+
+A symlink rather than a copy, so updating roost updates the extension. `roost doctor` prints this exact command with the real path for your checkout.
+
+The file name is yours; the `.ts` is not — pi discovers `*.ts` (and `*/index.ts`) and loads it through jiti, so there is no build step. Install it globally under `~/.pi/agent/` rather than in a project's `.pi/extensions/`: a project-local extension loads only after you have trusted that project, so a fresh worktree would badge nothing and say nothing about why.
+
+| pi signal | state |
+|-----------|-------|
+| `agent_start` | ⏳ working |
+| a `confirm` / `select` / `input` / `editor` dialog opening mid-turn | 🛑 blocked |
+| that dialog closing | ⏳ working |
+| `agent_settled`, last assistant message `stopReason: "error"` | 💥 error |
+| `agent_settled`, anything else | ✅ done |
+
+`roost read` returns the agent's own last answer, not a scrape of its screen — pi is a full-screen TUI, so a scrape returns its input box and token counter.
+
+### 🛑 blocked will not appear on a stock pi
+
+**pi ships no permission prompts.** That is a deliberate design choice, not a gap — [pi's own docs](https://github.com/earendil-works/pi) list "permission popups" among the things it intentionally omits, alongside MCP, sub-agents and plan mode. pi runs `bash` without asking.
+
+So nothing on a stock pi install ever asks you a question mid-turn, and a pi pane never goes 🛑. What that costs you, precisely:
+
+- **`roost next-blocked` will never find a pi pane.** Nothing is waiting for you, so there is nothing to jump to.
+- **`roost send` will never refuse a pi pane with exit 3.** That refusal exists so one agent cannot type into another's permission dialog. A pi pane has no dialog to type into, so a pi pane is always safe to send to — the refusal is not missing, it is not needed.
+
+If you install a permission gate of your own — pi ships `examples/extensions/permission-gate.ts` as the pattern — roost sees its dialog and badges the pane 🛑 for as long as it is open. That works because pi hands every extension the same `ctx.ui` object, so roost can watch a dialog it did not raise. **roost never answers one.** It calls your gate's dialog and returns exactly what your gate returned; you still choose.
+
+### A `pi -p` or `--mode json` pane is not badged
+
+The adapter reports only when a human is attached to the pane (pi's `ctx.hasUI`, which is true in interactive and RPC mode and false in `-p` print mode and `--mode json`).
+
+That is not caution about drawing to a headless terminal. pi's sub-agent pattern — its shipped `examples/extensions/subagent/` — runs each sub-agent as a **separate `pi --mode json -p` process**, and a child process inherits its parent's `$TMUX_PANE` and loads the same global extensions. Without the gate every sub-agent would badge the pane it was launched from, stamping ✅ done while the real agent was still working, and publishing its own answer as the pane's reply.
+
+The price is that a pane where you type `pi -p "…"` yourself stays unbadged. Report state by hand there, the way any other harness does:
+
+```sh
+roost state working && pi -p "…" && roost state done
+```
+
+`tests/live/pi-smoke.sh` drives real pi against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after a pi upgrade. It needs no account: it points pi at a local ollama.

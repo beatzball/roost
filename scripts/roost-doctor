@@ -105,6 +105,18 @@ cpext="$cphome/extensions/roost/extension.mjs"
 cpwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/copilot/extension.mjs"
 cpsettings="$cphome/settings.json"
 
+# Same for the pi extension. pi does NOT use the XDG directories either:
+# docs/usage.md's environment table names PI_CODING_AGENT_DIR as the one
+# override, defaulting to $HOME/.pi/agent, and it covers settings, provider
+# config, auth and the extension directory.
+#
+# The file name under extensions/ is ours to choose -- pi discovers `*.ts` and
+# `*/index.ts` -- but it must be a .ts: pi loads extensions through jiti, and
+# that is the only extension the discovery glob looks for.
+pihome="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+piext="$pihome/extensions/roost.ts"
+piwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/pi/roost.ts"
+
 # --- stale amux references (Phase 5 trigger) ---
 # The amux compatibility shims (amux-agent-state and friends) are deleted
 # once roost doctor reports clean on these checks on every machine the author
@@ -232,6 +244,47 @@ if command -v copilot >/dev/null 2>&1; then
   # to distinguish "not yet asked" from "denied". Say so plainly instead of
   # inferring an answer: an unanswered gate looks exactly like a healthy pane.
   warn "copilot asks once per directory to approve the roost extension (\"wants to: handle permission requests\") — answer Yes, or the badges stay silent with nothing reported"
+fi
+
+# pi adapter -- informational, in the same shape as the two checks above. Most
+# users will not have pi, so a missing extension is a warning, never a required
+# failure.
+if command -v pi >/dev/null 2>&1; then
+  if [ -L "$piext" ] && [ ! -e "$piext" ]; then
+    # -e follows symlinks, so a DANGLING link (an old checkout that got removed)
+    # reads as simply absent, and the "not installed" branch's `ln -s` then
+    # fails with "File exists". Name the real fix.
+    warn "pi extension symlink at $piext is dangling — run: rm \"$piext\" && ln -s \"$piwant\" \"$piext\""
+  elif [ ! -e "$piext" ]; then
+    warn "pi found, roost extension not installed — run: mkdir -p \"$(dirname "$piext")\" && ln -s \"$piwant\" \"$piext\""
+  elif [ "$piext" -ef "$piwant" ]; then
+    ok "pi extension linked"
+  else
+    warn "pi extension at $piext is not this install — relink it to $piwant"
+  fi
+
+  # "The extension is installed" and "the badges will be complete" are different
+  # claims, and for pi they differ in one specific, permanent way that no file
+  # on disk records (AGENTS.md §9). pi ships NO permission prompts — its own
+  # docs/usage.md:309 lists them among the things it intentionally omits — so a
+  # pi pane never enters `blocked`, and `roost send`'s exit-3 refusal never
+  # fires for one.
+  #
+  # This is not a misconfiguration and there is nothing to fix, so it is stated
+  # once rather than dressed up as a problem: the point is that a user reads it
+  # BEFORE they trust a pi pane's badge to tell them a human is being waited on.
+  # It is a warn rather than an ok because ok lines read as "this is handled",
+  # and this one is a gap the user is carrying.
+  warn "pi ships no permission prompts, so a pi pane never badges blocked and \`roost send\` will not refuse one — see /docs/state-badges"
+
+  # The second half of the same honesty, and the one with an actual fix. pi
+  # loads an extension only from a trusted location, and only a .ts. A file
+  # dropped in as roost.js, or a project-local .pi/extensions install in an
+  # untrusted project, is silently not loaded.
+  case "$piext" in
+    *.ts) : ;;
+    *) warn "pi only discovers *.ts extensions — $piext will never be loaded" ;;
+  esac
 fi
 
 # --- the saved error glyph doesn't match the saved glyph set ---
