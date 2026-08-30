@@ -164,7 +164,10 @@ python3 tests/test-contrast.py   # also a CI step — run it too
   `ZDOTDIR` too. `tests/test-install.sh`'s `run_install` sets the whole set in
   one place; copy that shape rather than deriving the list again. A runner that
   exports any of these has it inherited straight through a sandboxed `HOME`,
-  and then a test about a `PATH` line rewrites the author's live agent config
+  and then a test about a `PATH` line rewrites the author's live agent config.
+  That is not hypothetical and a comment did not stop it, so `tests/test-install.sh`
+  exports the whole set at a canary directory nothing may write to and fails at
+  the end of the file if anything landed there. Copy that too
 
 ## 9. Verify rather than assert
 

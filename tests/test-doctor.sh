@@ -19,6 +19,19 @@ export ROOST_NOTIFY_SOCK="/nonexistent/roost-doctor-test-sock"
 export XDG_CONFIG_HOME="$(mktemp -d /tmp/amx.XXXX)"
 trap 'rm -rf "$XDG_CONFIG_HOME"' EXIT
 
+# $CLAUDE_SETTINGS names the FILE doctor reports on, and doctor honours it via
+# scripts/lib/roost-adapters.sh -- so a runner that exports it redirects every
+# case in this file at one stroke. Measured: with it set, the four stale-hook
+# assertions below (which seed $HOME/.claude/settings.json and expect doctor to
+# read that) fail, because doctor was reading somebody else's file the whole
+# time. Same omission as the one AGENTS.md §8 describes for install.sh, and
+# harmless only because doctor reads and never writes.
+#
+# So: pinned inert here for the few cases that pin no HOME of their own, and
+# set explicitly beside HOME in every case where that file IS the thing under
+# test. The one case that deliberately points it somewhere else sets it itself.
+export CLAUDE_SETTINGS="$XDG_CONFIG_HOME/no-such-claude-home/settings.json"
+
 # reports the running tmux version
 out="$("$DOC" 2>&1 || true)"
 assert_contains "$out" "tmux" "doctor reports on tmux"
@@ -142,16 +155,16 @@ set -g @roost-glyph-working "[~]"
 set -g @roost-glyph-done    "[+]"
 set -g @roost-glyph-idle    "[·]"
 EOF
-out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
+out="$(HOME="$gchome" CLAUDE_SETTINGS="$gchome/.claude/settings.json" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
 assert_contains "$out" "has no @roost-glyph-error line" "doctor reports the missing line as missing, rather than asserting a cause"
 assert_contains "$out" "'ascii'" "doctor names the set it actually matched (ascii)"
 assert_contains "$out" "falls back to the built-in '💥'" "doctor names the exact glyph being inherited, not just 'the default'"
-HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" >/dev/null 2>&1
+HOME="$gchome" CLAUDE_SETTINGS="$gchome/.claude/settings.json" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" >/dev/null 2>&1
 assert_eq "$?" "0" "a missing error glyph does not fail doctor (informational only)"
 
 # once @roost-glyph-error is added and matches, the warning goes away
 printf 'set -g @roost-glyph-error   "[x]"\n' >> "$gcdir/roost/roost.conf"
-out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
+out="$(HOME="$gchome" CLAUDE_SETTINGS="$gchome/.claude/settings.json" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
 case "$out" in
   *"@roost-glyph-error"*) assert_eq "warned" "silent" "doctor is silent once the error glyph matches its set" ;;
   *) assert_eq ok ok "doctor is silent once the error glyph matches its set" ;;
@@ -171,7 +184,7 @@ set -g @roost-glyph-working "[~]"
 set -g @roost-glyph-done    "[+]"
 set -g @roost-glyph-idle    "[·]"
 EOF
-out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" 2>&1)"
+out="$(HOME="$gchome" CLAUDE_SETTINGS="$gchome/.claude/settings.json" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" 2>&1)"
 assert_contains "$out" "sets @roost-glyph-error to '(X)'" "doctor quotes the custom error glyph the config actually holds"
 assert_contains "$out" "the 'ascii' set's own error glyph is '[x]'" "doctor quotes the set's own error glyph for comparison"
 assert_contains "$out" "if you chose that yourself there is nothing to fix" "doctor offers the deliberate-choice reading instead of asserting a cause"
@@ -179,7 +192,7 @@ case "$out" in
   *"has no @roost-glyph-error line"*) assert_eq "claimed-missing" "described-mismatch" "doctor does not tell a user with a custom error glyph that the line is missing" ;;
   *) assert_eq ok ok "doctor does not tell a user with a custom error glyph that the line is missing" ;;
 esac
-HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" >/dev/null 2>&1
+HOME="$gchome" CLAUDE_SETTINGS="$gchome/.claude/settings.json" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" >/dev/null 2>&1
 assert_eq "$?" "0" "a custom error glyph does not fail doctor (informational only)"
 rm -rf "$cudir" "$gchome"
 
@@ -216,11 +229,11 @@ mkdir -p "$stalehome/.claude"
 cat > "$stalehome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-out="$(HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(HOME="$stalehome" CLAUDE_SETTINGS="$stalehome/.claude/settings.json" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "amux-agent-state" "roost doctor warns when settings.json still references amux-agent-state"
 assert_contains "$out" "roost-agent-state" "roost doctor names the roost-agent-state fix"
 assert_contains "$out" "user settings" "roost doctor labels which settings file is stale (user)"
-HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
+HOME="$stalehome" CLAUDE_SETTINGS="$stalehome/.claude/settings.json" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
 assert_eq "$?" "0" "a stale hook reference does not fail doctor (warning only)"
 rm -rf "$stalehome"
 
@@ -235,7 +248,7 @@ mkdir -p "$cleanhome/.claude"
 cat > "$cleanhome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/roost-agent-state done"}]}]}}
 EOF
-out="$(HOME="$cleanhome" XDG_CONFIG_HOME="$cleanhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(HOME="$cleanhome" CLAUDE_SETTINGS="$cleanhome/.claude/settings.json" XDG_CONFIG_HOME="$cleanhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 case "$out" in
   *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent once settings.json is migrated, even with 'amux' in the checkout path" ;;
   *) assert_eq ok ok "roost doctor is silent once settings.json is migrated, even with 'amux' in the checkout path" ;;
@@ -244,7 +257,7 @@ rm -rf "$cleanhome"
 
 # absent: no settings.json at all -> silent, not a crash
 absenthome="$(mktemp -d /tmp/amx.XXXX)"
-out="$(HOME="$absenthome" XDG_CONFIG_HOME="$absenthome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(HOME="$absenthome" CLAUDE_SETTINGS="$absenthome/.claude/settings.json" XDG_CONFIG_HOME="$absenthome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 case "$out" in
   *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent when settings.json is absent" ;;
   *) assert_eq ok ok "roost doctor is silent when settings.json is absent" ;;
@@ -263,7 +276,7 @@ else
   mkdir -p "$unreadhome/.claude"
   printf '{"hooks":{}}' > "$unreadhome/.claude/settings.json"
   chmod 000 "$unreadhome/.claude/settings.json"
-  out="$(HOME="$unreadhome" XDG_CONFIG_HOME="$unreadhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+  out="$(HOME="$unreadhome" CLAUDE_SETTINGS="$unreadhome/.claude/settings.json" XDG_CONFIG_HOME="$unreadhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
   # The specific phrase from the STALE-hook check's own unreadable branch,
   # not just "not readable" generically -- the pre-existing "Claude hooks
   # wired" check also says "not readable" for the same file, so a looser
@@ -283,7 +296,7 @@ mkdir -p "$projhome/.claude"
 cat > "$projhome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-out="$(cd "$projhome" && HOME="$projhome" XDG_CONFIG_HOME="$projhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(cd "$projhome" && HOME="$projhome" CLAUDE_SETTINGS="$projhome/.claude/settings.json" XDG_CONFIG_HOME="$projhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "project settings" "roost doctor warns on a stale project .claude/settings.json (cwd-relative, not just \$HOME)"
 rm -rf "$projhome"
 
@@ -295,7 +308,7 @@ mkdir -p "$localhome/.claude"
 cat > "$localhome/.claude/settings.local.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-out="$(cd "$localhome" && HOME="$localhome" XDG_CONFIG_HOME="$localhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(cd "$localhome" && HOME="$localhome" CLAUDE_SETTINGS="$localhome/.claude/settings.json" XDG_CONFIG_HOME="$localhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "local settings" "roost doctor warns on a stale local .claude/settings.local.json"
 rm -rf "$localhome"
 
@@ -315,7 +328,7 @@ if command -v git >/dev/null 2>&1; then
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
   git -C "$wtroot/main" worktree add -q "$wtroot/wt" -b wtbranch >/dev/null 2>&1
-  out="$(cd "$wtroot/wt" && HOME="$wtroot" XDG_CONFIG_HOME="$wtroot/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+  out="$(cd "$wtroot/wt" && HOME="$wtroot" CLAUDE_SETTINGS="$wtroot/.claude/settings.json" XDG_CONFIG_HOME="$wtroot/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
   assert_contains "$out" "local settings" "roost doctor resolves local settings through a worktree to the main checkout"
   rm -rf "$wtroot"
 else
@@ -329,7 +342,7 @@ fi
 ocstale="$(mktemp -d /tmp/amx.XXXX)"
 mkdir -p "$ocstale/.config/opencode/plugin"
 printf 'not the real plugin\n' > "$ocstale/.config/opencode/plugin/amux.js"
-out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(HOME="$ocstale" CLAUDE_SETTINGS="$ocstale/.claude/settings.json" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 assert_contains "$out" "opencode/plugin/amux.js" "roost doctor warns when the old opencode plugin file still exists"
 assert_contains "$out" "no reason to keep the old name around" "roost doctor names the exact fix and frames it as a harmless leftover, not a coexistence need"
 assert_contains "$out" "rm \"" "roost doctor prints an exact rm command for the stale plugin file"
@@ -337,7 +350,7 @@ assert_contains "$out" "ln -s \"" "roost doctor prints an exact ln -s command na
 
 # and once it's gone, silent
 rm "$ocstale/.config/opencode/plugin/amux.js"
-out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(HOME="$ocstale" CLAUDE_SETTINGS="$ocstale/.claude/settings.json" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
 case "$out" in
   *"opencode/plugin/amux.js"*) assert_eq "warned" "silent" "roost doctor is silent once the old opencode plugin file is gone" ;;
   *) assert_eq ok ok "roost doctor is silent once the old opencode plugin file is gone" ;;
@@ -456,7 +469,7 @@ instshim="$(mktemp -d /tmp/amx.XXXX)"
 for _h in opencode copilot pi codex; do
   printf '#!/bin/sh\nexit 0\n' > "$instshim/$_h"; chmod +x "$instshim/$_h"
 done
-out="$(HOME="$insthome" XDG_CONFIG_HOME="$insthome/.config" \
+out="$(HOME="$insthome" CLAUDE_SETTINGS="$insthome/.claude/settings.json" XDG_CONFIG_HOME="$insthome/.config" \
   COPILOT_HOME="$insthome/.copilot" PI_CODING_AGENT_DIR="$insthome/.pi/agent" \
   CODEX_HOME="$insthome/.codex" COLORTERM=truecolor \
   PATH="$instshim:$PATH" "$RDOC" 2>&1)"
@@ -482,7 +495,7 @@ assert_contains "$l" "run: roost hooks," "doctor still prints the claude hooks c
 assert_contains "$l" "or run: roost install" "the claude hooks line also points at roost install"
 
 # and none of this is a failure: advice is advice
-HOME="$insthome" XDG_CONFIG_HOME="$insthome/.config" \
+HOME="$insthome" CLAUDE_SETTINGS="$insthome/.claude/settings.json" XDG_CONFIG_HOME="$insthome/.config" \
   COPILOT_HOME="$insthome/.copilot" PI_CODING_AGENT_DIR="$insthome/.pi/agent" \
   CODEX_HOME="$insthome/.codex" COLORTERM=truecolor \
   PATH="$instshim:$PATH" "$RDOC" >/dev/null 2>&1

@@ -6,8 +6,51 @@ INSTALL="$HERE/install.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# --- the sandbox canary -----------------------------------------------------
+# Every variable install.sh -- and the `roost install` it now runs -- can be
+# steered by, exported here at one directory that NOTHING in this file may
+# write to. Each invocation below overrides all of them; an invocation that
+# forgets even one inherits the canary instead, and the check at the very
+# bottom of this file fails.
+#
+# This deliberately IS the shape of the bug rather than a defence against a
+# hypothetical one. AGENTS.md §8 records it: a runner that exports COPILOT_HOME
+# (or any of the other four) has it inherited straight through a sandboxed
+# HOME, and then a test about a PATH line rewrites the developer's live agent
+# config. The ZDOTDIR case below did exactly that -- merging roost's hooks into
+# the real $CLAUDE_SETTINGS, writing $CODEX_HOME/hooks.json, and linking
+# copilot's and pi's extensions -- while its own assertion passed throughout,
+# because what that assertion checks is a line in a .zshrc.
+#
+# So the guard is a leak detector and not a comment asking the next person to
+# remember: the case that leaked had a green assertion the whole time, and the
+# only thing that would have caught it is something watching the paths.
+#
+# HOME is not canaried. Every invocation here has always set it, and pointing
+# it at the canary would trip on the unrelated writes a `roost help` or a git
+# lookup makes; the five harness homes, ZDOTDIR and the XDG pair are the ones
+# that get forgotten, and they are exactly the set AGENTS.md §8 lists.
+CANARY="$TMP/canary"
+export ZDOTDIR="$CANARY/zdot"
+export XDG_CONFIG_HOME="$CANARY/xdg-config"
+export XDG_DATA_HOME="$CANARY/xdg-data"
+export COPILOT_HOME="$CANARY/copilot"
+export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
+export CODEX_HOME="$CANARY/codex"
+export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+
+# What escaped, if anything. -mindepth 1 so the directory itself is never the
+# finding, and the whole listing is printed on failure rather than a count --
+# which path leaked names the variable that was missed.
+canary_leaks() { find "$CANARY" -mindepth 1 2>/dev/null | sort; }
+
 # Runs the installer against a sandboxed HOME so a test can never touch the
 # developer's real dotfiles.
+#
+# $RUN_ZDOTDIR, when the caller sets it for one call, is the ONE sandbox value
+# a case may choose: zsh's dotfile directory is the subject of a case below,
+# and routing that case through here rather than spelling its own environment
+# is what keeps the other six pinned. Unset means cleared, as before.
 run_install() { # HOME_SUBDIR SHELL_PATH [args...]
   local home="$TMP/$1"; shift
   local shell_path="$1"; shift
@@ -27,7 +70,8 @@ run_install() { # HOME_SUBDIR SHELL_PATH [args...]
   # stdin is /dev/null, never the runner's. install.sh asks `[ -t 0 ]` to
   # decide whether the wiring may prompt, so a suite run by hand in a terminal
   # would otherwise sit at a 60-second prompt in every case here.
-  HOME="$home" SHELL="$shell_path" ZDOTDIR= XDG_CONFIG_HOME= XDG_DATA_HOME= \
+  HOME="$home" SHELL="$shell_path" ZDOTDIR="${RUN_ZDOTDIR:-}" \
+  XDG_CONFIG_HOME= XDG_DATA_HOME= \
   COPILOT_HOME="$home/.copilot" PI_CODING_AGENT_DIR="$home/.pi/agent" \
   CODEX_HOME="$home/.codex" CLAUDE_SETTINGS="$home/.claude/settings.json" \
     sh "$INSTALL" "$@" </dev/null 2>&1
@@ -45,8 +89,7 @@ out="$(run_install zsh /bin/zsh)"
 assert_contains "$(rc_line "$out")" ".zshrc" "zsh -> .zshrc"
 
 mkdir -p "$TMP/zdot"
-out="$(HOME="$TMP/zdotshome" ZDOTDIR="$TMP/zdot" SHELL=/bin/zsh \
-  XDG_CONFIG_HOME= XDG_DATA_HOME= sh "$INSTALL" 2>&1)"
+out="$(RUN_ZDOTDIR="$TMP/zdot" run_install zdotshome /bin/zsh)"
 assert_contains "$(rc_line "$out")" "zdot/.zshrc" "zsh honours ZDOTDIR"
 
 # macOS terminals start LOGIN shells, which never read .bashrc.
@@ -101,7 +144,10 @@ out="$(run_install optval /bin/zsh --symlink --dry-run)"
 assert_contains "$out" "would run" "--symlink treats a following flag as absent, not as its value"
 
 # An unknown option fails loudly rather than silently installing something else.
-HOME="$TMP/bad" SHELL=/bin/zsh sh "$INSTALL" --nonsense </dev/null >/dev/null 2>&1
+# Through run_install like everything else: this one dies in the argument loop,
+# long before the wiring step, but "it exits early" is a property of today's
+# code and not of the sandbox -- and the sandbox is what has to hold.
+run_install bad /bin/zsh --nonsense >/dev/null
 assert_eq "$?" "1" "unknown option exits non-zero"
 
 # --- wiring: install.sh finishes the job -----------------------------------
@@ -215,3 +261,19 @@ assert_contains "$out" "roost install exited 3" "the failure is reported with it
 assert_contains "$out" "but the wiring did not finish" "the closing block says wiring is unfinished"
 assert_contains "$(cat "$TMP/wirefail/home/.zshrc" 2>/dev/null)" "$FAKE/bin" \
   "the PATH step survives a failed wiring run"
+
+# --- nothing escaped the sandbox --------------------------------------------
+# Last, because it has to see every invocation above.
+#
+# The detector is checked before it is trusted. "Found nothing" is exactly what
+# a detector aimed at the wrong path also says, and this suite has been fooled
+# by that shape more than once -- a probe pointed at a filename the code never
+# reads, a `tr` that silently deleted its own input. So make it find something
+# first, then ask it about the real thing.
+mkdir -p "$CANARY"; : > "$CANARY/detector-check"
+assert_contains "$(canary_leaks)" "detector-check" \
+  "the sandbox canary reports a file when there is one"
+rm -f "$CANARY/detector-check"
+
+assert_eq "$(canary_leaks)" "" \
+  "no install.sh invocation wrote outside its sandbox"
