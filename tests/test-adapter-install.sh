@@ -339,6 +339,24 @@ body="$(printf '%s' "$out" | sed "s|$HERE||g")"
 printf '%s' "$body" | grep -Eqw opencode && s=mentioned || s=absent
 assert_eq "$s" "absent" "--only pi: opencode is not even mentioned"
 
+# The half of --only that is a SAFETY invariant rather than a convenience, and
+# the reason scripts/roost-install spells it out at length above in_scope: the
+# blast radius of getting --only wrong used to be three symlinks, and since
+# Tasks 5-7 it is claude's settings.json, codex's hooks.json and copilot's
+# settings.json edited on a machine whose caller explicitly scoped them out.
+# The shim carries every harness AND a JSON tool, so all three writes are
+# fully possible here -- nothing but the restriction stops them.
+box="$TMP/onlyjsonscoped"
+out="$(run_install "$box" "$ALL_JSON_SHIM" --only opencode --yes)"; rc=$?
+assert_eq "$rc" "0" "--only opencode: exits 0"
+[ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? "--only opencode: opencode is linked"
+for scoped_out in "$box/home/.claude/settings.json" \
+                  "$box/home/.codex/hooks.json" \
+                  "$box/home/.copilot/settings.json"; do
+  assert_file_absent "$scoped_out" \
+    "--only opencode: $(basename "$(dirname "$scoped_out")")/$(basename "$scoped_out") was not written"
+done
+
 # ===========================================================================
 # 8. Unknown flag -> exit 2
 # ===========================================================================
