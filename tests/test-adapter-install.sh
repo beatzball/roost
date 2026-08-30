@@ -1707,7 +1707,72 @@ run_install "$TMP/records-flagval" "$ALL_SHIM" --records --yes >/dev/null 2>&1
 assert_eq "$?" "2" "--records swallowing a following flag as its value exits 2"
 
 # ===========================================================================
-# 19. Hygiene
+# 19. json_probe answers only in the words its own contract lists
+# ===========================================================================
+# json_probe is internal to scripts/roost-install, and that file runs a whole
+# install the moment it is sourced -- so its three functions are lifted out by
+# name and eval'd here instead. That extraction is checked before it is
+# trusted: a harness that quietly defined nothing would leave every case below
+# reading `malformed` and passing for exactly the wrong reason, which is the
+# shape of bug this section exists to catch in the first place.
+#
+# Both engines run. roost_json_tool prefers python3 whenever it is present, so
+# the jq implementation -- a whole second copy of the same logic, kept so a
+# jq-only machine can still tell "already wired" from "wired somewhere else" --
+# would otherwise never execute on the developer's machine.
+PROBE_SRC="$(sed -n '/^json_probe__py() {/,/^# --- is this checkout itself behind/p' "$INSTALL")"
+PROBE_PY_SHIM="$(make_one_tool_shim python3)"
+PROBE_JQ_SHIM="$(make_one_tool_shim jq)"
+
+# probe TOOLDIR MODE FILE [PATCH WANT] -> the probe's one word, with the tool
+# on PATH being the ONLY JSON engine the run can find.
+probe() {
+  local tooldir="$1"; shift
+  PATH="$tooldir" bash -c '
+    set -u
+    . "$1/scripts/lib/roost-json.sh"
+    . "$1/scripts/lib/roost-hooks.sh"
+    eval "$2"
+    shift 2
+    json_probe "$@"
+  ' _ "$HERE" "$PROBE_SRC" "$@"
+}
+
+PROBE_BOX="$TMP/probe"; mkdir -p "$PROBE_BOX"
+PROBE_WANT="/some/checkout/scripts/roost-agent-state"
+PROBE_PATCH="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "$PROBE_WANT")"
+printf '%s' '{"model":"opus"}'                            > "$PROBE_BOX/nohooks.json"
+printf '%s' '{"enabledFeatureFlags":{"EXTENSIONS":false}}' > "$PROBE_BOX/flagoff.json"
+printf '%s' '{"enabledFeatureFlags":{"EXTENSIONS":true}}'  > "$PROBE_BOX/flagon.json"
+printf '%s' 'this is not json at all'                      > "$PROBE_BOX/garbage.json"
+
+for eng in py jq; do
+  case "$eng" in py) shim="$PROBE_PY_SHIM" ;; jq) shim="$PROBE_JQ_SHIM" ;; esac
+
+  # The harness self-check, first and on its own two answers. These two must
+  # DIFFER: one word for both would mean the eval defined nothing useful and
+  # every case below is reading a default.
+  assert_eq "$(probe "$shim" flag "$PROBE_BOX/flagon.json")" "ours" \
+    "$eng: the lifted-out probe runs (a flag already true reads as ours)"
+  assert_eq "$(probe "$shim" hooks "$PROBE_BOX/garbage.json" "$PROBE_PATCH" "$PROBE_WANT")" \
+    "malformed" "$eng: the lifted-out probe still reports a real parse error as malformed"
+
+  # A settings.json with no "hooks" key is the most ordinary claude file this
+  # command will ever meet, and it parses perfectly. Reporting it as
+  # `malformed` -- the one word whose stated job is surfacing a parse error --
+  # is wrong even where the write that follows happens to be identical.
+  assert_eq "$(probe "$shim" hooks "$PROBE_BOX/nohooks.json" "$PROBE_PATCH" "$PROBE_WANT")" \
+    "$(printf 'write\t0\t0')" "$eng: a well-formed settings.json with no hooks key is a write, not malformed"
+
+  # Same for the copilot flag: absent or false is a write, and nothing about
+  # the file is malformed.
+  assert_eq "$(probe "$shim" flag "$PROBE_BOX/flagoff.json")" \
+    "$(printf 'write\t0\t0')" "$eng: a well-formed copilot settings.json with EXTENSIONS off is a write, not malformed"
+done
+rm -rf "$PROBE_PY_SHIM" "$PROBE_JQ_SHIM"
+
+# ===========================================================================
+# 20. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"

@@ -300,7 +300,14 @@ resolve_link() { # resolve_link PATH
 #                   there, pointing at this checkout
 #   write K R       a write is due. K entries belonging to someone else sit in
 #                   those events and are KEPT; R entries of ROOST'S OWN are
-#                   not the current shape and are replaced by it
+#                   not the current shape and are replaced by it. `write 0 0`
+#                   covers the two nothing-there-yet cases as well: a
+#                   settings.json with no "hooks" key, and a copilot file whose
+#                   EXTENSIONS flag is absent or false. Both parse perfectly,
+#                   so neither is `malformed` -- and an engine answering in a
+#                   FIFTH word would be, because the dispatcher below accepts
+#                   only the four listed here and reports anything else as a
+#                   file it could not parse
 #   other-checkout  a roost hook is there, pointing at a DIFFERENT checkout
 #   unreadable      the file exists and cannot be read
 #   malformed       it does not parse, an event roost writes is not an array,
@@ -364,8 +371,12 @@ def main():
         return
 
     if mode == "flag":
+        # `write 0 0`, not a word of its own. There is no hook entry to keep or
+        # to replace when the question is one boolean, and a fourth outcome
+        # that the dispatcher below would have to learn -- and did not -- is
+        # how this came back as "malformed" for a file that parses fine.
         flags = data.get("enabledFeatureFlags")
-        print("ours" if isinstance(flags, dict) and flags.get("EXTENSIONS") is True else "merge")
+        print("ours" if isinstance(flags, dict) and flags.get("EXTENSIONS") is True else "write\t0\t0")
         return
 
     patch = json.loads(sys.argv[3])["hooks"]
@@ -373,7 +384,10 @@ def main():
     marker = want.rsplit("/", 1)[-1]
     hooks = data.get("hooks")
     if hooks is None:
-        print("merge")
+        # A settings.json with no "hooks" key at all: the most ordinary claude
+        # file this command meets. Nothing of anyone's is in those events, so
+        # nothing is kept and nothing is replaced.
+        print("write\t0\t0")
         return
     if not isinstance(hooks, dict):
         print("malformed")
@@ -443,8 +457,8 @@ else .[0] as $d
 | if ($d | type) != "object" then "malformed"
   elif $mode == "flag" then
     (if (($d.enabledFeatureFlags | type) == "object") and ($d.enabledFeatureFlags.EXTENSIONS == true)
-     then "ours" else "merge" end)
-  elif ($d.hooks == null) then "merge"
+     then "ours" else "write\t0\t0" end)
+  elif ($d.hooks == null) then "write\t0\t0"
   elif (($d.hooks | type) != "object") then "malformed"
   else
     ($patch.hooks) as $p
@@ -589,7 +603,6 @@ DETECTED="${DETECTED# }"
 #                          shape and will be overwritten by it
 #   JSON_OK       HARNESS \t REAL_PATH
 #   JSON_REFUSED  HARNESS \t REAL_PATH \t WHY   (WHY runs to end of line)
-#   JSON_PRINT    HARNESS \t print|notool
 #
 # REAL_PATH and CONFIG_PATH differ only when the config file is a symlink —
 # see resolve_link. Everything downstream writes to REAL_PATH and mentions
@@ -598,7 +611,6 @@ JSON_HARNESSES="claude codex copilot"
 JSON_STEPS=""
 JSON_OK=""
 JSON_REFUSED=""
-JSON_PRINT=""
 
 # print  — the user asked for the block instead of a write (--print-only)
 # notool — neither python3 nor jq is here, so roost CANNOT edit JSON. Not an
@@ -639,11 +651,11 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
         json_label="copilot's EXTENSIONS feature flag" ;;
     esac
 
-    if [ "$JSON_MODE" != write ]; then
-      JSON_PRINT="$JSON_PRINT$h$TAB$JSON_MODE
-"
-      continue
-    fi
+    # Not a write: --print-only, or no JSON engine on the machine. Nothing is
+    # recorded here -- the manual block at the end re-derives both the harness
+    # list and the reason from $DETECTED and $JSON_MODE, which is where they
+    # have to be read from anyway.
+    [ "$JSON_MODE" = write ] || continue
 
     if [ -e "$json_real" ]; then
       json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want")"
