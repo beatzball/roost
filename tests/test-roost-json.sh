@@ -107,7 +107,11 @@ run_case() {
   # the destination, so a -rw-r--r-- settings file would silently become
   # -rw-------. Fixture was chmod 644 above specifically so this can fail.)
   local mode
-  mode="$(stat -f '%Lp' "$d/settings.json" 2>/dev/null || stat -c '%a' "$d/settings.json" 2>/dev/null)"
+  # GNU-first, for the reason spelled out in scripts/lib/roost-config.sh: BSD
+  # and GNU `stat -f` mean different things, so only this order falls through
+  # correctly on both. Reversed, this line passed on macOS and compared a mode
+  # against a block of filesystem info on Linux.
+  mode="$(stat -c '%a' "$d/settings.json" 2>/dev/null || stat -f '%Lp' "$d/settings.json" 2>/dev/null)"
   assert_eq "$mode" "644" "[$tool] merge preserves the target file's permissions"
 
   # -- idempotent: merging again with the same args changes nothing further --
