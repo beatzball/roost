@@ -287,6 +287,80 @@ property that says a human is attached. Tier 0 covers the gap —
 `roost state working && pi -p "…" && roost state done` — and
 `site/content/docs/state-badges.md` prints that line in the pi section.
 
+### An opencode pane on a retrying-but-alive provider wears `error` mid-turn
+
+`adapters/opencode/roost.js` badges `error` at the second `retry` of a turn and
+then holds it. `RETRY_THRESHOLD` is 2 (`adapters/opencode/roost.js:38`), the
+count is raised in the `retry` branch (`:323-325`), and the `busy` branch is
+gated on `retries < RETRY_THRESHOLD` (`:319`) — so once the threshold trips,
+nothing reports `working` again until the turn ends. The gate is deliberate and
+the comment above it is right: opencode re-announces `busy` before every retry,
+so an ungated `busy` would flap the badge working/error around the whole retry
+loop and re-notify on each cycle (`:293-305`). `session.idle` resets the counter
+and stamps `done`.
+
+The threshold was tuned against a **dead** provider, where the retries never
+stop and `error` is correct and useful. A **rate-limited but alive** provider is
+indistinguishable from a dead one until the turn ends — so on a free tier, where
+retries are routine, a pane wears `error` through most of a turn that is
+working fine.
+
+**Input:** an opencode pane on a free cloud model (OpenCode Zen,
+`nemotron-3-ultra-free`), one ordinary turn.
+**Wrong output:** the pane badges 💥 `error` for minutes while the spinner
+animates, the context grows and tool calls land — and `roost wait-done` against
+it exits 1 with `is in error state, not done` (`bin/roost:719-722`), reporting a
+healthy turn as a corpse to whatever is coordinating it. One desktop
+notification fires with it (`scripts/roost-agent-state:201-220`); `set` bails on
+an unchanged state (`adapters/opencode/roost.js:208-212`), so it is one ping per
+turn, not one per retry.
+
+Measured from opencode's own log (`~/.local/share/opencode/log/opencode.log`),
+five entries across roughly two minutes of one turn:
+
+```
+23:47:14 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:48:12 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:48:23 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:48:26 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:49:22 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+```
+
+opencode retried each one and carried on. The turn was healthy throughout.
+
+**This is a third shape of wrong badge, not either of the two already here.**
+It is not the stranded `blocked` at the top of this section: that one needs a
+human keystroke, never self-heals, and outlives the turn. It is not a stale
+badge either — `@agent_since` advances and the adapter is still reporting. The
+badge is *accurate about the turn as a whole* and wrong about the present
+moment, which is the only thing a glanceable badge is for.
+
+**Why it is a live risk and not a note.** It costs no keystroke to create — a
+free tier produces it on ordinary turns — and the consumer that acts on `error`
+acts on it wrongly: `wait-done` stops the moment it sees the badge, so a
+coordinating agent abandons a turn that would have finished on its own.
+
+**Why it is not worse than that.** It self-heals at the end of every turn:
+`session.idle` resets the counter and stamps `done`, so nothing is left stranded
+and no pane is unreachable the way a stuck `blocked` one is. It fails loud
+rather than silent — the opposite direction from the codex wrong-`done` entry
+above — and it costs one notification, not one per retry.
+
+**The fix is deliberately not in this PR.** #27 is the installer; this is an
+adapter change carrying its own risk, in the one code path that has already
+produced a real bug here (see *opencode counts retries too* below). Two
+directions, neither decided:
+
+- Let a genuine sign of forward progress after the retries — a tool call,
+  output tokens — return the badge to `working`. It preserves the dead-provider
+  behaviour and kills the false red. It has to be a one-way latch within the
+  turn rather than a plain reset of the counter, or it reintroduces exactly the
+  flapping `:293-305` exists to prevent.
+- Leave the logic alone and add a distinct state meaning "struggling but
+  alive", reserving `error` for actually dead. That is a new entry in the state
+  vocabulary — glyphs, `wait-done`, notifications, the adapter contract — so it
+  is by far the larger of the two.
+
 ## Behaviour changes
 
 ### Wiring is part of installing now, and two prompts are all that is left
