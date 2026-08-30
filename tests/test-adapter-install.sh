@@ -1555,10 +1555,15 @@ assert_contains "$upd_out" "--dry-run: nothing above was written." \
 assert_eq "$upd_out" "$inst_out" \
   "roost update --dry-run is byte-identical to roost install --dry-run"
 
-# Arguments really are forwarded, not swallowed. Without a `shift`, --help
-# would be dropped and BOTH commands would print a full plan instead -- which
-# the identity check above cannot see, because they would be identically
-# wrong.
+# Arguments really are forwarded, not swallowed. Without a `shift` in
+# bin/roost's install|update arm the installer is handed `install --help`:
+# the SUBCOMMAND arrives as its first argument, hits the installer's `*)` arm
+# and exits 2 with `roost install: unknown argument 'install'`, so --help is
+# never looked at. Measured by deleting that one line -- 7 assertions in this
+# file fail, both --dry-run runs among them. The identity check above does
+# catch it, because the refusal names the subcommand and the two spellings
+# therefore differ; what it cannot tell you is that the failure was a usage
+# error rather than a dropped flag, which is what this loop is here to pin.
 for sub in install update; do
   out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" "$sub" --help)"; rc=$?
   assert_eq "$rc" "0" "roost $sub --help exits 0"
