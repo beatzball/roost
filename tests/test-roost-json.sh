@@ -363,7 +363,7 @@ JSON
   rm -rf "$cx"
 
   # -- the merged bytes come from scripts/lib/roost-hooks.sh, not a copy --
-  # Task 3b. roost-json.sh used to hardcode its own version of the four
+  # roost-json.sh used to hardcode its own version of the four
   # claude and the four codex handler shapes. They matched by hand, which is
   # exactly the guarantee codex's handler hashing does not accept: it stores
   # a hash of each normalised handler object and silently SKIPS any handler

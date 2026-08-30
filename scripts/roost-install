@@ -187,10 +187,10 @@ done
 # THE INVARIANT, and it is a safety one: if --only was given at all, it must
 # end up naming at least one real harness, or this exits 2. Anything else —
 # `--only=`, `--only ,`, `--only ' '` — is a caller error, and the one
-# interpretation that must never be reachable is "no restriction". Today the
-# blast radius of getting that wrong is three symlinks; once Tasks 5-7 land it
-# is claude's settings.json, codex's hooks.json and copilot's settings.json
-# written on a machine whose caller explicitly scoped them out.
+# interpretation that must never be reachable is "no restriction". The blast
+# radius of getting that wrong is not just the three symlinks: it is claude's
+# settings.json, codex's hooks.json and copilot's settings.json written on a
+# machine whose caller explicitly scoped them out.
 ONLY_LIST=""
 if [ "$ONLY_GIVEN" -eq 1 ]; then
   # Bash's own substitution, not `tr`: this runs before roost has told the
@@ -502,7 +502,7 @@ json_probe() { # json_probe MODE FILE [PATCH WANT]
 }
 
 # --- is this checkout itself behind? ---------------------------------------
-# `roost update` is an alias for `roost install` (Task 9), so people will
+# `roost update` is an alias for `roost install`, so people will
 # reasonably expect it to update roost's own code. It does not, and must not:
 # the checkout may be someone's dev tree with local work in it, and this tool
 # does not get to run `git pull` over that. All it does is SAY so.

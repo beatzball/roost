@@ -37,8 +37,9 @@ trap 'rm -rf "$TMP"' EXIT
 # that has nothing to do with the installer.
 #
 # python3 and jq are DELIBERATELY absent. A shim built by make_harness_shim is
-# a machine with no JSON tool at all, which is the degraded path Task 5 has to
-# keep working; make_json_shim below is the same machine with one.
+# a machine with no JSON tool at all, which is the degraded path the claude,
+# codex and copilot writes have to keep working -- they print the block to
+# paste instead; make_json_shim below is the same machine with one.
 CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname readlink ln find grep sed date env printf true false chmod stat cmp"
 make_harness_shim() { # make_harness_shim NAME... -> prints a PATH dir
   local dir h real
@@ -341,9 +342,9 @@ assert_eq "$s" "absent" "--only pi: opencode is not even mentioned"
 
 # The half of --only that is a SAFETY invariant rather than a convenience, and
 # the reason scripts/roost-install spells it out at length above in_scope: the
-# blast radius of getting --only wrong used to be three symlinks, and since
-# Tasks 5-7 it is claude's settings.json, codex's hooks.json and copilot's
-# settings.json edited on a machine whose caller explicitly scoped them out.
+# blast radius of getting --only wrong is not just three symlinks: it is
+# claude's settings.json, codex's hooks.json and copilot's settings.json
+# edited on a machine whose caller explicitly scoped them out.
 # The shim carries every harness AND a JSON tool, so all three writes are
 # fully possible here -- nothing but the restriction stops them.
 box="$TMP/onlyjsonscoped"
@@ -378,9 +379,9 @@ assert_eq "$rc" "2" "--only with an unknown harness: exits 2"
 # nothing about these: each of the four below used to reduce to an empty
 # ONLY_LIST, which in_scope reads as unrestricted -- so the run dropped the
 # restriction and linked EVERY harness. `roost install --only="$HARNESS"
-# --yes` in a wrapper where $HARNESS is unset is the realistic way in, and
-# after Tasks 5-7 the same hole writes claude's settings.json, codex's
-# hooks.json and copilot's settings.json on a machine that scoped them out.
+# --yes` in a wrapper where $HARNESS is unset is the realistic way in, and the
+# same hole writes claude's settings.json, codex's hooks.json and copilot's
+# settings.json on a machine that scoped them out.
 # Each case asserts BOTH halves: exit 2, and nothing linked.
 i=0
 for empty_only in "--only=" "--only,--only-sep" "--only,--only-ws" "--only-space"; do
@@ -511,10 +512,10 @@ assert_eq "$n" "3" "--print-only: the symlinks are still made (it only governs J
 # the suite survives -- case 10 skips the branch via --symlinks-only, and
 # cases 7 and 9 have no claude or codex detected, so none of them can see it.
 #
-# The shim here carries a JSON tool, and that is the whole point. Since Task 5
-# a run WITHOUT one prints the block on purpose -- that is the degraded path,
-# pinned in section 13 -- so building this case on ALL_SHIM would assert the
-# opposite of what it claims and go green either way.
+# The shim here carries a JSON tool, and that is the whole point. A run
+# WITHOUT one prints the block on purpose -- that is the degraded path, pinned
+# in section 13 -- so building this case on ALL_SHIM would assert the opposite
+# of what it claims and go green either way.
 box="$TMP/noprint"
 out="$(run_install "$box" "$ALL_JSON_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "a normal run: exits 0"
@@ -1364,7 +1365,7 @@ assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
 # ===========================================================================
 # 16. Saying when the checkout itself is behind its upstream
 # ===========================================================================
-# `roost update` is an alias for `roost install` (Task 9), so people will
+# `roost update` is an alias for `roost install`, so people will
 # reasonably expect it to update roost's own code. It does not, and must not:
 # the checkout may be someone's dev tree with local work in it. All this does
 # is SAY so, from what git already knows locally -- never a fetch, which would
