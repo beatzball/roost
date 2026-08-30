@@ -158,8 +158,12 @@ Four things to know:
   and it installs *that* clone, says `installing from this checkout`, and pulls
   nothing. That branch is deliberate, so neither this nor `./install.sh` can
   yank code out from under a checkout you are working in — but it is easy to
-  hit by accident, and it looks like an ordinary successful upgrade. `cd`
-  somewhere else first.
+  hit by accident, and it looks like an ordinary successful upgrade. It also
+  puts *that* clone on your `PATH`, ahead of the copy you meant to upgrade, so
+  from then on `roost` runs the one you happened to be standing in — it all
+  looks stale or wrong, with nothing on screen tying it back to a directory you
+  were in once. `cd` somewhere else first, and read the two lines below if you
+  are not sure you did.
 - **If roost is not in the default place, pass `--dir`.** The bare line looks
   only in `~/.local/share/roost`. Installed anywhere else it does not find it,
   clones a second copy at the default, and you now have two:

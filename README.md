@@ -168,7 +168,11 @@ Worth knowing:
   `installing from this checkout` branch on *that* clone: no pull, no network,
   exactly as `./install.sh` does. The branch is deliberate — neither form yanks
   code out from under someone working in a checkout — but reaching it by
-  accident still looks like a clean run. `cd` somewhere neutral first.
+  accident still looks like a clean run. It also appends a *second* `PATH`
+  line, for that clone — the duplicate check is per bin directory — and being
+  last in the rc file it wins, so `roost` afterwards resolves to the copy you
+  were standing in rather than the one you meant to upgrade. `cd` somewhere
+  neutral first; the two lines below are how you catch it if you did not.
 - **A non-default install needs `--dir`.** The bare line looks only at
   `${XDG_DATA_HOME:-$HOME/.local/share}/roost`. Installed anywhere else it does
   not find it, clones a fresh copy at that default, and leaves you with two:
