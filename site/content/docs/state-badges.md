@@ -50,6 +50,37 @@ ln -s "$HOME/path/to/roost/adapters/opencode/roost.js" ~/.config/opencode/plugin
 
 A symlink rather than a copy, so updating roost updates the plugin. `roost doctor` prints this exact command with the real path for your checkout, so run that if you are unsure what to fill in — it also confirms once the plugin is linked.
 
+One thing to check before you rely on it: the plugin runs **inside the opencode process that owns the pane**, which is how it knows which pane to badge. A plain `opencode` in a roost pane is exactly that. `opencode attach` against a detached `opencode serve` is not — there the plugin runs in the server, and the pane you are looking at is never badged.
+
+| opencode signal | state |
+|-----------------|-------|
+| `session.status` type `busy` | ⏳ working |
+| `permission.asked` | 🛑 blocked |
+| `permission.replied` | ⏳ working |
+| `session.status` type `retry`, the first in a row | ⏳ working |
+| `session.status` type `retry`, the second in a row | 💥 error |
+| `session.error` | 💥 error |
+| `session.error` because **you** pressed Esc | ✅ done |
+| `session.idle` | ✅ done, plus the turn's reply |
+
+`roost read` returns the agent's own last answer, not a scrape of its screen — opencode is a full-screen TUI, so a scrape returns its input box and footer. The reply is the last piece of assistant **text** in the turn. Three things arrive on that same event and are all excluded: the model's reasoning, your own prompt, and text opencode injects itself.
+
+**Four things about this table are unlike the other harnesses,** and they are worth knowing because they change what a badge means.
+
+**One retry is not an error.** opencode retries a failing provider several times inside a single turn. The first retry keeps the pane ⏳ working, because a single retry is often a blip that heals itself; only a second consecutive retry turns it 💥. So a pane that flickers and recovers never goes red, and a pane that is genuinely stuck goes red once and stays there rather than flapping.
+
+**Pressing Esc ends a turn ✅ done, not 💥 error.** opencode reports your interrupt through the same channel as a real failure. Badging your own keystroke as a crash — and sending you a desktop notification about it — would be worse than saying nothing, so roost reads that one case as a finished turn.
+
+**A dead turn stays 💥 and does not flip back to ✅.** opencode emits its ordinary end-of-turn signal *after* it reports the error, a minute or so later. roost swallows that one, so the badge you are left with is the one that tells you to look. The related consequence is in the next section.
+
+**A subagent's work does not badge your pane, but its questions do.** When a turn delegates to a subagent, the child's own start, finish and speech arrive on the same stream as the parent's, and unfiltered they would stamp your pane ✅ done partway through the turn and publish the child's answer as yours. Those are filtered out. A subagent's **permission dialog** is deliberately not filtered: the human who has to answer it is sitting at this pane, so it still badges 🛑.
+
+### What 💥 error means for `roost wait-done`
+
+`roost wait-done` does not treat an errored pane as finished. It prints `roost: '<target>' is in error state, not done` and exits 1, rather than reporting success on a turn that produced nothing.
+
+That matters most in a script. If you loop `roost wait-done` over several agents, a non-zero exit now means **error *or* timeout**, and the message tells you which. Under `set -e` a script will stop on a dead agent rather than carrying on, which is the intended behaviour but a change in flow if you had assumed non-zero meant "still busy, try again".
+
 `tests/live/opencode-smoke.sh` drives real opencode against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after an opencode upgrade.
 
 ## GitHub Copilot CLI

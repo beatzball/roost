@@ -70,10 +70,18 @@ const AGENTS = [
   },
   {
     name: 'Anything else',
+    // Not an adapter: it is the fallback every harness has without one. Flagged
+    // rather than counted out by position, because the paragraph below reports
+    // how many adapters ship and a sixth card would otherwise make that number
+    // wrong silently.
+    generic: true,
     how: 'One command, from any harness, in any language.',
     cmd: 'roost state working',
   },
 ] as const;
+
+/** How many of the cards above are real adapters in this repo. */
+const ADAPTER_COUNT = AGENTS.filter((a) => !('generic' in a)).length;
 
 /** Harnesses with an adapter planned, but not written yet. */
 const AGENTS_PLANNED = [] as const;
@@ -344,17 +352,44 @@ export class SplashPage extends LitroPage {
                 `,
               )}
             </div>
+            <!-- What this section closes on, now that AGENTS_PLANNED is
+                 empty. "More are coming" was the honest message while it had
+                 names in it; the honest message now is what a reader can rely
+                 on, which is not the same as "everything works everywhere".
+                 The two examples are the two real limits and both are stated
+                 the same way on /docs/state-badges — if that page and this
+                 sentence ever disagree, this one is wrong. -->
+            <p style="
+              text-align:center;
+              color:var(--sl-color-gray-4);
+              font-size:var(--sl-text-sm);
+              line-height:1.6;
+              max-width:34rem;
+              margin:1.5rem auto 0;
+            ">
+              ${ADAPTER_COUNT} adapters ship in the repo, and every one of them
+              badges, blocks and reports its reply on its own — you wire it once.
+              What each can signal is not identical: Codex has no error signal to
+              pass on, and pi never asks permission, so a pi pane never blocks.
+              <a href="/docs/state-badges" style="
+                color:var(--sl-color-text-accent,var(--sl-color-accent));
+                text-decoration:none;
+                font-weight:600;
+              ">Every harness's exact badge table →</a>
+            </p>
             ${
               // Every harness that was ever on this list now ships, so the list
               // is empty and the sentence would read "planned for ." Rendered
               // conditionally rather than deleted: the array stays as the one
-              // place to name the next one, and the paragraph comes back with it.
+              // place to name the next one, and the paragraph comes back with it
+              // -- underneath the paragraph above, which reads as the standing
+              // statement with this one as the update to it.
               AGENTS_PLANNED.length
                 ? `<p style="
               text-align:center;
               color:var(--sl-color-gray-4);
               font-size:var(--sl-text-sm);
-              margin:1.25rem 0 0;
+              margin:0.75rem 0 0;
             ">
               Dedicated adapters planned for ${AGENTS_PLANNED.join(', ')}.
             </p>`
