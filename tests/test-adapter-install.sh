@@ -30,7 +30,16 @@ trap 'rm -rf "$TMP"' EXIT
 # this suite really does have claude, codex and opencode installed, so a
 # PREPENDED shim would leave the real ones findable and the "a harness that is
 # not installed is not mentioned at all" case could never fail.
-CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname readlink ln find grep sed date env printf true false chmod stat"
+# `cmp` is on this list because scripts/lib/roost-json.sh uses it to decide
+# whether a merge changed anything -- without it every merge would look like a
+# change, take a backup, and rewrite a file it did not need to touch, and the
+# "no backup when nothing is written" cases would pass or fail for a reason
+# that has nothing to do with the installer.
+#
+# python3 and jq are DELIBERATELY absent. A shim built by make_harness_shim is
+# a machine with no JSON tool at all, which is the degraded path Task 5 has to
+# keep working; make_json_shim below is the same machine with one.
+CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname readlink ln find grep sed date env printf true false chmod stat cmp"
 make_harness_shim() { # make_harness_shim NAME... -> prints a PATH dir
   local dir h real
   dir="$(mktemp -d /tmp/amx.XXXX)"
@@ -44,11 +53,45 @@ make_harness_shim() { # make_harness_shim NAME... -> prints a PATH dir
   printf '%s' "$dir"
 }
 
+# make_one_tool_shim TOOL NAME... -> a shim carrying exactly ONE JSON engine.
+# scripts/lib/roost-json.sh prefers python3 whenever it is there, and so does
+# the installer's own probe, so on this machine the jq branch of both would
+# never run. tests/test-roost-json.sh forces each engine for the same reason.
+make_one_tool_shim() { # make_one_tool_shim TOOL NAME... -> prints a PATH dir
+  local tool="$1"; shift
+  local dir real
+  dir="$(make_harness_shim "$@")"
+  real="$(command -v "$tool" 2>/dev/null)" && ln -s "$real" "$dir/$tool" 2>/dev/null
+  printf '%s' "$dir"
+}
+
+# make_json_shim NAME... -> the same, plus whichever of python3 and jq this
+# machine has. Every case that expects the installer to EDIT a JSON file must
+# use this one: roost_json_merge returns 3 and writes nothing when neither
+# tool is on PATH, so a merge case built on make_harness_shim would assert the
+# degraded path while claiming to assert the write.
+make_json_shim() { # make_json_shim NAME... -> prints a PATH dir
+  local dir t real
+  dir="$(make_harness_shim "$@")"
+  for t in python3 jq; do
+    real="$(command -v "$t" 2>/dev/null)" && ln -s "$real" "$dir/$t" 2>/dev/null
+  done
+  printf '%s' "$dir"
+}
+
 # --- one sandboxed run -----------------------------------------------------
 # Every harness home lives under $box, so a case can list the whole tree and
 # assert on it. stdin is /dev/null unless the caller redirects: the installer
 # must treat "no terminal" as no, and a test that inherited the runner's
 # stdin would be answering the prompt by accident.
+#
+# CLAUDE_SETTINGS is set EXPLICITLY, not left to default off the sandboxed
+# $HOME. It resolves to the same path the default would give, so no case
+# behaves differently -- but claude is the one harness whose override names a
+# FILE, and a runner that happens to export CLAUDE_SETTINGS pointing at their
+# real ~/.claude/settings.json would otherwise have it inherited straight
+# through the redirected HOME and merged into for real. AGENTS.md §8: find the
+# harness's own variable, do not assume redirecting HOME is enough.
 run_install() { # run_install BOX SHIMDIR [args...]
   local box="$1" shim="$2"; shift 2
   mkdir -p "$box"
@@ -58,6 +101,7 @@ run_install() { # run_install BOX SHIMDIR [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$INSTALL" "$@" </dev/null 2>&1
 }
@@ -74,6 +118,7 @@ run_install_stdin() { # run_install_stdin BOX SHIMDIR ANSWER [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$INSTALL" "$@" <<<"$ans" 2>&1
 }
@@ -89,6 +134,7 @@ adapter_path_in() { # adapter_path_in BOX HARNESS
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
     bash -c '. "'"$HERE"'/scripts/lib/roost-adapters.sh"; roost_adapter_path "$1"' _ "$h"
 }
 adapter_target() { # adapter_target HARNESS
@@ -153,6 +199,9 @@ while True:
 }
 
 ALL_SHIM="$(make_harness_shim opencode pi copilot claude codex)"
+# The same machine, with a JSON tool on it. ALL_SHIM has none by construction,
+# so it is the "neither python3 nor jq" machine; this one is the ordinary one.
+ALL_JSON_SHIM="$(make_json_shim opencode pi copilot claude codex)"
 
 # ===========================================================================
 # 1. Fresh machine, every harness present -> exactly three symlinks, exit 0
@@ -444,15 +493,18 @@ assert_eq "$n" "3" "--print-only: the symlinks are still made (it only governs J
 # block at all. Without this, wiring PRINT_ONLY permanently on is a mutation
 # the suite survives -- case 10 skips the branch via --symlinks-only, and
 # cases 7 and 9 have no claude or codex detected, so none of them can see it.
+#
+# The shim here carries a JSON tool, and that is the whole point. Since Task 5
+# a run WITHOUT one prints the block on purpose -- that is the degraded path,
+# pinned in section 13 -- so building this case on ALL_SHIM would assert the
+# opposite of what it claims and go green either way.
 box="$TMP/noprint"
-out="$(run_install "$box" "$ALL_SHIM" --yes)"; rc=$?
+out="$(run_install "$box" "$ALL_JSON_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "a normal run: exits 0"
 if command -v python3 >/dev/null 2>&1; then
   assert_eq "$(printf '%s\n' "$out" | hook_blocks)" "" \
     "a normal run prints no hook block -- that is what --print-only is for"
 fi
-assert_contains "$out" "roost hooks claude" \
-  "a normal run names the command that prints the block instead"
 
 # ===========================================================================
 # 12. -h / --help -> usage, exit 0, nothing written
@@ -466,7 +518,330 @@ assert_contains "$out" "--symlinks-only" "--help: the flags are documented"
 assert_eq "$(tree_of "$box")" "$before" "--help: nothing was written"
 
 # ===========================================================================
-# 13. Hygiene
+# 13. claude: the four hooks are merged into settings.json
+# ===========================================================================
+# Every case here that expects a WRITE uses make_json_shim. roost_json_merge
+# returns 3 and writes nothing when neither python3 nor jq is on PATH, so the
+# same case built on make_harness_shim would quietly assert the degraded path
+# while claiming to assert the merge. The no-tool machine gets its own case at
+# the end of this section, because that path is a promise too.
+CLAUDE_SHIM="$(make_json_shim claude opencode)"
+
+# bak_of FILE -> the newest FILE.roost-bak-* beside FILE, or nothing.
+# bak_count FILE -> how many of them there are.
+#
+# Two helpers rather than one: "no backup was taken" and "the backup holds the
+# pre-run bytes" are different claims, and a case almost always wants exactly
+# one of them. A backup taken when nothing was subsequently written is a bug
+# (scripts/lib/roost-json.sh's roost_json_backup header says so), which is why
+# the count is asserted as often as the content.
+bak_of()    { ls -1 "$1".roost-bak-* 2>/dev/null | sort | tail -1; }
+bak_count() { ls -1 "$1".roost-bak-* 2>/dev/null | wc -l | tr -d ' '; }
+
+# claude_event FILE EVENT -> that event's entry from FILE, canonicalised.
+# claude_want EVENT       -> the same entry as roost-hooks.sh prints it.
+# Compared against each other rather than against a copy of the JSON typed
+# out here: a second copy of those bytes in this file is the drift the whole
+# one-definition rule exists to prevent.
+claude_event() {
+  python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+print(json.dumps(d.get("hooks", {}).get(sys.argv[2])))' "$1" "$2"
+}
+claude_want() {
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_claude "$HERE/scripts/roost-agent-state" ) | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)["hooks"][sys.argv[1]]))' "$1"
+}
+
+# --- an existing settings.json: roost's four go in, everything else stays ---
+box="$TMP/claudemerge"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+cat > "$cset" <<'EOF'
+{
+  "unrelatedTopLevelKey": "keep-me",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "echo unrelated-hook" } ] }
+    ]
+  }
+}
+EOF
+cbefore="$(cat "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude merge: exits 0"
+after="$(cat "$cset")"
+assert_contains "$after" "keep-me" "claude merge: an unrelated top-level key survives"
+assert_contains "$after" "echo unrelated-hook" "claude merge: an unrelated hook survives"
+if command -v python3 >/dev/null 2>&1; then
+  for ev in UserPromptSubmit Notification PostToolUse Stop; do
+    assert_eq "$(claude_event "$cset" "$ev")" "$(claude_want "$ev")" \
+      "claude merge: the $ev entry is roost-hooks.sh's own, structure for structure"
+  done
+fi
+bak="$(bak_of "$cset")"
+assert_eq "$(bak_count "$cset")" "1" "claude merge: exactly one backup was taken"
+assert_eq "$(cat "$bak" 2>/dev/null)" "$cbefore" \
+  "claude merge: the backup holds the pre-run bytes"
+# The sentinel matters: with no backup taken $bak is empty, and
+# assert_contains against an empty needle passes no matter what was printed.
+assert_contains "$out" "${bak:-NO-BACKUP-WAS-TAKEN}" "claude merge: the backup path is printed"
+# A JSON round-trip reindents the whole file. Someone who diffs their
+# settings.json afterwards and finds every line changed needs to have been
+# told why, and where the original went.
+assert_contains "$out" "two spaces" \
+  "claude merge: the output says the round-trip renormalises indentation to two spaces"
+
+# --- already wired to THIS checkout -> untouched, and no backup ------------
+box="$TMP/claudeagain"
+cset="$box/home/.claude/settings.json"
+run_install "$box" "$CLAUDE_SHIM" --yes >/dev/null
+[ -f "$cset" ]; assert_true $? "claude: a first run creates settings.json when there was none"
+assert_eq "$(bak_count "$cset")" "0" \
+  "claude: creating a file that did not exist takes no backup"
+cbefore="$(cat "$cset")"
+before="$(tree_of "$box")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude re-run: exits 0"
+assert_eq "$(cat "$cset")" "$cbefore" "claude re-run: settings.json is byte-identical"
+assert_eq "$(bak_count "$cset")" "0" "claude re-run: no backup was taken"
+assert_eq "$(tree_of "$box")" "$before" "claude re-run: nothing under the sandbox changed"
+# Named, not just "Already correct" -- opencode is already linked on a re-run
+# too, so the bare phrase is printed whatever claude did. Without naming it,
+# a mutation that plans the merge anyway and lets roost_json_merge discover it
+# is a no-op survives this whole case: the file does come back byte-identical
+# and no backup is taken, because the merge itself is idempotent.
+assert_contains "$out" "Already correct: opencode, claude" \
+  "claude re-run: claude is named as already correct"
+case "$out" in *"merge  $cset"*) s=planned ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "claude re-run: no write is even PLANNED for it"
+
+# --- already wired, but the file is indented some other way ----------------
+# The distinction the case above cannot draw. roost_json_merge compares the
+# rendered bytes, so a file that already says the right thing in 4-space
+# indentation is NOT byte-identical to what it would write -- it would be
+# reindented, backed up and rewritten, for no change anyone asked for. The
+# installer has to answer "is this already wired" from the PARSED document,
+# and this is the case that proves it does.
+box="$TMP/claudereindent"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+if command -v python3 >/dev/null 2>&1; then
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_claude "$HERE/scripts/roost-agent-state" ) \
+    | python3 -c 'import json,sys; sys.stdout.write(json.dumps(json.load(sys.stdin), indent=4) + "\n")' > "$cset"
+  fbefore="$(cksum < "$cset")"
+  out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude already wired at another indentation: exits 0"
+  assert_eq "$(cksum < "$cset")" "$fbefore" \
+    "claude already wired at another indentation: the file is byte-identical after"
+  assert_eq "$(bak_count "$cset")" "0" \
+    "claude already wired at another indentation: no backup was taken"
+fi
+
+# --- wired to a DIFFERENT checkout -> refuse the whole claude step ---------
+# Generated from roost-hooks.sh with another checkout's path, not typed out
+# here: a second copy of those bytes is exactly the drift the one-definition
+# rule exists to prevent, and a hand-typed near-miss would make this case pass
+# for the wrong reason.
+box="$TMP/claudeforeign"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude wired elsewhere: still exits 0 (a refusal is not a failure)"
+assert_eq "$(cksum < "$cset")" "$fbefore" \
+  "claude wired elsewhere: settings.json is byte-identical after"
+assert_eq "$(bak_count "$cset")" "0" "claude wired elsewhere: no backup was taken"
+assert_contains "$out" "$cset" "claude wired elsewhere: the exact file is named"
+assert_contains "$out" "different checkout" \
+  "claude wired elsewhere: the output says why it will not touch it"
+[ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
+  "claude wired elsewhere: refusing one step does not abandon the others"
+
+# --- someone ELSE's hook under one of the four events -> refuse ------------
+# scripts/lib/roost-json.sh's hooks-merge REPLACES an event it writes, so
+# merging over a PostToolUse that carries the user's own formatter would
+# delete it with nothing printed. "A path that is not ours is never replaced"
+# is one of the three load-bearing properties in scripts/roost-install's
+# header; a hook entry inside a file is no different from a file.
+box="$TMP/claudeuserhook"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+cat > "$cset" <<'EOF'
+{
+  "hooks": {
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "my-own-formatter" } ] }
+    ]
+  }
+}
+EOF
+fbefore="$(cksum < "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude with a user's own hook: exits 0"
+assert_eq "$(cksum < "$cset")" "$fbefore" \
+  "claude with a user's own hook: settings.json is byte-identical after"
+assert_eq "$(bak_count "$cset")" "0" "claude with a user's own hook: no backup was taken"
+assert_contains "$out" "my-own-formatter" \
+  "claude with a user's own hook: the output names the hook it refuses to overwrite"
+
+# --- malformed settings.json -> exit 1, no write, no backup ----------------
+box="$TMP/claudebad"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+printf '{ this is not json\n' > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "1" "claude malformed settings.json: exits 1"
+assert_eq "$(cksum < "$cset")" "$fbefore" \
+  "claude malformed settings.json: the file is byte-identical after"
+assert_eq "$(bak_count "$cset")" "0" "claude malformed settings.json: no backup was taken"
+
+# --- neither python3 nor jq -> print the block, still link, still exit 0 ---
+# ALL_SHIM has no JSON tool by construction. The symlinks are unaffected by
+# the JSON steps, and the block is printed for the user to merge by hand --
+# the honest degraded path, not an error.
+box="$TMP/claudenotool"
+cset="$box/home/.claude/settings.json"
+out="$(run_install "$box" "$ALL_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude with no JSON tool: exits 0"
+assert_file_absent "$cset" "claude with no JSON tool: settings.json is not written"
+n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$n" "3" "claude with no JSON tool: the symlinks are still made"
+if command -v python3 >/dev/null 2>&1; then
+  want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
+  printf '%s\n' "$out" | hook_blocks | grep -qxF "$want_claude" && s=printed || s=absent
+  assert_eq "$s" "printed" \
+    "claude with no JSON tool: the block is printed exactly as roost hooks prints it"
+fi
+assert_contains "$out" "python3" \
+  "claude with no JSON tool: the output says WHY it printed instead of writing"
+
+# --- --dry-run with a JSON tool present -> still writes literally nothing --
+# The no-tool cases above cannot see this: with no tool there is nothing to
+# suppress. Without a JSON tool on the shim, wiring --dry-run to nothing at
+# all is a mutation the suite survives.
+box="$TMP/claudedry"
+mkdir -p "$box/home"
+before="$(tree_of "$box")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --dry-run --yes)"; rc=$?
+assert_eq "$rc" "0" "claude --dry-run: exits 0"
+assert_eq "$(tree_of "$box")" "$before" "claude --dry-run: nothing under the sandbox changed"
+[ ! -d "$box/home/.claude" ]; assert_true $? \
+  "claude --dry-run: not even the parent directory was created"
+# Matched against the PLAN line, not merely the path: the closing manual block
+# names that path too, so a bare path match would go green with the plan entry
+# missing entirely.
+assert_contains "$out" "merge  $box/home/.claude/settings.json" \
+  "claude --dry-run: the plan still names the exact file and what it would do"
+
+# --- --print-only with a JSON tool present -> still writes nothing ---------
+# The no-tool cases cannot see this one: with no tool there is nothing for
+# --print-only to suppress, so wiring the flag to nothing at all would survive
+# them. Here a write is fully possible and must still not happen.
+box="$TMP/claudeprintonly"
+mkdir -p "$box/home"
+out="$(run_install "$box" "$CLAUDE_SHIM" --print-only --yes)"; rc=$?
+assert_eq "$rc" "0" "claude --print-only: exits 0"
+assert_file_absent "$box/home/.claude/settings.json" \
+  "claude --print-only: settings.json is not written even though a JSON tool is there"
+n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$n" "1" "claude --print-only: the symlink is still made (it only governs JSON)"
+if command -v python3 >/dev/null 2>&1; then
+  want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
+  printf '%s\n' "$out" | hook_blocks | grep -qxF "$want_claude" && s=printed || s=absent
+  assert_eq "$s" "printed" "claude --print-only: the block is printed instead"
+fi
+
+# --- a SYMLINKED settings.json -> write through to the real file -----------
+# Keeping ~/.claude/settings.json symlinked into a dotfiles repo is common in
+# this audience, and `[ -f ]` follows the link, so the file reads as present
+# and an unwary `mv` drops a regular file over the link: the dotfiles repo
+# stops seeing the change and the user's VCS never notices. The temp file has
+# to land in the REAL file's directory for the write to stay atomic anyway.
+box="$TMP/claudelink"
+mkdir -p "$box/home/.claude" "$box/dotfiles"
+real="$box/dotfiles/settings.json"
+link="$box/home/.claude/settings.json"
+printf '{\n  "unrelatedTopLevelKey": "keep-me"\n}\n' > "$real"
+rbefore="$(cat "$real")"
+ln -s "$real" "$link"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude via a symlink: exits 0"
+[ -L "$link" ]; assert_true $? "claude via a symlink: the symlink is still a symlink"
+assert_eq "$(readlink "$link")" "$real" "claude via a symlink: it still points where it did"
+assert_contains "$(cat "$real")" "roost-agent-state" \
+  "claude via a symlink: the REAL file is the one that got the hooks"
+assert_contains "$(cat "$real")" "keep-me" \
+  "claude via a symlink: the real file kept its other keys"
+assert_eq "$(bak_count "$real")" "1" \
+  "claude via a symlink: the backup sits beside the real file"
+assert_eq "$(cat "$(bak_of "$real")" 2>/dev/null)" "$rbefore" \
+  "claude via a symlink: that backup holds the real file's pre-run bytes"
+assert_eq "$(bak_count "$link")" "0" \
+  "claude via a symlink: no backup was dropped beside the link"
+assert_contains "$out" "$real" \
+  "claude via a symlink: the output says which file it actually wrote"
+
+# --- the same merge, driven by jq instead of python3 -----------------------
+# Both engines have to reach the same verdict, because which one a machine has
+# is not the user's choice to make. The interesting half is the REFUSAL: an
+# engine that answered "merge" where the other answered "other-checkout" would
+# silently rewrite a file the other one protects.
+if command -v jq >/dev/null 2>&1; then
+  JQ_SHIM="$(make_one_tool_shim jq claude opencode)"
+
+  box="$TMP/claudejq"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  printf '{\n  "unrelatedTopLevelKey": "keep-me"\n}\n' > "$cset"
+  out="$(run_install "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq: exits 0"
+  assert_contains "$(cat "$cset")" "keep-me" "claude under jq: the other keys survive"
+  assert_contains "$(cat "$cset")" "$HERE/scripts/roost-agent-state done --stop-hook" \
+    "claude under jq: the hooks point at this checkout"
+  assert_eq "$(bak_count "$cset")" "1" "claude under jq: exactly one backup was taken"
+  # And a second run changes nothing, which is the jq half of the
+  # already-wired probe.
+  cbefore="$(cat "$cset")"
+  run_install "$box" "$JQ_SHIM" --yes >/dev/null
+  assert_eq "$(cat "$cset")" "$cbefore" "claude under jq: a re-run is byte-identical"
+  assert_eq "$(bak_count "$cset")" "1" "claude under jq: a re-run takes no second backup"
+
+  box="$TMP/claudejqforeign"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+  fbefore="$(cksum < "$cset")"
+  out="$(run_install "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, wired elsewhere: exits 0"
+  assert_eq "$(cksum < "$cset")" "$fbefore" \
+    "claude under jq, wired elsewhere: the file is byte-identical after"
+  assert_eq "$(bak_count "$cset")" "0" \
+    "claude under jq, wired elsewhere: no backup was taken"
+  assert_contains "$out" "different checkout" \
+    "claude under jq, wired elsewhere: refused for the same stated reason"
+  rm -rf "$JQ_SHIM"
+fi
+
+# --- the installer's target script and roost-hooks.sh's default agree ------
+# The installer has to name the target script to pass it to roost_json_merge,
+# and roost-hooks.sh names its own default independently. Two spellings of one
+# path, and if they ever drift the installer writes hooks pointing at a script
+# that is not there -- silently, because a hook that cannot exec just never
+# badges. Pinned by rendering the block both ways and comparing.
+inst_target="$(sed -n 's/^CLAUDE_TARGET="\$HERE\(.*\)"$/\1/p' "$INSTALL")"
+assert_eq "$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "$HERE$inst_target")" \
+          "$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude)" \
+  "the installer's CLAUDE_TARGET is the same path roost-hooks.sh defaults to"
+
+# ===========================================================================
+# 14. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
@@ -475,7 +850,7 @@ bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
 n="$(grep -cE 'declare -A|\$\{[A-Za-z_]+\^\^|printf .*\\u[0-9a-fA-F]{4}' "$INSTALL" || true)"
 assert_eq "${n:-0}" "0" "scripts/roost-install uses no bash-4-only construct"
 
-rm -rf "$ALL_SHIM"
+rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
