@@ -156,12 +156,23 @@ That last part is not busywork — a release can add an adapter, and codex's
 `hooks.json` names roost by absolute path, so a checkout you moved or re-cloned
 has to be wired again.
 
-Three things worth knowing:
+Run it from a directory that is not itself a roost clone and that is the whole
+story: one copy on the machine, pulled, no second `PATH` line, agents re-wired.
 
-- **`./install.sh` from inside a clone does not pull.** It takes the
-  "installing from this checkout" branch (`install.sh:81`) and installs that
-  checkout exactly as it stands, deliberately — so it never yanks code out from
-  under someone working in it. Pull that one yourself.
+Worth knowing:
+
+- **Where you run it from decides which checkout it installs.** `here` comes
+  from `dirname -- "$0"` (`install.sh:80-84`), and under `curl … | sh` `$0` is
+  `sh` — so it resolves to your **current working directory**, not to any
+  clone. Stand in a roost clone and the piped line takes the
+  `installing from this checkout` branch on *that* clone: no pull, no network,
+  exactly as `./install.sh` does. The branch is deliberate — neither form yanks
+  code out from under someone working in a checkout — but reaching it by
+  accident still looks like a clean run. `cd` somewhere neutral first.
+- **A non-default install needs `--dir`.** The bare line looks only at
+  `${XDG_DATA_HOME:-$HOME/.local/share}/roost`. Installed anywhere else it does
+  not find it, clones a fresh copy at that default, and leaves you with two:
+  `… | sh -s -- --dir /path/to/roost`.
 - **`--ff-only` refuses rather than clobbers.** A clone with local commits or a
   diverged branch warns `could not update; keeping what is there`, and the run
   carries on with the `PATH` and wiring steps rather than aborting.
@@ -169,6 +180,12 @@ Three things worth knowing:
   you have; they never touch roost's own code. When git already knows locally
   that the checkout is behind, they say how far and print the `git pull` to run
   — they do not fetch to find out.
+
+**Check it upgraded the copy you meant.** The first two lines it prints are the
+branch it took and the path it took it on: `roost: already cloned` (found that
+clone and pulled it) or `roost: installing from this checkout` (installed that
+directory as it stands, no pull). If the path is not the install you meant,
+stop — the rest of the run is about a different copy.
 
 ## Quick start
 

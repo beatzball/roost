@@ -145,12 +145,29 @@ last one matters more than it sounds — a release can add an adapter for a
 harness that had none, and codex records roost's hook by absolute path, so a
 checkout you have moved or re-cloned needs wiring again either way.
 
-Three things to know:
+Run it from a directory that is not itself a roost clone and there is nothing
+more to it: one copy of roost on the machine, pulled up to date, your shell
+startup file untouched, your agents wired again.
 
-- **Running `./install.sh` from inside a clone does not pull.** It installs
-  that checkout exactly as it stands, on purpose, so it can never yank code out
-  from under someone working in it. That is the one case where you have to
-  `git pull` yourself first.
+Four things to know:
+
+- **Where you are standing when you run it decides which checkout it
+  installs.** The script works out where it lives from `$0` — and in the piped
+  form there is no script file, so `$0` is just `sh` and "where it lives" comes
+  out as your current directory. Run the line while standing in a roost clone
+  and it installs *that* clone, says `installing from this checkout`, and pulls
+  nothing. That branch is deliberate, so neither this nor `./install.sh` can
+  yank code out from under a checkout you are working in — but it is easy to
+  hit by accident, and it looks like an ordinary successful upgrade. `cd`
+  somewhere else first.
+- **If roost is not in the default place, pass `--dir`.** The bare line looks
+  only in `~/.local/share/roost`. Installed anywhere else it does not find it,
+  clones a second copy at the default, and you now have two:
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh -s -- --dir /path/to/roost
+  ```
+
 - **A clone you have committed to is never clobbered.** The pull is
   `--ff-only`, so where it cannot fast-forward it says `could not update;
   keeping what is there` and carries on with the `PATH` and wiring steps rather
@@ -160,6 +177,22 @@ Three things to know:
   harnesses to the checkout you already have, and that is all. When git already
   knows locally that your checkout is behind, they tell you how far and print
   the `git pull` to run — they never go to the network to find out.
+
+### Check it upgraded the copy you meant
+
+The script announces its choice in the first two lines it prints: the branch it
+took, then the path it took it on. You get one or the other, never both.
+
+```
+roost: already cloned                  # found that clone and pulled it
+  ~/.local/share/roost
+
+roost: installing from this checkout   # installed it as it stands, no pull
+  ~/src/roost
+```
+
+Read the path. If it is not the install you meant to upgrade, stop there — the
+rest of the run happened to a different copy.
 
 ## First run
 

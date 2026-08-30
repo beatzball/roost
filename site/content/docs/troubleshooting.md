@@ -23,8 +23,10 @@ tail is one no installer may fix: something that is not roost's sitting at an
 adapter path, a hook pointing at a different checkout, or a prompt only you can
 answer. What it does **not** do is fetch new roost code — if the adapter you
 need shipped in a later release, upgrade first by re-running the install
-command ([Getting started](/docs/getting-started)). If `roost install` has been
-run and a pane still does not badge, check, in order:
+command ([Getting started](/docs/getting-started)). Run that from a directory
+that is not itself a roost clone, and check that the path in its first two
+lines is the checkout your agents are wired to. If `roost install` has been run
+and a pane still does not badge, check, in order:
 
 1. `roost hooks` output is merged into `~/.claude/settings.json` under `"hooks"`. See [State Badges](/docs/state-badges).
 2. You are running the agent **inside** a roost pane. `scripts/roost-agent-state` is a deliberate no-op outside one.
