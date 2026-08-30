@@ -101,4 +101,27 @@ If neither fires, set `@roost-notify-backend` explicitly (`tmux` always uses the
 
 ## Still stuck
 
-Open an issue at [github.com/beatzball/roost](https://github.com/beatzball/roost/issues). Maintainer-facing notes on shipped risks live in `docs/known-gaps.md` in the repo.
+```sh
+roost validate
+```
+
+`roost doctor` reads your configuration. `roost validate` **drives** it, and writes the report for you — the environment and every version, `roost doctor` verbatim, both offline test suites with their exit codes, and a real end-to-end drive of every agent harness you have installed: it starts each one in a throwaway roost server, asks it a question, samples the badge over time, checks that `roost read` returns the reply where `roost screen` returns the screen, and drives a permission dialog where the harness has one. It ends by printing one file to send us. Nothing in it needs filling in.
+
+**Each harness runs the way you normally run it** — your own configuration, your provider, your account. That is the point: a small local model barely calls tools, and tool calls are what drive `PostToolUse`, permission dialogs and the ⏳→🛑→⏳ transitions the badges are almost entirely about. So the run **costs you a little money** — roughly three one-line prompts per harness — and it says so before it starts.
+
+`roost validate --local` drives a local [ollama](https://ollama.com) instead and spends nothing. It is the fallback for a machine with no accounts wired, and it tests our rig rather than your setup; the report records which mode each harness actually used, because a report that does not say that is nearly worthless to us.
+
+It takes a while, so start it and walk away. Every wait is bounded, so it cannot sit there forever, and it writes the report even when something fails. A wait that runs out is reported as a **timeout**, not as a failure — against a real account a turn with tool calls can take minutes.
+
+What it will not do:
+
+- **Touch your tmux.** It runs its own server on its own socket in a temp directory and tears it down at the end, including when it fails.
+- **Change your configuration.** It reads what each harness already has and writes none of it. It will not install an adapter or write a hooks file: where one is missing, that harness is skipped and the report prints the exact command to fix it, so a second run covers it.
+- **Log in to anything.** It uses the credential already on your machine and never asks for one. A harness that is not set up is skipped, with that as the reason.
+- **Send your home directory to us.** Absolute paths, your username and your hostname are substituted before anything is written, and the report says so. Pass `--keep-home-paths` if you would rather send it raw.
+
+Claude Code is the one harness it will not drive: there is no way to isolate its configuration without taking the credential with it.
+
+`roost validate --quick` skips the slowest part (this repo's own ollama-based smoke suites) and still produces a full report.
+
+Then open an issue at [github.com/beatzball/roost](https://github.com/beatzball/roost/issues) and attach it. Maintainer-facing notes on shipped risks live in `docs/known-gaps.md` in the repo.

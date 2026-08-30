@@ -255,6 +255,69 @@ carries a setting that asks it not to
 one opencode, copilot or pi process, which the recovery cases need and a config
 rewrite cannot do — the file's docstring has the measurement.
 
+## `roost validate` — the report a tester sends back
+
+```sh
+roost validate            # drives YOUR providers; walk away
+roost validate --local    # drives a local ollama instead; spends nothing
+roost validate --quick    # skip the ollama smoke suites above
+```
+
+Not a test, and deliberately out of reach of `tests/run.sh` — that globs
+`tests/test-*.sh`, so `scripts/roost-validate` cannot be picked up and a
+long live run can never land in CI. It sits next to `roost doctor` because it
+is the same kind of thing: something a **user** runs to tell us what happened
+on their machine.
+
+Where doctor reads the configuration, validate drives it, and writes the report
+itself. One run produces one file covering the environment and every version,
+`roost doctor` verbatim, both offline suites with their exit codes reported
+separately from their counts ([AGENTS.md](AGENTS.md) §8), the smoke suites
+above, a uniform end-to-end drive of every installed harness — badge sampled
+over time rather than read once, `roost read` against `roost screen`, `roost
+send`'s exit-3 refusal at a real dialog — and the two entries in
+[docs/known-gaps.md](docs/known-gaps.md) as explicit REPRODUCED / NOT
+REPRODUCED checks.
+
+**The default drives each harness against the tester's own provider, and that
+is the whole value of it.** Everything in `tests/live/` runs against a local
+ollama because that is how our own tests run without credentials — and a 3B
+local model barely calls tools, never spawns a subagent, and answers in
+seconds. Tool calls are what drive `PostToolUse`, permission dialogs and the
+`working`→`blocked`→`working` transitions this badge mapping is almost entirely
+about; subagents are trap T1 in the adapter contract; and real latency is where
+our ordering bugs have lived (`#14` was a message re-announced *after* its
+content). Codex is the sharpest case: it cannot drive ollama at all without
+`tests/live/codex-tool-proxy.py` stripping tool definitions ollama rejects, so
+a local codex run exercises that proxy and a run on a real account exercises
+the code path we ship. `--local` keeps the old behaviour for a machine with no
+accounts wired, and the report records per harness which of the two ran.
+
+Two consequences of that default, both handled rather than hidden: the run
+spends the tester's own money (announced before it starts, a handful of
+one-line prompts per harness, and `--local` avoids it), and real turns are slow
+and uneven — so every bound is sized for a real provider and reaching one is
+reported as a **TIMEOUT** row, distinct from a FAIL, because "the reply did not
+arrive in N seconds" and "the reply was wrong" are different findings.
+
+It replaced a 240-line manual pack that asked a volunteer to observe all of
+that by hand and fill in a form. Hand-copied observations are the least
+reliable evidence available, and the field most often left blank was the one
+that mattered most: a suite's exit code, as opposed to its PASS/FAIL counts.
+
+Its boundaries are in the file's own header and are not negotiable: its own
+`-S` socket in a `mktemp -d` (never the caller's tmux, never a live `-L roost`
+server), no authentication ever, no configuration written and nothing installed
+— a harness whose adapter is missing is SKIPPED with doctor's own fix command
+rather than driven into a column of red — every wait bounded, and the report
+assembled from an `EXIT` trap so a crash halfway through still leaves a file
+worth sending. Absolute paths, usernames and hostnames are substituted before
+anything is written; `--keep-home-paths` turns that off.
+
+Claude Code is the one harness it will not drive, and the report says so where
+it matters: there is no local-provider seam for it, and redirecting `HOME` to
+isolate the config takes the credential with it.
+
 ## Working on the docs site
 
 The site in `site/` builds to static HTML and deploys to

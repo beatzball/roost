@@ -67,6 +67,30 @@ typed into anything, the exit code is distinct, and the message it prints names
 the escape hatch (`roost send --force`) in its own second line. A human typing
 anything into the pane clears it on the next `UserPromptSubmit`.
 
+**The same shape is now measured on codex and on copilot**, which widens this
+from a Claude Code entry to a cross-harness one. Both adapters clear `blocked`
+only on the harness's post-tool event, and declining fires no such event —
+so nothing unstamps the pane, exactly as above. Measured by `roost validate`
+on a throwaway `-S <tmpdir>/roost` server, codex-cli 0.151.0 and Copilot CLI
+1.0.81, Esc at a real dialog:
+
+```
+codex    +58s badge=[blocked] since=1788058642
+         +122s badge=[blocked] since=1788058642   age=64s, frozen
+         screen: "✗ You canceled the request to run echo roost-validate-escalate"
+                 "■ Conversation interrupted"      -- no dialog on screen
+         roost send -> exit 3
+copilot  +5s  badge=[blocked] since=1788058761
+         +60s badge=[blocked] since=1788058761    age=59s, frozen
+         roost send -> exit 3
+```
+
+opencode does **not** have it: the same drive left `blocked` 1s after Esc and
+`roost send` then exited 0. So the hole is per adapter and tracks the event the
+adapter clears on, not something general to roost — which is what makes the
+first candidate below (confirm the badge against the pane) the fix for all
+three at once rather than three separate ones.
+
 **Not fixed here, because the fix is a behaviour change to the guard**, and
 that is its own task. Two candidates, neither implemented:
 
