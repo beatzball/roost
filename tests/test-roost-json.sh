@@ -9,7 +9,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # Every external binary roost-json.sh or this test file calls, so a shim
 # built from this list can run either engine's whole code path (stat/chmod
 # included, for the permission-preservation check).
-CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname cmp date grep sed diff env printf true false stat chmod"
+CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname readlink cmp date grep sed diff env printf true false stat chmod"
 
 build_shim() {
   # build_shim [EXTRA...] -> prints a PATH-ready directory of symlinks to
@@ -219,6 +219,36 @@ JSON
   done
   rm -rf "$cx"
 
+  # -- the merged bytes come from scripts/lib/roost-hooks.sh, not a copy --
+  # Task 3b. roost-json.sh used to hardcode its own version of the four
+  # claude and the four codex handler shapes. They matched by hand, which is
+  # exactly the guarantee codex's handler hashing does not accept: it stores
+  # a hash of each normalised handler object and silently SKIPS any handler
+  # whose hash no longer matches -- nothing on stdout, on stderr, or in its
+  # TUI (measured on codex-cli 0.150.1: appending one argument took 8 of 8
+  # hooks down; changing one timeout from 10 to 11 took 7 of 8 down). So
+  # compare what the merge actually wrote against what roost-hooks.sh
+  # prints, for the same injected target, as ONE ordered compact object --
+  # a reordered key, a dropped field or a changed timeout all fail here.
+  if command -v jq >/dev/null 2>&1; then
+    local sd_ want_hooks got_hooks
+    sd_="$(mktemp -d /tmp/amx.XXXX)"
+    merge_under "$shim" "$sd_/claude.json" claude-hooks "/x/agent-state" >/dev/null 2>&1
+    want_hooks="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "/x/agent-state" | jq -c '.hooks')"
+    got_hooks="$(jq -c '.hooks' "$sd_/claude.json" 2>/dev/null)"
+    assert_eq "$got_hooks" "$want_hooks" \
+      "[$tool] claude-hooks merges exactly what roost_hooks_claude prints"
+
+    merge_under "$shim" "$sd_/codex.json" codex-hooks "/x/codex-hook" >/dev/null 2>&1
+    want_hooks="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex "/x/codex-hook" | jq -c '.hooks')"
+    got_hooks="$(jq -c '.hooks' "$sd_/codex.json" 2>/dev/null)"
+    assert_eq "$got_hooks" "$want_hooks" \
+      "[$tool] codex-hooks merges exactly what roost_hooks_codex prints"
+    rm -rf "$sd_"
+  else
+    assert_true 0 "[$tool] hook-body identity check skipped (jq needed to compare)"
+  fi
+
   # -- absent file is treated as {} --
   local af
   af="$(mktemp -d /tmp/amx.XXXX)"
@@ -308,6 +338,27 @@ hide_json_tools bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_mer
 assert_eq "$?" "3" "no JSON tool on PATH, absent file: roost_json_merge still returns 3"
 assert_file_absent "$nt2/settings.json" "no JSON tool on PATH: nothing written even for a new file"
 rm -rf "$nt2"
+
+# --- one copy of the hook bytes, not two ---------------------------------
+# Output equality alone cannot tell "sourced from the shared lib" from
+# "duplicated inline and kept in sync by hand", and the hand-kept duplicate is
+# the thing that actually bites (see the identity check inside run_case). So
+# pin the SOURCE too, the way tests/test-hook-source.sh pins bin/roost's.
+# Comment-only lines are stripped first and the function name is required as a
+# whole word, because roost-json.sh's own header names both functions in
+# prose -- an unanchored grep would pass with the call deleted.
+json_code="$(grep -v '^[[:space:]]*#' "$HERE/scripts/lib/roost-json.sh")"
+json_called() { printf '%s' "$1" | grep -Eq "(^|[^A-Za-z0-9_])$2([^A-Za-z0-9_]|\$)"; }
+grep -q 'roost-hooks.sh' "$HERE/scripts/lib/roost-json.sh" && s=yes || s=no
+assert_eq "$s" "yes" "roost-json.sh sources scripts/lib/roost-hooks.sh"
+json_called "$json_code" roost_hooks_claude && s=yes || s=no
+assert_eq "$s" "yes" "roost-json.sh actually CALLS roost_hooks_claude (not just mentions it)"
+json_called "$json_code" roost_hooks_codex && s=yes || s=no
+assert_eq "$s" "yes" "roost-json.sh actually CALLS roost_hooks_codex (not just mentions it)"
+n="$(grep -c 'roost-codex-hook' "$HERE/scripts/lib/roost-json.sh" || true)"
+assert_eq "${n:-0}" "0" "roost-json.sh carries no second copy of the frozen codex handlers"
+n="$(grep -c 'permission_prompt' "$HERE/scripts/lib/roost-json.sh" || true)"
+assert_eq "${n:-0}" "0" "roost-json.sh carries no second copy of the claude hook body"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

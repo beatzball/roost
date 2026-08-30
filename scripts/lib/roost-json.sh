@@ -14,6 +14,27 @@
 # roost_self_socket, these print rather than set a variable — nothing here
 # runs on a hot path, so a subshell per call costs nothing anyone will notice.
 
+# The claude and codex hook bodies are NOT written out again here. They come
+# from scripts/lib/roost-hooks.sh, which is the one production definition of
+# those bytes, and this file merges whatever that prints. Codex stores a hash
+# of each normalised handler object and silently SKIPS any handler whose hash
+# no longer matches — nothing on stdout, on stderr, or in its TUI (measured on
+# codex-cli 0.150.1: appending one argument to a command string took 8 of 8
+# hooks down; changing one timeout from 10 to 11 took 7 of 8 down). A second
+# copy of those bytes here, kept in sync by hand, would eventually differ by
+# one byte and silently un-badge every machine that had already granted trust.
+#
+# Sourced by path relative to THIS file rather than from an inherited
+# $ROOST_HOME, for the reason scripts/lib/roost-adapters.sh spells out at
+# length: bin/roost exports ROOST_HOME into every pane of the session it
+# starts, so a caller running inside a roost session would otherwise pull the
+# hook bodies out of a DIFFERENT checkout than the one it is installing.
+# Guarded, because bin/roost sources both files and re-sourcing is wasted work
+# rather than a bug.
+if ! declare -f roost_hooks_claude >/dev/null 2>&1; then
+  . "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-hooks.sh"
+fi
+
 # roost_json_tool -> prints "python3", "jq", or nothing (found, in that
 # preference order). Never fails; absence is reported by an empty string, not
 # a non-zero status, so callers that only want the name can use it directly
@@ -70,38 +91,24 @@ def main():
         sys.exit(1)
 
     try:
-        if mode == "claude-hooks":
-            target = args[0]
+        if mode == "hooks-merge":
+            # argv[2] is a whole JSON document {"hooks": {...}} produced by
+            # scripts/lib/roost-hooks.sh. Its events are copied in ITS order,
+            # so a key already in the file is updated where it stands and a
+            # new one is appended after the existing ones — which is what
+            # makes a re-merge byte-identical. Every hook the file already
+            # had under a different event name is left alone.
+            patch = json.loads(args[0])
             hooks = data.setdefault("hooks", {})
-            hooks["UserPromptSubmit"] = [
-                {"hooks": [{"type": "command", "command": "%s working" % target}]}
-            ]
-            hooks["Notification"] = [
-                {"matcher": "permission_prompt",
-                 "hooks": [{"type": "command", "command": "%s blocked" % target}]}
-            ]
-            hooks["PostToolUse"] = [
-                {"hooks": [{"type": "command", "command": "%s working" % target}]}
-            ]
-            hooks["Stop"] = [
-                {"hooks": [{"type": "command", "command": "%s done --stop-hook" % target}]}
-            ]
-        elif mode == "codex-hooks":
-            target = args[0]
-            hooks = data.setdefault("hooks", {})
-            for event in ("UserPromptSubmit", "PostToolUse", "PermissionRequest", "Stop"):
-                hooks[event] = [
-                    {"hooks": [{"type": "command",
-                                "command": "%s %s" % (target, event),
-                                "timeout": 10}]}
-                ]
+            for event in patch["hooks"]:
+                hooks[event] = patch["hooks"][event]
         elif mode == "copilot-flag":
             flags = data.setdefault("enabledFeatureFlags", {})
             flags["EXTENSIONS"] = True
         else:
             sys.stderr.write("roost-json: unknown mode '%s'\n" % mode)
             sys.exit(2)
-    except (IndexError, TypeError, AttributeError) as exc:
+    except (IndexError, KeyError, TypeError, ValueError, AttributeError) as exc:
         sys.stderr.write("roost-json: cannot apply mode '%s': %s\n" % (mode, exc))
         sys.exit(1)
 
@@ -158,15 +165,15 @@ roost_json__jq_validate() {
 
 # roost_json__jq_run MODE INPUT OUT ARGS... -> run jq for MODE against INPUT,
 # writing the result to OUT. Kept as a case per mode rather than one generic
-# filter, because jq has no equivalent of Python's setdefault-then-assign in
-# one readable expression per key, and spelling each mode out explicitly is
-# what makes the claude/codex/copilot shapes below diffable against
-# roost_json__py_script's version of the same three.
+# filter, so each mode stays diffable against roost_json__py_script's version
+# of the same one. MODE here is an INTERNAL mode, already translated by
+# roost_json_merge — `hooks-merge`, not `claude-hooks`.
 #
-# jq preserves key order the same way Python's dict does: `.k = v` on a key
-# that already exists updates it in place; only a brand new key is appended.
-# That is what makes the idempotent-merge and same-input-same-output checks
-# hold for jq too, not just for python3.
+# jq preserves key order the same way Python's dict does: on the left of a
+# `+`, a key that already exists keeps its position and takes the right's
+# value; only a brand new key is appended. That is what makes the
+# idempotent-merge and same-input-same-output checks hold for jq too, not just
+# for python3.
 roost_json__jq_run() {
   local mode="$1" input="$2" out="$3"; shift 3
 
@@ -177,29 +184,19 @@ roost_json__jq_run() {
   roost_json__jq_validate "$input" || return $?
 
   case "$mode" in
-    claude-hooks)
-      local target="$1"
-      jq --indent 2 \
-        --arg working "$target working" \
-        --arg blocked "$target blocked" \
-        --arg done "$target done --stop-hook" \
-        '.hooks.UserPromptSubmit = [{"hooks": [{"type": "command", "command": $working}]}]
-       | .hooks.Notification = [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": $blocked}]}]
-       | .hooks.PostToolUse = [{"hooks": [{"type": "command", "command": $working}]}]
-       | .hooks.Stop = [{"hooks": [{"type": "command", "command": $done}]}]' \
-        "$input" > "$out"
-      ;;
-    codex-hooks)
-      local target="$1"
-      jq --indent 2 \
-        --arg upsub "$target UserPromptSubmit" \
-        --arg post  "$target PostToolUse" \
-        --arg perm  "$target PermissionRequest" \
-        --arg stop  "$target Stop" \
-        '.hooks.UserPromptSubmit  = [{"hooks": [{"type": "command", "command": $upsub, "timeout": 10}]}]
-       | .hooks.PostToolUse       = [{"hooks": [{"type": "command", "command": $post,  "timeout": 10}]}]
-       | .hooks.PermissionRequest = [{"hooks": [{"type": "command", "command": $perm,  "timeout": 10}]}]
-       | .hooks.Stop              = [{"hooks": [{"type": "command", "command": $stop,  "timeout": 10}]}]' \
+    hooks-merge)
+      # `+` on two objects is jq's spelling of the python branch above: the
+      # left object keeps its own key order, a key present on both takes the
+      # right's value in place, and a key only on the right is appended after
+      # them. So both engines produce the same bytes for the same input, and
+      # a re-merge changes nothing.
+      local patch="${1:-}"
+      if [ -z "$patch" ]; then
+        printf "roost-json: cannot apply mode 'hooks-merge': no patch document\n" >&2
+        return 1
+      fi
+      jq --indent 2 --argjson patch "$patch" \
+        '.hooks = ((.hooks // {}) + $patch.hooks)' \
         "$input" > "$out"
       ;;
     copilot-flag)
@@ -217,6 +214,14 @@ roost_json__jq_run() {
 #   claude-hooks TARGET_SCRIPT   merge the four roost hook entries into .hooks
 #   codex-hooks  TARGET_SCRIPT   merge the four roost handlers into .hooks
 #   copilot-flag                 set .enabledFeatureFlags.EXTENSIONS = true
+#
+# The two hook modes are translated here into the engines' internal
+# `hooks-merge` mode, whose patch document is whatever
+# scripts/lib/roost-hooks.sh prints for TARGET_SCRIPT. That is the whole point
+# of the translation: the bytes merged into a real settings.json and the bytes
+# `roost hooks` prints come from ONE definition, so they cannot drift into two
+# different codex handler hashes. TARGET_SCRIPT is passed to roost-hooks.sh
+# verbatim, so a caller (or a test) may inject any path at all.
 #
 # Every other top-level key, and every other key already inside .hooks (or
 # .enabledFeatureFlags), is left exactly as it was. Key order survives: only
@@ -255,6 +260,26 @@ roost_json_merge() {
   tool="$(roost_json_tool)"
   [ -n "$tool" ] || return 3
 
+  # Translate a public hook mode into the engines' `hooks-merge` plus the
+  # patch document roost-hooks.sh prints. An unrecognised mode is passed
+  # through untouched so the engine still reports it as unknown (status 2)
+  # AFTER it has validated FILE — the order the header documents.
+  local engine_mode="$mode"
+  case "$mode" in
+    claude-hooks|codex-hooks)
+      local target="${1:-}"
+      if [ -z "$target" ]; then
+        printf "roost-json: mode '%s' needs a TARGET_SCRIPT\n" "$mode" >&2
+        return 1
+      fi
+      engine_mode=hooks-merge
+      case "$mode" in
+        claude-hooks) set -- "$(roost_hooks_claude "$target")" ;;
+        codex-hooks)  set -- "$(roost_hooks_codex  "$target")" ;;
+      esac
+      ;;
+  esac
+
   dir="$(dirname -- "$file")"
   mkdir -p -- "$dir" || return 1
 
@@ -271,11 +296,11 @@ roost_json_merge() {
 
   case "$tool" in
     python3)
-      python3 -c "$(roost_json__py_script)" "$mode" "$@" < "$input" > "$tmp"
+      python3 -c "$(roost_json__py_script)" "$engine_mode" "$@" < "$input" > "$tmp"
       rc=$?
       ;;
     jq)
-      roost_json__jq_run "$mode" "$input" "$tmp" "$@"
+      roost_json__jq_run "$engine_mode" "$input" "$tmp" "$@"
       rc=$?
       ;;
   esac

@@ -22,6 +22,16 @@
 # of the session it starts, so a caller running inside a roost session could
 # otherwise print a hook pointing at a DIFFERENT checkout than the one whose
 # `roost hooks` it just ran.
+#
+# Both functions take an OPTIONAL explicit target-script path. With no
+# argument they self-resolve, which is what `roost hooks` wants and is why its
+# output is byte-identical either way. The argument exists because
+# scripts/lib/roost-json.sh's `roost_json_merge FILE claude-hooks
+# TARGET_SCRIPT` is handed the script path by its caller (and by its tests,
+# which inject a fixed one) rather than a checkout root — and it takes the
+# SCRIPT path, not the root, precisely so an injected path that does not look
+# like `<root>/scripts/roost-agent-state` still works. A path is passed
+# through verbatim; nothing here derives one from the other.
 _roost_hooks_root() {
   local source dir root
   source="${BASH_SOURCE[0]}"
@@ -34,45 +44,53 @@ _roost_hooks_root() {
   printf '%s' "${root%/}"
 }
 
+# roost_hooks_claude [TARGET_SCRIPT] -- TARGET_SCRIPT defaults to this
+# checkout's own scripts/roost-agent-state.
 roost_hooks_claude() {
-  local home; home="$(_roost_hooks_root)"
+  local target
+  if [ $# -ge 1 ]; then target="$1"
+  else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
   cat <<JSON
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state working" } ] }
+      { "hooks": [ { "type": "command", "command": "$target working" } ] }
     ],
     "Notification": [
       { "matcher": "permission_prompt",
-        "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state blocked" } ] }
+        "hooks": [ { "type": "command", "command": "$target blocked" } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state working" } ] }
+      { "hooks": [ { "type": "command", "command": "$target working" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state done --stop-hook" } ] }
+      { "hooks": [ { "type": "command", "command": "$target done --stop-hook" } ] }
     ]
   }
 }
 JSON
 }
 
+# roost_hooks_codex [TARGET_SCRIPT] -- TARGET_SCRIPT defaults to this
+# checkout's own adapters/codex/roost-codex-hook.
 roost_hooks_codex() {
-  local home; home="$(_roost_hooks_root)"
+  local target
+  if [ $# -ge 1 ]; then target="$1"
+  else target="$(_roost_hooks_root)/adapters/codex/roost-codex-hook"; fi
   cat <<JSON
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook UserPromptSubmit", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$target UserPromptSubmit", "timeout": 10 } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook PostToolUse", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$target PostToolUse", "timeout": 10 } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook PermissionRequest", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$target PermissionRequest", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$target Stop", "timeout": 10 } ] }
     ]
   }
 }
