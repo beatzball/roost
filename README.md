@@ -258,9 +258,10 @@ rewrite cannot do — the file's docstring has the measurement.
 ## `roost validate` — the report a tester sends back
 
 ```sh
-roost validate            # drives YOUR providers; walk away
-roost validate --local    # drives a local ollama instead; spends nothing
-roost validate --quick    # skip the ollama smoke suites above
+roost validate                  # drives YOUR providers; walk away
+roost validate --opencode-cloud # opencode via a free cloud model; no account
+roost validate --local          # drives a local ollama instead; spends nothing
+roost validate --quick          # skip the ollama smoke suites above
 ```
 
 Not a test, and deliberately out of reach of `tests/run.sh` — that globs
@@ -291,7 +292,32 @@ content). Codex is the sharpest case: it cannot drive ollama at all without
 `tests/live/codex-tool-proxy.py` stripping tool definitions ollama rejects, so
 a local codex run exercises that proxy and a run on a real account exercises
 the code path we ship. `--local` keeps the old behaviour for a machine with no
-accounts wired, and the report records per harness which of the two ran.
+accounts wired, and the report records per harness which tier ran.
+
+**A third tier exists for opencode alone, and it is the best fallback there
+is.** opencode ships free cloud models that need no account and no key —
+`opencode auth list` can report zero credentials while `opencode models` lists
+seven — and they are a genuinely remote provider. `--opencode-cloud` drives
+opencode against one. Measured on this repo's own machine against a token that
+existed only in a file on disk and never in a prompt, so a tool call was the
+only way to produce it: five of seven called the tool, and both models driven
+through the TUI reached a real permission dialog in 3–4 seconds with a clean
+release to `done`. `granite4.2:3b` took 55s to do the same and frequently
+declines to call a tool at all, which is why `tests/live/*-smoke.sh` have to
+treat "the model never called the tool" as a SKIP. So for opencode this tier is
+strictly better than the local one, and it costs the tester nothing.
+
+Two measured facts shape how it is implemented, and both would have made a
+naive version lie. **The model list is not stable** — one model disappeared and
+another arrived between two runs an hour apart — so the model is resolved
+against `opencode models` at runtime rather than pinned. And **the opencode TUI
+silently runs a different model when given an id it does not know**: a config
+naming `opencode/no-such-model-zzz` answered normally with "Build · Big Pickle"
+on its own footer, no error and no warning. An unrecognised id is therefore
+refused up front, because a page of green results attributed to a model that
+never ran is worse than any failure this script can report. A free tier that
+throttles is reported as the provider's own message and a SKIP, never a FAIL —
+a tester who sees FAIL on a rate limit reports the wrong bug.
 
 Two consequences of that default, both handled rather than hidden: the run
 spends the tester's own money (announced before it starts, a handful of

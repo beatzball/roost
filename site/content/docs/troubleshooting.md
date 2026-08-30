@@ -109,6 +109,8 @@ roost validate
 
 **Each harness runs the way you normally run it** — your own configuration, your provider, your account. That is the point: a small local model barely calls tools, and tool calls are what drive `PostToolUse`, permission dialogs and the ⏳→🛑→⏳ transitions the badges are almost entirely about. So the run **costs you a little money** — roughly three one-line prompts per harness — and it says so before it starts.
 
+**No accounts at all?** `roost validate --opencode-cloud` drives opencode against one of opencode's own free cloud models. Those need **no account and no key** — `opencode auth list` can report zero credentials and they still work — and they are a real remote provider, so unlike a local model they have real network latency and call tools readily. For opencode this is the better fallback: measured, a free cloud model reached a permission dialog in 3–4 seconds where a local 3B model took 55 and often would not call a tool at all. It affects opencode only, and costs nothing.
+
 `roost validate --local` drives a local [ollama](https://ollama.com) instead and spends nothing. It is the fallback for a machine with no accounts wired, and it tests our rig rather than your setup; the report records which mode each harness actually used, because a report that does not say that is nearly worthless to us.
 
 It takes a while, so start it and walk away. Every wait is bounded, so it cannot sit there forever, and it writes the report even when something fails. A wait that runs out is reported as a **timeout**, not as a failure — against a real account a turn with tool calls can take minutes.
@@ -120,7 +122,7 @@ What it will not do:
 - **Touch your tmux.** It runs its own server on its own socket in a temp directory and tears it down at the end, including when it fails.
 - **Replace a file you put there.** If something that is not this checkout's adapter already sits where a symlink would go — your own extension, or a link to a checkout you deleted — it leaves it alone, names it in the report, and skips that harness.
 - **Change your configuration beyond those symlinks.** It reads what each harness already has and writes none of it. A missing **provider** is never something it arranges: that is your account, and the harness is skipped with that as the reason.
-- **Log in to anything.** It uses the credential already on your machine and never asks for one.
+- **Log in to anything.** It uses the credential already on your machine and never asks for one. The free cloud tier needs none in the first place.
 - **Send your home directory to us.** Absolute paths, your username and your hostname are substituted before anything is written, and the report says so. Pass `--keep-home-paths` if you would rather send it raw.
 
 Claude Code is the one harness it will not drive: there is no way to isolate its configuration without taking the credential with it.

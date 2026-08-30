@@ -103,6 +103,14 @@ ASSUME_YES=0
 # 0 = never link. See offer_adapter_install for why this is one question rather
 # than one per harness.
 INSTALL_ADAPTERS=""
+# "" = off. Otherwise, drive OPENCODE against a free opencode/* cloud model
+# instead of a configured provider or a local ollama. "auto" picks one from the
+# live list; anything else is taken as the model id.
+#
+# Only opencode, because only opencode ships these. It is a third tier between
+# the two that already exist, and for opencode it is strictly better than the
+# ollama fallback: measured below in pick_cloud_model's comment.
+OPENCODE_CLOUD=""
 
 # The smoke suites are minutes each against a local model. A bound is not
 # optional here: an ollama that stops responding mid-suite turns every one of
@@ -122,6 +130,12 @@ costs a small amount of money (a handful of one-line prompts per harness).
   --local             drive against a local ollama in a scratch config dir
                       instead of your accounts. Costs nothing, and tests our
                       rig rather than your setup — the report says which ran.
+  --opencode-cloud[=MODEL]
+                      drive OPENCODE against one of opencode's free cloud
+                      models. No account, no key, nothing to install, and it is
+                      a real remote provider — so it exercises network latency
+                      and real tool use, which a local model does not. Costs
+                      nothing. Affects opencode only.
   --quick             skip this repo's own tests/live/*-smoke.sh suites
   --yes               answer yes without asking: link any missing adapter
                       symlinks, and do not pause for the cost notice
@@ -142,6 +156,8 @@ while [ "$#" -gt 0 ]; do
     --local)           LOCAL=1; shift ;;
     --yes|-y)          ASSUME_YES=1; shift ;;
     --install)         INSTALL_ADAPTERS=1; shift ;;
+    --opencode-cloud)  OPENCODE_CLOUD=auto; shift ;;
+    --opencode-cloud=*) OPENCODE_CLOUD="${1#*=}"; shift ;;
     --no-install)      INSTALL_ADAPTERS=0; shift ;;
     --keep-home-paths) REDACT=0; shift ;;
     --model)           [ "$#" -ge 2 ] || usage; MODEL="$2"; shift 2 ;;
@@ -386,6 +402,7 @@ assemble() {
     printf '| Ended | %s |\n' "$ended"
     printf '| Duration | %dm %ds |\n' "$((dur / 60))" "$((dur % 60))"
     printf '| Drive mode | %s |\n' "$([ "$LOCAL" -eq 1 ] && echo 'local ollama (`--local`) — our rig, not your setup' || echo 'your own configured providers (the default)')"
+    [ -n "$OPENCODE_CLOUD" ] && printf '| opencode drive | overridden to a free `opencode/*` cloud model (`--opencode-cloud`) — no account, no key |\n'
     [ "$LOCAL" -eq 1 ] && printf '| Local model | `%s` |\n' "$MODEL"
     printf '| Home paths redacted | %s |\n' "$([ "$REDACT" -eq 1 ] && echo yes || echo 'no (--keep-home-paths)')"
     printf '| Adapter symlinks | %s |\n' "${INSTALL_DECISION:-not reached}" | redact
@@ -1305,6 +1322,69 @@ h_read_config() {
   return 0
 }
 
+# pick_cloud_model -> print an opencode/* model id to drive, or nothing.
+#
+# opencode ships free cloud models that need NO account and NO key --
+# `opencode auth list` reporting 0 credentials while `opencode models` lists
+# seven of them. That matters more than it sounds: it is a real remote provider,
+# over the network, which is where the ordering bugs live (#14 was a message
+# re-announced AFTER its content) and where real tool use happens. Measured here
+# against a token that existed only in a file on disk and never in the prompt,
+# so a model that returned it could not have guessed it:
+#
+#   big-pickle                       exit 0   called the tool
+#   mimo-v2.5-free                   exit 0   called the tool
+#   muse-spark-1.2-contributor-free  exit 0   called the tool
+#   nemotron-3.5-lightning-free      exit 0   called the tool
+#   nemotron-3-ultra-free            called the tool, but ran past a 120s bound
+#   hy3-free                         "Model hy3-free is not supported"
+#   x-preview-f-free                 provider error
+#
+# Five of seven, and in the TUI both models tried reached a real permission
+# dialog in 3-4 seconds with the dialog on screen and a clean release to done.
+# granite4.2:3b took 55s to do the same and often declines to call a tool at
+# all -- which is why tests/live/*-smoke.sh have to treat "the model never
+# called the tool" as a SKIP.
+#
+# THE LIST IS NOT STABLE, which is why this resolves at runtime rather than
+# hardcoding one: between the list quoted above and the run that measured it,
+# ling-3.0-flash-fin-free disappeared and x-preview-f-free arrived. A pinned
+# model id would be a flag that works until it silently does not.
+#
+# The preference order is the measured one. Anything not on it still gets used
+# if nothing better is present, because a model that is merely unmeasured is a
+# better answer than no drive at all -- and if it fails, drive_harness reports
+# the provider's own message rather than a roost failure.
+pick_cloud_model() {
+  local live pref m
+  live="$(opencode models 2>/dev/null | grep '^opencode/')"
+  [ -n "$live" ] || return 0
+  for pref in opencode/nemotron-3.5-lightning-free \
+              opencode/big-pickle \
+              opencode/mimo-v2.5-free \
+              opencode/muse-spark-1.2-contributor-free; do
+    printf '%s\n' "$live" | grep -qxF "$pref" && { printf '%s' "$pref"; return 0; }
+  done
+  # Nothing measured is on offer any more. Take the first that is, and say so
+  # in the report rather than pretending it was chosen.
+  m="$(printf '%s\n' "$live" | head -n 1)"
+  printf '%s' "$m"
+  return 0
+}
+
+# cloud_trouble PANE -> print the provider's own complaint, or nothing.
+#
+# A free tier that throttles, or a listed-but-unsupported model, must NOT read
+# as a roost failure: a tester who sees FAIL on a rate limit reports the wrong
+# bug, and we would chase it. So when a cloud drive does not do what it should,
+# the pane is read for the provider's own words first and those are reported
+# instead.
+cloud_trouble() {
+  T capture-pane -p -t "$1" 2>/dev/null \
+    | grep -iE 'rate.?limit|too many requests|quota|not supported|unauthoriz|forbidden|payment|credit|overloaded|capacity' \
+    | head -n 1 | sed 's/^[[:space:]]*//' | cut -c1-160
+}
+
 # h_prepare HARNESS — set H_MODE/H_ENV/H_CMD/H_PROVIDER/H_MODEL, or set H_SKIP
 # to the reason this harness is not being driven.
 #
@@ -1325,6 +1405,44 @@ h_prepare() {
   # in docs/known-gaps.md was measured on Claude Code specifically.
   if [ "$h" = claude ]; then
     H_SKIP='roost validate does not drive Claude Code: there is no way to isolate its config without taking the credential with it. See section 6.1'
+    return 0
+  fi
+
+  # --- the cloud tier, opencode only, in either mode ------------------------
+  # Checked before both of the others: it is an explicit request from the
+  # command line, and it is the one tier that needs neither an account nor a
+  # local model.
+  if [ "$h" = opencode ] && [ -n "$OPENCODE_CLOUD" ]; then
+    local cm
+    if [ "$OPENCODE_CLOUD" = auto ]; then
+      cm="$(pick_cloud_model)"
+      [ -n "$cm" ] || { H_SKIP='opencode lists no free opencode/* cloud models on this machine'; return 0; }
+    else
+      cm="$OPENCODE_CLOUD"
+      case "$cm" in opencode/*) : ;; *) cm="opencode/$cm" ;; esac
+      # Checked against the live list, and this is not defensive tidiness.
+      # Measured: the opencode TUI SILENTLY IGNORES a model id it does not
+      # know and runs a different model instead — a config naming
+      # opencode/no-such-model-zzz answered normally, with "Build · Big
+      # Pickle" on its own footer. Nothing errors and nothing warns. Without
+      # this check a typo would produce a full page of green results
+      # attributed to a model that never ran, which is worse than any failure
+      # this script can report.
+      #
+      # Membership in `opencode models` is the right gate rather than whether
+      # `opencode run` accepts it: hy3-free is refused by `opencode run` with
+      # "not supported" and drives the TUI perfectly well, and it is the TUI
+      # that section 5 uses.
+      if ! opencode models 2>/dev/null | grep -qxF "$cm"; then
+        H_SKIP="opencode does not list '$cm' on this machine, and its TUI silently runs a different model rather than refusing an unknown one — so this was not driven. Available: $(opencode models 2>/dev/null | grep '^opencode/' | tr '\n' ' ')"
+        return 0
+      fi
+    fi
+    h_cloud_setup "$cm" || { H_SKIP='could not build a scratch opencode configuration for the cloud model'; return 0; }
+    H_MODE=cloud
+    H_PROVIDER='opencode free cloud — no account, no key, no credential used'
+    H_MODEL="$cm"
+    H_CMD="opencode"
     return 0
   fi
 
@@ -1447,6 +1565,31 @@ h_tool_prompt() {
 # AGENTS.md §8, which exists because copilot ignores XDG entirely and would
 # otherwise have been read and written while looking isolated.
 CODEX_DRIVE_MODEL=""
+
+# h_cloud_setup MODEL -> 0, and sets $H_ENV. A scratch XDG home naming one
+# opencode/* cloud model, and nothing else in it.
+#
+# A scratch home rather than the tester's own, even though this tier needs no
+# credential: writing a model choice into their real opencode.json would be
+# changing their configuration, which no mode here does. It carries no provider
+# block and no key -- the opencode/* provider is built in, which is the whole
+# point of this tier.
+h_cloud_setup() {
+  local m="$1" d="$RIG_HOMES/opencode-cloud"
+  H_ENV=""
+  mkdir -p "$d/config/opencode/plugin" "$d/data" "$d/cache" || return 1
+  ln -sf "$HERE/adapters/opencode/roost.js" "$d/config/opencode/plugin/roost.js" || return 1
+  cat > "$d/config/opencode/opencode.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "$m",
+  "permission": { "bash": "ask" }
+}
+JSON
+  H_ENV="XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_CACHE_HOME=$d/cache"
+  return 0
+}
+
 h_local_setup() {
   local h="$1" d="$RIG_HOMES/$h"
   H_ENV=""
@@ -1645,8 +1788,25 @@ h_startup() {
 KB_STUCK="$WORK/kb-stuck.tsv"; : > "$KB_STUCK"
 KB_PI="$WORK/kb-pi.tsv"; : > "$KB_PI"
 
+# mode_label — the one place that names a drive tier, so the summary row, the
+# per-harness table and the header can never disagree about which one ran.
+mode_label() {
+  case "$H_MODE" in
+    real)  printf 'your own provider' ;;
+    cloud) printf "opencode's free cloud tier (--opencode-cloud)" ;;
+    *)     printf 'local ollama (--local)' ;;
+  esac
+}
+
+# cloud_excuse PANE -> the provider's own complaint, but only in cloud mode.
+# Empty everywhere else, so the call sites read the same in all three tiers.
+cloud_excuse() {
+  [ "$H_MODE" = cloud ] || return 0
+  cloud_trouble "$1"
+}
+
 drive_harness() {
-  local h="$1" reason pane marker ready token1 token2 f rc nm seq
+  local h="$1" reason pane marker ready token1 token2 f rc nm seq trouble
   h_prepare "$h"
   reason="$H_SKIP"
   if [ -n "$reason" ] || [ -z "$H_MODE" ]; then
@@ -1657,7 +1817,20 @@ drive_harness() {
   fi
 
   sub "$h"
-  if [ "$H_MODE" = real ]; then
+  if [ "$H_MODE" = cloud ]; then
+    para "**The model named below is the one this run asked for.** opencode's TUI
+names the model it actually loaded on its own footer, and the pane capture
+further down shows it — worth a glance, because opencode answers an unknown
+model id by quietly running a different model rather than refusing. This run
+checks the id against \`opencode models\` first for that reason."
+    para "Driven against **one of opencode's own free cloud models** — a real remote
+provider, reached over the network, with **no account, no key and no stored
+credential** (\`opencode auth list\` reports none). That matters because it is
+not a local stub: it has real latency and it calls tools readily, which is what
+drives \`PostToolUse\`, permission dialogs and the working→blocked→working
+transitions the badges are about. Your own opencode configuration is not read
+or written; this runs from a scratch config directory naming only the model."
+  elif [ "$H_MODE" = real ]; then
     para "Driven **against your own configuration** — the provider, model and
 account this machine already uses for $h. Nothing about that configuration was
 changed to run this; the only things added to the environment are \`PATH\` (so the
@@ -1670,11 +1843,11 @@ this tests our rig rather than your setup, which is why the mode is recorded
 here rather than left to be assumed."
   fi
   printf '| | |\n|---|---|\n' >> "$BODY"
-  printf '| Drive mode | %s |\n' "$([ "$H_MODE" = real ] && echo 'your own provider' || echo 'local ollama (--local)')" >> "$BODY"
+  printf '| Drive mode | %s |\n' "$(mode_label)" >> "$BODY"
   printf '| Provider | %s |\n' "${H_PROVIDER:-unknown — nothing readable in the config named one}" | redact >> "$BODY"
   printf '| Model | %s |\n\n' "${H_MODEL:-unknown — see the pane capture below, the TUI names it on its own footer}" | redact >> "$BODY"
   record INFO 5 "$h: driven against" \
-    "$([ "$H_MODE" = real ] && echo 'your own provider' || echo 'local ollama (--local)'): provider ${H_PROVIDER:-unknown}, model ${H_MODEL:-unknown}"
+    "$(mode_label): provider ${H_PROVIDER:-unknown}, model ${H_MODEL:-unknown}"
 
   pane="$(T new-window -d -P -F '#{pane_id}' -n "$h" -c "$RIG_PROJ" \
     "PATH=$HERE/bin:\$PATH ROOST_SOCKET=$RIG_SOCK $H_ENV $H_CMD")"
@@ -1703,7 +1876,12 @@ here rather than left to be assumed."
     # was the line that would have hidden the bug above.
     pscreen "$pane" > "$WORK/$h-notready.txt"
     block "the pane $h never made interactive (waited ${TMO_READY}s for \"$ready\")" "$WORK/$h-notready.txt"
-    record TIME 5 "$h: the TUI became interactive" "waited ${TMO_READY}s for \"$ready\"; the screen it gave up on is in §5"
+    trouble="$(cloud_excuse "$pane")"
+    if [ -n "$trouble" ]; then
+      record SKIP 5 "$h: the TUI became interactive" "the free cloud tier said: $trouble — not a roost failure; re-run later or pass --opencode-cloud=<another model>"
+    else
+      record TIME 5 "$h: the TUI became interactive" "waited ${TMO_READY}s for \"$ready\"; the screen it gave up on is in §5"
+    fi
     T kill-window -t "$pane"
     return 0
   fi
@@ -1733,6 +1911,11 @@ here rather than left to be assumed."
 
   if wait_state "$pane" working "$TMO_WORKING"; then
     record PASS 5 "$h: the badge reaches working" "the turn starting is observable"
+  elif [ -n "$(cloud_excuse "$pane")" ]; then
+    # A free tier that refused the request never started a turn, so there was
+    # no badge to see. Reporting that as a missing badge would send a reader
+    # after the adapter, which is the wrong bug entirely.
+    record SKIP 5 "$h: the badge reaches working" "the turn never started — the free cloud tier said: $(cloud_excuse "$pane")"
   elif [ -z "$(pstate "$pane")" ]; then
     # Never badged AT ALL is a different finding from badged late, and it has a
     # different cause: the adapter is not running. That is a FAIL, where a slow
@@ -1743,6 +1926,8 @@ here rather than left to be assumed."
   fi
   if wait_state "$pane" done "$TMO_TURN"; then
     record PASS 5 "$h: the badge reaches done" "the turn ending is observable"
+  elif [ -n "$(cloud_excuse "$pane")" ]; then
+    record SKIP 5 "$h: the badge reaches done" "the turn did not finish — the free cloud tier said: $(cloud_excuse "$pane")"
   else
     record TIME 5 "$h: the badge reaches done" "badge was '$(pstate "$pane")' after ${TMO_TURN}s — a real turn with tool calls can outlast this bound; see the timeline in §5"
   fi
@@ -1820,7 +2005,7 @@ here rather than left to be assumed."
 # drive_dialog HARNESS PANE — the permission-dialog half of the drive, and the
 # part the old manual pack asked a human to watch for and describe.
 drive_dialog() {
-  local h="$1" pane="$2" f marker before after out rc n stuck left_after dialog_gone
+  local h="$1" pane="$2" f marker before after out rc n stuck left_after dialog_gone trouble
   f="$WORK/$h-dialog.badges"
 
   if ! h_expects_dialog "$h"; then
@@ -1867,8 +2052,9 @@ drive_dialog() {
     # exercised. It is a SKIP with the reason, exactly as the smoke suites do.
     stop_samplers
     block "badge timeline, tool-calling turn (no dialog appeared)" "$f"
+    trouble="$(cloud_excuse "$pane")"
     record SKIP 5 "$h: the pane badges blocked at a dialog" \
-      "no permission dialog appeared in ${TMO_DIALOG}s. Either the model answered without calling a tool, or this $h configuration auto-approves the call. Badges: $(badge_sequence "$f")"
+      "${trouble:+the free cloud tier said: $trouble. }no permission dialog appeared in ${TMO_DIALOG}s. Either the model answered without calling a tool, or this $h configuration auto-approves the call. Badges: $(badge_sequence "$f")"
     wait_state "$pane" done "$TMO_TURN"
     return 0
   fi
@@ -1987,7 +2173,16 @@ once, because a single poll cannot tell a stale badge from a live one:
 \`@agent_since\` in each timeline is the instant the badge was stamped, and a
 frozen one against a moving clock is what staleness looks like.
 
-Every harness below says which mode it ran in, and which provider and model
+There is a third tier for opencode alone, and it is worth knowing about because
+it needs nothing at all. opencode ships free cloud models — real remote models,
+reached over the network, that work with **no account and no key**. Passing
+\`--opencode-cloud\` drives opencode against one. For opencode that is strictly
+better than the local fallback: measured on this machine, a free cloud model
+reached a real permission dialog in 3–4 seconds and the local 3B took 55s and
+often declines to call a tool at all. It costs nothing, so a tester with no
+accounts whatsoever can still exercise a genuinely remote provider.
+
+Every harness below says which tier it ran in, and which provider and model
 actually answered. A report that does not say that is nearly worthless.
 
 > **Worth knowing before you read the results.** The default mode — driving a
