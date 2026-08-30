@@ -6,11 +6,11 @@
 #
 # What this file does today: detection, the plan, the prompt, the flags, the
 # exit codes, the three adapter symlinks (opencode, pi, copilot), and the
-# Claude hooks merge. The codex and copilot JSON steps are NOT here yet — see
-# "WHERE THE JSON STEPS GO" below for the frame they slot into. Until they
-# land, this command names them in the closing manual block instead of
-# performing them, which is honest rather than aspirational: a user who runs
-# it and reads the output knows exactly what is and is not wired.
+# claude and codex hook files. The copilot feature flag is NOT here yet — see
+# "WHERE THE JSON STEPS GO" below for the frame it slots into. Until it lands,
+# this command names it in the closing manual block instead of performing it,
+# which is honest rather than aspirational: a user who runs it and reads the
+# output knows exactly what is and is not wired.
 #
 # Four properties are load-bearing and every change must keep them:
 #
@@ -80,6 +80,7 @@ HERE="${HERE%/}"
 # duplication is not avoidable today: roost_json_merge takes the SCRIPT path
 # from its caller, and roost-hooks.sh exposes no accessor for its own default.
 CLAUDE_TARGET="$HERE/scripts/roost-agent-state"
+CODEX_TARGET="$HERE/adapters/codex/roost-codex-hook"
 
 # Detection order, and the only names --only will accept.
 HARNESSES="opencode pi copilot claude codex"
@@ -462,7 +463,7 @@ DETECTED="${DETECTED# }"
 # REAL_PATH and CONFIG_PATH differ only when the config file is a symlink —
 # see resolve_link. Everything downstream writes to REAL_PATH and mentions
 # CONFIG_PATH, because that is the one the user knows the file by.
-JSON_HARNESSES="claude"
+JSON_HARNESSES="claude codex"
 JSON_STEPS=""
 JSON_OK=""
 JSON_REFUSED=""
@@ -488,6 +489,10 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
         json_want="$CLAUDE_TARGET"
         json_patch="$(roost_hooks_claude "$CLAUDE_TARGET")"
         json_label="roost's four Claude hooks" ;;
+      codex)
+        json_want="$CODEX_TARGET"
+        json_patch="$(roost_hooks_codex "$CODEX_TARGET")"
+        json_label="roost's four codex handlers" ;;
     esac
 
     if [ "$JSON_MODE" != write ]; then
@@ -705,6 +710,12 @@ EOF
     # give someone whose settings.json will not parse.
     case "$h" in
       claude) json_bak="$(roost_json_merge "$real" claude-hooks "$CLAUDE_TARGET")"; rc=$? ;;
+      # Adding a NEW event to a hooks.json codex has already been trusted with
+      # is measured-safe on 0.151.0: the handlers already trusted keep firing,
+      # because their hashes are over their own parsed structs and nothing
+      # about them moved. The handlers roost's own merge would REPLACE are the
+      # ones the probe has already refused to touch.
+      codex)  json_bak="$(roost_json_merge "$real" codex-hooks  "$CODEX_TARGET")";  rc=$? ;;
       *)      json_bak=""; rc=2 ;;
     esac
 
@@ -814,12 +825,24 @@ fi
 if [ -n "$JSON_REFUSED" ]; then
   while IFS="$TAB" read -r h path why; do
     [ -n "${h:-}" ] || continue
-    add_manual "$h: left alone —
+    json_note="$h: left alone —
     $path
   $why
   roost will not edit that file. Look at it first, then merge the object from
     roost hooks $h
   into it by hand, or move the entry that is already there out of the way."
+    # The one place in this command where helpfully fixing something would be
+    # worse than doing nothing, said in plain words because a reader who does
+    # not know this will reasonably assume the tool is being timid.
+    case "$h" in
+      codex) json_note="$json_note
+  Why roost will not just rewrite it: codex stores a hash of each handler and
+  silently skips any handler whose hash no longer matches — nothing on stdout,
+  nothing on stderr, nothing in its TUI. Rewriting that command string would
+  re-hash the handler and stop every badge on a machine that is working today,
+  with no way to notice. Doing nothing is deliberate." ;;
+    esac
+    add_manual "$json_note"
   done <<EOF
 $JSON_REFUSED
 EOF
@@ -848,17 +871,22 @@ $(roost_hooks_claude)" ;;
 
   case " $DETECTED " in *" codex "*)
     codex_hooks="$(roost_adapter_settings codex)"
-    if [ "$PRINT_ONLY" -eq 1 ]; then
-      add_manual "codex: put this in $codex_hooks:
-$(roost_hooks_codex)"
-    else
-      add_manual "codex: roost's hooks are not written for you yet. Run
-    roost hooks codex
-  and put the JSON object it prints in $codex_hooks."
-    fi
-    # Unconditional, and it always will be. Codex skips every hook until a
-    # human answers this, there is no file on disk that records the answer,
-    # and no tool can answer it for them.
+    case "$JSON_MODE" in
+      print)
+        add_manual "codex: --print-only, so nothing was written. Put this in
+    $codex_hooks
+$(roost_hooks_codex)" ;;
+      notool)
+        add_manual "codex: neither python3 nor jq is on this PATH, so roost cannot edit
+  JSON here. Nothing was written. Put this in
+    $codex_hooks
+$(roost_hooks_codex)" ;;
+    esac
+    # Unconditional, and it always will be — printed on every path, including
+    # the ones that wrote nothing at all. Codex skips every hook until a human
+    # answers this, there is no file on disk that records the answer, and no
+    # tool can answer it for them, so there is nothing roost could detect that
+    # would justify leaving it out.
     add_manual "codex: start \`codex\` and answer \"Trust all and continue\" at its
   \"Hooks need review\" prompt. Until then codex silently runs no hook at all
   and its pane will not badge."

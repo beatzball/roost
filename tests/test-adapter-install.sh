@@ -841,7 +841,181 @@ assert_eq "$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "$HERE$ins
   "the installer's CLAUDE_TARGET is the same path roost-hooks.sh defaults to"
 
 # ===========================================================================
-# 14. Hygiene
+# 14. codex: write hooks.json, and never rewrite one
+# ===========================================================================
+# The stakes here are different from claude's, and higher. Codex stores a hash
+# of each normalised handler and silently SKIPS any handler whose hash no
+# longer matches -- nothing on stdout, nothing on stderr, nothing in the TUI.
+# So the two things worth pinning are that what roost writes is exactly what
+# `roost hooks codex` prints, and that an entry already on disk is never
+# rewritten.
+CODEX_SHIM="$(make_json_shim codex opencode)"
+
+# codex_hooks_of FILE -> the whole .hooks object, canonicalised.
+# codex_hooks_want   -> the same object as roost-hooks.sh prints it.
+#
+# Compared as parsed structures, and that is a MEASURED choice rather than a
+# convenience: on codex-cli 0.151.0 the hash covers the parsed handler struct,
+# not the file bytes -- an unindented and a 2-space-indented hooks.json gave
+# identical HookMetadata.currentHash for all four handlers, while changing one
+# "timeout": 10 to 11 moved all four. Key order is NOT sorted away: json.dumps
+# keeps insertion order, so a reordered event map still fails here.
+codex_hooks_of() {
+  python3 -c 'import json,sys
+print(json.dumps(json.load(open(sys.argv[1])).get("hooks")))' "$1"
+}
+codex_hooks_want() {
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_codex "$HERE/adapters/codex/roost-codex-hook" ) | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)["hooks"]))'
+}
+codex_event_of() {
+  python3 -c 'import json,sys
+print(json.dumps(json.load(open(sys.argv[1])).get("hooks", {}).get(sys.argv[2])))' "$1" "$2"
+}
+
+# --- no hooks.json at all -> write all four handlers -----------------------
+box="$TMP/codexnew"
+chooks="$box/home/.codex/hooks.json"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex fresh: exits 0"
+[ -f "$chooks" ]; assert_true $? "codex fresh: hooks.json was written"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(codex_hooks_of "$chooks")" "$(codex_hooks_want)" \
+    "codex fresh: the four handlers are exactly roost-hooks.sh's own object"
+fi
+assert_eq "$(bak_count "$chooks")" "0" \
+  "codex fresh: creating a file that did not exist takes no backup"
+# Unconditional and permanent. Until a human answers this, codex runs no hook
+# at all and says nothing about it -- there is no file on disk that records
+# the answer and no tool can answer it for them.
+assert_contains "$out" "Trust all and continue" \
+  "codex fresh: the trust step is printed after a write"
+
+# --- a hooks.json that already has somebody else's handler -----------------
+box="$TMP/codexother"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+cat > "$chooks" <<'EOF'
+{
+  "hooks": {
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "echo unrelated", "timeout": 5 } ] }
+    ]
+  }
+}
+EOF
+cbefore="$(cat "$chooks")"
+if command -v python3 >/dev/null 2>&1; then
+  keep_before="$(codex_event_of "$chooks" SessionEnd)"
+fi
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex merge: exits 0"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(codex_event_of "$chooks" SessionEnd)" "$keep_before" \
+    "codex merge: the unrelated handler is kept, value for value"
+  for ev in UserPromptSubmit PostToolUse PermissionRequest Stop; do
+    assert_eq "$(codex_event_of "$chooks" "$ev")" \
+      "$(codex_hooks_want | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))' "$ev")" \
+      "codex merge: the $ev handler is roost-hooks.sh's own, value for value"
+  done
+fi
+assert_eq "$(bak_count "$chooks")" "1" "codex merge: exactly one backup was taken"
+assert_eq "$(cat "$(bak_of "$chooks")" 2>/dev/null)" "$cbefore" \
+  "codex merge: the backup holds the pre-run bytes"
+assert_contains "$out" "Trust all and continue" \
+  "codex merge: the trust step is printed after a write"
+
+# --- already this checkout -> nothing, and no backup -----------------------
+box="$TMP/codexagain"
+chooks="$box/home/.codex/hooks.json"
+run_install "$box" "$CODEX_SHIM" --yes >/dev/null
+cbefore="$(cat "$chooks")"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex re-run: exits 0"
+assert_eq "$(cat "$chooks")" "$cbefore" "codex re-run: hooks.json is byte-identical"
+assert_eq "$(bak_count "$chooks")" "0" "codex re-run: no backup was taken"
+case "$out" in *"merge  $chooks"*) s=planned ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "codex re-run: no write is even PLANNED for it"
+# Still printed, even though this run wrote nothing. There is no way to read
+# the answer off the disk, so the only safe assumption is that it may not have
+# been given.
+assert_contains "$out" "Trust all and continue" \
+  "codex re-run: the trust step is printed anyway -- nothing can detect it"
+
+# --- a roost entry pointing at a DIFFERENT checkout -> refuse --------------
+# This is the one place in this command where helpfully fixing something is
+# worse than doing nothing. Rewriting the command string re-hashes the
+# handler, and codex then skips it in silence, so a machine that was badging
+# correctly would simply stop.
+box="$TMP/codexforeign"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_codex "$TMP/some-other-checkout/adapters/codex/roost-codex-hook" ) > "$chooks"
+fbefore="$(cksum < "$chooks")"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex wired elsewhere: still exits 0 (a refusal is not a failure)"
+assert_eq "$(cksum < "$chooks")" "$fbefore" \
+  "codex wired elsewhere: hooks.json is byte-identical after"
+assert_eq "$(bak_count "$chooks")" "0" "codex wired elsewhere: no backup was taken"
+assert_contains "$out" "$chooks" "codex wired elsewhere: the exact file is named"
+assert_contains "$out" "different checkout" \
+  "codex wired elsewhere: the output says what it found"
+assert_contains "$out" "re-hash" \
+  "codex wired elsewhere: the output says in plain words why rewriting would be worse"
+[ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
+  "codex wired elsewhere: refusing one step does not abandon the others"
+
+# --- somebody else's handler on one of roost's OWN four events -> refuse ---
+# Same reasoning as the claude case: hooks-merge replaces the event it writes,
+# so merging here would delete a handler that is not ours.
+box="$TMP/codexclash"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+cat > "$chooks" <<'EOF'
+{
+  "hooks": {
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "somebody-elses-codex-hook", "timeout": 3 } ] }
+    ]
+  }
+}
+EOF
+fbefore="$(cksum < "$chooks")"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex with another tool's handler: exits 0"
+assert_eq "$(cksum < "$chooks")" "$fbefore" \
+  "codex with another tool's handler: hooks.json is byte-identical after"
+assert_eq "$(bak_count "$chooks")" "0" \
+  "codex with another tool's handler: no backup was taken"
+assert_contains "$out" "somebody-elses-codex-hook" \
+  "codex with another tool's handler: the output names what it refuses to overwrite"
+
+# --- no JSON tool -> print the block, still exit 0, still say to trust -----
+box="$TMP/codexnotool"
+chooks="$box/home/.codex/hooks.json"
+out="$(run_install "$box" "$ALL_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex with no JSON tool: exits 0"
+assert_file_absent "$chooks" "codex with no JSON tool: hooks.json is not written"
+if command -v python3 >/dev/null 2>&1; then
+  want_codex="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex | hook_blocks)"
+  printf '%s\n' "$out" | hook_blocks | grep -qxF "$want_codex" && s=printed || s=absent
+  assert_eq "$s" "printed" \
+    "codex with no JSON tool: the block is printed exactly as roost hooks prints it"
+fi
+assert_contains "$out" "Trust all and continue" \
+  "codex with no JSON tool: the trust step is still printed"
+
+# --- the installer's codex target and roost-hooks.sh's default agree -------
+codex_inst_target="$(sed -n 's/^CODEX_TARGET="\$HERE\(.*\)"$/\1/p' "$INSTALL")"
+assert_eq "$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex "$HERE$codex_inst_target")" \
+          "$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex)" \
+  "the installer's CODEX_TARGET is the same path roost-hooks.sh defaults to"
+
+# ===========================================================================
+# 15. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
@@ -850,7 +1024,7 @@ bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
 n="$(grep -cE 'declare -A|\$\{[A-Za-z_]+\^\^|printf .*\\u[0-9a-fA-F]{4}' "$INSTALL" || true)"
 assert_eq "${n:-0}" "0" "scripts/roost-install uses no bash-4-only construct"
 
-rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM"
+rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CODEX_SHIM"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
