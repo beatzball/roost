@@ -63,9 +63,10 @@ need to hack on roost itself.
 - `git`
 - A powerline/Nerd Font for the tab separators — or run `roost init` and pick
   the plain-separator fallback
-- An agent that can report its state, for the badges — Claude Code, opencode or
-  GitHub Copilot CLI have adapters in this repo; anything else calls `roost
-  state`. The view itself works without any of them
+- An agent that can report its state, for the badges — Claude Code, opencode,
+  GitHub Copilot CLI, pi and OpenAI Codex CLI all have adapters in this repo,
+  and the installer wires whichever of them you have; anything else calls
+  `roost state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
 
 ## Install
@@ -74,18 +75,62 @@ need to hack on roost itself.
 curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
 ```
 
-That clones roost to `~/.local/share/roost` and adds its `bin/` to your `PATH`.
-It works out which startup file your shell actually reads — `.zshrc` for zsh
-(honouring `ZDOTDIR`), `.bash_profile` or `.bashrc` for bash depending on your
-platform, `config.fish` for fish — and refuses to add the same line twice.
+One command, two halves — and it is worth ten seconds to know which is which,
+because **two different things here are called "install"**:
+
+1. **It places roost.** Clones to `~/.local/share/roost` and adds its `bin/` to
+   your `PATH`, working out which startup file your shell actually reads —
+   `.zshrc` for zsh (honouring `ZDOTDIR`), `.bash_profile` or `.bashrc` for
+   bash depending on your platform, `config.fish` for fish — and refusing to
+   add the same line twice.
+2. **It wires your agents**, in the same step, by running `roost install` for
+   you. Until a harness has roost's adapter no pane ever badges, so this is the
+   half that used to get skipped.
+
+Piped from `curl` it cannot stop to ask — stdin is the script itself, so a
+prompt would eat the rest of it. Instead it prints a block naming what it is
+about to write, says that every file it edits is backed up beside itself as
+`<name>.roost-bak-<timestamp>`, and names the flag that skips it. Run from a
+clone with a terminal, it asks first.
 
 Options:
 
 ```sh
 ./install.sh --dir ~/tools/roost   # clone somewhere else
 ./install.sh --symlink             # symlink bin/roost into a PATH dir instead
+./install.sh --no-wire             # place roost, wire nothing
 ./install.sh --dry-run             # print what it would do, change nothing
 ```
+
+### `roost install` — the *other* one, for later
+
+`roost install` is that second half on its own, run whenever you like.
+`roost update` is a real alias for it: the same code path and the same flags.
+**Neither fetches new roost code** — both re-wire the checkout you already have
+to whatever is installed on the machine now. Re-run either after installing a
+harness roost had not seen, after moving or re-cloning your checkout, or after
+a roost release that adds an adapter.
+
+It is safe to repeat. Hooks you already have are kept and roost's four join
+them — a `PostToolUse` formatter of your own survives — and a second run adds
+no duplicates. Anything at an adapter path that is not roost's is left exactly
+as found and named, with the command to replace it yourself if that is what you
+want.
+
+```sh
+roost install --dry-run     # print the plan, write nothing
+roost install --only pi     # one harness (opencode, pi, copilot, claude, codex)
+roost install --print-only  # never edit JSON — print the blocks to paste
+roost install --help        # -y/--yes, --symlinks-only, --records
+```
+
+**Two steps stay manual because both are prompts**, and `roost install` names
+whichever apply when it finishes: codex's *"Trust all and continue"* at its
+`Hooks need review` prompt, and copilot's per-directory *"wants to: handle
+permission requests"*.
+
+The user-facing walkthrough is
+[roosting.dev/docs/getting-started](https://roosting.dev/docs/getting-started).
 
 Prefer to do it by hand? roost is just a script:
 
@@ -107,8 +152,10 @@ roost          # start/attach the default session ("main")
 
 The prefix is `Ctrl-s`. Detach with `prefix d`, like any tmux.
 
-Badges need a one-time hook setup — run `roost hooks` and merge the output into
-`~/.claude/settings.json`. Full walkthrough:
+Badges come from the wiring the installer already did. If a pane is not
+badging, `roost doctor` names the harness and ends that line with
+`, or run: roost install`. To wire by hand instead, `roost hooks` prints the
+Claude block and `roost hooks codex` the codex one. Full walkthrough:
 [roosting.dev/docs/state-badges](https://roosting.dev/docs/state-badges).
 
 For LLM agents, install the portable skill so they know the coordination loop:
@@ -144,7 +191,8 @@ Everything below is for people working **on** roost.
 ```
 bin/roost                   # launcher / CLI (up, session, new, spawn, split, whoami,
                             #   ssh, send, read, screen, reply, wait-done, state,
-                            #   hooks, doctor, init, settings, status, kill)
+                            #   hooks, doctor, validate, install, update, init,
+                            #   settings, status, kill)
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the
@@ -155,9 +203,20 @@ scripts/roost-notify        # cross-platform desktop notification delivery
 scripts/roost-doctor        # preflight checks (tmux version, truecolor, fzf, JSON
                             #   reader, hooks, adapter links, notifier)
 scripts/roost-init          # setup wizard (theme, glyphs, separator style, prints hooks)
+scripts/roost-install       # `roost install` / `roost update`: wire every installed
+                            #   harness to THIS checkout — three adapter symlinks, the
+                            #   claude and codex hook files, copilot's EXTENSIONS flag.
+                            #   Refuses rather than replace a file that is not roost's
 scripts/roost-settings      # live settings TUI (prefix S)
 scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
 scripts/roost-themes.sh     # built-in theme palettes
+scripts/lib/roost-adapters.sh   # the one table of where each adapter goes, so an
+                            #   install plan and a doctor report cannot disagree
+scripts/lib/roost-hooks.sh  # the ONE definition of the claude and codex hook JSON.
+                            #   Codex hashes what it trusts, so a second copy that
+                            #   drifted by a byte would un-badge a trusted machine
+scripts/lib/roost-json.sh   # the atomic, backed-up JSON merge behind `roost install`
+                            #   (and the honest degrade when there is no JSON tool)
 scripts/lib/roost-config.sh # shared config helpers
                             #   (surgical writer, glyph/sep maps, live-apply)
 scripts/lib/roost-reply.sh  # the one place that decides how a reply is

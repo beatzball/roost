@@ -20,7 +20,7 @@ State comes from **each agent's own lifecycle events** — Claude Code hooks, th
 - `tmux` ≥ 3.2 (needs pane options, `#{P:}` pane loops, and `display-popup`)
 - `git`
 - A powerline/Nerd Font for the tab separators — or run `roost init` and pick the plain-separator fallback
-- An agent that can report its state, for the badges — Claude Code, opencode and GitHub Copilot CLI have adapters in this repo; anything else calls `roost state`. The view itself works without any of them
+- An agent that can report its state, for the badges — Claude Code, opencode, GitHub Copilot CLI, pi and OpenAI Codex CLI all have adapters in this repo, and the installer wires whichever of them you have; anything else calls `roost state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
 
 ## Install
@@ -29,13 +29,29 @@ State comes from **each agent's own lifecycle events** — Claude Code hooks, th
 curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
 ```
 
-That clones roost to `~/.local/share/roost` and adds its `bin/` to your `PATH`.
+That does two things, and it is worth ten seconds to know which is which,
+because **two different things here are called "install"**.
 
-It works out which startup file your shell actually reads, rather than assuming
-zsh: `.zshrc` for zsh (honouring `ZDOTDIR`), `.bash_profile` or `.bashrc` for
-bash depending on your platform, `config.fish` for fish. Re-running it will not
-add the same line twice, and an unrecognised shell gets a line to paste rather
-than a guess.
+**1. It places roost.** Clones it to `~/.local/share/roost` and adds its `bin/`
+to your `PATH`. It works out which startup file your shell actually reads,
+rather than assuming zsh: `.zshrc` for zsh (honouring `ZDOTDIR`),
+`.bash_profile` or `.bashrc` for bash depending on your platform,
+`config.fish` for fish. Re-running it will not add the same line twice, and an
+unrecognised shell gets a line to paste rather than a guess.
+
+**2. It wires your agents**, in the same step, by running `roost install` for
+you. That is the part that makes the badges work: until a harness has roost's
+adapter, its pane is never badged and roost looks broken. It touches only
+harnesses you already have, and only their own agent config — one symlink each
+for opencode, pi and copilot, roost's hooks merged into Claude's and codex's
+settings, and copilot's `EXTENSIONS` flag turned on.
+
+Piped from `curl` it cannot stop to ask you: stdin is the script itself, so a
+prompt there would eat the rest of the script. So it prints a block naming
+exactly what it will write, says that every file it edits is backed up beside
+itself as `<name>.roost-bak-<timestamp>`, and tells you how to skip it — then
+goes ahead. Run from a clone in a terminal, it asks first, and only you know
+what you answered.
 
 ### Options
 
@@ -43,6 +59,7 @@ than a guess.
 ./install.sh --dir ~/tools/roost   # clone somewhere else
 ./install.sh --symlink             # symlink bin/roost into a PATH dir instead
 ./install.sh --symlink ~/bin       # ...or a specific one
+./install.sh --no-wire             # place roost, wire nothing
 ./install.sh --dry-run             # print what it would do, change nothing
 ```
 
@@ -50,14 +67,64 @@ than a guess.
 your `PATH`. It checks rather than assuming: `/usr/local/bin` is the
 traditional answer and is frequently root-owned.
 
+`--no-wire` stops after the `PATH` line. Run `roost install` yourself whenever
+you want the second half.
+
+### `roost install` — the other one, for later
+
+`roost install` is that second half on its own, and it is the command to reach
+for after the first day:
+
+```sh
+roost install    # wire every installed harness to this checkout
+roost update     # the same thing — a real alias, not a second command
+```
+
+**Neither of them fetches new roost code.** They re-wire the checkout you
+already have to whatever is installed on the machine *now*. Run either one
+when you:
+
+- install a harness roost had not seen when you first ran it
+- move, re-clone, or switch to a different roost checkout
+- take a roost release that adds a new adapter
+
+It is safe to run again and again. Hooks you already have are kept and roost's
+join them — a `PostToolUse` formatter of your own survives — and a second run
+adds no duplicates. Anything sitting at an adapter path that is not roost's is
+left exactly as it was found and named in the output, with the command to
+replace it yourself if that is what you want. Every file it edits is backed up
+beside itself first.
+
+```sh
+roost install --dry-run     # print the plan and change nothing
+roost install --only pi     # one harness (opencode, pi, copilot, claude, codex)
+roost install --print-only  # never edit JSON — print the blocks to paste
+roost install --help        # the rest of the flags
+```
+
+**Two steps are left for you, and no tool can do either** — both are prompts
+somebody has to answer. `roost install` lists whichever apply to your machine
+when it finishes:
+
+- **codex** — start `codex` once and answer *"Trust all and continue"* at its
+  `Hooks need review` prompt. Until you do, codex silently runs no hook at all.
+- **copilot** — the first time you run it in a directory, answer **Yes** to
+  *"wants to: handle permission requests"*. Once per directory, and nothing on
+  disk records it.
+
+Both are covered in full on [Enable the state badges](/docs/state-badges).
+
 ### By hand
 
-roost is just a script, so this is all the installer does:
+roost is just a script, so this is all the placing half does:
 
 ```sh
 git clone https://github.com/beatzball/roost.git roost
 export PATH="$PWD/roost/bin:$PATH"   # add to your shell's startup file
 ```
+
+Then `roost install` for the wiring half, or wire each harness yourself from
+[Enable the state badges](/docs/state-badges).
 
 The launcher resolves its own location (following symlinks), so it finds its
 config and scripts no matter where you run it from.
@@ -69,6 +136,10 @@ roost doctor   # check tmux version, truecolor, fzf, hooks, adapter links, notif
 roost init     # pick theme, glyph set, separator style; print the Claude hooks
 roost          # start/attach the default session ("main")
 ```
+
+`roost doctor` is the one to run if a pane is not badging: it names the harness
+that is not wired, and every one of those lines ends with
+`, or run: roost install`.
 
 Detach with the prefix then `d`, like any tmux. The prefix is `Ctrl-s`.
 

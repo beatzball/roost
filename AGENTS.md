@@ -47,8 +47,8 @@ A live `tmux -L roost` server usually holds the author's real working agents.
   Every test drives `tmux -S "$ROOST_TEST_SOCK"`, never a bare `tmux`
 
 `scripts/roost-agent-state` is wired into
-`~/.claude/settings.json` by **absolute path** and runs on every tool call of
-every live agent. Renaming, moving, or breaking it takes down real work in
+`~/.claude/settings.json` by **absolute path** — that is the entry
+`roost install` writes — and runs on every tool call of every live agent. Renaming, moving, or breaking it takes down real work in
 seconds, with no keypress involved.
 
 ## 3. Work in a worktree, never the primary checkout
@@ -155,6 +155,16 @@ python3 tests/test-contrast.py   # also a CI step — run it too
   and write the author's real account while looking isolated —
   `tests/live/copilot-smoke.sh` sets `COPILOT_HOME` for exactly this reason. The
   rule is per harness: find its own home variable, do not assume the XDG one
+- **`roost install` writes into every one of those homes, and `install.sh` runs
+  it**, so a test that exercises either has to redirect all of them. `HOME`
+  alone is not enough and neither is the XDG pair. The table lives in
+  `scripts/lib/roost-adapters.sh`: `XDG_CONFIG_HOME` (opencode),
+  `PI_CODING_AGENT_DIR` (pi), `COPILOT_HOME` (copilot), `CODEX_HOME` (codex),
+  and `CLAUDE_SETTINGS` — which names a **file**, not a directory. Clear
+  `ZDOTDIR` too. `tests/test-install.sh`'s `run_install` sets the whole set in
+  one place; copy that shape rather than deriving the list again. A runner that
+  exports any of these has it inherited straight through a sandboxed `HOME`,
+  and then a test about a `PATH` line rewrites the author's live agent config
 
 ## 9. Verify rather than assert
 
