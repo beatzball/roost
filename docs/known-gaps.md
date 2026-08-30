@@ -79,6 +79,73 @@ that is its own task. Two candidates, neither implemented:
   would be a new kind of check: list panes stamped `blocked` whose visible
   screen carries no dialog marker, and name them. Cheap, read-only, and it
   turns an invisible deadlock into a line of output.
+### A codex pane reports a dead turn as ✅ done
+
+Codex has exactly twelve hook events — `PreToolUse`, `PermissionRequest`,
+`PostToolUse`, `PreCompact`, `PostCompact`, `SessionStart`, `SessionEnd`,
+`UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `Stop`, `Interrupt` —
+enumerated out of the shipped binary and confirmed against live runs on 0.150.1
+and 0.151.0. **None of them reports an error.**
+
+A turn that never reaches the model still ends, and codex still fires `Stop`.
+So `adapters/codex/roost-codex-hook` maps that ending to `done`, and the pane
+says *"finished, go look"* about a turn that produced nothing. `roost read`
+then serves whatever `last_assistant_message` the payload carried, which for a
+dead turn is empty — so the reader falls back to scraping the screen and gets
+the error text as chrome rather than as a state.
+
+This is the `#13` bug shipped deliberately rather than by accident, and **a
+wrong `done` is the worst wrong badge there is: every other one makes you look,
+and this one makes you stop looking.** `roost wait-done` will report success on
+a corpse, and `roost next-blocked` has nothing to jump to.
+
+**Why it shipped anyway.** There is no signal to build it on. The only
+candidate is an unmatched `PreToolUse` — a live turn whose tool call failed
+showed five `PreToolUse` against four `PostToolUse` — and a heuristic built on
+that mislabels a healthy turn `error`, which fires a desktop notification for
+nothing. The adapter contract's §1 rules that out explicitly: do not invent a
+state from a signal nobody has seen behave. Every other harness roost adapts
+has a real failure declaration; codex does not, and inventing one is worse than
+naming the gap. The Codex section of `site/content/docs/state-badges.md` states
+it before a user trusts the badge.
+
+### A codex adapter can be installed, correct, and silently switched off
+
+`adapters/codex/roost-codex-hook` only runs once a human has answered *"Trust
+all and continue"* at codex's `Hooks need review` prompt. Until then all four
+hooks are skipped, and **codex says nothing about it**. This is the complete,
+unedited stderr of a `codex exec` turn with untrusted hooks wired:
+
+```
+warning: clamping SessionEnd hook timeout to 3s in <scratch>/cxhome/hooks.json
+warning: clamping Interrupt hook timeout to 3s in <scratch>/cxhome/hooks.json
+warning: Model metadata for `granite4.2:3b` not found. ...
+codex
+alpha
+```
+
+Warnings about timeouts. A warning about model metadata. Nothing about four
+hooks being skipped. Codex's own docs promise a startup warning pointing at
+`/hooks` — true of the TUI, false of `codex exec`, which is where automation
+lives.
+
+**What that costs, precisely.** The same as the copilot entry below: an
+unbadged pane is not `blocked`, so `roost send`'s exit-3 refusal never fires,
+and a `send` aimed at a codex pane sitting at a permission dialog types into
+that dialog and presses Enter on whatever is highlighted.
+
+**Why it shipped anyway.** The gate is codex's and cannot be answered from this
+side; `--dangerously-bypass-hook-trust` exists and roost does not use it or
+suggest it. `roost doctor` does what can be done — it reads the trust entries
+out of `$CODEX_HOME/config.toml` and counts them, so "installed" and "will run"
+are reported as the different claims they are.
+
+**The residual risk doctor cannot see.** A trust entry stores a *hash* of the
+normalised handler. roost does not know codex's normalisation, so four present
+entries are not proof that four hooks will fire: a `hooks.json` hand-edited
+after trust was granted keeps its entries and loses its hooks. roost's own
+answer is upstream of doctor — `roost hooks codex` emits handler objects frozen
+at v1 that never change again, so a roost upgrade can never be the cause.
 
 ### A copilot pane can be badge-less, and nothing says so
 
@@ -259,6 +326,14 @@ has already produced a real bug here.
   skip it without noticing. Shipping the adapter as `.js` was the alternative and
   was rejected: pi's discovery glob only looks for `*.ts` and `*/index.ts`, so a
   `.js` adapter is a file pi never loads.
+- `tests/live/codex-smoke.sh` runs a harness that can modify the machine it is
+  tested on. A codex TUI being driven inside an isolated tmux socket ran
+  `brew upgrade --cask codex` and replaced the host's binary mid-test — the tmux
+  socket, `CODEX_HOME` and the XDG homes were all isolated and all held; a
+  system package manager is not something a scratch directory contains. The test
+  sets `check_for_update_on_startup = false`, which is codex's own switch rather
+  than a boundary roost enforces. Full write-up, and what it means for the next
+  harness, in `docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md`.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at

@@ -343,3 +343,72 @@ case "$out" in
   *) assert_eq ok ok "roost doctor is silent once the old opencode plugin file is gone" ;;
 esac
 rm -rf "$ocstale"
+
+# --- roost doctor: the codex adapter, and its consent gate ---
+#
+# The codex check does one thing the opencode and copilot checks do not: it
+# reads the TRUST entries out of config.toml, because codex skips an untrusted
+# hook in total silence and nothing else on the machine will ever say so (spec
+# §5 T6). "Installed" and "will run" are different claims, so both are asserted
+# here, separately.
+#
+# A fake `codex` on PATH, because the checks are gated on the binary existing
+# and most machines running this suite will not have it — the same shape as the
+# faked-tmux cases at the top of this file.
+cxshim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\nexit 0\n' > "$cxshim/codex"
+chmod +x "$cxshim/codex"
+cxhome="$(mktemp -d /tmp/amx.XXXX)"
+HOOK="$HERE/adapters/codex/roost-codex-hook"
+rdoctor() { PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor "$RDOC" 2>&1; }
+
+# 1. codex present, nothing written
+out="$(rdoctor)"
+assert_contains "$out" "roost hooks codex" "doctor names the exact command when codex hooks are not written"
+
+# 2. a hooks.json that wires some other tool
+printf '{"hooks":{}}\n' > "$cxhome/hooks.json"
+out="$(rdoctor)"
+assert_contains "$out" "does not reference roost-codex-hook" "doctor spots a hooks.json that is not roost's"
+
+# 3. a hooks.json wiring a DIFFERENT checkout's shim. This is the codex
+# equivalent of the opencode "not this install" case, and it matters more here:
+# the trust entry is keyed by the hooks.json path, so a stale checkout path
+# fails at the exec rather than at the trust prompt.
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/somewhere/else/adapters/codex/roost-codex-hook Stop","timeout":10}]}]}}\n' > "$cxhome/hooks.json"
+out="$(rdoctor)"
+assert_contains "$out" "different checkout" "doctor spots a roost-codex-hook from another checkout"
+
+# 4. wired to THIS checkout, but never trusted — the silent-failure case
+"$HERE/bin/roost" hooks codex | sed -n '/^{/,$p' > "$cxhome/hooks.json"
+out="$(rdoctor)"
+assert_contains "$out" "codex hooks wired in" "doctor confirms roost's own hooks.json"
+assert_contains "$out" "trusted NONE" "doctor reports untrusted hooks rather than inferring consent from the file"
+assert_contains "$out" "Trust all and continue" "doctor prints the exact answer the user has to give"
+
+# 5. partially trusted. Real trust entries are keyed
+# "<hooks.json path>:<snake_case event>:<group>:<handler>" — captured live from
+# codex-cli 0.151.0's config.toml.
+{
+  printf '[hooks.state."%s:stop:0:0"]\n' "$cxhome/hooks.json"
+  printf 'trusted_hash = "sha256:0000"\n'
+} > "$cxhome/config.toml"
+out="$(rdoctor)"
+assert_contains "$out" "only 1 of the four" "doctor counts partially-granted trust instead of calling it done"
+
+# 6. fully trusted
+{
+  for ev in user_prompt_submit post_tool_use permission_request stop; do
+    printf '[hooks.state."%s:%s:0:0"]\n' "$cxhome/hooks.json" "$ev"
+    printf 'trusted_hash = "sha256:0000"\n'
+  done
+} > "$cxhome/config.toml"
+out="$(rdoctor)"
+assert_contains "$out" "trusted all four" "doctor confirms a fully trusted codex install"
+
+# ...and none of it is ever a hard failure: most users do not have codex, and a
+# missing adapter for a harness you do not run is not a broken roost.
+PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
+assert_eq "$?" "0" "the codex checks never fail doctor"
+
+rm -rf "$cxshim" "$cxhome"
