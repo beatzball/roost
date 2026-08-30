@@ -25,6 +25,7 @@
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
 #   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
+#   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status             list running sessions + agents
@@ -167,6 +168,19 @@ case "${1:-up}" in
     ;;
   doctor)
     exec "$ROOST_HOME/scripts/roost-doctor"
+    ;;
+  validate)
+    # Next to doctor, and for the same reason: it is a thing a USER runs to
+    # tell us what happened on their machine, not a test. tests/run.sh globs
+    # tests/test-*.sh and cannot reach scripts/, which is the property that
+    # keeps a forty-minute live run out of CI.
+    #
+    # Where doctor reads the machine's configuration, validate drives it: the
+    # offline suites, this repo's live smoke suites, a real end-to-end drive of
+    # every installed harness against local ollama, and the two known bugs as
+    # explicit checks. It writes one file and prints its path.
+    shift
+    exec "$ROOST_HOME/scripts/roost-validate" "$@"
     ;;
   init)
     exec "$ROOST_HOME/scripts/roost-init"
@@ -739,5 +753,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

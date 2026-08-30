@@ -255,6 +255,106 @@ carries a setting that asks it not to
 one opencode, copilot or pi process, which the recovery cases need and a config
 rewrite cannot do — the file's docstring has the measurement.
 
+## `roost validate` — the report a tester sends back
+
+```sh
+roost validate                  # drives YOUR providers; walk away
+roost validate --opencode-cloud # opencode via a free cloud model; no account
+roost validate --local          # drives a local ollama instead; spends nothing
+roost validate --quick          # skip the ollama smoke suites above
+```
+
+Not a test, and deliberately out of reach of `tests/run.sh` — that globs
+`tests/test-*.sh`, so `scripts/roost-validate` cannot be picked up and a
+long live run can never land in CI. It sits next to `roost doctor` because it
+is the same kind of thing: something a **user** runs to tell us what happened
+on their machine.
+
+Where doctor reads the configuration, validate drives it, and writes the report
+itself. One run produces one file covering the environment and every version,
+`roost doctor` verbatim, both offline suites with their exit codes reported
+separately from their counts ([AGENTS.md](AGENTS.md) §8), the smoke suites
+above, a uniform end-to-end drive of every installed harness — badge sampled
+over time rather than read once, `roost read` against `roost screen`, `roost
+send`'s exit-3 refusal at a real dialog — and the two entries in
+[docs/known-gaps.md](docs/known-gaps.md) as explicit REPRODUCED / NOT
+REPRODUCED checks.
+
+**The default drives each harness against the tester's own provider, and that
+is the whole value of it.** Everything in `tests/live/` runs against a local
+ollama because that is how our own tests run without credentials — and a 3B
+local model barely calls tools, never spawns a subagent, and answers in
+seconds. Tool calls are what drive `PostToolUse`, permission dialogs and the
+`working`→`blocked`→`working` transitions this badge mapping is almost entirely
+about; subagents are trap T1 in the adapter contract; and real latency is where
+our ordering bugs have lived (`#14` was a message re-announced *after* its
+content). Codex is the sharpest case: it cannot drive ollama at all without
+`tests/live/codex-tool-proxy.py` stripping tool definitions ollama rejects, so
+a local codex run exercises that proxy and a run on a real account exercises
+the code path we ship. `--local` keeps the old behaviour for a machine with no
+accounts wired, and the report records per harness which tier ran.
+
+**A third tier exists for opencode alone, and it is the best fallback there
+is.** opencode ships free cloud models that need no account and no key —
+`opencode auth list` can report zero credentials while `opencode models` lists
+seven — and they are a genuinely remote provider. `--opencode-cloud` drives
+opencode against one. Measured on this repo's own machine against a token that
+existed only in a file on disk and never in a prompt, so a tool call was the
+only way to produce it: five of seven called the tool, and both models driven
+through the TUI reached a real permission dialog in 3–4 seconds with a clean
+release to `done`. `granite4.2:3b` took 55s to do the same and frequently
+declines to call a tool at all, which is why `tests/live/*-smoke.sh` have to
+treat "the model never called the tool" as a SKIP. So for opencode this tier is
+strictly better than the local one, and it costs the tester nothing.
+
+Two measured facts shape how it is implemented, and both would have made a
+naive version lie. **The model list is not stable** — one model disappeared and
+another arrived between two runs an hour apart — so the model is resolved
+against `opencode models` at runtime rather than pinned. And **the opencode TUI
+silently runs a different model when given an id it does not know**: a config
+naming `opencode/no-such-model-zzz` answered normally with "Build · Big Pickle"
+on its own footer, no error and no warning. An unrecognised id is therefore
+refused up front, because a page of green results attributed to a model that
+never ran is worse than any failure this script can report. A free tier that
+throttles is reported as the provider's own message and a SKIP, never a FAIL —
+a tester who sees FAIL on a rate limit reports the wrong bug.
+
+Two consequences of that default, both handled rather than hidden: the run
+spends the tester's own money (announced before it starts, a handful of
+one-line prompts per harness, and `--local` avoids it), and real turns are slow
+and uneven — so every bound is sized for a real provider and reaching one is
+reported as a **TIMEOUT** row, distinct from a FAIL, because "the reply did not
+arrive in N seconds" and "the reply was wrong" are different findings.
+
+It replaced a 240-line manual pack that asked a volunteer to observe all of
+that by hand and fill in a form. Hand-copied observations are the least
+reliable evidence available, and the field most often left blank was the one
+that mattered most: a suite's exit code, as opposed to its PASS/FAIL counts.
+
+It asks exactly one question before it starts, and the split behind it is worth
+keeping straight. A missing **provider** is the tester's account and is never
+ours to arrange — that stays a SKIP. A missing **adapter symlink** is the
+install step of the thing they agreed to test, `roost doctor` already prints
+the command, and skipping four harnesses to make someone run four commands and
+start again puts back the manual work this script exists to remove. So it lists
+what is missing, asks once for all of them, and links them on a yes. Symlinks
+and adapters only — no hooks file, no codex trust, no `settings.json`, no
+provider config, since each of those carries a credential or needs an answer at
+an interactive prompt. It never replaces a path that is not already our symlink,
+and the report prints an `rm` for every link the run created. `--install` /
+`--no-install` answer it up front; a pipe with neither defaults to no.
+
+Its other boundaries are in the file's own header and are not negotiable: its
+own `-S` socket in a `mktemp -d` (never the caller's tmux, never a live
+`-L roost` server), no authentication ever, every wait bounded, and the report
+assembled from an `EXIT` trap so a crash halfway through still leaves a file
+worth sending. Absolute paths, usernames and hostnames are substituted before
+anything is written; `--keep-home-paths` turns that off.
+
+Claude Code is the one harness it will not drive, and the report says so where
+it matters: there is no local-provider seam for it, and redirecting `HOME` to
+isolate the config takes the credential with it.
+
 ## Working on the docs site
 
 The site in `site/` builds to static HTML and deploys to

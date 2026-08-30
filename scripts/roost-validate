@@ -1,0 +1,2411 @@
+#!/usr/bin/env bash
+# roost validate — run every check we would otherwise ask a tester to run by
+# hand, and write the report ourselves.
+#
+# This replaces a 240-line manual pack that ended in a form the tester filled
+# in. Hand-copied observations are the least reliable evidence there is: a
+# badge is read once and typed from memory, an exit code is remembered rather
+# than captured, and the one number that matters (a suite's EXIT code, as
+# opposed to its PASS/FAIL counts — AGENTS.md §8) is the one a human is most
+# likely to leave out. Everything below is measured and pasted verbatim.
+#
+#   roost validate                 # everything; walk away, come back to a file
+#   roost validate --local         # drive against local ollama instead of your accounts
+#   roost validate --quick         # skip this repo's own live smoke suites
+#   roost validate --out report.md # choose where the report lands
+#
+# BY DEFAULT EACH HARNESS RUNS THE WAY YOU NORMALLY RUN IT — your own
+# configuration, your own provider, your own account. That is deliberate and it
+# is the whole value of the report: everything that differs between a small
+# local model and a real account is exactly where an adapter breaks. Real
+# models call tools constantly, which is what drives PostToolUse, permission
+# dialogs and the working->blocked->working transitions this badge mapping is
+# almost entirely about; they spawn subagents, which is trap T1 in the adapter
+# contract; and they have real latency, which is where the ordering bugs live
+# (#14 was a message re-announced AFTER its content). Codex is the sharpest
+# case: it cannot drive ollama at all without tests/live/codex-tool-proxy.py
+# stripping tool definitions ollama rejects, so a local codex run exercises our
+# proxy and a real one exercises the actual code path.
+#
+# --local swaps every drive to a local ollama in a scratch config directory
+# instead. It is the fallback for someone with no accounts wired, and it tests
+# our rig rather than their setup — so the report says, per harness, which of
+# the two ran.
+#
+# It is NOT a test. tests/run.sh globs tests/test-*.sh and cannot reach this
+# file; it sits in scripts/ next to roost-doctor because it is the same kind of
+# thing — something a user runs to tell us what happened on their machine.
+#
+# --- the four boundaries this script does not cross -------------------------
+#
+# 1. It never touches the caller's tmux. Its own server lives on an -S socket
+#    inside a mktemp -d, and the path ends in /roost because
+#    scripts/lib/roost-socket.sh recognises nothing else as a roost server (so
+#    a socket named anything else would badge nothing and every check below
+#    would fail for the wrong reason). A live `tmux -L roost` server usually
+#    holds the author's real working agents and is never contacted.
+# 2. It never CHANGES the caller's configuration, and never sets anything up.
+#    In the default mode it READS the config each harness already has — that is
+#    the point — and writes none of it. It will not install an adapter, write a
+#    hooks file, or answer a trust prompt that persists: where an adapter is
+#    missing, the harness is SKIPPED and the report prints the exact command
+#    from `roost doctor` instead. Under --local nothing real is read either:
+#    HOME, the three XDG homes, CODEX_HOME, COPILOT_HOME and
+#    PI_CODING_AGENT_DIR are all redirected per harness — per harness, because
+#    AGENTS.md §8 is explicit that XDG is a convention and not a guarantee:
+#    copilot ignores it entirely and codex still creates ~/.codex/tmp whatever
+#    CODEX_HOME says.
+#
+#    The one thing the default mode does leave behind is what running the agent
+#    once always leaves behind: that harness's own session transcript, in its
+#    normal place. Not a config change, and not something roost can prevent
+#    without taking the credential away with it.
+# 3. It never authenticates. It uses the credential already on the machine and
+#    never asks for one, and a harness with no configuration is SKIPPED with
+#    that as the printed reason. Claude Code is SKIPPED in both modes: it has
+#    no local-provider seam, and section 6 says so where it matters.
+#
+#    In the default mode the run therefore SPENDS THE TESTER'S OWN MONEY. It is
+#    a handful of one-line prompts per harness, it is announced before anything
+#    starts, and --local avoids it entirely.
+# 4. It never hangs. Every wait is bounded, every timeout is a recorded result
+#    rather than a stall, and the report is assembled from an EXIT trap so a
+#    crash in the middle still leaves a file worth sending.
+set -u
+
+ROOST_VALIDATE_FORMAT=1
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+HERE="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+# granite4.2:3b for the same reason tests/live/*-smoke.sh give: 2.2 GB, and it
+# is the one thing a tester may have to pull. The escalation case needs a model
+# that actually ASKS for it — measured in tests/live/codex-smoke.sh, the 3b
+# never does — so a second, bigger model is named separately and its absence is
+# a SKIP with the pull command in it, never a failure.
+MODEL="${ROOST_LIVE_MODEL:-granite4.2:3b}"
+BIGMODEL="${ROOST_LIVE_BIG_MODEL:-granite4.2:8b}"
+
+OUT=""
+REDACT=1
+RUN_SMOKE=1
+# 0 = drive each harness with its own configured provider (the default, and the
+# reason this report is worth collecting). 1 = drive everything against a local
+# ollama in a scratch config directory instead.
+LOCAL=0
+ASSUME_YES=0
+# "" = ask once, interactively, defaulting to no. 1 = link without asking.
+# 0 = never link. See offer_adapter_install for why this is one question rather
+# than one per harness.
+INSTALL_ADAPTERS=""
+# "" = off. Otherwise, drive OPENCODE against a free opencode/* cloud model
+# instead of a configured provider or a local ollama. "auto" picks one from the
+# live list; anything else is taken as the model id.
+#
+# Only opencode, because only opencode ships these. It is a third tier between
+# the two that already exist, and for opencode it is strictly better than the
+# ollama fallback: measured below in pick_cloud_model's comment.
+OPENCODE_CLOUD=""
+
+# The smoke suites are minutes each against a local model. A bound is not
+# optional here: an ollama that stops responding mid-suite turns every one of
+# their `wait_state ... 240` loops into a wall-clock hour with nothing to show.
+SMOKE_BUDGET="${ROOST_VALIDATE_SMOKE_BUDGET:-1500}"
+
+usage() {
+  cat >&2 <<USAGE
+usage: roost validate [--out PATH] [--local] [--quick] [--yes]
+                      [--keep-home-paths] [--model NAME] [--big-model NAME]
+
+By default every harness is driven with YOUR OWN configuration and provider —
+your account, your model, your quota. That is the point of the report, and it
+costs a small amount of money (a handful of one-line prompts per harness).
+
+  --out PATH          where to write the report (default: ./roost-validation-<UTC>.md)
+  --local             drive against a local ollama in a scratch config dir
+                      instead of your accounts. Costs nothing, and tests our
+                      rig rather than your setup — the report says which ran.
+  --opencode-cloud[=MODEL]
+                      drive OPENCODE against one of opencode's free cloud
+                      models. No account, no key, nothing to install, and it is
+                      a real remote provider — so it exercises network latency
+                      and real tool use, which a local model does not. Costs
+                      nothing. Affects opencode only.
+  --quick             skip this repo's own tests/live/*-smoke.sh suites
+  --yes               answer yes without asking: link any missing adapter
+                      symlinks, and do not pause for the cost notice
+  --install           link missing adapter symlinks without asking
+  --no-install        never link anything; skip those harnesses instead
+  --keep-home-paths   do NOT redact \$HOME, your username or your hostname
+  --model NAME        ollama model, --local only (default: $MODEL)
+  --big-model NAME    ollama model for the codex escalation case, --local only
+                      (default: $BIGMODEL)
+USAGE
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --out)             [ "$#" -ge 2 ] || usage; OUT="$2"; shift 2 ;;
+    --quick|--no-smoke) RUN_SMOKE=0; shift ;;
+    --local)           LOCAL=1; shift ;;
+    --yes|-y)          ASSUME_YES=1; shift ;;
+    --install)         INSTALL_ADAPTERS=1; shift ;;
+    --opencode-cloud)  OPENCODE_CLOUD=auto; shift ;;
+    --opencode-cloud=*) OPENCODE_CLOUD="${1#*=}"; shift ;;
+    --no-install)      INSTALL_ADAPTERS=0; shift ;;
+    --keep-home-paths) REDACT=0; shift ;;
+    --model)           [ "$#" -ge 2 ] || usage; MODEL="$2"; shift 2 ;;
+    --big-model)       [ "$#" -ge 2 ] || usage; BIGMODEL="$2"; shift 2 ;;
+    -h|--help)         usage ;;
+    *)                 echo "roost validate: unknown argument '$1'" >&2; usage ;;
+  esac
+done
+
+STARTED_EPOCH="$(date -u +%s)"
+STARTED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+[ -n "$OUT" ] || OUT="$PWD/roost-validation-$(date -u +%Y%m%dT%H%M%SZ).md"
+
+# Fail on an unwritable destination NOW, not in the EXIT trap after forty
+# minutes of model time. The trap is the only thing that ever writes $OUT, so a
+# bad path would otherwise be discovered exactly once — at the end, with every
+# measurement already taken and nowhere to put it.
+: > "$OUT" 2>/dev/null || { echo "roost validate: cannot write to $OUT" >&2; exit 2; }
+
+WORK="$(mktemp -d /tmp/roost-val.XXXXXX)"
+BODY="$WORK/body.md"
+SUMMARY="$WORK/summary.tsv"
+: > "$BODY"; : > "$SUMMARY"
+
+# --- redaction --------------------------------------------------------------
+#
+# `roost doctor` prints absolute paths into $HOME on almost every line, tmux
+# socket paths carry the scratch directory, and `uname -a` carries the
+# hostname. A tester should not have to read 400 lines looking for their own
+# name before they feel safe sending this.
+#
+# So the default is to redact, and the report SAYS it redacted rather than
+# doing it silently — a reader who sees `~/.claude/settings.json` needs to know
+# that is a substitution and not what doctor printed. --keep-home-paths turns
+# it off for anyone who would rather send the raw thing.
+#
+# Order matters: $HOME before the bare username, longest match first, or
+# `/Users/alice` would become `/Users/<user>` and never reach the `~` rule.
+_sed_escape() { printf '%s' "$1" | sed 's/[\\/&|]/\\&/g'; }
+REDACT_SED=""
+if [ "$REDACT" -eq 1 ]; then
+  _user="$(id -un 2>/dev/null || echo "${USER:-}")"
+  _host="$(hostname 2>/dev/null || echo "")"
+  # The PHYSICAL path first, and it is not belt-and-braces. On macOS /tmp is a
+  # symlink to /private/tmp; a harness that resolves its own working directory
+  # prints the /private form, which the /tmp pattern below cannot match — the
+  # first run of this script left "/private<scratch>/rig/proj" in the report.
+  _workp="$(cd "$WORK" 2>/dev/null && pwd -P)"
+  REDACT_SED="s|$(_sed_escape "${_workp:-$WORK}")|<scratch>|g"
+  [ "${_workp:-$WORK}" != "$WORK" ] && REDACT_SED="$REDACT_SED;s|$(_sed_escape "$WORK")|<scratch>|g"
+  [ -n "${HOME:-}" ] && REDACT_SED="$REDACT_SED;s|$(_sed_escape "$HOME")|~|g"
+  [ -n "${TMPDIR:-}" ] && REDACT_SED="$REDACT_SED;s|$(_sed_escape "${TMPDIR%/}")|<tmp>|g"
+  # The bare username is last and is the one substitution that can bite an
+  # unrelated word — a user called `git` would see `<user>` in the middle of a
+  # path. That is the safe direction: an over-redacted report is readable, and
+  # a leaked username is not recallable once sent.
+  [ -n "$_user" ] && REDACT_SED="$REDACT_SED;s|$(_sed_escape "$_user")|<user>|g"
+  [ -n "$_host" ] && REDACT_SED="$REDACT_SED;s|$(_sed_escape "$_host")|<host>|g"
+fi
+# redact — filter stdin. With --keep-home-paths this is `cat` rather than a
+# no-op sed, so the raw bytes are passed through untouched.
+redact() {
+  if [ -n "$REDACT_SED" ]; then sed "$REDACT_SED"; else cat; fi
+}
+
+# --- the report -------------------------------------------------------------
+#
+# Two files, joined at the end: $SUMMARY is one tab-separated row per check,
+# $BODY is the evidence. They are separate because the summary has to appear
+# ABOVE the evidence in the finished report and is only complete once every
+# check has run — writing the report in one pass would put a three-second
+# summary at the bottom of a 500-line file, which is where nobody reads it.
+n_pass=0; n_fail=0; n_skip=0; n_warn=0; n_time=0
+
+# record STATUS SECTION LABEL [DETAIL]
+#   PASS  the thing we wanted to be true is true
+#   FAIL  it is not, and that is a finding
+#   TIME  it did not finish inside the bound. Separate from FAIL on purpose:
+#         against a real provider a turn with tool calls can take minutes, and
+#         "the reply did not arrive within N seconds" and "the reply was wrong"
+#         are different findings that want different follow-ups. Collapsing
+#         them would make every slow account look like a broken adapter.
+#   SKIP  it was not exercised — DETAIL carries why, always
+#   WARN  it ran, and something about it deserves a look
+#   INFO  a measurement with no pass/fail meaning
+record() {
+  local st="$1" sec="$2" label="$3" detail="${4:-}"
+  case "$st" in
+    PASS) n_pass=$((n_pass+1)) ;;
+    FAIL) n_fail=$((n_fail+1)) ;;
+    TIME) n_time=$((n_time+1)) ;;
+    SKIP) n_skip=$((n_skip+1)) ;;
+    WARN) n_warn=$((n_warn+1)) ;;
+  esac
+  # Through redact() on the way to the FILE only. A detail line routinely
+  # carries a path — "roost is on PATH: /Users/<name>/..." is the common one —
+  # and the summary table is assembled straight out of this file, so a raw
+  # write here leaks a home directory into the top of the report while every
+  # captured block below it is clean. That is exactly what happened the first
+  # time this ran. The terminal echo below stays unredacted on purpose: the
+  # person reading it is the person whose machine it is, and they want the real
+  # path they can act on.
+  printf '%s\t%s\t%s\t%s\n' "$st" "$sec" "$label" "$detail" | redact >> "$SUMMARY"
+  # Echoed as it happens as well as recorded. A tester watching a forty-minute
+  # run needs to see it moving; a silent script that prints one path at the end
+  # is indistinguishable from a hung one, and the whole promise here is that it
+  # never hangs.
+  printf '  %-4s %s\n' "$st" "$label"
+  [ -n "$detail" ] && printf '       %s\n' "$detail"
+  return 0
+}
+
+# Everything below writes THROUGH redact(), including the section text, so
+# there is no path by which an unredacted absolute path reaches the report.
+sec()  { printf '\n## %s\n\n' "$1" | redact >> "$BODY"; }
+sub()  { printf '\n### %s\n\n' "$1" | redact >> "$BODY"; }
+para() { printf '%s\n\n' "$1" | redact >> "$BODY"; }
+kv()   { printf '| %s | %s |\n' "$1" "$2" | redact >> "$BODY"; }
+kvhead() { printf '| %s | %s |\n|---|---|\n' "$1" "$2" >> "$BODY"; }
+
+# block LABEL FILE — a fenced block of captured output.
+#
+# Capped at 200 lines, from the END, because that is where a failure's own
+# message is and because a suite that printed 4000 PASS lines would otherwise
+# be the whole report. The cap announces itself: a silently truncated capture
+# is the same class of bug as the silently truncated reply
+# scripts/lib/roost-reply.sh exists to prevent.
+block() {
+  local label="$1" f="$2" n
+  [ -n "$label" ] && printf '**%s**\n\n' "$label" | redact >> "$BODY"
+  if [ ! -s "$f" ]; then
+    printf '```\n(no output)\n```\n\n' >> "$BODY"
+    return 0
+  fi
+  n="$(wc -l < "$f" | tr -d ' ')"
+  printf '```\n' >> "$BODY"
+  if [ "$n" -gt 200 ]; then
+    printf '[roost validate: showing the last 200 of %s lines]\n' "$n" >> "$BODY"
+    tail -n 200 "$f" | redact >> "$BODY"
+  else
+    redact < "$f" >> "$BODY"
+  fi
+  printf '```\n\n' >> "$BODY"
+}
+
+# blockstr LABEL STRING — same, for output already in a variable.
+blockstr() {
+  local label="$1" s="$2"
+  printf '%s' "$s" > "$WORK/.blockstr"
+  block "$label" "$WORK/.blockstr"
+}
+
+# --- bounded execution ------------------------------------------------------
+#
+# `timeout(1)` is coreutils and is not on a stock macOS, which is half this
+# script's audience, so the wait is built here. The watchdog is a background
+# subshell rather than a `sleep N & wait -n` race because -n is bash 4.3+ and
+# the shell on the other side of `#!/usr/bin/env bash` is not ours to choose.
+BOUNDED_TIMED_OUT=0
+bounded() {  # bounded SECONDS CMD...
+  local secs="$1"; shift
+  local pid watcher rc flag
+  BOUNDED_TIMED_OUT=0
+  # A flag FILE, not an inference from the child's exit code. The obvious
+  # cheaper test — "the child exited 143, so we must have TERMed it" — is wrong
+  # in both directions: a child that returns 143 on its own would be reported
+  # as a timeout we caused, and a child killed in the one-second window before
+  # the watchdog notices would not. The watchdog writes this before it signals
+  # anything, so the answer is recorded by the only process that knows it.
+  flag="$WORK/.bounded.$$"; rm -f "$flag"
+  "$@" & pid=$!
+  ( n=0
+    while [ "$n" -lt "$secs" ]; do
+      kill -0 "$pid" 2>/dev/null || exit 0
+      sleep 1; n=$((n+1))
+    done
+    : > "$flag"
+    # TERM first so a bash script's own EXIT trap gets the chance to tear down
+    # its tmux server; KILL only for something that ignored it. Without the
+    # gap, a timed-out smoke suite would leave its scratch server running on
+    # the tester's machine, which is precisely the thing this file promises
+    # not to do.
+    kill -TERM "$pid" 2>/dev/null
+    sleep 5
+    kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  watcher=$!
+  wait "$pid"; rc=$?
+  kill "$watcher" 2>/dev/null
+  wait "$watcher" 2>/dev/null
+  if [ -f "$flag" ]; then
+    rm -f "$flag"
+    BOUNDED_TIMED_OUT=1
+    # 124 is borrowed from timeout(1) on purpose: no test file in this repo
+    # returns it, so "we stopped it" can never be read as "it failed".
+    rc=124
+  fi
+  return "$rc"
+}
+
+# --- teardown and assembly --------------------------------------------------
+#
+# One EXIT trap does both, and that ordering is the whole crash-safety story:
+# the report is built from whatever $BODY and $SUMMARY hold at the moment the
+# script stops, for ANY reason — a finished run, a bug in this file, a Ctrl-C
+# forty minutes in. A partial report with reasons beats no file at all, which
+# is the one outcome that wastes the tester's evening entirely.
+RIG_SOCK=""
+SAMPLERS=""
+ASSEMBLED=0
+
+teardown_rig() {
+  local p
+  for p in $SAMPLERS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+  SAMPLERS=""
+  # -S with our own path, NEVER a bare `tmux kill-server` and never -L roost.
+  # AGENTS.md §2: a live roost server usually holds someone's real agents.
+  [ -n "$RIG_SOCK" ] && tmux -S "$RIG_SOCK" kill-server 2>/dev/null
+  RIG_SOCK=""
+  return 0
+}
+
+assemble() {
+  [ "$ASSEMBLED" -eq 1 ] && return 0
+  ASSEMBLED=1
+  local ended dur now
+  ended="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  now="$(date -u +%s 2>/dev/null)"
+  # First line only, and a fallback for each. When this runs from a signal
+  # handler a command substitution can come back carrying output that was in
+  # flight when the signal landed — measured: `ended` came back as the
+  # timestamp with an interrupted progress line stuck to it, which then broke
+  # the arithmetic below. Neither value is worth failing the report over.
+  ended="${ended%%$'\n'*}"; now="${now%%$'\n'*}"
+  case "$now" in ''|*[!0-9]*) now="$STARTED_EPOCH" ;; esac
+  dur=$(( now - STARTED_EPOCH ))
+  {
+    printf '# roost validation report\n\n'
+    printf 'Written by `roost validate` (report format v%s). ' "$ROOST_VALIDATE_FORMAT"
+    printf 'Nothing in this file was typed by a human.\n\n'
+    printf '| | |\n|---|---|\n'
+    printf '| Started | %s |\n' "$STARTED_UTC"
+    printf '| Ended | %s |\n' "$ended"
+    printf '| Duration | %dm %ds |\n' "$((dur / 60))" "$((dur % 60))"
+    printf '| Drive mode | %s |\n' "$([ "$LOCAL" -eq 1 ] && echo 'local ollama (`--local`) — our rig, not your setup' || echo 'your own configured providers (the default)')"
+    [ -n "$OPENCODE_CLOUD" ] && printf '| opencode drive | overridden to a free `opencode/*` cloud model (`--opencode-cloud`) — no account, no key |\n'
+    [ "$LOCAL" -eq 1 ] && printf '| Local model | `%s` |\n' "$MODEL"
+    printf '| Home paths redacted | %s |\n' "$([ "$REDACT" -eq 1 ] && echo yes || echo 'no (--keep-home-paths)')"
+    printf '| Adapter symlinks | %s |\n' "${INSTALL_DECISION:-not reached}" | redact
+    printf '\n'
+
+    if [ "$COMPLETED" -ne 1 ]; then
+      printf '> **This run did not finish.** The script stopped before its last\n'
+      printf '> section. Everything above the cut is still real; everything that\n'
+      printf '> never ran is simply absent rather than reported as passing.\n\n'
+    fi
+
+    printf '## Summary\n\n'
+    printf '%d PASS · %d FAIL · %d TIMEOUT · %d SKIP · %d WARN\n\n' "$n_pass" "$n_fail" "$n_time" "$n_skip" "$n_warn"
+    if [ "$n_time" -gt 0 ]; then
+      printf 'A TIMEOUT row is not a failure. It means a bound was reached before an\n'
+      printf 'answer arrived — against a real account a turn with tool calls can take\n'
+      printf 'minutes. The timeline under that check in section 5 says how far it got.\n\n'
+    fi
+    if [ "$n_fail" -gt 0 ]; then
+      printf 'Read the FAIL rows first. Each one is linked to its evidence by section number.\n\n'
+    fi
+    printf '| | § | Check | Detail |\n|---|---|---|---|\n'
+    # Sort is deliberately NOT applied: the rows are in the order the checks
+    # ran, which is the order the evidence appears below them. Sorting by
+    # status would put a FAIL at the top and its evidence 300 lines away with
+    # nothing saying where.
+    while IFS="$(printf '\t')" read -r st s label detail; do
+      printf '| %s | %s | %s | %s |\n' "$st" "$s" "$label" "$detail"
+    done < "$SUMMARY"
+    printf '\n'
+
+    if [ "$REDACT" -eq 1 ]; then
+      printf '### What was substituted\n\n'
+      printf 'Every captured line below passed through a filter before it was written,\n'
+      printf 'because `roost doctor` prints absolute paths into your home directory on\n'
+      printf 'most of its lines and a tester should not have to audit 400 lines for\n'
+      printf 'their own name before sending this. The substitutions are:\n\n'
+      printf '| Was | Became |\n|---|---|\n'
+      printf '| your home directory | `~` |\n'
+      printf '| your username | `<user>` |\n'
+      printf '| your hostname | `<host>` |\n'
+      printf '| the temp dir this run used | `<scratch>` |\n'
+      printf '| `$TMPDIR` | `<tmp>` |\n\n'
+      printf 'So a path reading `~/.claude/settings.json` below was printed with your\n'
+      printf 'real home path in it. Re-run with `--keep-home-paths` to send it raw.\n\n'
+    else
+      printf '### Nothing was substituted\n\n'
+      printf 'This run used `--keep-home-paths`, so absolute paths, your username and\n'
+      printf 'your hostname appear below exactly as the commands printed them.\n\n'
+    fi
+    cat "$BODY"
+  } > "$OUT"
+}
+
+on_exit() {
+  local rc=$?
+  # THE EXIT TRAP MUST NOT BE ABLE TO FAIL. It is the only thing that writes
+  # the report, so an error inside it costs the tester the entire run — which
+  # is exactly what happened when this script was run as `roost validate | head`
+  # to watch it start: head closed the pipe, SIGPIPE arrived in the middle of a
+  # printf, and the trap that ran next died on an unbound variable and left a
+  # zero-byte report. `set -u` is the right setting for the body of this script
+  # and the wrong one for its last act.
+  set +u
+  teardown_rig
+  assemble
+  rm -rf "$WORK" 2>/dev/null
+  printf '\n'
+  printf 'roost validate: %d PASS · %d FAIL · %d TIMEOUT · %d SKIP · %d WARN\n' "$n_pass" "$n_fail" "$n_time" "$n_skip" "$n_warn"
+  printf 'roost validate: report written to\n\n  %s\n\n' "$OUT"
+  printf 'Send that one file. Nothing else is needed, and nothing in it needs filling in.\n'
+  return "$rc"
+}
+COMPLETED=0
+trap on_exit EXIT
+# Any of these must reach the EXIT trap rather than killing the shell outright,
+# or a tester who gets bored at minute 30 loses every measurement taken so far
+# AND leaves a scratch tmux server running.
+#
+# PIPE is on this list because of a real failure, found by running this script
+# with `| head -30` to watch it start: head closed the pipe, the next progress
+# line raised SIGPIPE, and bash died WITHOUT running the EXIT trap. The report
+# file was zero bytes. That is precisely the promise this script makes and
+# breaks — a run that got most of the way and left nothing — and it costs one
+# word here to keep. HUP is the same case with the terminal window closed.
+trap 'exit 130' INT TERM HUP PIPE
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ver CMD — one line, the harness's own version string, or "" if it will not
+# give one. Bounded: a harness that blocks on stdin or on a network check at
+# --version would otherwise hang the environment section, which is the section
+# a tester watches to decide the thing is working at all.
+ver() {
+  have "$1" || return 0
+  # </dev/null, and stderr folded in, because more than one of these prints its
+  # version to stderr and at least one (codex) reads stdin when it has a tty.
+  ( "$@" </dev/null 2>&1 & p=$!
+    ( n=0; while [ $n -lt 15 ]; do kill -0 $p 2>/dev/null || exit 0; sleep 1; n=$((n+1)); done
+      kill -KILL $p 2>/dev/null ) >/dev/null 2>&1 &
+    w=$!
+    wait $p; kill $w 2>/dev/null; wait $w 2>/dev/null ) \
+    | grep -v '^[[:space:]]*$' | head -n 1
+}
+
+OLLAMA_UP=0
+OLLAMA_MODELS="$WORK/ollama-models.txt"; : > "$OLLAMA_MODELS"
+CODEX_VER_START=""
+
+section_environment() {
+  sec "1. Environment"
+  para "Every version below is read from the machine, not remembered. \"It worked
+for us and failed for them\" is almost always a version gap, so this section is
+the first thing to compare against your own."
+
+  sub "Operating system and terminal"
+  kvhead "What" "Value"
+  kv "uname" "$(uname -s) $(uname -r) $(uname -m)"
+  if [ "$(uname -s)" = "Darwin" ] && have sw_vers; then
+    kv "macOS" "$(sw_vers -productVersion 2>/dev/null) ($(sw_vers -buildVersion 2>/dev/null))"
+  elif [ -r /etc/os-release ]; then
+    kv "distro" "$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-unknown}")"
+  fi
+  kv "shell" "${SHELL:-unset}"
+  kv "bash running this" "${BASH_VERSION:-unknown}"
+  kv "TERM" "${TERM:-unset}"
+  kv "COLORTERM" "${COLORTERM:-unset} $([ "${COLORTERM:-}" = truecolor ] || [ "${COLORTERM:-}" = 24bit ] || echo '(not truecolor — the palette may band)')"
+  kv "LANG" "${LANG:-unset}"
+  printf '\n' >> "$BODY"
+
+  sub "tmux"
+  kvhead "What" "Value"
+  if have tmux; then
+    kv "tmux" "$(tmux -V 2>&1 | head -1)"
+    kv "tmux path" "$(command -v tmux)"
+    # Not a style note. #{P:} pane loops, #{E:} and pane options are all 3.2,
+    # and roost's status line is built out of all three — on 3.0 the bar
+    # renders as literal format text rather than failing, which reads as a
+    # roost bug.
+    _tv="$(tmux -V 2>/dev/null | sed 's/^tmux //')"
+    _maj="${_tv%%.*}"; _rest="${_tv#*.}"; _min="${_rest%%[a-z]*}"
+    if [ "${_maj:-0}" -gt 3 ] 2>/dev/null || { [ "${_maj:-0}" -eq 3 ] && [ "${_min:-0}" -ge 2 ]; } 2>/dev/null; then
+      record PASS 1 "tmux is >= 3.2" "found $_tv"
+    else
+      record FAIL 1 "tmux is >= 3.2" "found ${_tv:-none} — roost needs 3.2 for #{P:}, #{E:} and pane options"
+    fi
+  else
+    record FAIL 1 "tmux is installed" "tmux not found on PATH; nothing else in this report could run"
+  fi
+  printf '\n' >> "$BODY"
+
+  sub "Agent harnesses"
+  para "A harness that is absent is not a failure — it is why some sections below
+say SKIP."
+  printf '| Harness | Installed | Version | Path |\n|---|---|---|---|\n' >> "$BODY"
+  local h v
+  for h in claude opencode pi codex copilot; do
+    if have "$h"; then
+      case "$h" in
+        claude)   v="$(ver claude --version)" ;;
+        opencode) v="$(ver opencode --version)" ;;
+        pi)       v="$(ver pi --version)" ;;
+        codex)    v="$(ver codex --version)" ;;
+        copilot)  v="$(ver copilot --version)" ;;
+      esac
+      printf '| %s | yes | `%s` | `%s` |\n' "$h" "${v:-(would not print one)}" "$(command -v "$h")" | redact >> "$BODY"
+      [ "$h" = codex ] && CODEX_VER_START="$v"
+    else
+      printf '| %s | no | — | — |\n' "$h" >> "$BODY"
+    fi
+  done
+  printf '\n' >> "$BODY"
+
+  sub "ollama"
+  para "ollama is **not** what section 5 drives by default — that runs against your
+own configured providers, which is the whole point of the report. It is used by
+this repo's own smoke suites in section 4, and by section 5 only when
+\`--local\` is passed."
+  kvhead "What" "Value"
+  if have ollama; then
+    kv "ollama" "$(ver ollama --version)"
+    if curl -s -m 5 http://localhost:11434/api/tags >/dev/null 2>&1; then
+      OLLAMA_UP=1
+      kv "responding on :11434" "yes"
+      ollama list 2>/dev/null > "$OLLAMA_MODELS"
+    else
+      kv "responding on :11434" "**no** — start it with \`ollama serve\`"
+    fi
+  else
+    kv "ollama" "not installed"
+  fi
+  printf '\n' >> "$BODY"
+  [ -s "$OLLAMA_MODELS" ] && block "ollama list" "$OLLAMA_MODELS"
+
+  # ollama matters to two different things now, and they want different words.
+  # Section 5 uses it only under --local; section 4's smoke suites are this
+  # repo's own rig and always need it.
+  if [ "$LOCAL" -eq 1 ]; then
+    if [ "$OLLAMA_UP" -eq 1 ] && grep -q "^${MODEL} " "$OLLAMA_MODELS" 2>/dev/null; then
+      record PASS 1 "the --local drive model is pulled" "$MODEL"
+    elif [ "$OLLAMA_UP" -eq 1 ]; then
+      record SKIP 1 "the --local drive model is pulled" "$MODEL is not pulled — run: ollama pull $MODEL"
+    else
+      record SKIP 1 "ollama is reachable" "--local was passed but nothing is answering on :11434, so every drive below is skipped"
+    fi
+  elif [ "$OLLAMA_UP" -eq 1 ]; then
+    record INFO 1 "ollama is reachable" "used by this repo's own smoke suites in §4; §5 drives your real providers"
+  else
+    record INFO 1 "ollama is not running" "not needed — §5 drives your real providers. It is only used by this repo's own smoke suites in §4, which will skip"
+  fi
+
+  sub "Supporting tools"
+  printf '| Tool | Version | What roost uses it for |\n|---|---|---|\n' >> "$BODY"
+  printf '| python3 | `%s` | reading the Claude Stop payload for `roost read`; the contrast test; the codex proxy |\n' "$(ver python3 --version)" >> "$BODY"
+  printf '| jq | `%s` | the same JSON read, if python3 is absent |\n' "$(ver jq --version)" >> "$BODY"
+  printf '| fzf | `%s` | the `prefix a` switcher |\n' "$(ver fzf --version)" >> "$BODY"
+  printf '| node | `%s` | the opencode, copilot and pi adapters run inside it |\n' "$(ver node --version)" >> "$BODY"
+  printf '| git | `%s` | how roost is installed and updated |\n' "$(ver git --version)" >> "$BODY"
+  printf '\n' >> "$BODY"
+  if have python3 || have jq; then
+    record PASS 1 "a JSON reader is present" "roost read can collect Claude replies"
+  else
+    record WARN 1 "a JSON reader is present" "neither python3 nor jq — roost read falls back to scraping the screen for Claude panes"
+  fi
+
+  sub "This roost"
+  kvhead "What" "Value"
+  kv "checkout" "$HERE"
+  kv "bin/roost on PATH" "$(command -v roost || echo 'not on PATH')"
+  if git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1; then
+    kv "commit" "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null)"
+    kv "branch" "$(git -C "$HERE" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    kv "describe" "$(git -C "$HERE" describe --tags --always --dirty 2>/dev/null)"
+    kv "working tree" "$(test -z "$(git -C "$HERE" status --porcelain 2>/dev/null)" && echo clean || echo 'has local changes')"
+  else
+    kv "commit" "not a git checkout"
+  fi
+  printf '\n' >> "$BODY"
+  report_install
+
+  if have roost; then
+    record PASS 1 "roost is on PATH" "$(command -v roost)"
+  else
+    # Not cosmetic: adapters shell out to `roost state` by bare name, so a pane
+    # goes silently unbadged — never an error, just nothing.
+    record WARN 1 "roost is on PATH" "adapters call \`roost state\` by bare name; without it panes stay unbadged and nothing says so"
+  fi
+}
+
+section_doctor() {
+  sec "2. roost doctor"
+  para "Verbatim. This is the single most useful thing in the report — it names what
+is wired and what is not, and it prints the exact fix command for this checkout.
+The banner is missing because doctor only draws it to a terminal."
+  local f="$WORK/doctor.txt" rc
+  bounded 120 bash -c '"$1" doctor >"$2" 2>&1' _ "$HERE/bin/roost" "$f"
+  rc=$?
+  block "roost doctor" "$f"
+  printf 'Exit code: `%d`\n\n' "$rc" >> "$BODY"
+  if [ "$BOUNDED_TIMED_OUT" -eq 1 ]; then
+    record FAIL 2 "roost doctor completes" "it was still running after 120s and was stopped"
+  elif [ "$rc" -eq 0 ]; then
+    record PASS 2 "roost doctor exits 0" "no REQUIRED check failed; any ! lines above are warnings"
+  else
+    record FAIL 2 "roost doctor exits 0" "exit $rc — a required check failed; look for a ✗ line above"
+  fi
+  # Warnings are counted rather than judged. doctor warns about things that are
+  # entirely normal for a machine without every harness installed, so turning
+  # each one into a FAIL would bury the two that matter.
+  local warns
+  warns="$(grep -c '^  !' "$f" 2>/dev/null || echo 0)"
+  [ "${warns:-0}" -gt 0 ] && record INFO 2 "doctor warnings" "$warns line(s) beginning ! — advisory, listed in full above"
+  return 0
+}
+
+# suite_result LABEL SECTION FILE RC — the shared reporting rule for a test
+# suite, and the reason it is a function: the EXIT code and the PASS/FAIL
+# counts are two different measurements and AGENTS.md §8 is explicit that the
+# counts alone under-report. A file that dies mid-run contributes fewer PASS
+# lines and NO FAIL lines, so "677 passed, 0 failed" can sit directly above a
+# non-zero exit. Both are printed, and the disagreement gets its own row.
+suite_result() {
+  local label="$1" s="$2" f="$3" rc="$4" counts
+  counts="$(grep -E '^[0-9]+ passed, [0-9]+ failed' "$f" 2>/dev/null | tail -n 1)"
+  printf 'Exit code: `%d`%s\n\n' "$rc" "$([ "$BOUNDED_TIMED_OUT" -eq 1 ] && printf ' — **stopped by roost validate after its time budget**')" >> "$BODY"
+  [ -n "$counts" ] && printf 'Counts line: `%s`\n\n' "$counts" >> "$BODY"
+  if [ "$BOUNDED_TIMED_OUT" -eq 1 ]; then
+    record FAIL "$s" "$label" "still running after its time budget; stopped. Counts at that point: ${counts:-none printed}"
+  elif [ "$rc" -eq 0 ]; then
+    record PASS "$s" "$label" "exit 0${counts:+, $counts}"
+  elif [ -n "$counts" ] && [ "${counts%% *}" -gt 0 ] 2>/dev/null && [ "$(printf '%s' "$counts" | sed 's/.*, \([0-9]*\) failed/\1/')" = "0" ]; then
+    record FAIL "$s" "$label" "exit $rc although the counts say '$counts' — a file died mid-run; see the RUNNER line above"
+  else
+    record FAIL "$s" "$label" "exit $rc${counts:+, $counts}"
+  fi
+  return 0
+}
+
+section_offline_suites() {
+  sec "3. The offline test suites"
+  para "Both of these run on this machine with no agent and no model. They are the
+baseline: if they do not pass here, nothing below them means very much.
+
+**The exit code is reported separately from the counts on purpose.** A test file
+that dies partway through contributes fewer PASS lines and no FAIL lines, so the
+totals can read as healthy while a whole file silently stopped running."
+
+  if [ ! -f "$HERE/tests/run.sh" ]; then
+    record SKIP 3 "tests/run.sh" "not present in this install — \$HERE/tests is missing"
+    return 0
+  fi
+
+  sub "tests/run.sh"
+  local f="$WORK/suite.txt" rc
+  bounded 900 bash -c 'bash "$1/tests/run.sh" >"$2" 2>&1' _ "$HERE" "$f"
+  rc=$?
+  block "" "$f"
+  suite_result "tests/run.sh passes" 3 "$f" "$rc"
+  # The runner names a file that died in a line of its own. Surfacing it as its
+  # own row is the difference between a reader seeing "exit 1" and a reader
+  # seeing which file to open.
+  if grep -q '^RUNNER:' "$f" 2>/dev/null; then
+    record FAIL 3 "no test file died mid-run" "$(grep '^RUNNER:' "$f" | tail -n 1)"
+  fi
+
+  sub "tests/test-contrast.py"
+  if ! have python3; then
+    record SKIP 3 "tests/test-contrast.py passes" "python3 is not installed; this check is a CI step and needs it"
+    return 0
+  fi
+  local g="$WORK/contrast.txt" grc
+  bounded 300 bash -c 'python3 "$1/tests/test-contrast.py" >"$2" 2>&1' _ "$HERE" "$g"
+  grc=$?
+  block "" "$g"
+  suite_result "tests/test-contrast.py passes" 3 "$g" "$grc"
+  return 0
+}
+
+# smoke_available HARNESS -> prints a skip reason, or nothing if it can run.
+smoke_available() {
+  local h="$1"
+  have "$h"    || { printf '%s is not installed' "$h"; return 0; }
+  have ollama  || { printf 'ollama is not installed'; return 0; }
+  [ "$OLLAMA_UP" -eq 1 ] || { printf 'ollama is not responding on :11434'; return 0; }
+  grep -q "^${MODEL} " "$OLLAMA_MODELS" 2>/dev/null \
+    || { printf 'model %s is not pulled (ollama pull %s)' "$MODEL" "$MODEL"; return 0; }
+  [ "$h" != codex ] || have python3 || { printf 'python3 is missing, and the codex rig needs it for the tool-stripping proxy'; return 0; }
+  return 0
+}
+
+section_smoke_suites() {
+  sec "4. This repo's own live smoke suites"
+  para "These are the suites a maintainer runs by hand after a harness upgrade. They
+drive the real harness **against local ollama** and assert the adapter's own
+behaviour — the badge sequence within a turn, the reply channel, the retry and
+error paths.
+
+They are our rig, not your setup: they exist so this repo's own tests can run
+with no credential anywhere. Without ollama they skip themselves, which is
+normal and costs you nothing. Section 5 below is the part that runs against your
+real providers."
+
+  if [ "$RUN_SMOKE" -eq 0 ]; then
+    record SKIP 4 "the live smoke suites" "--quick was passed, so they were not run"
+    para "_Not run: \`--quick\` was passed._"
+    return 0
+  fi
+  if [ ! -d "$HERE/tests/live" ]; then
+    record SKIP 4 "the live smoke suites" "tests/live is not present in this install"
+    return 0
+  fi
+
+  local h f rc reason
+  for h in opencode pi codex copilot; do
+    [ -f "$HERE/tests/live/$h-smoke.sh" ] || continue
+    reason="$(smoke_available "$h")"
+    if [ -n "$reason" ]; then
+      record SKIP 4 "tests/live/$h-smoke.sh" "$reason"
+      continue
+    fi
+    sub "tests/live/$h-smoke.sh"
+    f="$WORK/smoke-$h.txt"
+    bounded "$SMOKE_BUDGET" bash -c 'bash "$1/tests/live/'"$h"'-smoke.sh" >"$2" 2>&1' _ "$HERE" "$f"
+    rc=$?
+    block "" "$f"
+    # A suite that decided for itself that it could not run exits 0 with SKIP
+    # lines and no counts line. Reporting that as PASS would be a green tick
+    # for code that never executed — the exact failure docs/known-gaps.md
+    # records under "green is evidence about the tests".
+    if [ "$rc" -eq 0 ] && ! grep -qE '^[[:space:]]*[0-9]+ passed' "$f" 2>/dev/null; then
+      record SKIP 4 "tests/live/$h-smoke.sh" "the suite skipped itself: $(grep 'SKIP:' "$f" | tail -n 1 | sed 's/^ *//')"
+    else
+      suite_result "tests/live/$h-smoke.sh" 4 "$f" "$rc"
+    fi
+    if [ "$BOUNDED_TIMED_OUT" -eq 1 ]; then
+      # Its scratch server is not ours to find: the suite chooses its own
+      # mktemp path and we never learn it. Deleting every /tmp/amx.* would be
+      # the obvious sweep and is exactly the wrong move — another agent on this
+      # machine may be running one right now, and AGENTS.md §2 is about not
+      # taking down someone else's server to tidy up. Say so and stop.
+      record WARN 4 "tests/live/$h-smoke.sh left nothing behind" \
+        "it was stopped mid-run, so it may have left a scratch tmux server; check with: tmux -S /tmp/amx.*/roost list-sessions"
+    fi
+  done
+  return 0
+}
+
+# --- section 5's rig --------------------------------------------------------
+#
+# One throwaway roost server, shared by every harness drive, on a socket path
+# ending in /roost. The suffix is load-bearing rather than decorative:
+# scripts/lib/roost-socket.sh recognises a roost server ONLY by a socket path
+# ending /roost, which is what makes a globally-wired hook safe. On any other
+# name `roost state` is a silent no-op, so every badge assertion below would
+# fail with nothing to explain why.
+RIG_DIR="$WORK/rig"
+RIG_PROJ="$RIG_DIR/proj"
+RIG_HOMES="$RIG_DIR/homes"
+
+# Every bound in section 5, in one place, and all of them sized for a REAL
+# provider rather than for a 3B model answering locally in seconds. A real turn
+# that calls tools can take minutes, and a bound that is too tight does not
+# report slowness — it reports a failure, about a harness that was working.
+# That is why reaching one is a TIME row and not a FAIL row.
+#
+# Worst case, if a harness hangs at every step, is about half an hour for that
+# harness and then the run moves on. Nothing here can wait forever.
+TMO_READY=180      # TUI startup, including a first-run network check
+TMO_WORKING=180    # from submitting a prompt to the badge saying working
+TMO_TURN=600       # a whole turn, tool calls and all
+TMO_DIALOG=600     # from submitting a tool prompt to a permission dialog
+TMO_DECLINE=60     # how long a declined pane is watched for recovery
+
+rig_up() {
+  mkdir -p "$RIG_PROJ" "$RIG_HOMES"
+  # Resolved, not as written. codex records a per-directory trust entry keyed
+  # by the path it resolves the cwd to, and on macOS /tmp is a symlink to
+  # /private/tmp — so a config trusting /tmp/... put codex's own "Do you trust
+  # the contents of this directory?" prompt in front of every drive, measured.
+  RIG_PROJ="$(cd "$RIG_PROJ" && pwd -P)"
+  RIG_SOCK="$RIG_DIR/roost"
+  tmux -S "$RIG_SOCK" -f /dev/null new-session -d -x 200 -y 50 -c "$RIG_PROJ" 'ENV= exec /bin/sh' 2>/dev/null || return 1
+  tmux -S "$RIG_SOCK" source-file "$HERE/tmux/roost.conf" 2>/dev/null
+  tmux -S "$RIG_SOCK" set-option -g @roost-home "$HERE" 2>/dev/null
+  return 0
+}
+
+T() { tmux -S "$RIG_SOCK" "$@" 2>/dev/null; }
+pstate()  { T show-options -pqv -t "$1" @agent_state; }
+psince()  { T show-options -pqv -t "$1" @agent_since; }
+pscreen() { T capture-pane -p -t "$1" | grep -v '^[[:space:]]*$'; }
+# roost, driven exactly as one agent drives another: through bin/roost, with
+# the socket named. Not through tmux directly — the point of section 5 is the
+# roost commands, not the tmux options underneath them.
+R() { ROOST_SOCKET="$RIG_SOCK" "$HERE/bin/roost" "$@"; }
+
+wait_state() {  # wait_state PANE WANT SECONDS
+  local p="$1" want="$2" t="$3" n=0
+  while [ "$n" -lt "$t" ]; do
+    [ "$(pstate "$p")" = "$want" ] && return 0
+    sleep 1; n=$((n+1))
+  done
+  return 1
+}
+
+wait_screen() {  # wait_screen PANE TEXT SECONDS
+  local p="$1" text="$2" t="$3" n=0
+  while [ "$n" -lt "$t" ]; do
+    T capture-pane -p -t "$p" | grep -qF "$text" && return 0
+    sleep 1; n=$((n+1))
+  done
+  return 1
+}
+
+# wait_reply PANE TOKEN SECONDS -> 0 once that pane's recorded reply contains
+# TOKEN. Polls the REPLY rather than the badge, because a badge left over from
+# the previous turn is indistinguishable from this turn's — see the comment at
+# its call site.
+wait_reply() {
+  local p="$1" tok="$2" t="$3" n=0
+  while [ "$n" -lt "$t" ]; do
+    R read "$p" 2>/dev/null | grep -qF "$tok" && return 0
+    sleep 3; n=$((n+3))
+  done
+  return 1
+}
+
+# start_sampler PANE FILE — a badge timeline, not a badge reading.
+#
+# This is requirement 5 of the brief and the reason it is worth the background
+# process: a single poll cannot tell a STALE badge from a live one. `blocked`
+# read once is the same string whether a human is being waited on right now or
+# whether nothing has unstamped the pane since a dialog was declined four
+# minutes ago. @agent_since is what separates them — it is the instant the
+# stamp was written, and a frozen one against a moving clock IS the staleness.
+#
+# So every line carries three things: elapsed time, the badge, and the badge's
+# own age. A heartbeat every 5s means a badge that never changes still leaves a
+# trail proving it did not, which a change-only log cannot do.
+start_sampler() {  # start_sampler PANE FILE -> pid appended to $SAMPLERS
+  local p="$1" f="$2" t0
+  t0="$(date +%s)"
+  : > "$f"
+  ( last="__none__" beat=0
+    while :; do
+      s="$(tmux -S "$RIG_SOCK" show-options -pqv -t "$p" @agent_state 2>/dev/null)"
+      since="$(tmux -S "$RIG_SOCK" show-options -pqv -t "$p" @agent_since 2>/dev/null)"
+      now="$(date +%s)"
+      if [ "$s" != "$last" ]; then
+        printf '+%-4ss  badge=%-8s since=%s  age=%ss  (change)\n' \
+          "$((now - t0))" "[${s:-unset}]" "${since:--}" "$([ -n "$since" ] && echo $((now - since)) || echo '-')" >> "$f"
+        last="$s"; beat=0
+      elif [ "$beat" -ge 25 ]; then
+        printf '+%-4ss  badge=%-8s since=%s  age=%ss\n' \
+          "$((now - t0))" "[${s:-unset}]" "${since:--}" "$([ -n "$since" ] && echo $((now - since)) || echo '-')" >> "$f"
+        beat=0
+      fi
+      beat=$((beat + 1))
+      sleep 0.2
+    done ) >/dev/null 2>&1 &
+  SAMPLERS="$SAMPLERS $!"
+  return 0
+}
+
+stop_samplers() {
+  local p
+  for p in $SAMPLERS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done
+  SAMPLERS=""
+  return 0
+}
+
+# badge_sequence FILE — the badges seen, in order, comma separated. This is the
+# thing an assertion can be written against: "blocked,working" is a dialog
+# released back into the turn, "blocked,done" is a dialog that ended it, and a
+# sequence containing `done` in the middle of a dying turn is the worst wrong
+# badge there is.
+badge_sequence() {
+  grep '(change)' "$1" 2>/dev/null \
+    | sed 's/.*badge=\[\([^]]*\)\].*/\1/' | tr '\n' ',' | sed 's/,$//'
+}
+
+# --- section 5's per-harness recipes ----------------------------------------
+#
+# One engine, four recipes. The engine below asks the same questions of every
+# harness — does the badge track the turn, does `roost read` return the reply
+# where `roost screen` returns the screen, does `roost send` refuse a pane with
+# a dialog open — and the recipe is only the harness-specific knowledge needed
+# to get one running against local ollama and to put a dialog on its screen.
+#
+# Every readiness and dialog marker below was captured from a real pane before
+# it was written here, not inferred from a manual. A marker that is merely
+# plausible turns "the TUI never became ready" into the report's most common
+# line, and that line cannot be acted on by anyone.
+CODEX_PROXY_PID=""
+CODEX_PORT=""
+
+# Set by h_prepare for the harness about to be driven, and reported per harness
+# in section 5. "Which provider actually answered" is one of the most important
+# lines in the report: a run that does not say whether it hit a real account or
+# a local stub is nearly worthless to whoever reads it.
+H_MODE=""       # real | local
+H_PROVIDER=""   # what the harness's own configuration names
+H_MODEL=""
+H_ENV=""        # env prefix for the launch command
+H_CMD=""        # the launch command itself
+
+# h_real_home HARNESS — the directory that harness actually keeps its
+# configuration and credentials in. Per harness, and never assumed to be the
+# XDG one: AGENTS.md §8 exists because copilot ignores XDG entirely, and pi and
+# codex each have their own override too.
+h_real_home() {
+  case "$1" in
+    opencode) printf '%s/opencode' "${XDG_CONFIG_HOME:-$HOME/.config}" ;;
+    pi)       printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" ;;
+    copilot)  printf '%s' "${COPILOT_HOME:-$HOME/.copilot}" ;;
+    codex)    printf '%s' "${CODEX_HOME:-$HOME/.codex}" ;;
+  esac
+}
+
+# h_config_missing HARNESS -> a reason, or nothing if the harness looks
+# configured. This is a READ. roost validate will not create a configuration,
+# will not log anything in, and will not ask the tester to: a harness with no
+# provider wired is a SKIP with that as the printed reason.
+h_config_missing() {
+  local h="$1" home; home="$(h_real_home "$h")"
+  case "$h" in
+    opencode)
+      [ -s "$home/opencode.json" ] \
+        || [ -s "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" ] \
+        || { printf 'no opencode configuration found (%s/opencode.json, and no stored auth)' "$home"; return 0; } ;;
+    pi)
+      [ -s "$home/settings.json" ] || [ -s "$home/models.json" ] \
+        || { printf 'no pi configuration found (%s/settings.json)' "$home"; return 0; } ;;
+    codex)
+      [ -s "$home/config.toml" ] || [ -s "$home/auth.json" ] \
+        || { printf 'no codex configuration found (%s/config.toml, and no stored auth)' "$home"; return 0; } ;;
+    copilot)
+      [ -d "$home" ] \
+        || { printf 'no copilot configuration found (%s does not exist)' "$home"; return 0; } ;;
+  esac
+  return 0
+}
+
+# h_adapter_path / h_adapter_target HARNESS — the symlink roost wants, and what
+# it must point at. One pair, used by the state check, the install offer and the
+# skip text, so those three can never disagree about which file they mean.
+h_adapter_path() {
+  local home; home="$(h_real_home "$1")"
+  case "$1" in
+    opencode) printf '%s/plugin/roost.js' "$home" ;;
+    pi)       printf '%s/extensions/roost.ts' "$home" ;;
+    copilot)  printf '%s/extensions/roost/extension.mjs' "$home" ;;
+  esac
+}
+h_adapter_target() {
+  case "$1" in
+    opencode) printf '%s/adapters/opencode/roost.js' "$HERE" ;;
+    pi)       printf '%s/adapters/pi/roost.ts' "$HERE" ;;
+    copilot)  printf '%s/adapters/copilot/extension.mjs' "$HERE" ;;
+  esac
+}
+
+# h_adapter_state HARNESS -> ok | missing | foreign | none
+#
+#   ok       the symlink is there and points at THIS checkout
+#   missing  nothing at that path at all — safe to create
+#   foreign  something else is there. Could be another checkout's link, could
+#            be the tester's own extension, could be a dangling link to a
+#            checkout they deleted. roost validate does not touch any of them.
+#            A tester who keeps their own extension at that path must not lose
+#            it to a validation run, and "it is probably ours" is not a good
+#            enough reason to delete a file (AGENTS.md §9 — verify, do not
+#            assume). Reported with the exact fix so they can decide.
+#   none     this harness has no symlink-shaped adapter (codex uses a hooks
+#            file and a trust prompt, and both are out of scope for installing)
+h_adapter_state() {
+  local h="$1" path want
+  case "$h" in opencode|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
+  path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
+  elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'foreign'   # dangling
+  elif [ "$path" -ef "$want" ]; then printf 'ok'
+  else printf 'foreign'
+  fi
+}
+
+# h_adapter_fix HARNESS -> the exact command that would install the missing
+# adapter, or nothing when it is already installed.
+#
+# The drive is SKIPPED rather than run when this returns something, and that is
+# the deliberate choice: without the adapter the pane is never badged, so every
+# badge assertion would fail for a reason that has nothing to do with roost's
+# behaviour — and a report full of red about an install step nobody took is
+# worse than an honest SKIP carrying the fix. These are the same checks and the
+# same fixes `roost doctor` prints, deliberately duplicated in the shape a skip
+# reason needs rather than factored out, because doctor's output is prose for a
+# human at a terminal and this is one line for a table.
+#
+# By the time this runs, offer_adapter_install has already had its one chance
+# to create the missing ones — so anything left here is either a path roost
+# will not touch, or an answer of no.
+h_adapter_fix() {
+  local h="$1" home want path n ev
+  home="$(h_real_home "$h")"
+  case "$h" in
+    opencode|pi|copilot)
+      path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+      case "$(h_adapter_state "$h")" in
+        ok) return 0 ;;
+        missing)
+          printf 'the %s adapter is not linked — run: mkdir -p "%s" && ln -s "%s" "%s"' \
+            "$h" "$(dirname "$path")" "$want" "$path" ;;
+        *)
+          # Never a bare `ln -sf` here. Overwriting is the tester's call to
+          # make, not a command roost hands them without saying what is there.
+          printf 'something other than this checkout is already at %s (roost validate will not replace it) — check it, then: rm "%s" && ln -s "%s" "%s"' \
+            "$path" "$path" "$want" "$path" ;;
+      esac
+      return 0 ;;
+    codex)
+      want="$HERE/adapters/codex/roost-codex-hook"
+      if [ ! -s "$home/hooks.json" ] || ! grep -qF "$want" "$home/hooks.json" 2>/dev/null; then
+        printf 'codex hooks are not wired to this checkout — run: roost hooks codex, and copy the JSON object into %s/hooks.json' "$home"
+        return 0
+      fi
+      # Installed and trusted are DIFFERENT CLAIMS, and codex will never say
+      # they differ: a `codex exec` turn with untrusted hooks wired prints
+      # warnings about timeouts and about model metadata, and not one word
+      # about four hooks being skipped. So the trust entries are counted, not
+      # inferred. Counting rather than testing for presence separates "never
+      # trusted" (0) from "trusted, then hooks.json was hand-edited" (1-3),
+      # which are different problems.
+      #
+      # Neither half of this is offered as an install. The hooks file is
+      # content rather than a link, and the trust is an answer only a human can
+      # give at codex's own prompt — so both stay a printed instruction.
+      n=0
+      for ev in user_prompt_submit post_tool_use permission_request stop; do
+        grep -qF "$home/hooks.json:$ev:0:0" "$home/config.toml" 2>/dev/null && n=$((n + 1))
+      done
+      [ "$n" -eq 4 ] && return 0
+      printf 'codex has trusted %s of the 4 roost hooks, so the rest are silently skipped — run: codex, then answer "Trust all and continue" at "Hooks need review"' "$n" ;;
+  esac
+  return 0
+}
+
+# --- the adapter install offer ----------------------------------------------
+#
+# ONE question, asked once, before anything else runs.
+#
+# The reasoning that put this here rather than leaving the run read-only: two
+# different things were being skipped for what looked like the same reason, and
+# only one of them is the tester's to decide.
+#
+#   - A missing PROVIDER is their account. Not ours to arrange, and a run that
+#     tried would be asking them to log in. Still a SKIP, always.
+#   - A missing adapter SYMLINK is the install step of the very thing they
+#     agreed to test. `roost doctor` already prints the exact command; the
+#     tester installed roost in order to exercise these adapters. Skipping four
+#     harnesses and telling them to run four commands and start again puts back
+#     exactly the manual work this script exists to remove.
+#
+# What it will not do, and these are limits rather than a to-do list: only
+# symlinks, and only adapters. No hooks file, no codex trust, no settings.json,
+# no provider config — each of those either carries a credential or needs an
+# answer at an interactive prompt, and neither belongs in a run the tester is
+# meant to walk away from. And it never replaces a path that is not already our
+# symlink: someone's own extension living there must not be lost to a
+# validation run.
+INSTALL_DECISION=""     # one line, for the report
+INSTALLED_LINKS=""      # newline-separated paths this run created
+BLOCKED_LINKS=""        # newline-separated "harness<TAB>path" it refused to touch
+INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
+
+offer_adapter_install() {
+  local h st path want ans created=0
+
+  if [ "$LOCAL" -eq 1 ]; then
+    # --local builds its own scratch config directory per harness and links the
+    # adapters in there, so there is nothing on the real machine to offer.
+    INSTALL_DECISION="not applicable — --local links the adapters inside its own scratch config directories"
+    return 0
+  fi
+
+  for h in opencode pi copilot; do
+    have "$h" || continue
+    case "$(h_adapter_state "$h")" in
+      missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
+      foreign) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(h_adapter_path "$h")
+" ;;
+    esac
+  done
+
+  if [ -n "$BLOCKED_LINKS" ]; then
+    printf '  Note: something that is not this checkout already sits where an adapter\n'
+    printf '  would go. Those are left alone, and named in the report:\n\n'
+    printf '%s' "$BLOCKED_LINKS" | while IFS="$(printf '\t')" read -r h path; do
+      [ -n "$h" ] && printf '    %-9s %s\n' "$h" "$path"
+    done
+    printf '\n'
+  fi
+
+  if [ -z "$INSTALL_CANDIDATES" ]; then
+    INSTALL_DECISION="nothing to install — every adapter for an installed harness was already linked to this checkout"
+    printf '  Adapters: all linked to this checkout already. Nothing to install.\n\n'
+    return 0
+  fi
+
+  printf '  These roost adapters are not linked yet. Without them the pane is never\n'
+  printf '  badged, so those harnesses would be skipped:\n\n'
+  for h in $INSTALL_CANDIDATES; do
+    printf '    %-9s %s\n' "$h" "$(h_adapter_path "$h")"
+    printf '    %-9s   -> %s\n' "" "$(h_adapter_target "$h")"
+  done
+  printf '\n  Creating them is a symlink each, nothing else — no hooks file, no trust,\n'
+  printf '  no settings change, no provider config. The report prints the one-line\n'
+  printf '  undo for every link this run makes.\n\n'
+
+  # Decide, in three ways, and never hang in any of them.
+  if [ "$INSTALL_ADAPTERS" = 0 ]; then
+    ans=n
+    printf '  --no-install was passed. Skipping those harnesses.\n\n'
+  elif [ "$INSTALL_ADAPTERS" = 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
+    ans=y
+    printf '  Linking them (--install/--yes).\n\n'
+  elif [ -t 0 ]; then
+    # Bounded, and it defaults to NO. A tester who started this and walked
+    # away has not agreed to anything being written to their machine, and the
+    # whole promise of the run is that walking away is fine — so silence has to
+    # mean the conservative answer, not the convenient one.
+    printf '  Link them and test those harnesses? [y/N] (no answer in 60s = no) '
+    read -r -t 60 ans || ans=n
+    printf '\n'
+  else
+    # A pipe, a cron, a CI step. Nobody is there to consent, so nothing is
+    # written; --install is how an unattended run opts in explicitly.
+    ans=n
+    printf '  Not a terminal, so nothing was asked and nothing was linked.\n'
+    printf '  Pass --install to link them in an unattended run.\n\n'
+  fi
+
+  case "${ans:-n}" in
+    y|Y|yes|YES) : ;;
+    *)
+      INSTALL_DECISION="offered and declined — $(printf '%s' "$INSTALL_CANDIDATES" | sed 's/^ //; s/ /, /g') stayed unlinked, and those harnesses are skipped below with the exact command"
+      INSTALL_CANDIDATES=""
+      return 0 ;;
+  esac
+
+  for h in $INSTALL_CANDIDATES; do
+    path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+    # Re-checked immediately before writing, not trusted from the loop above.
+    # The gap between the two is small and a tester could have been fixing
+    # things in another terminal while the prompt sat there — and this is the
+    # one place in the whole script that creates a file on their machine.
+    [ "$(h_adapter_state "$h")" = missing ] || { BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+"; continue; }
+    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$want" "$path" 2>/dev/null; then
+      INSTALLED_LINKS="$INSTALLED_LINKS$path
+"
+      created=$((created + 1))
+      printf '  linked %s\n' "$path"
+    else
+      BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+"
+      printf '  could NOT link %s\n' "$path"
+    fi
+  done
+  printf '\n'
+  INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s); see the undo below"
+  return 0
+}
+
+# report_install — the record of it, in section 1. Prominent on purpose: a
+# report that changed the machine it ran on and did not say so is worse than
+# one that skipped.
+report_install() {
+  sub "Adapter links"
+  para "**$INSTALL_DECISION**"
+  if [ -n "$INSTALLED_LINKS" ]; then
+    para "**This run created the following symlinks on this machine.** They are
+symlinks into the roost checkout and nothing else was written — no hooks file,
+no trust granted, no settings edited, no provider configuration. To undo them,
+run these lines; removing a symlink cannot affect anything it pointed at:"
+    printf '```sh\n' >> "$BODY"
+    # $HOME, not the ~ that redact() leaves behind. A tilde inside double
+    # quotes is a literal tilde to every shell — `rm "~/.pi/..."` fails with
+    # "No such file or directory" — so a redacted undo line was not actually
+    # paste-able, which for the one part of the report that changes the
+    # tester's machine back is worse than printing nothing. $HOME expands
+    # inside double quotes, survives a path with a space in it, and reveals
+    # exactly as little as the tilde did.
+    printf '%s' "$INSTALLED_LINKS" | while read -r path; do
+      [ -n "$path" ] && printf 'rm "%s"\n' "$path" | redact | sed 's|^rm "~/|rm "$HOME/|' >> "$BODY"
+    done
+    printf '```\n\n' >> "$BODY"
+    record WARN 1 "this run wrote to your machine" \
+      "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) after you agreed; the undo commands are in §1"
+  fi
+  if [ -n "$BLOCKED_LINKS" ]; then
+    para "**Left alone.** Something that is not this checkout's adapter already sits
+at each path below — another checkout's link, a link to a checkout that has been
+deleted, or an extension of your own. roost validate does not replace any of
+them, so the harness is skipped instead and section 5 carries the exact command
+if you decide you want it relinked."
+    printf '| Harness | Path already in use |\n|---|---|\n' >> "$BODY"
+    printf '%s' "$BLOCKED_LINKS" | while IFS="$(printf '\t')" read -r h path; do
+      [ -n "$h" ] && printf '| %s | `%s` |\n' "$h" "$path" | redact >> "$BODY"
+    done
+    printf '\n' >> "$BODY"
+  fi
+  return 0
+}
+
+# h_read_config HARNESS — set H_PROVIDER and H_MODEL from the harness's own
+# configuration.
+#
+# NAMED KEYS ONLY, never a dump of the file. An opencode.json, a pi models.json
+# and a codex config.toml can each hold an apiKey, and a validation report is a
+# thing that gets forwarded to strangers. Anything that cannot be read is left
+# empty and reported as unknown, which is honest; guessing is not.
+h_read_config() {
+  local h="$1" home f
+  home="$(h_real_home "$h")"
+  H_PROVIDER=""; H_MODEL=""
+  case "$h" in
+    opencode)
+      f="$home/opencode.json"
+      [ -s "$f" ] || return 0
+      H_MODEL="$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+      # opencode writes its model as provider/model, so the provider is the
+      # first segment and needs no second lookup.
+      case "$H_MODEL" in */*) H_PROVIDER="${H_MODEL%%/*}" ;; esac
+      ;;
+    pi)
+      f="$home/settings.json"
+      [ -s "$f" ] || return 0
+      H_MODEL="$(grep -o '"defaultModel"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+      H_PROVIDER="$(grep -o '"defaultProvider"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+      ;;
+    codex)
+      f="$home/config.toml"
+      if [ -s "$f" ]; then
+        H_MODEL="$(grep -E '^[[:space:]]*model[[:space:]]*=' "$f" 2>/dev/null | head -n 1 | sed 's/.*=[[:space:]]*"\{0,1\}//; s/"[[:space:]]*$//')"
+        H_PROVIDER="$(grep -E '^[[:space:]]*model_provider[[:space:]]*=' "$f" 2>/dev/null | head -n 1 | sed 's/.*=[[:space:]]*"\{0,1\}//; s/"[[:space:]]*$//')"
+      fi
+      # No model_provider line means codex's own default, which is the OpenAI
+      # account. Say that rather than leaving the most interesting field blank.
+      [ -n "$H_PROVIDER" ] || { [ -s "$home/auth.json" ] && H_PROVIDER="openai (codex's own default, signed in)"; }
+      ;;
+    copilot)
+      # copilot has no config field roost can read for this. The model is on
+      # the TUI's own footer, and the pane capture in section 5 carries it.
+      H_PROVIDER="github copilot (whatever this machine is signed in to)"
+      ;;
+  esac
+  return 0
+}
+
+# pick_cloud_model -> print an opencode/* model id to drive, or nothing.
+#
+# opencode ships free cloud models that need NO account and NO key --
+# `opencode auth list` reporting 0 credentials while `opencode models` lists
+# seven of them. That matters more than it sounds: it is a real remote provider,
+# over the network, which is where the ordering bugs live (#14 was a message
+# re-announced AFTER its content) and where real tool use happens. Measured here
+# against a token that existed only in a file on disk and never in the prompt,
+# so a model that returned it could not have guessed it:
+#
+#   big-pickle                       exit 0   called the tool
+#   mimo-v2.5-free                   exit 0   called the tool
+#   muse-spark-1.2-contributor-free  exit 0   called the tool
+#   nemotron-3.5-lightning-free      exit 0   called the tool
+#   nemotron-3-ultra-free            called the tool, but ran past a 120s bound
+#   hy3-free                         "Model hy3-free is not supported"
+#   x-preview-f-free                 provider error
+#
+# Five of seven, and in the TUI both models tried reached a real permission
+# dialog in 3-4 seconds with the dialog on screen and a clean release to done.
+# granite4.2:3b took 55s to do the same and often declines to call a tool at
+# all -- which is why tests/live/*-smoke.sh have to treat "the model never
+# called the tool" as a SKIP.
+#
+# THE LIST IS NOT STABLE, which is why this resolves at runtime rather than
+# hardcoding one: between the list quoted above and the run that measured it,
+# ling-3.0-flash-fin-free disappeared and x-preview-f-free arrived. A pinned
+# model id would be a flag that works until it silently does not.
+#
+# The preference order is the measured one. Anything not on it still gets used
+# if nothing better is present, because a model that is merely unmeasured is a
+# better answer than no drive at all -- and if it fails, drive_harness reports
+# the provider's own message rather than a roost failure.
+pick_cloud_model() {
+  local live pref m
+  live="$(opencode models 2>/dev/null | grep '^opencode/')"
+  [ -n "$live" ] || return 0
+  for pref in opencode/nemotron-3.5-lightning-free \
+              opencode/big-pickle \
+              opencode/mimo-v2.5-free \
+              opencode/muse-spark-1.2-contributor-free; do
+    printf '%s\n' "$live" | grep -qxF "$pref" && { printf '%s' "$pref"; return 0; }
+  done
+  # Nothing measured is on offer any more. Take the first that is, and say so
+  # in the report rather than pretending it was chosen.
+  m="$(printf '%s\n' "$live" | head -n 1)"
+  printf '%s' "$m"
+  return 0
+}
+
+# cloud_trouble PANE -> print the provider's own complaint, or nothing.
+#
+# A free tier that throttles, or a listed-but-unsupported model, must NOT read
+# as a roost failure: a tester who sees FAIL on a rate limit reports the wrong
+# bug, and we would chase it. So when a cloud drive does not do what it should,
+# the pane is read for the provider's own words first and those are reported
+# instead.
+cloud_trouble() {
+  T capture-pane -p -t "$1" 2>/dev/null \
+    | grep -iE 'rate.?limit|too many requests|quota|not supported|unauthoriz|forbidden|payment|credit|overloaded|capacity' \
+    | head -n 1 | sed 's/^[[:space:]]*//' | cut -c1-160
+}
+
+# h_prepare HARNESS — set H_MODE/H_ENV/H_CMD/H_PROVIDER/H_MODEL, or set H_SKIP
+# to the reason this harness is not being driven.
+#
+# It SETS H_SKIP rather than printing it, for the same reason h_local_setup
+# does: called through $( ) every one of those assignments would happen in a
+# subshell and be lost, and the codex branch's proxy pid would be lost with
+# them — leaving an orphan process holding a port after the run.
+H_SKIP=""
+h_prepare() {
+  local h="$1" r
+  H_MODE=""; H_ENV=""; H_CMD=""; H_PROVIDER=""; H_MODEL=""; H_SKIP=""
+  have "$h" || { H_SKIP="$h is not installed"; return 0; }
+
+  # Claude Code, in both modes. It has no local-provider seam, so driving it
+  # means the tester's own account — and redirecting HOME to isolate the config
+  # would take the credential with it and produce a login prompt instead of a
+  # turn. Section 6.1 says where this costs us, because the stuck-blocked entry
+  # in docs/known-gaps.md was measured on Claude Code specifically.
+  if [ "$h" = claude ]; then
+    H_SKIP='roost validate does not drive Claude Code: there is no way to isolate its config without taking the credential with it. See section 6.1'
+    return 0
+  fi
+
+  # --- the cloud tier, opencode only, in either mode ------------------------
+  # Checked before both of the others: it is an explicit request from the
+  # command line, and it is the one tier that needs neither an account nor a
+  # local model.
+  if [ "$h" = opencode ] && [ -n "$OPENCODE_CLOUD" ]; then
+    local cm
+    if [ "$OPENCODE_CLOUD" = auto ]; then
+      cm="$(pick_cloud_model)"
+      [ -n "$cm" ] || { H_SKIP='opencode lists no free opencode/* cloud models on this machine'; return 0; }
+    else
+      cm="$OPENCODE_CLOUD"
+      case "$cm" in opencode/*) : ;; *) cm="opencode/$cm" ;; esac
+      # Checked against the live list, and this is not defensive tidiness.
+      # Measured: the opencode TUI SILENTLY IGNORES a model id it does not
+      # know and runs a different model instead — a config naming
+      # opencode/no-such-model-zzz answered normally, with "Build · Big
+      # Pickle" on its own footer. Nothing errors and nothing warns. Without
+      # this check a typo would produce a full page of green results
+      # attributed to a model that never ran, which is worse than any failure
+      # this script can report.
+      #
+      # Membership in `opencode models` is the right gate rather than whether
+      # `opencode run` accepts it: hy3-free is refused by `opencode run` with
+      # "not supported" and drives the TUI perfectly well, and it is the TUI
+      # that section 5 uses.
+      if ! opencode models 2>/dev/null | grep -qxF "$cm"; then
+        H_SKIP="opencode does not list '$cm' on this machine, and its TUI silently runs a different model rather than refusing an unknown one — so this was not driven. Available: $(opencode models 2>/dev/null | grep '^opencode/' | tr '\n' ' ')"
+        return 0
+      fi
+    fi
+    h_cloud_setup "$cm" || { H_SKIP='could not build a scratch opencode configuration for the cloud model'; return 0; }
+    H_MODE=cloud
+    H_PROVIDER='opencode free cloud — no account, no key, no credential used'
+    H_MODEL="$cm"
+    H_CMD="opencode"
+    return 0
+  fi
+
+  if [ "$LOCAL" -eq 0 ]; then
+    # --- the default: their own provider, their own configuration ------------
+    r="$(h_config_missing "$h")"
+    [ -n "$r" ] && { H_SKIP="$r — run it once yourself to set it up, or re-run with --local"; return 0; }
+    r="$(h_adapter_fix "$h")"
+    # Not a failure and not silent. Without the adapter the pane is never
+    # badged, so the drive would produce a column of red about an install step
+    # rather than about roost's behaviour.
+    [ -n "$r" ] && { H_SKIP="$r"; return 0; }
+    h_read_config "$h"
+    H_MODE=real
+    # NOTHING is redirected. That is the point of this mode: the harness reads
+    # the configuration and the credential it always reads. Only PATH (so the
+    # adapter can find `roost state`) and ROOST_SOCKET (so it badges this
+    # run's own server rather than a live one) are added.
+    H_ENV=""
+    case "$h" in
+      opencode) H_CMD="opencode" ;;
+      pi)       H_CMD="pi" ;;
+      # --experimental rather than writing {"enabledFeatureFlags":...} into
+      # their settings.json: extensions are behind a flag that is off by
+      # default, and a launch flag turns it on for this run without changing a
+      # file. `roost doctor` names both; only one of them is ours to use here.
+      copilot)  H_CMD="copilot --experimental --banner" ;;
+      # -a/-s are launch flags, not config writes, and they are what makes the
+      # permission case reachable at all: a config with approval_policy =
+      # "never" raises no dialog, and roost validate will not edit it to change
+      # that. The scratch project directory is what keeps read-only harmless.
+      codex)    H_CMD="codex -a on-request -s read-only" ;;
+    esac
+    return 0
+  fi
+
+  # --- --local: our rig, in a scratch config directory ----------------------
+  have ollama || { H_SKIP='ollama is not installed, and --local needs it'; return 0; }
+  [ "$OLLAMA_UP" -eq 1 ] || { H_SKIP='ollama is not responding on :11434'; return 0; }
+  grep -q "^${MODEL} " "$OLLAMA_MODELS" 2>/dev/null \
+    || { H_SKIP="model $MODEL is not pulled — run: ollama pull $MODEL"; return 0; }
+  [ "$h" != codex ] || have python3 \
+    || { H_SKIP='codex cannot drive ollama directly and the tool-stripping proxy needs python3'; return 0; }
+  h_local_setup "$h" || { H_SKIP="could not build a scratch $h configuration"; return 0; }
+  H_MODE=local
+  H_PROVIDER="ollama (local, via --local)"
+  H_MODEL="$MODEL"
+  [ "$h" = codex ] && H_MODEL="$CODEX_DRIVE_MODEL"
+  case "$h" in
+    opencode) H_CMD="opencode" ;;
+    pi)       H_CMD="pi" ;;
+    copilot)  H_CMD="copilot --banner" ;;
+    codex)    H_CMD="codex" ;;
+  esac
+  return 0
+}
+
+h_expects_dialog() {  # 0 = this harness raises permission dialogs
+  case "$1" in
+    # pi ships no permission prompts at all — its own docs list them among the
+    # things it intentionally omits — so there is nothing for the adapter to
+    # see. That is not a gap in the drive; it is the thing section 6 checks.
+    pi) return 1 ;;
+    *)  return 0 ;;
+  esac
+}
+
+h_ready_marker() {
+  case "$1" in
+    opencode) printf 'ctrl+p commands' ;;   # the TUI footer, live only once the prompt box is
+    pi)       printf 'ctrl+o' ;;            # part of pi's header
+    codex)    printf 'Ask Codex' ;;         # codex's input box
+    copilot)  printf 'open sidebar' ;;      # copilot's footer
+  esac
+}
+
+h_dialog_marker() {
+  case "$1" in
+    opencode) printf 'Permission required' ;;
+    codex)    printf 'Would you like to run' ;;
+    copilot)  printf 'Do you want to run this command' ;;
+  esac
+}
+
+h_expect_name() {
+  # The adapter labels its own pane so the border stops showing a version
+  # string. Every adapter must, and each must use its own name rather than
+  # roost-agent-state's Claude-flavoured default.
+  case "$1" in
+    opencode) printf 'opencode' ;;
+    pi)       printf 'pi' ;;
+    codex)    printf '' ;;   # the codex hook does not set one; not asserted
+    copilot)  printf 'copilot' ;;
+  esac
+}
+
+h_tool_prompt() {
+  # A prompt that makes the model reach for a shell tool. For three harnesses
+  # that is what raises the dialog; for pi it is what proves no dialog appears.
+  case "$1" in
+    codex) printf 'The sandbox is read-only. Use the shell tool with escalated permissions to run exactly: echo roost-validate-escalate' ;;
+    # `rm`, not `echo`, for copilot: its sandbox auto-approves a plain echo and
+    # an auto-approved call raises no dialog at all — measured, and the same
+    # choice tests/live/copilot-smoke.sh makes for the same reason.
+    copilot) printf 'Use the bash tool to run exactly: rm -f deleteme.txt . Then tell me it is done.' ;;
+    *)     printf 'Use the bash tool to run exactly: echo roost-validate-tool' ;;
+  esac
+}
+
+# h_local_setup HARNESS -> 0, and SETS $H_ENV to the env prefix its launch
+# command needs. --local only.
+#
+# It sets a variable rather than printing one because the codex branch starts a
+# background proxy whose pid teardown has to reach: called through $( ), that
+# pid would be assigned inside a subshell and the proxy would outlive the run
+# as an orphan holding a port.
+#
+# Every path it sets is inside $RIG_HOMES, and the variable used to redirect
+# each harness is that harness's OWN home variable rather than the XDG ones —
+# AGENTS.md §8, which exists because copilot ignores XDG entirely and would
+# otherwise have been read and written while looking isolated.
+CODEX_DRIVE_MODEL=""
+
+# h_cloud_setup MODEL -> 0, and sets $H_ENV. A scratch XDG home naming one
+# opencode/* cloud model, and nothing else in it.
+#
+# A scratch home rather than the tester's own, even though this tier needs no
+# credential: writing a model choice into their real opencode.json would be
+# changing their configuration, which no mode here does. It carries no provider
+# block and no key -- the opencode/* provider is built in, which is the whole
+# point of this tier.
+h_cloud_setup() {
+  local m="$1" d="$RIG_HOMES/opencode-cloud"
+  H_ENV=""
+  mkdir -p "$d/config/opencode/plugin" "$d/data" "$d/cache" || return 1
+  ln -sf "$HERE/adapters/opencode/roost.js" "$d/config/opencode/plugin/roost.js" || return 1
+  cat > "$d/config/opencode/opencode.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "$m",
+  "permission": { "bash": "ask" }
+}
+JSON
+  H_ENV="XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_CACHE_HOME=$d/cache"
+  return 0
+}
+
+h_local_setup() {
+  local h="$1" d="$RIG_HOMES/$h"
+  H_ENV=""
+  mkdir -p "$d"
+  case "$h" in
+    opencode)
+      mkdir -p "$d/config/opencode/plugin" "$d/data" "$d/cache"
+      ln -sf "$HERE/adapters/opencode/roost.js" "$d/config/opencode/plugin/roost.js"
+      cat > "$d/config/opencode/opencode.json" <<JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama local",
+      "options": { "baseURL": "http://localhost:11434/v1" },
+      "models": { "$MODEL": { "name": "$MODEL" } }
+    }
+  },
+  "model": "ollama/$MODEL",
+  "permission": { "bash": "ask" }
+}
+JSON
+      H_ENV="XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_CACHE_HOME=$d/cache"
+      ;;
+    pi)
+      mkdir -p "$d/agent/extensions"
+      ln -sf "$HERE/adapters/pi/roost.ts" "$d/agent/extensions/roost.ts"
+      cat > "$d/agent/models.json" <<JSON
+{ "providers": { "ollama": {
+    "baseUrl": "http://localhost:11434/v1", "api": "openai-completions", "apiKey": "ollama",
+    "models": [{ "id": "$MODEL" }] } } }
+JSON
+      printf '{ "defaultProvider": "ollama", "defaultModel": "%s" }\n' "$MODEL" > "$d/agent/settings.json"
+      # No permission gate is installed, deliberately. tests/live/pi-smoke.sh
+      # installs one so its `blocked` case has a dialog to see; here the whole
+      # point is what a STOCK pi does, which is the claim section 6 checks.
+      H_ENV="PI_CODING_AGENT_DIR=$d/agent PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1"
+      ;;
+    copilot)
+      mkdir -p "$d/copilot/extensions/roost"
+      ln -sf "$HERE/adapters/copilot/extension.mjs" "$d/copilot/extensions/roost/extension.mjs"
+      printf '{"enabledFeatureFlags":{"EXTENSIONS":true}}\n' > "$d/copilot/settings.json"
+      H_ENV="COPILOT_HOME=$d/copilot COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1 COPILOT_MODEL=$MODEL COPILOT_OFFLINE=true"
+      ;;
+    codex)
+      mkdir -p "$d/cxhome" "$d/config" "$d/data" "$d/cache"
+      CODEX_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null)"
+      [ -n "$CODEX_PORT" ] || return 1
+      # The proxy exists ONLY for ollama: codex sends tool definitions ollama
+      # rejects with HTTP 500 and reports that as "We're currently experiencing
+      # high demand". Against a real provider it is not started at all, which
+      # is why the default mode reaches the actual code path and this one does
+      # not — see the header.
+      python3 "$HERE/tests/live/codex-tool-proxy.py" "$CODEX_PORT" http://127.0.0.1:11434 "$WORK/codex-proxy.log" >/dev/null 2>&1 &
+      CODEX_PROXY_PID=$!
+      local n=0
+      while [ "$n" -lt 40 ]; do
+        curl -s -m 2 "http://127.0.0.1:$CODEX_PORT/v1/models" >/dev/null 2>&1 && break
+        sleep 0.25; n=$((n+1))
+      done
+      curl -s -m 2 "http://127.0.0.1:$CODEX_PORT/v1/models" >/dev/null 2>&1 || return 1
+      # The escalation case needs a model that will actually ASK. Measured in
+      # tests/live/codex-smoke.sh: the 3b never requests escalation, it either
+      # runs what the sandbox allows or gives up. Using the bigger model for
+      # the whole pane when it is present keeps one pane for both turns.
+      CODEX_DRIVE_MODEL="$MODEL"
+      grep -q "^${BIGMODEL} " "$OLLAMA_MODELS" 2>/dev/null && CODEX_DRIVE_MODEL="$BIGMODEL"
+      cat > "$d/cxhome/config.toml" <<TOML
+model = "$CODEX_DRIVE_MODEL"
+model_provider = "localllm"
+approval_policy = "on-request"
+sandbox_mode = "read-only"
+# NOT cosmetic, and not ours to leave out. A codex TUI being driven inside an
+# isolated tmux socket has run \`brew upgrade --cask codex\` on its own host and
+# replaced the binary mid-test — docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md.
+# The tmux socket, CODEX_HOME and the XDG homes were all isolated and all held;
+# a system package manager is not something a scratch directory contains. This
+# is codex's own switch, asked politely, not a boundary roost can enforce —
+# which is why section 6 also records the codex version before and after.
+#
+# In the DEFAULT mode this file is not written at all, so that setting is not
+# ours to make: section 6.3 measures the version either way, and a change there
+# is a finding rather than a footnote.
+check_for_update_on_startup = false
+
+[model_providers.localllm]
+name = "local ollama via the roost tool-stripping proxy"
+base_url = "http://127.0.0.1:$CODEX_PORT/v1"
+# "responses", not "chat": wire_api = "chat" was removed in 0.150.1, and
+# "ollama" is a reserved built-in provider id that cannot be overridden.
+wire_api = "responses"
+
+[projects."$RIG_PROJ"]
+trust_level = "trusted"
+TOML
+      # Installed exactly as a user installs it: the frozen registration
+      # `roost hooks codex` prints, comments stripped.
+      "$HERE/bin/roost" hooks codex | sed -n '/^{/,$p' > "$d/cxhome/hooks.json"
+      H_ENV="CODEX_HOME=$d/cxhome XDG_CONFIG_HOME=$d/config XDG_DATA_HOME=$d/data XDG_CACHE_HOME=$d/cache"
+      ;;
+  esac
+  return 0
+}
+
+# h_startup HARNESS PANE — answer whatever a harness asks before its prompt box
+# is usable. Each of these is a real gate that a human meets on first run, and
+# each is driven with the keystroke a human would use rather than routed around
+# with a bypass flag: a gate that is skipped in testing is a gate whose silent
+# failure mode is never seen.
+h_startup() {
+  local h="$1" p="$2" n
+  case "$h" in
+    pi)
+      # pi asks to trust a project only when it finds project-local config.
+      # $RIG_PROJ is empty so it normally does not, but answering it if it
+      # appears costs one screen check.
+      wait_screen "$p" "Trust" 5 && { T send-keys -t "$p" Enter; sleep 2; }
+      ;;
+    copilot)
+      wait_screen "$p" "Do you trust" 90 || return 1
+      T send-keys -t "$p" Enter; sleep 3
+      # SECOND, and only ever seen against a real COPILOT_HOME: copilot follows
+      # the trust prompt with a "Restore interrupted sessions" picker whenever
+      # it has session history to offer. A scratch home has none, so this
+      # screen does not exist under --local and existed in no rig this script
+      # was built against — it turned up the first time the default mode drove
+      # a real copilot, and it stopped the run dead at "a startup prompt never
+      # appeared". Esc is the picker's own "start fresh", which is what a
+      # validation run wants: it restores nothing and changes no session.
+      #
+      # ONE Esc, then wait for the picker to actually go. Pressing it again on
+      # a screen that has already been dismissed is how a TUI gets told to
+      # quit, and the picker's own redraw leaves the pane briefly blank, so a
+      # "is it gone yet" check can succeed a beat before it has settled.
+      # Only ever waited for in the default mode. A --local run builds a brand
+      # new COPILOT_HOME, so it has no history to be offered and this would be
+      # thirty seconds of waiting for a screen that cannot appear.
+      if [ "$H_MODE" = real ] && wait_screen "$p" "Restore interrupted sessions" 30; then
+        T send-keys -t "$p" Escape
+        n=0
+        while [ "$n" -lt 20 ]; do
+          T capture-pane -p -t "$p" | grep -qF "Restore interrupted sessions" || break
+          sleep 1; n=$((n + 1))
+        done
+        sleep 2
+      fi
+      # Copilot asks, once per directory, to approve the adapter's elevated
+      # permissions. Denying it stops the extension loading entirely and there
+      # is no global pre-approval — but it is answered rather than REQUIRED
+      # here: whether it appears depends on the extension having loaded, which
+      # is the thing under test. Failing setup on its absence would report a
+      # missing badge as a rig failure and hide the finding. If it does not
+      # come, the drive continues and the badge assertions say what happened.
+      if wait_screen "$p" "wants elevated" 60; then
+        T send-keys -t "$p" Enter; sleep 3
+      fi
+      ;;
+    codex)
+      # Two gates, in this order. The directory one should not appear at all —
+      # the scratch config pre-trusts $RIG_PROJ — but it does whenever the path
+      # codex resolves differs from the one written, so it is answered rather
+      # than assumed away (AGENTS.md §9).
+      if wait_screen "$p" "Do you trust the contents" 20; then
+        T send-keys -t "$p" Enter; sleep 3
+      fi
+      # The hook trust gate. Codex skips every hook until a human answers, and
+      # says nothing when it skips them, so this is THE path worth driving —
+      # when it is there to drive. In the default mode the tester has already
+      # granted trust (h_adapter_fix refuses to drive codex otherwise), so the
+      # prompt does not appear and its absence is correct. Under --local the
+      # CODEX_HOME is brand new and it always does. Either way this is not
+      # fatal: a missing prompt in real mode is the healthy case, and a missing
+      # one under --local shows up immediately afterwards as an unbadged pane.
+      if ! wait_screen "$p" "Hooks need review" "$([ "$H_MODE" = real ] && echo 15 || echo 90)"; then
+        return 0
+      fi
+      T send-keys -t "$p" "2"
+      sleep 2
+      # Whether the digit also confirms is a version difference, not a guess:
+      # on 0.150.1 it selected and confirmed, on 0.151.0 it only moves the
+      # cursor. Sending Enter unconditionally would submit an empty prompt on
+      # the older behaviour, so it is sent only while the prompt is still up.
+      T capture-pane -p -t "$p" | grep -qF "Hooks need review" && T send-keys -t "$p" Enter
+      sleep 2
+      ;;
+  esac
+  return 0
+}
+
+# --- section 5's engine -----------------------------------------------------
+#
+# Findings that section 6 summarises are appended here as they are measured,
+# one line per harness, so section 6 reports what was observed rather than
+# re-deriving it.
+KB_STUCK="$WORK/kb-stuck.tsv"; : > "$KB_STUCK"
+KB_PI="$WORK/kb-pi.tsv"; : > "$KB_PI"
+
+# mode_label — the one place that names a drive tier, so the summary row, the
+# per-harness table and the header can never disagree about which one ran.
+mode_label() {
+  case "$H_MODE" in
+    real)  printf 'your own provider' ;;
+    cloud) printf "opencode's free cloud tier (--opencode-cloud)" ;;
+    *)     printf 'local ollama (--local)' ;;
+  esac
+}
+
+# cloud_excuse PANE -> the provider's own complaint, but only in cloud mode.
+# Empty everywhere else, so the call sites read the same in all three tiers.
+cloud_excuse() {
+  [ "$H_MODE" = cloud ] || return 0
+  cloud_trouble "$1"
+}
+
+drive_harness() {
+  local h="$1" reason pane marker ready token1 token2 f rc nm seq trouble
+  h_prepare "$h"
+  reason="$H_SKIP"
+  if [ -n "$reason" ] || [ -z "$H_MODE" ]; then
+    sub "$h — not driven"
+    para "_${reason:-no drive mode could be established}_"
+    record SKIP 5 "$h: end-to-end drive" "${reason:-no drive mode could be established}"
+    return 0
+  fi
+
+  sub "$h"
+  if [ "$H_MODE" = cloud ]; then
+    para "**The model named below is the one this run asked for.** opencode's TUI
+names the model it actually loaded on its own footer, and the pane capture
+further down shows it — worth a glance, because opencode answers an unknown
+model id by quietly running a different model rather than refusing. This run
+checks the id against \`opencode models\` first for that reason."
+    para "Driven against **one of opencode's own free cloud models** — a real remote
+provider, reached over the network, with **no account, no key and no stored
+credential** (\`opencode auth list\` reports none). That matters because it is
+not a local stub: it has real latency and it calls tools readily, which is what
+drives \`PostToolUse\`, permission dialogs and the working→blocked→working
+transitions the badges are about. Your own opencode configuration is not read
+or written; this runs from a scratch config directory naming only the model."
+  elif [ "$H_MODE" = real ]; then
+    para "Driven **against your own configuration** — the provider, model and
+account this machine already uses for $h. Nothing about that configuration was
+changed to run this; the only things added to the environment are \`PATH\` (so the
+adapter can find \`roost state\`) and \`ROOST_SOCKET\` (so it badges this run's
+throwaway server rather than a live one)."
+  else
+    para "Driven against **local ollama** in a scratch config directory
+(\`--local\`). No account, no quota and no stored credential is reachable — and
+this tests our rig rather than your setup, which is why the mode is recorded
+here rather than left to be assumed."
+  fi
+  printf '| | |\n|---|---|\n' >> "$BODY"
+  printf '| Drive mode | %s |\n' "$(mode_label)" >> "$BODY"
+  printf '| Provider | %s |\n' "${H_PROVIDER:-unknown — nothing readable in the config named one}" | redact >> "$BODY"
+  printf '| Model | %s |\n\n' "${H_MODEL:-unknown — see the pane capture below, the TUI names it on its own footer}" | redact >> "$BODY"
+  record INFO 5 "$h: driven against" \
+    "$(mode_label): provider ${H_PROVIDER:-unknown}, model ${H_MODEL:-unknown}"
+
+  pane="$(T new-window -d -P -F '#{pane_id}' -n "$h" -c "$RIG_PROJ" \
+    "PATH=$HERE/bin:\$PATH ROOST_SOCKET=$RIG_SOCK $H_ENV $H_CMD")"
+  case "$pane" in
+    %[0-9]*) : ;;
+    *) record FAIL 5 "$h: a window opened" "tmux printed no pane id"; return 0 ;;
+  esac
+
+  # The consent gates come FIRST, and the ordering is not arbitrary. codex and
+  # copilot both put a blocking prompt in front of the input box, so the input
+  # box's own marker cannot appear until the prompt has been answered — waiting
+  # for readiness first reported "the TUI never became interactive" about two
+  # harnesses that were sitting patiently at a question. Measured on the first
+  # full run of this script; the screens it dumped are what named the cause.
+  ready="$(h_ready_marker "$h")"
+  if ! h_startup "$h" "$pane"; then
+    pscreen "$pane" > "$WORK/$h-startup.txt"
+    block "$h did not get through its own startup prompts" "$WORK/$h-startup.txt"
+    record FAIL 5 "$h: startup consent gates answered" "a startup prompt never appeared or was not accepted; see the screen in §5"
+    T kill-window -t "$pane"
+    return 0
+  fi
+  if ! wait_screen "$pane" "$ready" "$TMO_READY"; then
+    # Always print the screen it gave up on. "Never appeared" on its own is the
+    # one report line nobody can act on — and on this script's own first run it
+    # was the line that would have hidden the bug above.
+    pscreen "$pane" > "$WORK/$h-notready.txt"
+    block "the pane $h never made interactive (waited ${TMO_READY}s for \"$ready\")" "$WORK/$h-notready.txt"
+    trouble="$(cloud_excuse "$pane")"
+    if [ -n "$trouble" ]; then
+      record SKIP 5 "$h: the TUI became interactive" "the free cloud tier said: $trouble — not a roost failure; re-run later or pass --opencode-cloud=<another model>"
+    else
+      record TIME 5 "$h: the TUI became interactive" "waited ${TMO_READY}s for \"$ready\"; the screen it gave up on is in §5"
+    fi
+    T kill-window -t "$pane"
+    return 0
+  fi
+  record PASS 5 "$h: the TUI became interactive" "and answered its own startup gates"
+  # Captured on every run, not only on failure. A TUI names its own provider
+  # and model on its footer, and that is the one reading of those two fields
+  # that is observed rather than read out of a config file and hoped for.
+  pscreen "$pane" > "$WORK/$h-ready.txt"
+  block "the pane once $h was ready (its footer names the model actually loaded)" "$WORK/$h-ready.txt"
+
+  # `idle` is a default, not a report — an adapter that badged its pane at
+  # startup would also be a pane `roost wait-done` could block on before its
+  # first turn ever began.
+  if [ -z "$(pstate "$pane")" ]; then
+    record PASS 5 "$h: an unasked pane stays unbadged" "no badge before the first turn"
+  else
+    record WARN 5 "$h: an unasked pane stays unbadged" "it badged '$(pstate "$pane")' before being asked anything"
+  fi
+
+  # --- turn 1: the badge, and read versus screen ----------------------------
+  token1="ROOST-OK-$$-$h"
+  f="$WORK/$h-turn1.badges"
+  start_sampler "$pane" "$f"
+  T send-keys -t "$pane" "Reply with exactly this one line and nothing else: $token1"
+  sleep 1
+  T send-keys -t "$pane" Enter
+
+  if wait_state "$pane" working "$TMO_WORKING"; then
+    record PASS 5 "$h: the badge reaches working" "the turn starting is observable"
+  elif [ -n "$(cloud_excuse "$pane")" ]; then
+    # A free tier that refused the request never started a turn, so there was
+    # no badge to see. Reporting that as a missing badge would send a reader
+    # after the adapter, which is the wrong bug entirely.
+    record SKIP 5 "$h: the badge reaches working" "the turn never started — the free cloud tier said: $(cloud_excuse "$pane")"
+  elif [ -z "$(pstate "$pane")" ]; then
+    # Never badged AT ALL is a different finding from badged late, and it has a
+    # different cause: the adapter is not running. That is a FAIL, where a slow
+    # first token is not.
+    record FAIL 5 "$h: the badge reaches working" "the pane was never badged at all in ${TMO_WORKING}s — the adapter is not running in this process"
+  else
+    record TIME 5 "$h: the badge reaches working" "badge was '$(pstate "$pane")' after ${TMO_WORKING}s; the turn may simply have been slow to start"
+  fi
+  if wait_state "$pane" done "$TMO_TURN"; then
+    record PASS 5 "$h: the badge reaches done" "the turn ending is observable"
+  elif [ -n "$(cloud_excuse "$pane")" ]; then
+    record SKIP 5 "$h: the badge reaches done" "the turn did not finish — the free cloud tier said: $(cloud_excuse "$pane")"
+  else
+    record TIME 5 "$h: the badge reaches done" "badge was '$(pstate "$pane")' after ${TMO_TURN}s — a real turn with tool calls can outlast this bound; see the timeline in §5"
+  fi
+  stop_samplers
+  block "badge timeline, plain turn — every change plus a heartbeat, with @agent_since so a stale badge is distinguishable from a live one" "$f"
+  printf 'Badges seen, in order: `%s`\n\n' "$(badge_sequence "$f")" >> "$BODY"
+
+  R read "$pane" > "$WORK/$h-read.txt" 2> "$WORK/$h-read.err"
+  R screen "$pane" > "$WORK/$h-screen.txt" 2>/dev/null
+  block "roost read $pane" "$WORK/$h-read.txt"
+  [ -s "$WORK/$h-read.err" ] && block "roost read, on stderr" "$WORK/$h-read.err"
+  block "roost screen $pane" "$WORK/$h-screen.txt"
+
+  if grep -qF "$token1" "$WORK/$h-read.txt" 2>/dev/null; then
+    record PASS 5 "$h: roost read returns the reply" "the one-line answer came back, not the screen"
+  elif [ -s "$WORK/$h-read.err" ]; then
+    # This is the failure the whole reply channel exists to prevent, and it is
+    # the one that sat on main through a release: read falling back to a scrape
+    # returns a TUI's input box and status bars where a caller expected an
+    # answer. The stderr notice is how it announces itself.
+    record FAIL 5 "$h: roost read returns the reply" "no reply was recorded, so read fell back to the screen: $(head -n 1 "$WORK/$h-read.err")"
+  else
+    # A recorded reply that does not contain the token is the reply channel
+    # working and the model choosing its own words. Not a roost finding.
+    record WARN 5 "$h: roost read returns the reply" "a reply WAS recorded — so the channel works — but it did not contain $token1; the model answered in its own words. See §5"
+  fi
+  if grep -qF "$ready" "$WORK/$h-screen.txt" 2>/dev/null; then
+    record PASS 5 "$h: roost screen returns the screen" "the TUI's own chrome came back, which is what read exists to replace"
+  else
+    record WARN 5 "$h: roost screen returns the screen" "the screen did not contain \"$ready\"; the read/screen contrast is in §5 either way"
+  fi
+
+  marker="$(h_expect_name "$h")"
+  if [ -n "$marker" ]; then
+    nm="$(T show-options -pqv -t "$pane" @roost-name)"
+    if [ "$nm" = "$marker" ]; then
+      record PASS 5 "$h: the adapter labels its pane" "@roost-name = $nm"
+    else
+      record FAIL 5 "$h: the adapter labels its pane" "@roost-name = '${nm:-unset}', expected '$marker'"
+    fi
+  fi
+
+  # --- turn 2: roost send, the happy path -----------------------------------
+  # Delivered through `roost send` rather than send-keys on purpose: this is
+  # the command one agent uses to drive another, it verifies its own submit,
+  # and the refusal case below means nothing unless the ordinary case works.
+  token2="ROOST-SEND-$$-$h"
+  R send "$pane" "Reply with exactly this one line and nothing else: $token2" > "$WORK/$h-send.txt" 2>&1
+  rc=$?
+  blockstr "roost send $pane (normal case) — exit $rc" "$(cat "$WORK/$h-send.txt")"
+  if [ "$rc" -eq 0 ]; then
+    record PASS 5 "$h: roost send delivers to an idle pane" "exit 0"
+  else
+    record FAIL 5 "$h: roost send delivers to an idle pane" "exit $rc: $(head -n 1 "$WORK/$h-send.txt")"
+  fi
+  # Polled on the REPLY, not on the badge. Waiting for `done` here races the
+  # turn that has just been submitted: the pane is still `done` from turn 1 for
+  # the moment it takes the harness to react, so a wait_state would return
+  # instantly and read back the PREVIOUS turn's answer. Measured on the first
+  # full run of this script — pi's tool-turn timeline was three seconds long
+  # for exactly this reason.
+  if wait_reply "$pane" "$token2" "$TMO_TURN"; then
+    record PASS 5 "$h: the agent answered what roost send typed" "$token2 came back through roost read"
+  else
+    record TIME 5 "$h: the agent answered what roost send typed" "no reply containing $token2 within ${TMO_TURN}s; the reply that was there is in §5"
+  fi
+  # Best effort, so the dialog turn below starts from a settled pane.
+  wait_state "$pane" done 120
+
+  drive_dialog "$h" "$pane"
+  T kill-window -t "$pane" 2>/dev/null
+  return 0
+}
+
+# drive_dialog HARNESS PANE — the permission-dialog half of the drive, and the
+# part the old manual pack asked a human to watch for and describe.
+drive_dialog() {
+  local h="$1" pane="$2" f marker before after out rc n stuck left_after dialog_gone trouble
+  f="$WORK/$h-dialog.badges"
+
+  if ! h_expects_dialog "$h"; then
+    # pi. There is no dialog to drive, and the claim under test is that there
+    # is not one — so the same tool prompt is run and the badge is watched for
+    # a `blocked` that must never come.
+    start_sampler "$pane" "$f"
+    T send-keys -t "$pane" "$(h_tool_prompt "$h")"
+    sleep 1
+    T send-keys -t "$pane" Enter
+    # working FIRST, then done. Waiting only for `done` returns instantly on
+    # the `done` left by the previous turn, and the sampler is then stopped
+    # about three seconds into a turn it was supposed to watch end to end —
+    # which is exactly what the first full run of this script did, and it
+    # produced a green row for a check that had seen almost nothing.
+    wait_state "$pane" working "$TMO_WORKING"
+    wait_state "$pane" done "$TMO_TURN"
+    sleep 3
+    stop_samplers
+    block "badge timeline, tool-calling turn on a stock $h" "$f"
+    local seq; seq="$(badge_sequence "$f")"
+    printf 'Badges seen, in order: `%s`\n\n' "$seq" >> "$BODY"
+    case ",$seq," in
+      *,blocked,*)
+        printf '%s\tBADGED BLOCKED\t%s\n' "$h" "$seq" >> "$KB_PI"
+        record FAIL 6 "$h never badges blocked (by design)" "it did: badges were $seq — this contradicts the documented behaviour and is worth telling us about" ;;
+      *)
+        printf '%s\tHELD\t%s\n' "$h" "$seq" >> "$KB_PI"
+        record PASS 6 "$h never badges blocked (by design)" "badges were $seq; a stock $h ships no permission prompts, so there is nothing to see" ;;
+    esac
+    record SKIP 5 "$h: roost send refuses a blocked pane" "a stock $h never reaches blocked, so the exit-3 refusal cannot be exercised"
+    return 0
+  fi
+
+  marker="$(h_dialog_marker "$h")"
+  start_sampler "$pane" "$f"
+  T send-keys -t "$pane" "$(h_tool_prompt "$h")"
+  sleep 1
+  T send-keys -t "$pane" Enter
+
+  if ! wait_state "$pane" blocked "$TMO_DIALOG"; then
+    # The model deciding to answer instead of calling a tool is not a roost
+    # failure, and reporting it as one would cry wolf about code that was never
+    # exercised. It is a SKIP with the reason, exactly as the smoke suites do.
+    stop_samplers
+    block "badge timeline, tool-calling turn (no dialog appeared)" "$f"
+    trouble="$(cloud_excuse "$pane")"
+    record SKIP 5 "$h: the pane badges blocked at a dialog" \
+      "${trouble:+the free cloud tier said: $trouble. }no permission dialog appeared in ${TMO_DIALOG}s. Either the model answered without calling a tool, or this $h configuration auto-approves the call. Badges: $(badge_sequence "$f")"
+    wait_state "$pane" done "$TMO_TURN"
+    return 0
+  fi
+  record PASS 5 "$h: the pane badges blocked at a dialog" "the badge changed while a human was being waited on"
+
+  pscreen "$pane" > "$WORK/$h-dialog-screen.txt"
+  block "the pane's screen at the moment the badge said blocked" "$WORK/$h-dialog-screen.txt"
+  if [ -n "$marker" ]; then
+    if grep -qF "$marker" "$WORK/$h-dialog-screen.txt"; then
+      record PASS 5 "$h: the dialog was genuinely on screen" "found \"$marker\" while the badge said blocked"
+      # roost observes a dialog; it never answers one. If it had, this text
+      # would already be gone.
+      record PASS 5 "$h: roost left the dialog for the human" "it is still on screen — roost observed it, it did not decide it"
+    else
+      record WARN 5 "$h: the dialog was genuinely on screen" "the badge said blocked but \"$marker\" was not captured; the screen may have scrolled — see §5"
+    fi
+  fi
+
+  # --- roost send must refuse, and must type nothing -------------------------
+  before="$(T capture-pane -p -t "$pane")"
+  out="$(R send "$pane" "ROOST-VALIDATE-MUST-NOT-ARRIVE" 2>&1)"; rc=$?
+  after="$(T capture-pane -p -t "$pane")"
+  blockstr "roost send at a pane with a dialog open — exit $rc" "$out"
+  if [ "$rc" -eq 3 ]; then
+    record PASS 5 "$h: roost send refuses a blocked pane with exit 3" "3 is distinct from 2 (wrong target) and 1 (submit failed), so a caller can retry later"
+  else
+    record FAIL 5 "$h: roost send refuses a blocked pane with exit 3" "exit $rc — one agent could type into another's permission dialog"
+  fi
+  # The precise claim is that the TEXT did not arrive, so that is what is
+  # checked. Byte-equality of the whole screen is reported alongside it but is
+  # not the assertion: a TUI that animates anything at all would fail it while
+  # having delivered nothing.
+  if printf '%s' "$after" | grep -qF "ROOST-VALIDATE-MUST-NOT-ARRIVE"; then
+    record FAIL 5 "$h: the refused text was not typed into the dialog" "the message is visible on the pane — it went into the dialog"
+  else
+    record PASS 5 "$h: the refused text was not typed into the dialog" "the message appears nowhere on the pane"
+  fi
+  if [ "$before" = "$after" ]; then
+    record INFO 5 "$h: the screen was byte-identical across the refused send" "nothing was drawn at all"
+  else
+    record INFO 5 "$h: the screen changed across the refused send" "the text above was still absent; a TUI redrawing itself is normal"
+  fi
+
+  # --- the known bug: declining a dialog ------------------------------------
+  # docs/known-gaps.md, first Live risk: answering No (or Esc) at a Claude Code
+  # permission dialog ends the turn without firing PostToolUse or Stop, so
+  # nothing ever unstamps `blocked` and the pane is unreachable to every roost
+  # coordination command afterwards. Claude Code cannot be driven here (see
+  # h_prepare), so what this measures is whether the same SHAPE of bug is
+  # present in this harness's adapter — which is a different question with the
+  # same consequence, and worth an answer either way.
+  #
+  # Esc is one of the two triggers the entry names, and it is the one that
+  # needs no per-harness knowledge of which digit means "no".
+  T send-keys -t "$pane" Escape
+  local t0; t0="$(date +%s)"
+  n=0; stuck=1; left_after=""
+  while [ "$n" -lt "$TMO_DECLINE" ]; do
+    if [ "$(pstate "$pane")" != blocked ]; then
+      stuck=0; left_after="$(( $(date +%s) - t0 ))"; break
+    fi
+    sleep 1; n=$((n+1))
+  done
+  sleep 2
+  stop_samplers
+  pscreen "$pane" > "$WORK/$h-declined-screen.txt"
+  block "badge timeline across the dialog and the Esc that declined it" "$f"
+  printf 'Badges seen, in order: `%s`\n\n' "$(badge_sequence "$f")" >> "$BODY"
+  block "the pane's screen ${TMO_DECLINE}s after Esc" "$WORK/$h-declined-screen.txt"
+
+  dialog_gone=1
+  if [ -n "$marker" ] && grep -qF "$marker" "$WORK/$h-declined-screen.txt"; then dialog_gone=0; fi
+
+  # A second send, after the decline, is what turns a badge reading into a
+  # consequence: an agent that cannot reach this pane is the actual damage the
+  # known-gaps entry describes.
+  out="$(R send "$pane" "ROOST-VALIDATE-AFTER-DECLINE" 2>&1)"; rc=$?
+  blockstr "roost send after the dialog was declined — exit $rc" "$out"
+
+  if [ "$stuck" -eq 0 ]; then
+    printf '%s\tNOT REPRODUCED\tbadge left blocked %ss after Esc; roost send then exited %s\n' "$h" "$left_after" "$rc" >> "$KB_STUCK"
+    record PASS 6 "$h: declining a dialog does not strand the pane" \
+      "NOT REPRODUCED — the badge left blocked ${left_after}s after Esc, and roost send then exited $rc"
+  elif [ "$dialog_gone" -eq 1 ]; then
+    printf '%s\tREPRODUCED\tbadge held blocked for %ss after Esc with no dialog on screen; roost send exited %s\n' "$h" "$TMO_DECLINE" "$rc" >> "$KB_STUCK"
+    record FAIL 6 "$h: declining a dialog does not strand the pane" \
+      "REPRODUCED — the badge held blocked for the full ${TMO_DECLINE}s after Esc with no dialog on screen, and roost send still exited $rc"
+  else
+    printf '%s\tINCONCLUSIVE\tEsc did not close the dialog, so the decline path was never entered\n' "$h" >> "$KB_STUCK"
+    record SKIP 6 "$h: declining a dialog does not strand the pane" \
+      "INCONCLUSIVE — Esc did not close the dialog (\"$marker\" is still on screen), so the decline path was never entered"
+  fi
+  return 0
+}
+
+section_drives() {
+  sec "5. A real end-to-end drive, per installed harness"
+  para "This is the part the old manual pack asked a person to watch and describe,
+and the part we cannot run for ourselves.
+
+**By default each harness here runs the way you normally run it** — your own
+configuration, your provider, your account. That is deliberate. Everything that
+differs between a small local model and a real one is exactly where an adapter
+breaks: real models call tools constantly, which is what drives \`PostToolUse\`,
+permission dialogs and the working→blocked→working transitions this badge
+mapping is almost entirely about; they spawn subagents; and they have real
+latency, which is where our ordering bugs have lived. Codex is the sharpest
+case — it cannot drive ollama at all without a proxy that strips tool
+definitions ollama rejects, so a local codex run tests that proxy and a run on
+your account tests the actual code path.
+
+Each harness is started in a throwaway roost server, asked a question with a
+one-line answer, sent a second prompt through \`roost send\`, and driven to a
+permission dialog where it has one. The badge is **sampled over time**, not read
+once, because a single poll cannot tell a stale badge from a live one:
+\`@agent_since\` in each timeline is the instant the badge was stamped, and a
+frozen one against a moving clock is what staleness looks like.
+
+There is a third tier for opencode alone, and it is worth knowing about because
+it needs nothing at all. opencode ships free cloud models — real remote models,
+reached over the network, that work with **no account and no key**. Passing
+\`--opencode-cloud\` drives opencode against one. For opencode that is strictly
+better than the local fallback: measured on this machine, a free cloud model
+reached a real permission dialog in 3–4 seconds and the local 3B took 55s and
+often declines to call a tool at all. It costs nothing, so a tester with no
+accounts whatsoever can still exercise a genuinely remote provider.
+
+Every harness below says which tier it ran in, and which provider and model
+actually answered. A report that does not say that is nearly worthless.
+
+> **Worth knowing before you read the results.** The default mode — driving a
+> harness against a real, paid provider — has never been exercised on our own
+> machines, because none of them has an account wired for these harnesses. Every
+> test we ran of this script took the \`--local\` path or the skip path. So if
+> something here looks odd, treat it as a genuine finding and tell us rather
+> than assuming it is your setup. Your run may well be the first time this code
+> path has ever driven a real turn."
+
+  if ! rig_up; then
+    record FAIL 5 "the throwaway roost server started" "tmux would not start a server on this run's own socket; no drive could run"
+    return 0
+  fi
+  para "The rig: its own tmux server on a socket inside a \`mktemp -d\`, and its own
+empty project directory. Your tmux is not touched and a live \`-L roost\` server
+is never contacted.
+
+In the default mode each harness **reads** the configuration it always reads —
+that is what makes the run meaningful — and roost changes none of it: no
+adapter is installed, no hooks file is written, and no trust prompt is answered
+in a way that persists. Where an adapter is missing the harness is skipped and
+the exact install command is printed instead. Under \`--local\` nothing real is
+read either: each harness gets a scratch config directory, redirected with that
+harness's own home variable.
+
+The one trace the default mode leaves is the one running the agent once always
+leaves: that harness's own session transcript, in its usual place."
+
+  local h
+  for h in claude opencode pi codex copilot; do
+    drive_harness "$h"
+  done
+  teardown_rig
+  [ -n "$CODEX_PROXY_PID" ] && { kill "$CODEX_PROXY_PID" 2>/dev/null; wait "$CODEX_PROXY_PID" 2>/dev/null; CODEX_PROXY_PID=""; }
+  return 0
+}
+
+section_known_bugs() {
+  sec "6. The two known bugs, checked rather than described"
+  para "The old manual pack described these in prose and asked the tester to look.
+Both are checked here, and both report an answer either way — a NOT REPRODUCED
+is as useful as a REPRODUCED, and much more useful than an unanswered question."
+
+  sub "6.1 Does declining a permission dialog strand the pane on blocked?"
+  para "\`docs/known-gaps.md\`, first Live risk. Answering **No** at a Claude Code
+permission dialog, or pressing **Esc**, ends the turn without firing
+\`PostToolUse\` or \`Stop\`. \`@agent_state\` was stamped \`blocked\` by the
+\`Notification\` hook and nothing ever unstamps it, so the pane becomes
+unreachable to \`roost send\` (exit 3 forever), \`roost wait-done\` (blocks to
+its timeout) and \`roost read\` (claims the current reply is stale).
+
+Each installed harness above was driven to a real dialog and then sent **Esc**,
+and the badge was sampled for 60 seconds afterwards. The full timeline and the
+screen at the end of it are in section 5, under that harness."
+  if [ -s "$KB_STUCK" ]; then
+    printf '| Harness | Verdict | Evidence |\n|---|---|---|\n' >> "$BODY"
+    while IFS="$(printf '\t')" read -r h v e; do
+      printf '| %s | **%s** | %s |\n' "$h" "$v" "$e" | redact >> "$BODY"
+    done < "$KB_STUCK"
+    printf '\n' >> "$BODY"
+  else
+    para "_No harness reached a permission dialog on this run, so the decline path was
+never entered. Section 5 says why for each one._"
+  fi
+  para "**What this does not answer.** The entry in \`docs/known-gaps.md\` was
+measured on Claude Code, and Claude Code is the one harness \`roost validate\`
+will not drive: it has no local-model seam, so driving it means the tester's own
+account and quota, and redirecting \`HOME\` to isolate the config takes the
+credential with it. So the rows above answer *\"is the same shape of bug present
+in this adapter\"*, which is a different question with the same consequence. The
+Claude Code case still needs a human with a Claude account to reproduce."
+
+  sub "6.2 Does a pi pane stay unbadged at blocked, as designed?"
+  para "\`docs/known-gaps.md\` again: pi ships no permission prompts of its own, so a
+pi pane never enters \`blocked\` and \`roost send\`'s exit-3 refusal never fires
+for one. That is a gap a pi user is carrying, not a defect — and it is worth
+confirming rather than assuming, because pi's \`blocked\` support rides on an
+undocumented internal (one shared \`ctx.ui\` object) that could start or stop
+working without any error.
+
+The pi drive above installs **no** permission gate, deliberately, so what was
+measured is a stock pi."
+  if [ -s "$KB_PI" ]; then
+    printf '| Harness | Verdict | Badges seen |\n|---|---|---|\n' >> "$BODY"
+    while IFS="$(printf '\t')" read -r h v e; do
+      printf '| %s | **%s** | `%s` |\n' "$h" "$v" "$e" | redact >> "$BODY"
+    done < "$KB_PI"
+    printf '\n' >> "$BODY"
+  else
+    para "_pi was not driven on this run; section 5 says why._"
+  fi
+
+  sub "6.3 Did codex change its own version during this run?"
+  para "A codex TUI being driven inside an isolated tmux socket has run
+\`brew upgrade --cask codex\` on its own host and replaced the binary mid-test
+(\`docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md\`). The isolation
+held everywhere it was designed to — tmux socket, \`CODEX_HOME\`, all three XDG
+homes — and none of that has any bearing on a system package manager. This run
+sets \`check_for_update_on_startup = false\`, which is codex's own switch asked
+politely rather than a boundary roost can enforce, so the version is measured
+before and after and compared."
+  if have codex; then
+    local now; now="$(ver codex --version)"
+    printf '| | |\n|---|---|\n' >> "$BODY"
+    printf '| codex version before this run | `%s` |\n' "${CODEX_VER_START:-not read}" >> "$BODY"
+    printf '| codex version after this run | `%s` |\n\n' "${now:-not read}" >> "$BODY"
+    if [ -z "$CODEX_VER_START" ] || [ -z "$now" ]; then
+      record WARN 6 "codex did not upgrade itself during this run" "one of the two version readings is missing, so they cannot be compared"
+    elif [ "$CODEX_VER_START" = "$now" ]; then
+      record PASS 6 "codex did not upgrade itself during this run" "$now before and after"
+    else
+      record FAIL 6 "codex did not upgrade itself during this run" \
+        "it changed from '$CODEX_VER_START' to '$now' — every measurement above was taken against a binary that may no longer be installed"
+    fi
+  else
+    record SKIP 6 "codex did not upgrade itself during this run" "codex is not installed"
+  fi
+  return 0
+}
+
+section_free_text() {
+  sec "7. The part a script cannot capture"
+  para "Everything above is measured. This is the only section that is not, and it is
+the most valuable one — we have tested this a great deal ourselves, which means
+we have stopped seeing the rough edges. You have not.
+
+**Optional.** The report is complete and worth sending exactly as it is. But if
+anything below has an answer, type it in before you send."
+  cat >> "$BODY" <<'FREE'
+```
+What confused you, at any point?
+
+
+What looked wrong or ugly, even if it worked?
+
+
+What did you expect to happen that did not?
+
+
+Did anything touch your normal tmux, shell or machine in a way that surprised
+you? (It should not have. If it did, that is the most important line here.)
+
+
+Anything else:
+
+```
+FREE
+  return 0
+}
+
+# --- main -------------------------------------------------------------------
+printf 'roost validate — this writes the report for you. Nothing to fill in.\n'
+printf '  checkout : %s\n' "$HERE"
+printf '  report   : %s\n' "$OUT"
+if [ "$LOCAL" -eq 1 ]; then
+  printf '  mode     : --local — a local ollama, model %s. Costs nothing.\n' "$MODEL"
+else
+  printf '  mode     : your own configured providers (pass --local to avoid that)\n'
+fi
+printf '\n'
+
+# The adapter offer comes FIRST, before the cost notice, because its answer
+# changes which harnesses the cost notice is about: declining it means fewer
+# harnesses are driven and less is spent. Both questions are asked before any
+# measurement begins, so the tester answers everything up front and then walks
+# away — which is the promise this script makes.
+offer_adapter_install
+
+# The cost notice. In the default mode this run spends the tester's own money,
+# and it must say so where they will see it rather than in a manual — but it
+# also promises they can walk away, so it cannot sit at a prompt forever. The
+# pause is bounded and continues on its own; Ctrl-C is the abort, and --yes
+# skips the wait entirely for an unattended run.
+if [ "$LOCAL" -eq 0 ]; then
+  cat <<'NOTICE'
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │  This drives each agent with YOUR account, and that costs YOU money.  │
+  └──────────────────────────────────────────────────────────────────────┘
+
+  That is on purpose: your real provider is the thing we cannot test here,
+  and it is where the adapters actually break. Real models call tools, spawn
+  subagents and take real time to answer — a local stub does none of that.
+
+  What it spends: about 3 one-line prompts per installed harness, plus
+  whatever tool calls the model decides to make answering them. On four
+  harnesses that is roughly a dozen short turns in total.
+
+  It will not log in to anything, and beyond any adapter symlink you just
+  agreed to it changes no configuration. A harness with no provider wired is
+  skipped -- that is your account, and not ours to arrange.
+
+  Run it with --local instead to drive a local ollama and spend nothing.
+
+NOTICE
+  if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
+    printf '  Starting in 20 seconds. Press Enter to start now, or Ctrl-C to stop.\n\n'
+    # -t on read is the bound. A tester who walks away at this point still gets
+    # their run; one who is watching can stop it or skip the wait.
+    read -r -t 20 _ || true
+  fi
+fi
+
+if [ "$RUN_SMOKE" -eq 1 ]; then
+  printf 'This also runs the live smoke suites in tests/live, which need a local\n'
+  printf 'ollama and skip themselves without one. Expect the whole thing to take a\n'
+  printf 'while — walk away. Every wait is bounded, so it cannot sit there forever,\n'
+  printf 'and the report is written even if something below fails.\n'
+  printf 'Pass --quick to skip them.\n\n'
+fi
+
+section_environment
+section_doctor
+section_offline_suites
+section_smoke_suites
+section_drives
+section_known_bugs
+section_free_text
+
+COMPLETED=1
+# The EXIT trap writes the report and prints its path. Exiting non-zero on a
+# FAIL would be the wrong contract: a tester's shell reporting failure invites
+# them to conclude the run itself broke and not send the file, and the file is
+# the whole point. Findings live in the report; the exit code only says whether
+# roost validate got to the end.
+exit 0
