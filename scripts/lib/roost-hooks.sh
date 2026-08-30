@@ -16,6 +16,25 @@
 # Moved here verbatim from bin/roost — do not edit a command or a timeout in
 # roost_hooks_codex, ever.
 #
+# WHITESPACE IS NOT PART OF WHAT IS HASHED, and knowing that saves the next
+# person a wasted round. The hash covers the PARSED handler struct, not the
+# file bytes — so indentation, line breaks and key order in hooks.json are all
+# free, and a caller that reflows this object to fit its own output
+# (scripts/roost-install prints it indented inside a list) changes nothing
+# codex can see. Measured on codex-cli 0.151.0 by calling its `hooks/list`
+# app-server method against a scratch $CODEX_HOME, the same path both times so
+# that only the file bytes varied: an unindented and a 2-space-indented
+# hooks.json returned identical HookMetadata.currentHash for all four
+# handlers, while changing a single timeout from 10 to 11 moved all four —
+# the positive control proving the probe was sensitive to real drift. Codex's
+# own generated schema puts currentHash alongside the deserialized fields,
+# which is the mechanism behind the measurement.
+#
+# This narrows the rule above; it does not soften it. What is hashed is every
+# VALUE in the parsed struct, so a changed command string, a changed argument
+# or a changed timeout still takes the handler down silently. Reflow freely;
+# edit nothing.
+#
 # Resolves its own checkout root rather than trusting an inherited
 # $ROOST_HOME, for the same reason scripts/lib/roost-adapters.sh does (see its
 # _roost_adapter_root comment): bin/roost exports ROOST_HOME into every pane

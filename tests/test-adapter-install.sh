@@ -106,6 +106,52 @@ tree_of() {
     done )
 }
 
+# hook_blocks -> reads text on stdin, prints one canonical JSON object per
+# line for every embedded {...} block that carries a "hooks" key.
+#
+# Filtered on "hooks" rather than emitting every object found, because the
+# copilot note in the manual list also contains a JSON object
+# ({"enabledFeatureFlags": {"EXTENSIONS": true}}) and it is printed
+# unconditionally -- it is a one-line snippet in a sentence, not one of the
+# blocks --print-only governs. Scoping to hook blocks keeps these two
+# assertions about the thing they actually claim.
+#
+# Whitespace-insensitive on purpose, and that is a measured decision rather
+# than a convenience: codex hashes the PARSED handler struct, not the file
+# bytes. Verified on codex-cli 0.151.0 via its `hooks/list` app-server method
+# against a scratch CODEX_HOME -- unindented and 2-space-indented hooks.json
+# gave identical HookMetadata.currentHash for all four handlers, while
+# changing one "timeout": 10 to 11 moved all four (the positive control that
+# proves the probe was sensitive). So the installer indenting a printed block
+# to fit its manual list is harmless, and the thing worth pinning is the
+# parsed structure.
+#
+# Key order is NOT sorted away: json.dumps keeps insertion order, so a
+# reordered event map or a reordered handler still fails here.
+hook_blocks() {
+  python3 -c '
+import json, sys
+text = sys.stdin.read()
+dec = json.JSONDecoder()
+i = 0
+while True:
+    i = text.find("{", i)
+    if i < 0:
+        break
+    try:
+        obj, end = dec.raw_decode(text, i)
+    except ValueError:
+        i += 1
+        continue
+    if isinstance(obj, dict):
+        if "hooks" in obj:
+            sys.stdout.write(json.dumps(obj) + "\n")
+        i = end
+    else:
+        i += 1
+'
+}
+
 ALL_SHIM="$(make_harness_shim opencode pi copilot claude codex)"
 
 # ===========================================================================
@@ -341,10 +387,13 @@ rm -rf "$shim"
 # ===========================================================================
 # 10. --symlinks-only -> the three links, and no JSON advice at all
 # ===========================================================================
-# This is the mode `roost validate` calls (`roost install --symlinks-only
-# --yes`), so its output has to be about symlinks and nothing else: validate
-# writes it into a report that promises "nothing else was written -- no hooks
-# file, no trust granted, no settings edited".
+# This is the mode `roost validate` WILL call (`roost install --symlinks-only
+# --yes`) -- not yet: roost install is not dispatched from bin/roost until
+# Task 9, and roost-validate still carries its own offer_adapter_install until
+# Task 10. Pinned now anyway, because it is the reason the mode exists:
+# validate writes its result into a report that promises "nothing else was
+# written -- no hooks file, no trust granted, no settings edited", so this
+# output has to be about symlinks and nothing else.
 box="$TMP/symonly"
 out="$(run_install "$box" "$ALL_SHIM" --symlinks-only --yes)"; rc=$?
 assert_eq "$rc" "0" "--symlinks-only: exits 0"
@@ -374,11 +423,36 @@ assert_eq "$(cksum < "$fpath")" "$fbefore" \
 box="$TMP/printonly"
 out="$(run_install "$box" "$ALL_SHIM" --print-only --yes)"; rc=$?
 assert_eq "$rc" "0" "--print-only: exits 0"
-want_line="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex | grep '"command":.*PermissionRequest')"
-assert_contains "$out" "$want_line" \
-  "--print-only: the codex block is byte-identical to roost_hooks_codex's"
+if command -v python3 >/dev/null 2>&1; then
+  # The WHOLE block, both harnesses, compared against the lib's own output --
+  # not one grepped line of one of them. Fidelity is the entire justification
+  # for --print-only, so a check that reads a single line leaves a reordered
+  # event map, a dropped "matcher" or an untouched-looking claude block
+  # entirely uncovered.
+  got_blocks="$(printf '%s\n' "$out" | hook_blocks)"
+  want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
+  want_codex="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex | hook_blocks)"
+  assert_eq "$got_blocks" "$(printf '%s\n%s' "$want_claude" "$want_codex")" \
+    "--print-only: the printed claude and codex blocks match roost-hooks.sh exactly"
+else
+  assert_true 0 "--print-only block comparison skipped (python3 needed)"
+fi
 n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "--print-only: the symlinks are still made (it only governs JSON)"
+
+# The other direction, which nothing covered: a NORMAL run must print no JSON
+# block at all. Without this, wiring PRINT_ONLY permanently on is a mutation
+# the suite survives -- case 10 skips the branch via --symlinks-only, and
+# cases 7 and 9 have no claude or codex detected, so none of them can see it.
+box="$TMP/noprint"
+out="$(run_install "$box" "$ALL_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "a normal run: exits 0"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(printf '%s\n' "$out" | hook_blocks)" "" \
+    "a normal run prints no hook block -- that is what --print-only is for"
+fi
+assert_contains "$out" "roost hooks claude" \
+  "a normal run names the command that prints the block instead"
 
 # ===========================================================================
 # 12. -h / --help -> usage, exit 0, nothing written

@@ -26,6 +26,11 @@
 #     behind by a run that promised to change nothing is still a change.
 set -u
 
+# NOTE ON TENSE: `--symlinks-only` is written for `roost validate`, but
+# nothing calls it yet — bin/roost gains its `install)` case in Task 9, and
+# roost-validate swaps its own offer_adapter_install for a call to it in Task
+# 10. Every reference to that caller is deliberately future tense.
+#
 # --- this checkout ---------------------------------------------------------
 # Resolved from this file's own location, never from an inherited $ROOST_HOME.
 # bin/roost does `set-environment -g ROOST_HOME` (bin/roost:89), so EVERY pane
@@ -85,8 +90,9 @@ asks once, and never replaces a file that is not roost's own.
   --only H[,H...]   restrict to these harnesses (opencode, pi, copilot,
                     claude, codex). Anything else is left completely alone.
   --print-only      never edit a JSON file; print the blocks to paste instead.
-  --symlinks-only   the adapter symlinks and nothing else. This is what
-                    `roost validate` invokes.
+  --symlinks-only   the adapter symlinks and nothing else. This is the mode
+                    `roost validate` will invoke, once Task 10 replaces its
+                    own offer_adapter_install with a call to it.
   -h, --help        this text.
 
 Exit codes: 0 everything it could do succeeded, even with manual steps left.
@@ -383,32 +389,32 @@ fi
 # exists only because the corresponding write does not happen yet. What must
 # survive that change: --print-only keeps printing the block instead of
 # writing it, --symlinks-only keeps skipping the JSON entirely (it is what
-# `roost validate` invokes, and validate's report promises that nothing but
-# symlinks was written), and the codex trust prompt and the copilot
+# `roost validate` WILL invoke — Task 10 — and validate's report promises that
+# nothing but symlinks was written), and the codex trust prompt and the copilot
 # per-directory approval stay listed forever — they are prompts no tool can
 # answer, not steps waiting to be automated.
 if [ "$SYMLINKS_ONLY" -eq 0 ]; then
   case " $DETECTED " in *" claude "*)
     if [ "$PRINT_ONLY" -eq 1 ]; then
-      add_manual "claude: merge this into ${HOME:-~}/.claude/settings.json, into any
+      add_manual "claude: merge this into $(roost_adapter_settings claude), into any
   \"hooks\" object already there:
 $(roost_hooks_claude)"
     else
       add_manual "claude: roost's hooks are not written for you yet. Run
     roost hooks claude
-  and merge the JSON object it prints into ${HOME:-~}/.claude/settings.json."
+  and merge the JSON object it prints into $(roost_adapter_settings claude)."
     fi
   ;; esac
 
   case " $DETECTED " in *" codex "*)
-    codex_home="$(roost_adapter_home codex)"
+    codex_hooks="$(roost_adapter_settings codex)"
     if [ "$PRINT_ONLY" -eq 1 ]; then
-      add_manual "codex: put this in $codex_home/hooks.json:
+      add_manual "codex: put this in $codex_hooks:
 $(roost_hooks_codex)"
     else
       add_manual "codex: roost's hooks are not written for you yet. Run
     roost hooks codex
-  and put the JSON object it prints in $codex_home/hooks.json."
+  and put the JSON object it prints in $codex_hooks."
     fi
     # Unconditional, and it always will be. Codex skips every hook until a
     # human answers this, there is no file on disk that records the answer,
@@ -419,10 +425,10 @@ $(roost_hooks_codex)"
   ;; esac
 
   case " $DETECTED " in *" copilot "*)
-    copilot_home="$(roost_adapter_home copilot)"
+    copilot_settings="$(roost_adapter_settings copilot)"
     add_manual "copilot: the EXTENSIONS feature flag is not set for you yet. Add
     {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}}
-  to $copilot_home/settings.json (merging, not replacing)."
+  to $copilot_settings (merging, not replacing)."
     # Also permanent. copilot persists nothing for this, so there is no file
     # to read and no way to tell "not yet asked" from "denied".
     add_manual "copilot: the first time you run it in a directory, answer Yes to the

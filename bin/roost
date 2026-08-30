@@ -66,6 +66,15 @@ roost_self_socket
 # shows below its own explanatory comments. Shared with the installer, which
 # needs the identical bytes — see that file's header for why editing them
 # there or here is not safe.
+#
+# Note for anyone reading the frozen-handlers warning in the codex prose
+# below: it is about the VALUES, not the layout. Codex hashes the parsed
+# handler struct, so indentation and key order are free and a caller may
+# reflow the object to fit its own output — measured on codex-cli 0.151.0 via
+# `hooks/list`, written up in full in scripts/lib/roost-hooks.sh's header. The
+# prose below is printed to users and is pinned byte-for-byte by
+# tests/fixtures/hooks-codex.txt, which is why the detail lives in the lib
+# rather than being added to it.
 . "$ROOST_HOME/scripts/lib/roost-hooks.sh"
 SOCKET="${ROOST_SOCKET:-${ROOST_SELF_SOCK:-roost}}"
 case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac

@@ -16,6 +16,36 @@ roost_adapter_home() {
     pi)       printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" ;;
     copilot)  printf '%s' "${COPILOT_HOME:-$HOME/.copilot}" ;;
     codex)    printf '%s' "${CODEX_HOME:-$HOME/.codex}" ;;
+    # Derived from the settings FILE rather than stated independently, so the
+    # two can never disagree when $CLAUDE_SETTINGS moves the file somewhere
+    # this directory does not contain. claude is the only harness whose
+    # override names a file instead of a directory.
+    claude)   local cs; cs="$(roost_adapter_settings claude)"; printf '%s' "${cs%/*}" ;;
+  esac
+}
+
+# roost_adapter_settings HARNESS — the JSON file roost has to edit for the
+# harnesses that are configured by JSON rather than by a symlink. Added
+# because scripts/roost-install had restated claude's path inline and
+# scripts/roost-doctor:63 spells the same thing with a $CLAUDE_SETTINGS
+# override in front of it — two definitions of one path, and roost install is
+# about to start WRITING to it (spec Tasks 5-7), where a divergence stops
+# being cosmetic. One definition, here, for the same reason
+# roost_adapter_path exists for the symlink three.
+#
+# $CLAUDE_SETTINGS is honoured because roost-doctor already honours it; a
+# report and an installer that disagreed about which file they mean is the
+# exact failure this file's header exists to prevent. roost-doctor should
+# adopt this function rather than keep its own copy of the expression — left
+# alone here only because that file is another task's to touch.
+#
+# Prints nothing for a harness with no JSON config of its own (the symlink
+# three), the same way roost_adapter_path prints nothing for codex.
+roost_adapter_settings() {
+  case "$1" in
+    claude)  printf '%s' "${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}" ;;
+    copilot) printf '%s/settings.json' "$(roost_adapter_home copilot)" ;;
+    codex)   printf '%s/hooks.json' "$(roost_adapter_home codex)" ;;
   esac
 }
 
