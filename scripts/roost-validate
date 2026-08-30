@@ -82,6 +82,7 @@ while [ -L "$SOURCE" ]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 HERE="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+. "$HERE/scripts/lib/roost-adapters.sh"
 
 # granite4.2:3b for the same reason tests/live/*-smoke.sh give: 2.2 GB, and it
 # is the one thing a tester may have to pull. The escalation case needs a model
@@ -969,25 +970,12 @@ H_MODEL=""
 H_ENV=""        # env prefix for the launch command
 H_CMD=""        # the launch command itself
 
-# h_real_home HARNESS — the directory that harness actually keeps its
-# configuration and credentials in. Per harness, and never assumed to be the
-# XDG one: AGENTS.md §8 exists because copilot ignores XDG entirely, and pi and
-# codex each have their own override too.
-h_real_home() {
-  case "$1" in
-    opencode) printf '%s/opencode' "${XDG_CONFIG_HOME:-$HOME/.config}" ;;
-    pi)       printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" ;;
-    copilot)  printf '%s' "${COPILOT_HOME:-$HOME/.copilot}" ;;
-    codex)    printf '%s' "${CODEX_HOME:-$HOME/.codex}" ;;
-  esac
-}
-
 # h_config_missing HARNESS -> a reason, or nothing if the harness looks
 # configured. This is a READ. roost validate will not create a configuration,
 # will not log anything in, and will not ask the tester to: a harness with no
 # provider wired is a SKIP with that as the printed reason.
 h_config_missing() {
-  local h="$1" home; home="$(h_real_home "$h")"
+  local h="$1" home; home="$(roost_adapter_home "$h")"
   case "$h" in
     opencode)
       [ -s "$home/opencode.json" ] \
@@ -1004,49 +992,6 @@ h_config_missing() {
         || { printf 'no copilot configuration found (%s does not exist)' "$home"; return 0; } ;;
   esac
   return 0
-}
-
-# h_adapter_path / h_adapter_target HARNESS — the symlink roost wants, and what
-# it must point at. One pair, used by the state check, the install offer and the
-# skip text, so those three can never disagree about which file they mean.
-h_adapter_path() {
-  local home; home="$(h_real_home "$1")"
-  case "$1" in
-    opencode) printf '%s/plugin/roost.js' "$home" ;;
-    pi)       printf '%s/extensions/roost.ts' "$home" ;;
-    copilot)  printf '%s/extensions/roost/extension.mjs' "$home" ;;
-  esac
-}
-h_adapter_target() {
-  case "$1" in
-    opencode) printf '%s/adapters/opencode/roost.js' "$HERE" ;;
-    pi)       printf '%s/adapters/pi/roost.ts' "$HERE" ;;
-    copilot)  printf '%s/adapters/copilot/extension.mjs' "$HERE" ;;
-  esac
-}
-
-# h_adapter_state HARNESS -> ok | missing | foreign | none
-#
-#   ok       the symlink is there and points at THIS checkout
-#   missing  nothing at that path at all — safe to create
-#   foreign  something else is there. Could be another checkout's link, could
-#            be the tester's own extension, could be a dangling link to a
-#            checkout they deleted. roost validate does not touch any of them.
-#            A tester who keeps their own extension at that path must not lose
-#            it to a validation run, and "it is probably ours" is not a good
-#            enough reason to delete a file (AGENTS.md §9 — verify, do not
-#            assume). Reported with the exact fix so they can decide.
-#   none     this harness has no symlink-shaped adapter (codex uses a hooks
-#            file and a trust prompt, and both are out of scope for installing)
-h_adapter_state() {
-  local h="$1" path want
-  case "$h" in opencode|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
-  path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
-  if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
-  elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'foreign'   # dangling
-  elif [ "$path" -ef "$want" ]; then printf 'ok'
-  else printf 'foreign'
-  fi
 }
 
 # h_adapter_fix HARNESS -> the exact command that would install the missing
@@ -1066,11 +1011,11 @@ h_adapter_state() {
 # will not touch, or an answer of no.
 h_adapter_fix() {
   local h="$1" home want path n ev
-  home="$(h_real_home "$h")"
+  home="$(roost_adapter_home "$h")"
   case "$h" in
     opencode|pi|copilot)
-      path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
-      case "$(h_adapter_state "$h")" in
+      path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
+      case "$(roost_adapter_state "$h")" in
         ok) return 0 ;;
         missing)
           printf 'the %s adapter is not linked — run: mkdir -p "%s" && ln -s "%s" "%s"' \
@@ -1149,9 +1094,9 @@ offer_adapter_install() {
 
   for h in opencode pi copilot; do
     have "$h" || continue
-    case "$(h_adapter_state "$h")" in
+    case "$(roost_adapter_state "$h")" in
       missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
-      foreign) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(h_adapter_path "$h")
+      foreign) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$h")
 " ;;
     esac
   done
@@ -1174,8 +1119,8 @@ offer_adapter_install() {
   printf '  These roost adapters are not linked yet. Without them the pane is never\n'
   printf '  badged, so those harnesses would be skipped:\n\n'
   for h in $INSTALL_CANDIDATES; do
-    printf '    %-9s %s\n' "$h" "$(h_adapter_path "$h")"
-    printf '    %-9s   -> %s\n' "" "$(h_adapter_target "$h")"
+    printf '    %-9s %s\n' "$h" "$(roost_adapter_path "$h")"
+    printf '    %-9s   -> %s\n' "" "$(roost_adapter_target "$h")"
   done
   printf '\n  Creating them is a symlink each, nothing else — no hooks file, no trust,\n'
   printf '  no settings change, no provider config. The report prints the one-line\n'
@@ -1213,12 +1158,12 @@ offer_adapter_install() {
   esac
 
   for h in $INSTALL_CANDIDATES; do
-    path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+    path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
     # Re-checked immediately before writing, not trusted from the loop above.
     # The gap between the two is small and a tester could have been fixing
     # things in another terminal while the prompt sat there — and this is the
     # one place in the whole script that creates a file on their machine.
-    [ "$(h_adapter_state "$h")" = missing ] || { BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+    [ "$(roost_adapter_state "$h")" = missing ] || { BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
 "; continue; }
     if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$want" "$path" 2>/dev/null; then
       INSTALLED_LINKS="$INSTALLED_LINKS$path
@@ -1286,7 +1231,7 @@ if you decide you want it relinked."
 # empty and reported as unknown, which is honest; guessing is not.
 h_read_config() {
   local h="$1" home f
-  home="$(h_real_home "$h")"
+  home="$(roost_adapter_home "$h")"
   H_PROVIDER=""; H_MODEL=""
   case "$h" in
     opencode)
