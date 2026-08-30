@@ -368,7 +368,7 @@ export class SplashPage extends LitroPage {
               margin:1.5rem auto 0;
             ">
               ${ADAPTER_COUNT} adapters ship in the repo, and every one of them
-              badges, blocks and reports its reply on its own — you wire it once.
+              badges its pane and reports its reply on its own — you wire it once.
               What each can signal is not identical: Codex has no error signal to
               pass on, and pi never asks permission, so a pi pane never blocks.
               <a href="/docs/state-badges" style="
