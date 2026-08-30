@@ -112,6 +112,43 @@ main()
 PY
 }
 
+# roost_json__jq_validate INPUT -> jq is a STREAM processor: an empty file
+# is zero JSON values, and two concatenated objects are two — either way jq
+# runs its filter zero-or-N times and exits 0, with no complaint that the
+# top-level shape was never a single object. Left unchecked, that turns an
+# empty or whitespace-only settings file into a truncated one (the merge
+# filter has nothing to operate on, so it produces nothing, and roost_json_
+# merge would still see rc=0 and promote that "nothing" to the real file) —
+# this is exactly the gap python3's `isinstance(data, dict)` check (above)
+# already closes for that engine.
+#
+# `jq --slurp` reads every top-level value in INPUT into one JSON array, so
+# `length == 1 and (.[0] | type) == "object"` is true for exactly the shape
+# roost_json_merge is willing to touch: prints nothing and returns 0 there.
+#
+# Two failure shapes, kept distinct because they ARE distinct and the header
+# comment on roost_json_merge documents both:
+#   - INPUT has a genuine JSON syntax error -> jq itself exits 5 (jq's own
+#     "compile/parse error" status; -e does not change this one). Its own
+#     parse-error message is forwarded verbatim.
+#   - INPUT parses fine but is not exactly one object at the top level
+#     (empty, whitespace-only, multiple concatenated documents, or a single
+#     non-object value like `[1,2]`) -> exit 1, with a message this
+#     function writes itself, since jq has no complaint of its own to
+#     forward for "valid JSON, wrong shape".
+roost_json__jq_validate() {
+  local input="$1" msg rc
+  msg="$(jq -e --slurp 'length == 1 and (.[0] | type) == "object"' "$input" 2>&1 1>/dev/null)"
+  rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  if [ "$rc" -eq 5 ]; then
+    printf '%s\n' "$msg" >&2
+    return 5
+  fi
+  printf 'roost-json: top-level JSON value must be an object\n' >&2
+  return 1
+}
+
 # roost_json__jq_run MODE INPUT OUT ARGS... -> run jq for MODE against INPUT,
 # writing the result to OUT. Kept as a case per mode rather than one generic
 # filter, because jq has no equivalent of Python's setdefault-then-assign in
@@ -125,6 +162,13 @@ PY
 # hold for jq too, not just for python3.
 roost_json__jq_run() {
   local mode="$1" input="$2" out="$3"; shift 3
+
+  # Validated unconditionally, same as python3's isinstance(dict) check runs
+  # before python3 even looks at MODE: an unparseable or wrongly-shaped
+  # FILE is refused the same way whether or not the caller also passed a
+  # mode this file recognises.
+  roost_json__jq_validate "$input" || return $?
+
   case "$mode" in
     claude-hooks)
       local target="$1"
@@ -174,13 +218,24 @@ roost_json__jq_run() {
 # Exit status:
 #   0  success — either FILE was written (and, if it existed before, backed
 #      up first — see below) or the merge turned out to be a no-op
-#   1  malformed input JSON, or the write itself failed. Nothing is written
-#      and no backup is taken: a settings file this helper cannot fully
-#      parse is the one case where doing nothing is clearly right.
+#   1  malformed input under python3 (any parse failure, or a top-level
+#      value that isn't an object); under jq, valid JSON that still isn't
+#      exactly one top-level object (empty input, multiple concatenated
+#      documents, or a single non-object value like `[1,2]`)
 #   2  unknown MODE (a caller bug, not a degraded runtime condition)
 #   3  neither python3 nor jq is on PATH. Nothing is written. Not an error —
 #      the caller falls back to printing the block for the user to merge by
 #      hand.
+#   5  jq only: a genuine JSON syntax error in FILE. jq's own exit status
+#      for a parse failure, forwarded rather than remapped to 1, so this
+#      contract says what each engine actually does instead of pretending
+#      they agree. No caller of this file distinguishes 5 from 1 today —
+#      both simply mean "nothing was written, read the stderr message" —
+#      but a future one should not have to discover the real number by
+#      testing.
+#
+# Every one of the non-zero codes above leaves FILE untouched and takes no
+# backup, regardless of engine.
 #
 # On stdout: the backup path, IF AND ONLY IF a backup was actually made
 # (an existing file whose content is about to change). Nothing is printed
