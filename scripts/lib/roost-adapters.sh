@@ -70,25 +70,33 @@ roost_adapter_target() {
   esac
 }
 
-# roost_adapter_state HARNESS -> ok | missing | foreign | none
+# roost_adapter_state HARNESS -> ok | missing | dangling | foreign | none
 #
-#   ok       the symlink is there and points at THIS checkout
-#   missing  nothing at that path at all — safe to create
-#   foreign  something else is there. Could be another checkout's link, could
-#            be the tester's own extension, could be a dangling link to a
-#            checkout they deleted. roost validate does not touch any of them.
-#            A tester who keeps their own extension at that path must not lose
-#            it to a validation run, and "it is probably ours" is not a good
-#            enough reason to delete a file (AGENTS.md §9 — verify, do not
-#            assume). Reported with the exact fix so they can decide.
-#   none     this harness has no symlink-shaped adapter (codex uses a hooks
-#            file and a trust prompt, and both are out of scope for installing)
+# Reports what is AT the path. What to do about each value is each caller's
+# own policy, not this function's — roost validate currently treats dangling
+# exactly like foreign (see h_adapter_fix and offer_adapter_install), but that
+# is validate's choice and is not guaranteed to stay true for every caller.
+#
+#   ok        the symlink is there and points at THIS checkout
+#   missing   nothing at that path at all — safe to create
+#   dangling  a symlink is there but points at nothing that exists. This is
+#             OURS to have broken — the checkout it pointed at moved or was
+#             deleted — not a tester's own file, so a caller is free to treat
+#             it differently from foreign.
+#   foreign   something else occupies the path and is NOT a dangling link:
+#             another live checkout's symlink, or the tester's own extension.
+#             "it is probably ours" is not a good enough reason to delete a
+#             file (AGENTS.md §9 — verify, do not assume) — a caller that
+#             wants to leave these alone reports the exact fix instead.
+#   none      this harness has no symlink-shaped adapter (codex uses a hooks
+#             file and a trust prompt, and both are out of scope for
+#             installing)
 roost_adapter_state() {
   local h="$1" path want
   case "$h" in opencode|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
   path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
   if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
-  elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'foreign'   # dangling
+  elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'dangling'
   elif [ "$path" -ef "$want" ]; then printf 'ok'
   else printf 'foreign'
   fi

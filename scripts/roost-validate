@@ -1096,7 +1096,9 @@ offer_adapter_install() {
     have "$h" || continue
     case "$(roost_adapter_state "$h")" in
       missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
-      foreign) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$h")
+      # dangling is treated exactly like foreign here: same behaviour as
+      # before roost_adapter_state told the two apart, not a policy change.
+      foreign|dangling) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$h")
 " ;;
     esac
   done
