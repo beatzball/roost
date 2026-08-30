@@ -63,6 +63,10 @@ DRY_RUN=0
 PRINT_ONLY=0
 SYMLINKS_ONLY=0
 ONLY=""
+# Whether --only was GIVEN, tracked apart from its value. The two are not the
+# same question, and conflating them is what let an empty value read as "no
+# restriction" instead of "a restriction naming nothing".
+ONLY_GIVEN=0
 
 usage() { # usage RC — to stdout for --help, to stderr for a usage error
   local rc="$1" out=1
@@ -105,8 +109,17 @@ while [ "$#" -gt 0 ]; do
       case "${2:-}" in
         ''|-*) printf 'roost install: --only needs a harness list\n' >&2; usage 2 ;;
       esac
-      ONLY="$2"; shift 2 ;;
-    --only=*)        ONLY="${1#*=}"; shift ;;
+      ONLY_GIVEN=1; ONLY="$2"; shift 2 ;;
+    # The SAME guard, on the other spelling. `--only=` with an empty value used
+    # to slip past it and then, being empty, past the `[ -n "$ONLY" ]` test
+    # below as well — so the restriction was DROPPED rather than emptied and
+    # the run linked every harness. `roost install --only="$HARNESS" --yes` in
+    # a wrapper where $HARNESS is unset is the realistic way to get there.
+    --only=*)
+      case "${1#*=}" in
+        ''|-*) printf 'roost install: --only needs a harness list\n' >&2; usage 2 ;;
+      esac
+      ONLY_GIVEN=1; ONLY="${1#*=}"; shift ;;
     -h|--help)       usage 0 ;;
     *) printf "roost install: unknown argument '%s'\n" "$1" >&2; usage 2 ;;
   esac
@@ -116,8 +129,16 @@ done
 # printed. A typo'd harness silently restricting the run to nothing at all
 # would exit 0 having done nothing, which reads exactly like a successful
 # no-op — the one failure mode a user cannot tell from success.
+#
+# THE INVARIANT, and it is a safety one: if --only was given at all, it must
+# end up naming at least one real harness, or this exits 2. Anything else —
+# `--only=`, `--only ,`, `--only ' '` — is a caller error, and the one
+# interpretation that must never be reachable is "no restriction". Today the
+# blast radius of getting that wrong is three symlinks; once Tasks 5-7 land it
+# is claude's settings.json, codex's hooks.json and copilot's settings.json
+# written on a machine whose caller explicitly scoped them out.
 ONLY_LIST=""
-if [ -n "$ONLY" ]; then
+if [ "$ONLY_GIVEN" -eq 1 ]; then
   # Bash's own substitution, not `tr`: this runs before roost has told the
   # user anything, and a thin PATH must not turn a typo'd --only into a silent
   # empty restriction that then links everything.
@@ -128,7 +149,16 @@ if [ -n "$ONLY" ]; then
            "$h" "$HARNESSES" >&2; exit 2 ;;
     esac
   done
+  # Non-empty but reducing to no words at all: separators only, or whitespace.
+  # Caught here rather than left to `in_scope`, which reads an empty ONLY_LIST
+  # as "unrestricted" — correct for a run with no --only, catastrophic for one
+  # that had it.
+  if [ -z "$ONLY_LIST" ]; then
+    printf "roost install: --only: no harness named (known: %s)\n" "$HARNESSES" >&2
+    exit 2
+  fi
 fi
+ONLY_LIST="${ONLY_LIST# }"
 
 in_scope() { # in_scope HARNESS
   [ -n "$ONLY_LIST" ] || return 0
@@ -180,7 +210,14 @@ DETECTED="${DETECTED# }"
 
 if [ -z "$DETECTED" ]; then
   printf 'roost install: no supported harness found on PATH — nothing to do.\n'
-  printf '  Looked for: %s\n' "$HARNESSES"
+  # What it ACTUALLY looked for. Under --only that is the restricted list, and
+  # printing all five would tell a user their harness was searched for and
+  # missing when it was never searched for at all.
+  if [ -n "$ONLY_LIST" ]; then
+    printf '  Looked for (--only): %s\n' "$ONLY_LIST"
+  else
+    printf '  Looked for: %s\n' "$HARNESSES"
+  fi
   exit 0
 fi
 

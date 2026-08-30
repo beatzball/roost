@@ -260,6 +260,40 @@ box="$TMP/badonly"
 out="$(run_install "$box" "$ALL_SHIM" --only nosuchharness --yes)"; rc=$?
 assert_eq "$rc" "2" "--only with an unknown harness: exits 2"
 
+# --only that names NOTHING must be a usage error, never "no restriction".
+# `--only nosuchharness` above takes the unknown-name branch and so proves
+# nothing about these: each of the four below used to reduce to an empty
+# ONLY_LIST, which in_scope reads as unrestricted -- so the run dropped the
+# restriction and linked EVERY harness. `roost install --only="$HARNESS"
+# --yes` in a wrapper where $HARNESS is unset is the realistic way in, and
+# after Tasks 5-7 the same hole writes claude's settings.json, codex's
+# hooks.json and copilot's settings.json on a machine that scoped them out.
+# Each case asserts BOTH halves: exit 2, and nothing linked.
+i=0
+for empty_only in "--only=" "--only,--only-sep" "--only,--only-ws" "--only-space"; do
+  i=$((i + 1))
+  box="$TMP/emptyonly$i"
+  mkdir -p "$box/home"
+  case "$empty_only" in
+    "--only=")            out="$(run_install "$box" "$ALL_SHIM" --only= --yes)" ;;
+    "--only,--only-sep")  out="$(run_install "$box" "$ALL_SHIM" --only , --yes)" ;;
+    "--only,--only-ws")   out="$(run_install "$box" "$ALL_SHIM" --only " " --yes)" ;;
+    "--only-space")       out="$(run_install "$box" "$ALL_SHIM" --only=, --yes)" ;;
+  esac
+  rc=$?
+  assert_eq "$rc" "2" "--only naming nothing ($empty_only): exits 2"
+  n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "$n" "0" "--only naming nothing ($empty_only): links nothing"
+done
+
+# The complement, so the guard cannot be "reject everything": a real name
+# still restricts rather than erroring.
+box="$TMP/onlyok"
+run_install "$box" "$ALL_SHIM" --only=copilot --yes >/dev/null; rc=$?
+assert_eq "$rc" "0" "--only=copilot (the = spelling with a real name): exits 0"
+n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$n" "1" "--only=copilot: exactly one symlink"
+
 # ===========================================================================
 # 8b. A write that fails -> exit 1
 # ===========================================================================
