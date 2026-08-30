@@ -412,3 +412,106 @@ PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor "$RDOC" >/dev/null
 assert_eq "$?" "0" "the codex checks never fail doctor"
 
 rm -rf "$cxshim" "$cxhome"
+
+# === roost doctor: the adapter advice points at `roost install` ===
+# `roost install` performs all five of these fixes in one go, so every warn
+# that hands the user a command to paste now names it too.
+#
+# The paste-command STAYS. The installer cannot run everywhere doctor can:
+# the two hook files need python3 or jq to edit, a foreign file at an adapter
+# path is left alone rather than replaced, and a read-only home cannot be
+# written at all. On any of those machines the pasted command is the only fix
+# there is, so the tail is an addition to it and never a replacement -- both
+# halves are asserted below, on the same line, for that reason.
+
+# doc_line NEEDLE REPORT -> the first line of REPORT containing NEEDLE, or the
+# empty string.
+#
+# Every assertion in this section is pinned to ONE line through this rather
+# than run against the whole report, because "roost install" now appears in
+# five separate lines: a whole-output assert_contains would go green on any of
+# them, including with the line it names deleted. That exact false pass has
+# already happened twice in this plan.
+#
+# bash's own parameter expansion and `read`, with no `tr` and no `cut`: the
+# thin PATHs this file builds elsewhere carry neither, and a silently absent
+# `tr` in a pipeline is a no-op that makes the filter match everything.
+doc_line() {
+  local needle="$1" hay="$2" line found=""
+  while IFS= read -r line; do
+    case "$line" in
+      *"$needle"*) [ -z "$found" ] && found="$line" ;;
+    esac
+  done <<EOF
+$hay
+EOF
+  printf '%s' "$found"
+}
+
+# All four optional harnesses faked onto PATH at once, each pointed at an
+# empty home of its own, so one run produces all five "not installed" lines --
+# the claude one comes for free, since an empty HOME has no settings.json.
+insthome="$(mktemp -d /tmp/amx.XXXX)"
+instshim="$(mktemp -d /tmp/amx.XXXX)"
+for _h in opencode copilot pi codex; do
+  printf '#!/bin/sh\nexit 0\n' > "$instshim/$_h"; chmod +x "$instshim/$_h"
+done
+out="$(HOME="$insthome" XDG_CONFIG_HOME="$insthome/.config" \
+  COPILOT_HOME="$insthome/.copilot" PI_CODING_AGENT_DIR="$insthome/.pi/agent" \
+  CODEX_HOME="$insthome/.codex" COLORTERM=truecolor \
+  PATH="$instshim:$PATH" "$RDOC" 2>&1)"
+
+l="$(doc_line "opencode found, roost plugin not installed" "$out")"
+assert_contains "$l" "ln -s " "doctor still prints the opencode symlink command"
+assert_contains "$l" "or run: roost install" "the opencode not-installed line also points at roost install"
+
+l="$(doc_line "copilot found, roost extension not installed" "$out")"
+assert_contains "$l" "ln -s " "doctor still prints the copilot symlink command"
+assert_contains "$l" "or run: roost install" "the copilot not-installed line also points at roost install"
+
+l="$(doc_line "pi found, roost extension not installed" "$out")"
+assert_contains "$l" "ln -s " "doctor still prints the pi symlink command"
+assert_contains "$l" "or run: roost install" "the pi not-installed line also points at roost install"
+
+l="$(doc_line "codex found, roost hooks not written" "$out")"
+assert_contains "$l" "run: roost hooks codex," "doctor still prints the codex hooks command"
+assert_contains "$l" "or run: roost install" "the codex hooks line also points at roost install"
+
+l="$(doc_line "Claude hooks not found in" "$out")"
+assert_contains "$l" "run: roost hooks," "doctor still prints the claude hooks command"
+assert_contains "$l" "or run: roost install" "the claude hooks line also points at roost install"
+
+# and none of this is a failure: advice is advice
+HOME="$insthome" XDG_CONFIG_HOME="$insthome/.config" \
+  COPILOT_HOME="$insthome/.copilot" PI_CODING_AGENT_DIR="$insthome/.pi/agent" \
+  CODEX_HOME="$insthome/.codex" COLORTERM=truecolor \
+  PATH="$instshim:$PATH" "$RDOC" >/dev/null 2>&1
+assert_eq "$?" "0" "the adapter advice never fails doctor"
+rm -rf "$insthome" "$instshim"
+
+# === roost doctor honours $CLAUDE_SETTINGS ===
+# doctor takes this path from roost_adapter_settings (scripts/lib/roost-adapters.sh)
+# rather than spelling ${CLAUDE_SETTINGS:-...} out itself, so doctor's report
+# and roost install's write can never disagree about which file they mean --
+# the divergence that file's header exists to prevent. Nothing covered the
+# override before this: every case above exercises the default.
+cshome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$cshome/.claude" "$cshome/elsewhere"
+# The DEFAULT location is deliberately populated, and with a STALE hook, so
+# that an implementation which ignored $CLAUDE_SETTINGS would not merely look
+# similar -- it would name this path and warn about amux-agent-state, and both
+# assertions below would catch it.
+cat > "$cshome/.claude/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
+EOF
+cat > "$cshome/elsewhere/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/roost/scripts/roost-agent-state done --stop-hook"}]}]}}
+EOF
+out="$(HOME="$cshome" XDG_CONFIG_HOME="$cshome/.config" \
+  CLAUDE_SETTINGS="$cshome/elsewhere/settings.json" COLORTERM=truecolor "$RDOC" 2>&1)"
+assert_contains "$out" "Claude hooks wired in $cshome/elsewhere/settings.json" \
+  "doctor checks the file \$CLAUDE_SETTINGS names, not \$HOME/.claude/settings.json"
+case "$out" in *"$cshome/.claude/settings.json"*) csleak=1 ;; *) csleak=0 ;; esac
+[ "$csleak" -eq 0 ]
+assert_true $? "doctor never reads \$HOME/.claude/settings.json when \$CLAUDE_SETTINGS names another file"
+rm -rf "$cshome"

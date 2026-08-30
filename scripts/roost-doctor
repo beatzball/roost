@@ -60,7 +60,12 @@ _settings_state() {
   fi
 }
 
-settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+# The one definition of this path lives in the adapter table, so doctor's
+# report and roost install's write can never disagree about which file they
+# mean -- $CLAUDE_SETTINGS included. Sourced here rather than beside the
+# other two libs further down because the very next line needs it.
+. "$(dirname "$0")/lib/roost-adapters.sh"
+settings="$(roost_adapter_settings claude)"
 case "$(_settings_state "$settings")" in
   ok)
     if grep -q roost-agent-state "$settings" 2>/dev/null; then
@@ -80,11 +85,11 @@ case "$(_settings_state "$settings")" in
       grep -q -- --stop-hook "$settings" 2>/dev/null \
         || warn "$settings has no --stop-hook on the Stop hook — roost read will fall back to the pane's screen; re-run: roost hooks"
     else
-      warn "Claude hooks not found in $settings — run: roost hooks"
+      warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install"
     fi
     ;;
   unreadable) warn "$settings exists but is not readable — could not check whether Claude hooks are wired" ;;
-  absent)     warn "Claude hooks not found in $settings — run: roost hooks" ;;
+  absent)     warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install" ;;
 esac
 
 # roost.js is the target every opencode-plugin symlink should point at (used
@@ -190,7 +195,7 @@ if command -v opencode >/dev/null 2>&1; then
     # itself is still there, just pointing nowhere. Name the real fix.
     warn "opencode plugin symlink at $ocplug is dangling — run: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\""
   elif [ ! -e "$ocplug" ]; then
-    warn "opencode found, roost plugin not installed — run: mkdir -p \"$(dirname "$ocplug")\" && ln -s \"$ocwant\" \"$ocplug\""
+    warn "opencode found, roost plugin not installed — run: mkdir -p \"$(dirname "$ocplug")\" && ln -s \"$ocwant\" \"$ocplug\", or run: roost install"
   elif [ "$ocplug" -ef "$ocwant" ]; then
     ok "opencode plugin linked"
   else
@@ -208,7 +213,7 @@ if command -v copilot >/dev/null 2>&1; then
     # fails with "File exists". Name the real fix.
     warn "copilot extension symlink at $cpext is dangling — run: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\""
   elif [ ! -e "$cpext" ]; then
-    warn "copilot found, roost extension not installed — run: mkdir -p \"$(dirname "$cpext")\" && ln -s \"$cpwant\" \"$cpext\""
+    warn "copilot found, roost extension not installed — run: mkdir -p \"$(dirname "$cpext")\" && ln -s \"$cpwant\" \"$cpext\", or run: roost install"
   elif [ "$cpext" -ef "$cpwant" ]; then
     ok "copilot extension linked"
   else
@@ -256,7 +261,7 @@ if command -v pi >/dev/null 2>&1; then
     # fails with "File exists". Name the real fix.
     warn "pi extension symlink at $piext is dangling — run: rm \"$piext\" && ln -s \"$piwant\" \"$piext\""
   elif [ ! -e "$piext" ]; then
-    warn "pi found, roost extension not installed — run: mkdir -p \"$(dirname "$piext")\" && ln -s \"$piwant\" \"$piext\""
+    warn "pi found, roost extension not installed — run: mkdir -p \"$(dirname "$piext")\" && ln -s \"$piwant\" \"$piext\", or run: roost install"
   elif [ "$piext" -ef "$piwant" ]; then
     ok "pi extension linked"
   else
@@ -312,7 +317,7 @@ if command -v codex >/dev/null 2>&1; then
   # A basic-regex `.` matching any character would make a check that looks
   # strict quietly permissive.
   if [ ! -e "$cxhooks" ]; then
-    warn "codex found, roost hooks not written — run: roost hooks codex, and copy the JSON object into $cxhooks"
+    warn "codex found, roost hooks not written — run: roost hooks codex, and copy the JSON object into $cxhooks, or run: roost install"
   elif [ ! -r "$cxhooks" ]; then
     warn "$cxhooks exists but is not readable — could not check whether codex hooks are wired"
   elif ! grep -qF roost-codex-hook "$cxhooks" 2>/dev/null; then
