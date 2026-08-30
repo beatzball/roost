@@ -6,39 +6,43 @@ set -u
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 . "$HERE/scripts/lib/roost-json.sh"
 
-# hide_json_tools -- run "$@" with a PATH that carries every external command
-# roost-json.sh and this test need, but neither python3 nor jq. Not a
-# $PATH-prepend (tests/test-doctor.sh's noroostdir note explains why: this
-# machine's real PATH has a real python3 and/or jq on it, and prepending
-# would never exercise the "neither present" branch). Instead build a
-# dedicated directory of symlinks to the real binaries this file actually
-# calls, and set PATH to exactly that directory.
-hide_json_tools() {
-  local shim
-  shim="$(mktemp -d /tmp/amx.XXXX)"
-  local bin
-  for bin in bash sh cat cp mv rm mkdir mktemp dirname cmp date grep sed diff env printf true false; do
-    local real
-    real="$(command -v "$bin" 2>/dev/null)" || continue
-    ln -s "$real" "$shim/$bin"
+# Every external binary roost-json.sh or this test file calls, so a shim
+# built from this list can run either engine's whole code path (stat/chmod
+# included, for the permission-preservation check).
+CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname cmp date grep sed diff env printf true false stat chmod"
+
+build_shim() {
+  # build_shim [EXTRA...] -> prints a PATH-ready directory of symlinks to
+  # CORE_BINS plus each EXTRA that this machine actually has. Not a
+  # $PATH-prepend (tests/test-doctor.sh's noroostdir case is the precedent):
+  # this machine's real PATH may carry a real python3 and/or jq, and
+  # prepending would never exercise the "only this one tool" or "neither
+  # tool" branches. The caller sets PATH to EXACTLY this directory.
+  local dir bin real
+  dir="$(mktemp -d /tmp/amx.XXXX)"
+  for bin in $CORE_BINS "$@"; do
+    real="$(command -v "$bin" 2>/dev/null)" && ln -s "$real" "$dir/$bin" 2>/dev/null
   done
+  printf '%s' "$dir"
+}
+
+hide_json_tools() {
+  # hide_json_tools CMD... -> run CMD with neither python3 nor jq reachable.
+  local shim rc
+  shim="$(build_shim)"
   PATH="$shim" "$@"
-  local rc=$?
+  rc=$?
   rm -rf "$shim"
   return $rc
 }
 
-# --- roost_json_tool ---
-
-case "$(roost_json_tool)" in
-  python3|jq) assert_eq ok ok "roost_json_tool reports a real tool when one is present" ;;
-  *) assert_eq "$(roost_json_tool)" "python3 or jq" "roost_json_tool reports a real tool when one is present" ;;
-esac
-
-out="$(hide_json_tools bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_tool')"
-assert_eq "$out" "" "roost_json_tool prints nothing when neither tool is on PATH"
-
-# --- shared fixture ---
+merge_under() {
+  # merge_under SHIMDIR FILE MODE [ARGS...] -> run roost_json_merge in a
+  # fresh bash under PATH=SHIMDIR, capturing stdout/stderr the way a real
+  # caller would (separately, so a test can check either).
+  local shim="$1"; shift
+  PATH="$shim" bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "$@"' _ "$@"
+}
 
 mkfixture() {
   # mkfixture DIR -- writes settings.json with an unrelated top-level key and
@@ -55,28 +59,38 @@ mkfixture() {
 JSON
 }
 
-run_case() {
-  # run_case TOOLNAME -- exercises the full case list once under a PATH that
-  # exposes ONLY that JSON tool (plus the other externals roost-json.sh and
-  # this test need), so python3 and jq are each proven to work on their own,
-  # not just whichever one this machine prefers.
-  local tool="$1" shim d
-  shim="$(mktemp -d /tmp/amx.XXXX)"
-  local bin
-  for bin in bash sh cat cp mv rm mkdir mktemp dirname cmp date grep sed diff env printf true false "$tool"; do
-    local real
-    real="$(command -v "$bin" 2>/dev/null)" || continue
-    ln -s "$real" "$shim/$bin" 2>/dev/null
-  done
+# --- roost_json_tool ---
 
+case "$(roost_json_tool)" in
+  python3|jq) assert_true 0 "roost_json_tool reports a real tool when one is present" ;;
+  *) assert_true 1 "roost_json_tool reports a real tool when one is present" ;;
+esac
+
+hide_json_tools bash -c '[ -z "$(. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_tool)" ]'
+assert_true $? "roost_json_tool prints nothing when neither tool is on PATH"
+
+# ============================================================================
+# run_case TOOL -- the full behavioural contract, exercised under a PATH that
+# carries ONLY this one JSON tool (plus CORE_BINS). Called once for python3
+# and once for jq so each engine is proven on its own, not just whichever one
+# this machine prefers -- this is what the reviewer's Blocking 1 exploited:
+# every mode except claude-hooks used to run on the ambient PATH, so on any
+# machine with python3 installed the jq code paths never executed at all.
+# ============================================================================
+run_case() {
+  local tool="$1" shim
+  shim="$(build_shim "$tool")"
+
+  # -- claude-hooks: unrelated key/hook survive, roost's hook is added --
+  local d before after
   d="$(mktemp -d /tmp/amx.XXXX)"
   mkfixture "$d"
-  local before after
   before="$(cat "$d/settings.json")"
+  chmod 644 "$d/settings.json"
 
-  PATH="$shim" bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$d"'/settings.json" claude-hooks "/checkout/scripts/roost-agent-state"' >"$d/merge1.out" 2>"$d/merge1.err"
-  local rc=$?
-  assert_eq "$rc" "0" "[$tool] merge exits 0"
+  merge_under "$shim" "$d/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" \
+    >"$d/merge1.out" 2>"$d/merge1.err"
+  assert_true $? "[$tool] claude-hooks merge exits 0"
 
   after="$(cat "$d/settings.json")"
   assert_contains "$after" "keep-me" "[$tool] unrelated top-level key survives the merge"
@@ -85,94 +99,76 @@ run_case() {
 
   local bak
   bak="$(ls "$d"/settings.json.roost-bak-* 2>/dev/null | head -1)"
+  [ -n "$bak" ]; assert_true $? "[$tool] a backup was created for the first write"
   [ -n "$bak" ] && assert_eq "$(cat "$bak")" "$before" "[$tool] backup holds the pre-merge bytes"
-  [ -n "$bak" ] || assert_eq "backup" "no backup" "[$tool] a backup was created for the first write"
 
-  # idempotent: merging again with the same args changes nothing further.
+  # -- permission preservation: mktemp's 0600 must not leak onto the target --
+  # (Blocking 2: mktemp creates 0600 and a bare `mv` carries that mode onto
+  # the destination, so a -rw-r--r-- settings file would silently become
+  # -rw-------. Fixture was chmod 644 above specifically so this can fail.)
+  local mode
+  mode="$(stat -f '%Lp' "$d/settings.json" 2>/dev/null || stat -c '%a' "$d/settings.json" 2>/dev/null)"
+  assert_eq "$mode" "644" "[$tool] merge preserves the target file's permissions"
+
+  # -- idempotent: merging again with the same args changes nothing further --
   cp "$d/settings.json" "$d/after-first.json"
   rm -f "$d"/settings.json.roost-bak-*
-  PATH="$shim" bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$d"'/settings.json" claude-hooks "/checkout/scripts/roost-agent-state"' >"$d/merge2.out" 2>"$d/merge2.err"
-  rc=$?
-  assert_eq "$rc" "0" "[$tool] second merge exits 0"
-  assert_eq "ok" "$(cmp -s "$d/settings.json" "$d/after-first.json" && echo ok || echo diff)" "[$tool] second merge is byte-identical (idempotent)"
-  local bak2
-  bak2="$(ls "$d"/settings.json.roost-bak-* 2>/dev/null | head -1)"
-  [ -z "$bak2" ] && assert_eq ok ok "[$tool] idempotent re-merge makes no backup" \
-    || assert_eq "backup made" "no backup" "[$tool] idempotent re-merge makes no backup"
+  merge_under "$shim" "$d/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" \
+    >"$d/merge2.out" 2>"$d/merge2.err"
+  assert_true $? "[$tool] second merge exits 0"
+  cmp -s "$d/settings.json" "$d/after-first.json"
+  assert_true $? "[$tool] second merge is byte-identical (idempotent)"
+  assert_file_absent "$d"/settings.json.roost-bak-* "[$tool] idempotent re-merge makes no backup"
 
-  # malformed input: return non-zero, file untouched, no backup.
-  local md
+  # -- genuine JSON syntax error: non-zero, untouched, no backup --
+  # python3 folds every malformed-input case into exit 1. jq's OWN parse
+  # error (a real syntax error, not just "not one object") is forwarded as
+  # jq's own exit status, 5 -- see roost_json__jq_validate's comment for why
+  # that is not remapped to 1.
+  local want_syntax_rc
+  case "$tool" in python3) want_syntax_rc=1 ;; jq) want_syntax_rc=5 ;; esac
+  local md mbefore
   md="$(mktemp -d /tmp/amx.XXXX)"
   printf '{ "not": "valid json"' > "$md/settings.json"
-  local malformed_before
-  malformed_before="$(cat "$md/settings.json")"
-  PATH="$shim" bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$md"'/settings.json" claude-hooks "/checkout/scripts/roost-agent-state"' >"$md/merge.out" 2>"$md/merge.err"
-  rc=$?
-  [ "$rc" -ne 0 ] && assert_eq ok ok "[$tool] malformed JSON: merge returns non-zero" \
-    || assert_eq "$rc" "non-zero" "[$tool] malformed JSON: merge returns non-zero"
-  assert_eq "$(cat "$md/settings.json")" "$malformed_before" "[$tool] malformed JSON: file is byte-identical after"
-  [ -s "$md/merge.err" ] && assert_eq ok ok "[$tool] malformed JSON: parser's message is printed" \
-    || assert_eq "empty" "a message" "[$tool] malformed JSON: parser's message is printed"
-  local malformed_bak
-  malformed_bak="$(ls "$md"/settings.json.roost-bak-* 2>/dev/null | head -1)"
-  [ -z "$malformed_bak" ] && assert_eq ok ok "[$tool] malformed JSON: no backup created" \
-    || assert_eq "backup made" "no backup" "[$tool] malformed JSON: no backup created"
+  mbefore="$(cat "$md/settings.json")"
+  merge_under "$shim" "$md/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" \
+    >"$md/merge.out" 2>"$md/merge.err"
+  assert_eq "$?" "$want_syntax_rc" "[$tool] genuine JSON syntax error returns $want_syntax_rc"
+  assert_eq "$(cat "$md/settings.json")" "$mbefore" "[$tool] syntax error: file is byte-identical after"
+  [ -s "$md/merge.err" ]; assert_true $? "[$tool] syntax error: parser's message is printed"
+  assert_file_absent "$md"/settings.json.roost-bak-* "[$tool] syntax error: no backup created"
   rm -rf "$md"
 
-  # capture the normalised output for the cross-tool comparison below.
-  cat "$d/settings.json" > "$d/../roost-json-cross-$tool.out" 2>/dev/null || cp "$d/settings.json" "/tmp/roost-json-cross-$tool.out"
-
-  rm -rf "$d" "$shim"
-}
-
-# --- python3 and jq, each in isolation ---
-
-if command -v python3 >/dev/null 2>&1; then
-  run_case python3
-else
-  assert_eq ok ok "python3 cases skipped (not installed on this machine)"
-fi
-
-if command -v jq >/dev/null 2>&1; then
-  run_case jq
-else
-  assert_eq ok ok "jq cases skipped (not installed on this machine)"
-fi
-
-# --- same input, same output under both tools ---
-
-if command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  py_out="$(mktemp -d /tmp/amx.XXXX)"
-  jq_out="$(mktemp -d /tmp/amx.XXXX)"
-  mkfixture "$py_out"
-  mkfixture "$jq_out"
-
-  pyshim="$(mktemp -d /tmp/amx.XXXX)"
-  for bin in bash sh cat cp mv rm mkdir mktemp dirname cmp date grep sed diff env printf true false python3; do
-    real="$(command -v "$bin" 2>/dev/null)" && ln -s "$real" "$pyshim/$bin" 2>/dev/null
-  done
-  jqshim="$(mktemp -d /tmp/amx.XXXX)"
-  for bin in bash sh cat cp mv rm mkdir mktemp dirname cmp date grep sed diff env printf true false jq; do
-    real="$(command -v "$bin" 2>/dev/null)" && ln -s "$real" "$jqshim/$bin" 2>/dev/null
+  # -- shape-malformed: valid JSON, but not exactly one top-level object --
+  # This is Blocking 1's actual bug. jq is a STREAM processor: an empty or
+  # whitespace-only file is zero JSON values and two concatenated objects
+  # are two, and unchecked, jq ran its merge filter over that stream, wrote
+  # whatever that produced (nothing, for an empty file), and reported rc=0
+  # -- silently truncating a real settings file while claiming success. Every
+  # one of these must now return non-zero, leave the file untouched, and
+  # take no backup, under BOTH engines.
+  local shape_name shape_content
+  for shape_name in empty whitespace-only two-concatenated-docs non-object-array; do
+    case "$shape_name" in
+      empty)                  shape_content="" ;;
+      whitespace-only)        shape_content="$(printf '\n  \n')" ;;
+      two-concatenated-docs)  shape_content="$(printf '{"a":1}\n{"b":2}\n')" ;;
+      non-object-array)       shape_content="$(printf '[1,2]')" ;;
+    esac
+    local sd sbefore
+    sd="$(mktemp -d /tmp/amx.XXXX)"
+    printf '%s' "$shape_content" > "$sd/settings.json"
+    sbefore="$(cat "$sd/settings.json")"
+    merge_under "$shim" "$sd/settings.json" copilot-flag >"$sd/merge.out" 2>"$sd/merge.err"
+    local rc=$?
+    [ "$rc" -ne 0 ]; assert_true $? "[$tool] shape ($shape_name): merge returns non-zero (got $rc)"
+    assert_eq "$(cat "$sd/settings.json")" "$sbefore" "[$tool] shape ($shape_name): file is byte-identical after"
+    assert_file_absent "$sd"/settings.json.roost-bak-* "[$tool] shape ($shape_name): no backup created"
+    rm -rf "$sd"
   done
 
-  PATH="$pyshim" bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$py_out"'/settings.json" claude-hooks "/checkout/scripts/roost-agent-state"' >/dev/null 2>&1
-  PATH="$jqshim" bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$jq_out"'/settings.json" claude-hooks "/checkout/scripts/roost-agent-state"' >/dev/null 2>&1
-
-  if cmp -s "$py_out/settings.json" "$jq_out/settings.json"; then
-    assert_eq ok ok "python3 and jq produce byte-identical output for the same input"
-  else
-    assert_eq "$(cat "$py_out/settings.json")" "$(cat "$jq_out/settings.json")" "python3 and jq produce byte-identical output for the same input"
-  fi
-
-  rm -rf "$py_out" "$jq_out" "$pyshim" "$jqshim"
-else
-  assert_eq ok ok "python3-vs-jq comparison skipped (both tools required)"
-fi
-
-# --- copilot-flag mode: unrelated keys survive, flag lands ---
-
-if command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
+  # -- copilot-flag: unrelated keys survive, flag lands --
+  local cd_
   cd_="$(mktemp -d /tmp/amx.XXXX)"
   cat > "$cd_/settings.json" <<'JSON'
 {
@@ -182,21 +178,23 @@ if command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
   }
 }
 JSON
-  roost_json_merge "$cd_/settings.json" copilot-flag >/dev/null 2>&1
-  rc=$?
-  assert_eq "$rc" "0" "copilot-flag merge exits 0"
+  merge_under "$shim" "$cd_/settings.json" copilot-flag >/dev/null 2>&1
+  assert_true $? "[$tool] copilot-flag merge exits 0"
+  local cflag_after
   cflag_after="$(cat "$cd_/settings.json")"
-  assert_contains "$cflag_after" '"SOME_OTHER_FLAG": true' "copilot-flag: unrelated flag survives"
-  assert_contains "$cflag_after" '"EXTENSIONS": true' "copilot-flag: EXTENSIONS flag is set"
-  assert_contains "$cflag_after" '"keepThis": true' "copilot-flag: unrelated top-level key survives"
+  assert_contains "$cflag_after" '"SOME_OTHER_FLAG": true' "[$tool] copilot-flag: unrelated flag survives"
+  assert_contains "$cflag_after" '"EXTENSIONS": true' "[$tool] copilot-flag: EXTENSIONS flag is set"
+  assert_contains "$cflag_after" '"keepThis": true' "[$tool] copilot-flag: unrelated top-level key survives"
   rm -rf "$cd_"
-else
-  assert_eq ok ok "copilot-flag case skipped (no JSON tool installed)"
-fi
 
-# --- codex-hooks mode ---
-
-if command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
+  # -- codex-hooks: unrelated hook survives, and the four handlers are
+  # byte-exact -- a reordered handler object, a dropped "matcher"-shaped
+  # field, or a changed argument would all still pass a plain
+  # assert_contains '"timeout": 10'. Codex silently skips any handler whose
+  # normalised hash no longer matches (see scripts/lib/roost-hooks.sh's own
+  # comment), so this compares full compact objects, in order, not just a
+  # substring.
+  local cx
   cx="$(mktemp -d /tmp/amx.XXXX)"
   cat > "$cx/hooks.json" <<'JSON'
 {
@@ -207,47 +205,91 @@ if command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
   }
 }
 JSON
-  roost_json_merge "$cx/hooks.json" codex-hooks "/checkout/adapters/codex/roost-codex-hook" >/dev/null 2>&1
-  rc=$?
-  assert_eq "$rc" "0" "codex-hooks merge exits 0"
+  merge_under "$shim" "$cx/hooks.json" codex-hooks "/checkout/adapters/codex/roost-codex-hook" >/dev/null 2>&1
+  assert_true $? "[$tool] codex-hooks merge exits 0"
+  local cx_after
   cx_after="$(cat "$cx/hooks.json")"
-  assert_contains "$cx_after" "echo unrelated" "codex-hooks: unrelated hook survives"
-  assert_contains "$cx_after" "/checkout/adapters/codex/roost-codex-hook UserPromptSubmit" "codex-hooks: UserPromptSubmit handler added"
-  assert_contains "$cx_after" '"timeout": 10' "codex-hooks: handler carries timeout 10"
+  assert_contains "$cx_after" "echo unrelated" "[$tool] codex-hooks: unrelated hook survives"
+
+  local event want_obj got_obj
+  for event in UserPromptSubmit PostToolUse PermissionRequest Stop; do
+    want_obj='{"hooks":[{"type":"command","command":"/checkout/adapters/codex/roost-codex-hook '"$event"'","timeout":10}]}'
+    got_obj="$(jq -c ".hooks.$event[0]" "$cx/hooks.json" 2>/dev/null)"
+    assert_eq "$got_obj" "$want_obj" "[$tool] codex-hooks: $event handler is byte-exact"
+  done
   rm -rf "$cx"
-else
-  assert_eq ok ok "codex-hooks case skipped (no JSON tool installed)"
-fi
 
-# --- absent file is treated as {} ---
-
-if command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
+  # -- absent file is treated as {} --
+  local af
   af="$(mktemp -d /tmp/amx.XXXX)"
-  roost_json_merge "$af/new-settings.json" copilot-flag >/dev/null 2>&1
-  rc=$?
-  assert_eq "$rc" "0" "merge against an absent file exits 0"
-  [ -f "$af/new-settings.json" ] && assert_eq ok ok "merge against an absent file creates it" \
-    || assert_eq "no file" "a file" "merge against an absent file creates it"
-  nobak="$(ls "$af"/new-settings.json.roost-bak-* 2>/dev/null | head -1)"
-  [ -z "$nobak" ] && assert_eq ok ok "creating a fresh file makes no backup (nothing existed to back up)" \
-    || assert_eq "backup made" "no backup" "creating a fresh file makes no backup (nothing existed to back up)"
+  merge_under "$shim" "$af/new-settings.json" copilot-flag >/dev/null 2>&1
+  assert_true $? "[$tool] merge against an absent file exits 0"
+  [ -f "$af/new-settings.json" ]; assert_true $? "[$tool] merge against an absent file creates it"
+  assert_file_absent "$af"/new-settings.json.roost-bak-* "[$tool] creating a fresh file makes no backup"
   rm -rf "$af"
-else
-  assert_eq ok ok "absent-file case skipped (no JSON tool installed)"
-fi
 
-# --- unknown mode: a caller bug, not a degraded runtime condition ---
-
-if command -v python3 >/dev/null 2>&1 || command -v jq >/dev/null 2>&1; then
+  # -- unknown mode: a caller bug, not a degraded runtime condition --
+  local um
   um="$(mktemp -d /tmp/amx.XXXX)"
   printf '{}' > "$um/f.json"
-  roost_json_merge "$um/f.json" bogus-mode >/dev/null 2>"$um/err"
-  rc=$?
-  assert_eq "$rc" "2" "unknown mode returns 2"
-  assert_eq "$(cat "$um/f.json")" "{}" "unknown mode: file is untouched"
+  merge_under "$shim" "$um/f.json" bogus-mode >/dev/null 2>"$um/err"
+  assert_eq "$?" "2" "[$tool] unknown mode returns 2"
+  assert_eq "$(cat "$um/f.json")" "{}" "[$tool] unknown mode: file is untouched"
   rm -rf "$um"
+
+  rm -rf "$d" "$md" "$shim" 2>/dev/null
+}
+
+if command -v python3 >/dev/null 2>&1; then
+  run_case python3
 else
-  assert_eq ok ok "unknown-mode case skipped (no JSON tool installed)"
+  assert_true 0 "python3 cases skipped (not installed on this machine)"
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  run_case jq
+else
+  assert_true 0 "jq cases skipped (not installed on this machine)"
+fi
+
+# --- same input, same output under both tools ---
+# Two fixtures: plain ASCII, and one with non-ASCII bytes (an accented path,
+# an emoji in a statusLine command -- both common in a real settings.json).
+# Blocking 3: python3's json.dump defaults to ensure_ascii=True (\uXXXX
+# escapes) while jq always emits raw UTF-8, so an ASCII-only fixture is
+# structurally incapable of catching that divergence -- which is exactly
+# what the original version of this test did.
+compare_engines() {
+  local fixture_file="$1" label="$2"
+  local py_out jq_out pyshim jqshim
+  py_out="$(mktemp -d /tmp/amx.XXXX)"
+  jq_out="$(mktemp -d /tmp/amx.XXXX)"
+  cp "$fixture_file" "$py_out/settings.json"
+  cp "$fixture_file" "$jq_out/settings.json"
+  pyshim="$(build_shim python3)"
+  jqshim="$(build_shim jq)"
+
+  merge_under "$pyshim" "$py_out/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" >/dev/null 2>&1
+  merge_under "$jqshim" "$jq_out/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" >/dev/null 2>&1
+
+  cmp -s "$py_out/settings.json" "$jq_out/settings.json"
+  assert_true $? "python3 and jq produce byte-identical output ($label)"
+
+  rm -rf "$py_out" "$jq_out" "$pyshim" "$jqshim"
+}
+
+if command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  fx="$(mktemp -d /tmp/amx.XXXX)"
+  mkfixture "$fx"
+  compare_engines "$fx/settings.json" "ASCII fixture"
+  rm -rf "$fx"
+
+  fx2="$(mktemp -d /tmp/amx.XXXX)"
+  printf '{"statusLine": {"command": "echo café \xe2\x9c\x94"}, "hooks": {}}' > "$fx2/settings.json"
+  compare_engines "$fx2/settings.json" "non-ASCII fixture (café + a checkmark)"
+  rm -rf "$fx2"
+else
+  assert_true 0 "python3-vs-jq comparison skipped (both tools required)"
 fi
 
 # --- neither tool present: status 3, nothing written ---
@@ -256,22 +298,15 @@ nt="$(mktemp -d /tmp/amx.XXXX)"
 mkfixture "$nt"
 nt_before="$(cat "$nt/settings.json")"
 hide_json_tools bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$nt"'/settings.json" claude-hooks "/checkout/scripts/roost-agent-state"'
-rc=$?
-assert_eq "$rc" "3" "no JSON tool on PATH: roost_json_merge returns 3"
+assert_eq "$?" "3" "no JSON tool on PATH: roost_json_merge returns 3"
 assert_eq "$(cat "$nt/settings.json")" "$nt_before" "no JSON tool on PATH: file is byte-identical"
-nt_bak="$(ls "$nt"/settings.json.roost-bak-* 2>/dev/null | head -1)"
-[ -z "$nt_bak" ] && assert_eq ok ok "no JSON tool on PATH: no backup created" \
-  || assert_eq "backup made" "no backup" "no JSON tool on PATH: no backup created"
+assert_file_absent "$nt"/settings.json.roost-bak-* "no JSON tool on PATH: no backup created"
 rm -rf "$nt"
-
-# --- also confirm the absent-file case degrades the same way ---
 
 nt2="$(mktemp -d /tmp/amx.XXXX)"
 hide_json_tools bash -c '. "'"$HERE"'/scripts/lib/roost-json.sh"; roost_json_merge "'"$nt2"'/settings.json" copilot-flag'
-rc=$?
-assert_eq "$rc" "3" "no JSON tool on PATH, absent file: roost_json_merge still returns 3"
-[ -f "$nt2/settings.json" ] && assert_eq "file created" "no file" "no JSON tool on PATH: nothing written even for a new file" \
-  || assert_eq ok ok "no JSON tool on PATH: nothing written even for a new file"
+assert_eq "$?" "3" "no JSON tool on PATH, absent file: roost_json_merge still returns 3"
+assert_file_absent "$nt2/settings.json" "no JSON tool on PATH: nothing written even for a new file"
 rm -rf "$nt2"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
