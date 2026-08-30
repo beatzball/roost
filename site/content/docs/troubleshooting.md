@@ -15,19 +15,31 @@ It checks your tmux version, truecolor support, `fzf`, the notifier, the Claude 
 
 ## Badges never appear
 
-The view works without badges; badges need a hook. Check, in order:
+The view works without badges; badges need a hook or an adapter. **The one
+command that fixes most of this is `roost install`** — it wires every installed
+harness to your checkout, is safe to re-run, and `roost doctor` ends every
+warning it can resolve with `, or run: roost install`. A warning without that
+tail is one no installer may fix: something that is not roost's sitting at an
+adapter path, a hook pointing at a different checkout, or a prompt only you can
+answer. What it does **not** do is fetch new roost code — if the adapter you
+need shipped in a later release, upgrade first by re-running the install
+command ([Getting started](/docs/getting-started)). Run that from a directory
+that is not itself a roost clone, and check that the path in its first two
+lines is the checkout your agents are wired to. If `roost install` has been run
+and a pane still does not badge, check, in order:
 
 1. `roost hooks` output is merged into `~/.claude/settings.json` under `"hooks"`. See [State Badges](/docs/state-badges).
 2. You are running the agent **inside** a roost pane. `scripts/roost-agent-state` is a deliberate no-op outside one.
-3. For opencode or GitHub Copilot CLI, the adapter is linked — run `roost doctor`, which prints the exact `ln -s` for your checkout. See [State Badges](/docs/state-badges).
-4. For any other agent, it must call `roost state <state>` itself.
+3. For opencode, pi or GitHub Copilot CLI, the adapter is linked — run `roost doctor`, which prints the exact `ln -s` for your checkout. See [State Badges](/docs/state-badges).
+4. For codex, `~/.codex/hooks.json` is written **and** you have answered *"Trust all and continue"* at codex's own `Hooks need review` prompt. That answer is one of the two steps `roost install` cannot do for you.
+5. For any other agent, it must call `roost state <state>` itself.
 
 ## A copilot pane never badges, and copilot says nothing
 
 Two gates stand in front of the copilot extension, and **neither one tells you when it is not met** — the turn runs normally and the pane just stays blank. `roost doctor` checks the first; the second it can only remind you about.
 
-1. **Extensions are off by default.** Launch your panes as `copilot --experimental`, or put `{"enabledFeatureFlags": {"EXTENSIONS": true}}` in `~/.copilot/settings.json`. Without one of them copilot never reads the adapter.
-2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading, and choosing "Yes" persists nothing, so a new worktree asks again. There is no global pre-approval.
+1. **Extensions are off by default.** `roost install` turns the flag on for you. By hand: launch your panes as `copilot --experimental`, or put `{"enabledFeatureFlags": {"EXTENSIONS": true}}` in `~/.copilot/settings.json`. Without one of them copilot never reads the adapter.
+2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading, and choosing "Yes" persists nothing, so a new worktree asks again. There is no global pre-approval, and this is the one copilot gate no installer can pass for you.
 
 Take the blank badge seriously rather than living with it. `roost send` refuses a 🛑 blocked target so one agent cannot type into another's permission dialog — and an unbadged pane is not blocked, so that refusal never fires. A copilot pane whose extension never loaded, sitting at a permission prompt, will take a `roost send` straight into that dialog.
 

@@ -26,6 +26,8 @@
 #   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
+#   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout
+#   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status             list running sessions + agents
@@ -62,6 +64,20 @@ ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 # server, so roost_self_socket recognises only a socket path ending /roost.
 . "$ROOST_HOME/scripts/lib/roost-socket.sh"
 roost_self_socket
+# roost_hooks_claude / roost_hooks_codex print the JSON object `roost hooks`
+# shows below its own explanatory comments. Shared with the installer, which
+# needs the identical bytes — see that file's header for why editing them
+# there or here is not safe.
+#
+# Note for anyone reading the frozen-handlers warning in the codex prose
+# below: it is about the VALUES, not the layout. Codex hashes the parsed
+# handler struct, so indentation and key order are free and a caller may
+# reflow the object to fit its own output — measured on codex-cli 0.151.0 via
+# `hooks/list`, written up in full in scripts/lib/roost-hooks.sh's header. The
+# prose below is printed to users and is pinned byte-for-byte by
+# tests/fixtures/hooks-codex.txt, which is why the detail lives in the lib
+# rather than being added to it.
+. "$ROOST_HOME/scripts/lib/roost-hooks.sh"
 SOCKET="${ROOST_SOCKET:-${ROOST_SELF_SOCK:-roost}}"
 case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
 DEFAULT_SESSION="main"
@@ -182,6 +198,20 @@ case "${1:-up}" in
     shift
     exec "$ROOST_HOME/scripts/roost-validate" "$@"
     ;;
+  install|update)
+    # `update` is an ALIAS, not a second arm: one shift, one exec, so the two
+    # spellings cannot drift. They are the same command because re-running the
+    # installer IS the update -- it is idempotent, it relinks whatever now
+    # points somewhere else, and it names what it left alone. What it does NOT
+    # do is fetch new roost code, which is why the help line for `update` says
+    # so out loud; the installer prints its own note when this checkout is
+    # behind its upstream.
+    #
+    # tests/test-adapter-install.sh compares the two --dry-run outputs byte for
+    # byte, which is what pins the alias rather than merely the arm.
+    shift
+    exec "$ROOST_HOME/scripts/roost-install" "$@"
+    ;;
   init)
     exec "$ROOST_HOME/scripts/roost-init"
     ;;
@@ -294,23 +324,8 @@ case "${1:-up}" in
 # The trust prompt vouches for a PATH, not for the code at that path. Anyone who
 # can write adapters/codex/roost-codex-hook changes what runs, with no second
 # review. That is codex's model, not something roost adds.
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook UserPromptSubmit", "timeout": 10 } ] }
-    ],
-    "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook PostToolUse", "timeout": 10 } ] }
-    ],
-    "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook PermissionRequest", "timeout": 10 } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
-    ]
-  }
-}
 JSON
+        roost_hooks_codex
         exit 0
         ;;
       *) echo "usage: roost hooks [claude|codex]" >&2; exit 2 ;;
@@ -327,24 +342,8 @@ JSON
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — \`roost
 # read\` just falls back to scraping the pane's screen, and tells you it did.
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
-    ],
-    "Notification": [
-      { "matcher": "permission_prompt",
-        "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state blocked" } ] }
-    ],
-    "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state done --stop-hook" } ] }
-    ]
-  }
-}
 JSON
+    roost_hooks_claude
     ;;
   ssh)
     host="${2:?usage: roost ssh HOST [ARGS...]}"; shift 2
@@ -753,5 +752,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

@@ -43,18 +43,18 @@ is how a stale badge is told apart from a live one. Both triggers were re-run:
 Esc held `blocked` for 97 s, `4. No` for 46 s, neither self-healing. Answering
 **Yes** does clear it — the tool runs, `PostToolUse` fires, the pane goes
 `working` then `done` — so the surviving hole is exactly *decline* and
-*interrupt*, which the `roost hooks` comment in `bin/roost:240-241` and
+*interrupt*, which the `roost hooks` comment in `bin/roost:339-340` and
 `site/content/docs/state-badges.md` both describe only for the approve path.
 
 **Three consumers read that badge, and all three are wrong on a stale one:**
 
-- `roost send` — exit 3, forever (`bin/roost:346-350`).
-- `roost wait-done` — `busy()` counts `blocked` as busy (`bin/roost:593-613`),
+- `roost send` — exit 3, forever (`bin/roost:429-433`).
+- `roost wait-done` — `busy()` counts `blocked` as busy (`bin/roost:676-696`),
   so it blocks to its timeout and exits 1. The retry loop published at
   `site/content/docs/driving-a-fleet.md:111-117` retries **only** on exit 3, so
   it spins for as long as the script runs.
 - `roost read` — prints *"is blocked — this reply is from its previous turn"*
-  (`bin/roost:506-509`) about a reply that is in fact the current one.
+  (`bin/roost:589-592`) about a reply that is in fact the current one.
 
 **Why it is a live risk and not a note.** It needs a human keystroke to create,
 but it bites later and unattended: an orchestrating agent that hands work to a
@@ -113,7 +113,7 @@ that is its own task. Two candidates, neither implemented:
 - Have the `send` guard confirm the badge against the pane before refusing —
   `capture-pane` and look for the dialog — and downgrade to a warning when the
   screen disagrees. That trades the guard's current "exact, no scraping"
-  property (`bin/roost:338-340`) for freshness, so it needs deciding, not
+  property (`bin/roost:422-424`) for freshness, so it needs deciding, not
   assuming.
 - Have `roost doctor` report it. It reads no live pane state today, so this
   would be a new kind of check: list panes stamped `blocked` whose visible
@@ -176,7 +176,10 @@ that dialog and presses Enter on whatever is highlighted.
 
 **Why it shipped anyway.** The gate is codex's and cannot be answered from this
 side; `--dangerously-bypass-hook-trust` exists and roost does not use it or
-suggest it. `roost doctor` does what can be done — it reads the trust entries
+suggest it. This is one of the only two steps `roost install` cannot do (see
+the behaviour-change note below): the installer writes `hooks.json` and then
+prints this step on every run, including the runs that wrote nothing.
+`roost doctor` does the rest of what can be done — it reads the trust entries
 out of `$CODEX_HOME/config.toml` and counts them, so "installed" and "will run"
 are reported as the different claims they are.
 
@@ -195,11 +198,13 @@ neither one announces itself when it is not:
 1. Copilot's extension system is behind a feature flag that is off by default.
    Without `copilot --experimental` or `{"enabledFeatureFlags":
    {"EXTENSIONS": true}}` in `~/.copilot/settings.json`, copilot does not read
-   the first line of the adapter.
+   the first line of the adapter. **`roost install` writes that flag**, so a
+   machine wired by it is past this one; a machine wired by hand may not be.
 2. In interactive mode copilot asks the human, **once per directory**, to
    approve the extension — *"wants to: handle permission requests"*. Denying it
    prevents the extension loading. There is no global pre-approval, so every new
-   worktree asks again.
+   worktree asks again. This is one of the only two steps `roost install` cannot
+   do (see the behaviour-change note below).
 
 In both cases the turn runs normally and copilot prints nothing about having
 skipped anything. The pane simply stays unstamped, which roost renders exactly
@@ -212,14 +217,15 @@ refusal never fires. A copilot pane whose extension never loaded, sitting at a
 permission prompt, will take a `roost send` straight into that dialog and press
 Enter on whatever is highlighted.
 
-**Why it shipped anyway.** Both gates are copilot's, not roost's, and neither
-can be worked around from this side: the feature flag is a preview switch in the
-user's own config, and the consent is a TUI answer that persists nothing unless
-the human picks "always allow in this directory". `roost doctor` does what can
-be done — it reads `settings.json` for the flag and prints the exact fix, and it
-states the consent gate rather than inferring an answer to it (`AGENTS.md` §9,
-and the same discipline the adapter contract's T6 sets out). The install stanza
-in `site/content/docs/state-badges.md` names both before a user trusts the badge.
+**Why it shipped anyway.** Both gates are copilot's, not roost's. The flag is a
+switch in the user's own config, so `roost install` now sets it — that half is
+no longer manual. The consent is a TUI answer that persists nothing unless the
+human picks "always allow in this directory", and no tool can answer it from
+here. `roost doctor` does what can be done — it reads `settings.json` for the
+flag and prints the exact fix, and it states the consent gate rather than
+inferring an answer to it (`AGENTS.md` §9, and the same discipline the adapter
+contract's T6 sets out). The install stanza in
+`site/content/docs/state-badges.md` names both before a user trusts the badge.
 
 ### pi's `blocked` rides on an undocumented internal, and would fail silently
 
@@ -282,6 +288,28 @@ property that says a human is attached. Tier 0 covers the gap —
 `site/content/docs/state-badges.md` prints that line in the pi section.
 
 ## Behaviour changes
+
+### Wiring is part of installing now, and two prompts are all that is left
+
+**A note, not a defect.** Pointing roost at your agents used to be a separate
+manual step per harness. `curl … | sh` now does it in the same step as the
+`PATH` line, and `roost install` — alias `roost update`, the same code path —
+is the re-run for later: a harness installed since, a moved or re-cloned
+checkout, a release that adds an adapter. Neither fetches new roost code.
+
+**The only two steps `roost install` cannot do are prompts**, and it prints
+both on every run, including runs that wrote nothing:
+
+- codex — *"Trust all and continue"* at its `Hooks need review` prompt.
+- copilot — the per-directory *"wants to: handle permission requests"*.
+
+Neither can be answered from this side, and neither leaves anything on disk to
+detect, so both are stated rather than inferred. They are listed because they
+are permanent, not because they are outstanding work. What each costs on a
+machine where nobody has answered it is a different question, and it is a live
+risk that stays above: *"A codex adapter can be installed, correct, and
+silently switched off"* and *"A copilot pane can be badge-less, and nothing
+says so"*.
 
 ### `bin/roost` now addresses the roost server you are inside
 
@@ -374,6 +402,25 @@ has already produced a real bug here.
   sets `check_for_update_on_startup = false`, which is codex's own switch rather
   than a boundary roost enforces. Full write-up, and what it means for the next
   harness, in `docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md`.
+- `roost validate` now reports adapter links from the installer's own record
+  (`roost install --records`) rather than from the disk, which fixed two
+  divergences between "is it linked" and "did this run link it". One shape is
+  left, and it is wording in the report rather than anything the run does to
+  the machine: a candidate the installer reached no verdict on — a write that
+  failed, or an installer that could not start — lands in the same bucket as a
+  path roost refused to touch, and §1 renders that bucket as *"Something that
+  is not this checkout's adapter already sits at each path below"*, sending the
+  tester to look for a conflicting file that is not there. Measured by making
+  the write fail (`chmod 555` on the adapter's parent directory): the record
+  line comes back `failed<TAB>opencode<TAB><path>`, and validate files anything
+  that is not `wrote` or `unchanged` under `BLOCKED_LINKS`. Two things keep it
+  small — the run prints `could NOT link <path>` on stdout as it happens, and
+  §5 re-reads the disk, so for the same harness it says *"the adapter is not
+  linked — run: mkdir -p … && ln -s …"*. The two sections disagree and the one
+  carrying the fix is the correct one. Left because the honest fix is a fourth
+  bucket in `report_install` ("this run could not link it"), a report change
+  with its own test file, and because reaching it at all needs a directory
+  roost can read but not write.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at

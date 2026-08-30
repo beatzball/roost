@@ -16,11 +16,120 @@ DOC="$HERE/scripts/roost-doctor"
 # contact -L roost.
 export ROOST_CONFIG_SOCK="/nonexistent/roost-doctor-test-sock"
 export ROOST_NOTIFY_SOCK="/nonexistent/roost-doctor-test-sock"
-export XDG_CONFIG_HOME="$(mktemp -d /tmp/amx.XXXX)"
-trap 'rm -rf "$XDG_CONFIG_HOME"' EXIT
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# doctor reports on files it finds relative to the CWD as well as to $HOME:
+# $PWD/.claude/settings.json, and -- inside a git repository -- the MAIN
+# checkout's .claude/settings.local.json, resolved through the linked worktree
+# this suite is normally run from. Measured with a `grep` shim logging its
+# arguments: run from this checkout with $HOME pointed at a directory that
+# does not exist, the one and only file doctor opened was the developer's own
+# .claude/settings.local.json in the primary checkout. That file is gitignored
+# and is nobody's fixture, and the day it comes to contain the string
+# amux-agent-state the three "doctor is silent" cases below start failing on
+# that machine and nowhere else. So the whole file runs from an empty scratch
+# directory instead; the three cases whose subject IS the cwd cd for
+# themselves, in a subshell, and are unaffected.
+cd "$TMP"
+
+# --- the sandbox canary -----------------------------------------------------
+# Every home `roost doctor` can be steered by, exported here at one directory
+# nothing may write to, and overridden by run_doctor below on every single
+# invocation. Copied from tests/test-install.sh, which grew it after a test
+# about a PATH line rewrote the developer's live agent config: one idiom for
+# this hazard, not two.
+#
+# Two differences from that copy, both because doctor only ever READS:
+#
+#   - HOME is canaried here, where install.sh could not canary it (the
+#     installer writes to $HOME as part of its job, so the canary would trip
+#     on its own work). Every other path in this table falls back to $HOME
+#     when its own variable is unset, so canarying HOME is what turns a
+#     forgotten variable into an empty directory under $TMP rather than the
+#     real ~/.copilot.
+#   - the `find` at the bottom therefore reports nothing today, and that is
+#     expected: it is a WRITE detector on a read-only tool. It stays because
+#     it costs one line and it fires the day doctor -- or anything a later
+#     case runs through this file -- gains a write. The READ half of the same
+#     canary is checked at the bottom too, against the log run_doctor keeps.
+#
+# Measured before the pinning went in, with a wrapper logging every doctor
+# invocation's output and $HOME pointed at a seeded decoy home: 57 report
+# lines named that home's .copilot, .pi/agent and .codex, while all 81
+# assertions in this file stayed green. Green was never the evidence here.
+CANARY="$TMP/canary"
+export HOME="$CANARY/home"
+export XDG_CONFIG_HOME="$CANARY/xdg-config"
+export XDG_DATA_HOME="$CANARY/xdg-data"
+export COPILOT_HOME="$CANARY/copilot"
+export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
+export CODEX_HOME="$CANARY/codex"
+export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+
+# What escaped, if anything. -mindepth 1 so the directory itself is never the
+# finding, and the whole listing is printed on failure rather than a count --
+# which path leaked names the variable that was missed.
+canary_leaks() { find "$CANARY" -mindepth 1 2>/dev/null | sort; }
+
+# run_doctor HOME_DIR [VAR=VAL ...] -- one `roost doctor` run with every home
+# it can be steered by pinned under HOME_DIR, and the caller's own assignments
+# applied on top of those.
+#
+# The whole set in ONE place, the way tests/test-install.sh's run_install
+# holds it, rather than spelled out at each call site where the next case
+# added copies whichever three the line above it happened to carry -- which is
+# how a third of this file came to pin no HOME at all and report on the
+# developer's real ~/.copilot, ~/.pi and ~/.codex. Per AGENTS.md §8 the XDG
+# pair is not enough on its own: copilot, pi and codex each read their own
+# variable, and claude's names a FILE.
+#
+# $CLAUDE_SETTINGS is derived from HOME_DIR rather than left to the canary for
+# a measured reason: exporting it at the top redirects every case at one
+# stroke, and the four stale-hook cases below (which seed
+# $HOME/.claude/settings.json and expect doctor to read that) then fail,
+# because doctor had been reading somebody else's file the whole time. Both
+# halves hold only if the pin follows HOME, which is what this does. The one
+# case that deliberately points it elsewhere passes its own value.
+#
+# Mutation-tested, one variable removed at a time. Dropping COPILOT_HOME,
+# PI_CODING_AGENT_DIR, CODEX_HOME, CLAUDE_SETTINGS or XDG_CONFIG_HOME is
+# caught: by three or four of the assertions below in each case, and by the
+# read check at the bottom of this file in all five. Two are caught by
+# nothing, and are here by intent rather than by measurement -- XDG_DATA_HOME,
+# which doctor does not read today, and HOME itself, which doctor only ever
+# reaches through the five above. Both are what keeps a check added later from
+# reporting on a real dotfile directory before anyone notices.
+#
+# `env` rather than a bare assignment prefix, so a caller can pass VAR=VAL
+# arguments of its own and have them win: env applies assignments left to
+# right. stderr is merged in, because every call site below asked for it and
+# because the log has to hold the whole report, not the half of it doctor
+# happened to print on stdout.
+run_doctor() { # run_doctor HOME_DIR [VAR=VAL ...]
+  local home="$1" out rc; shift
+  out="$(env HOME="$home" \
+    XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+    COPILOT_HOME="$home/.copilot" PI_CODING_AGENT_DIR="$home/.pi/agent" \
+    CODEX_HOME="$home/.codex" CLAUDE_SETTINGS="$home/.claude/settings.json" \
+    "$@" "$DOC" 2>&1)"; rc=$?
+  # Every line of every run, for the read half of the canary check at the
+  # bottom of this file. A leaked variable does not write anything here -- it
+  # produces a REPORT LINE about a path under $CANARY -- so that is what gets
+  # looked for.
+  printf '%s\n' "$out" >> "$TMP/every-report"
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
+# An empty home for the cases whose subject is something other than a dotfile:
+# the tmux version gate, the two PATH checks, and the opencode and codex cases
+# that pin one directory of their own on top. Shared, because nothing in this
+# file writes to a home, and a case that needs content makes its own.
+EMPTY="$TMP/empty-home"; mkdir -p "$EMPTY"
 
 # reports the running tmux version
-out="$("$DOC" 2>&1 || true)"
+out="$(run_doctor "$EMPTY" 2>&1 || true)"
 assert_contains "$out" "tmux" "doctor reports on tmux"
 
 # a faked old tmux makes the required check fail (non-zero exit)
@@ -31,7 +140,7 @@ cat > "$shimdir/tmux" <<'EOF'
 exit 0
 EOF
 chmod +x "$shimdir/tmux"
-PATH="$shimdir:$PATH" "$DOC" >/dev/null 2>&1
+run_doctor "$EMPTY" PATH="$shimdir:$PATH" >/dev/null 2>&1
 assert_eq "$?" "1" "doctor exits non-zero on tmux < 3.2"
 rm -rf "$shimdir"
 
@@ -43,7 +152,7 @@ cat > "$shimdir/tmux" <<'EOF'
 exit 0
 EOF
 chmod +x "$shimdir/tmux"
-out="$(COLORTERM=truecolor PATH="$shimdir:$PATH" "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor PATH="$shimdir:$PATH" 2>&1)"
 assert_contains "$out" "3.4" "doctor accepts tmux 3.4"
 rm -rf "$shimdir"
 
@@ -55,25 +164,25 @@ shimdir="$(mktemp -d /tmp/amx.XXXX)"
 printf '#!/bin/sh\nexit 0\n' > "$shimdir/opencode"; chmod +x "$shimdir/opencode"
 
 # opencode present, plugin not linked -> a warning naming the fix
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" 2>&1)"
 assert_contains "$out" "opencode" "doctor mentions opencode when it is installed"
 assert_contains "$out" "ln -s" "doctor prints the command that links the plugin"
 
 # ...and it is still only a warning
-COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" >/dev/null 2>&1
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "a missing opencode plugin does not fail doctor"
 
 # plugin linked -> reported as linked, with no install command
 mkdir -p "$ocdir/opencode/plugin"
 ln -s "$HERE/adapters/opencode/roost.js" "$ocdir/opencode/plugin/roost.js"
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" 2>&1)"
 assert_contains "$out" "opencode plugin linked" "doctor confirms a correctly linked plugin"
 
 # a link pointing at some OTHER roost checkout is worse than none -- it silently
 # runs a different version's plugin
 rm "$ocdir/opencode/plugin/roost.js"
 printf 'not the real plugin\n' > "$ocdir/opencode/plugin/roost.js"
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" 2>&1)"
 assert_contains "$out" "not this install" "doctor flags a plugin that is not this installation"
 
 # a DANGLING symlink (target moved/deleted) must not read as "not installed":
@@ -81,9 +190,9 @@ assert_contains "$out" "not this install" "doctor flags a plugin that is not thi
 # fails with "File exists" because the link itself is still there.
 rm "$ocdir/opencode/plugin/roost.js"
 ln -s "$ocdir/opencode/plugin/nonexistent-target.js" "$ocdir/opencode/plugin/roost.js"
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" 2>&1)"
 assert_contains "$out" "dangling" "doctor flags a dangling plugin symlink distinctly"
-COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" "$DOC" >/dev/null 2>&1
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "a dangling plugin symlink does not fail doctor"
 
 rm -rf "$ocdir" "$shimdir"
@@ -103,13 +212,13 @@ chmod +x "$noroostdir/tmux"
 # has a real `roost` on it, and prepending would never exercise the "absent"
 # branch. /usr/bin:/bin carries bash/env/grep/sed/etc; $noroostdir carries
 # only the tmux shim, so no roost is reachable.
-out="$(PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "roost not found on PATH" "doctor warns when roost is not on PATH"
-PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" >/dev/null 2>&1
+run_doctor "$EMPTY" PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor >/dev/null 2>&1
 assert_eq "$?" "0" "roost missing from PATH does not fail doctor (informational only)"
 
 printf '#!/bin/sh\nexit 0\n' > "$noroostdir/roost"; chmod +x "$noroostdir/roost"
-out="$(PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor "$DOC" 2>&1)"
+out="$(run_doctor "$EMPTY" PATH="$noroostdir:/usr/bin:/bin" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "roost is on PATH" "doctor confirms roost is on PATH"
 rm -rf "$noroostdir"
 
@@ -132,7 +241,9 @@ rm -rf "$noroostdir"
 #
 # HOME is pinned to a throwaway dir for every invocation, alongside the
 # XDG_CONFIG_HOME each case sets: doctor reads $HOME/.claude/settings.json,
-# and this suite must never touch the real one.
+# and this suite must never touch the real one. run_doctor is what pins it --
+# and the other five homes with it, which spelling HOME and XDG_CONFIG_HOME
+# out here did not.
 gchome="$(mktemp -d /tmp/amx.XXXX)"
 gcdir="$(mktemp -d /tmp/amx.XXXX)"
 mkdir -p "$gcdir/roost"
@@ -142,16 +253,16 @@ set -g @roost-glyph-working "[~]"
 set -g @roost-glyph-done    "[+]"
 set -g @roost-glyph-idle    "[·]"
 EOF
-out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
+out="$(run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" 2>&1)"
 assert_contains "$out" "has no @roost-glyph-error line" "doctor reports the missing line as missing, rather than asserting a cause"
 assert_contains "$out" "'ascii'" "doctor names the set it actually matched (ascii)"
 assert_contains "$out" "falls back to the built-in '💥'" "doctor names the exact glyph being inherited, not just 'the default'"
-HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" >/dev/null 2>&1
+run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" >/dev/null 2>&1
 assert_eq "$?" "0" "a missing error glyph does not fail doctor (informational only)"
 
 # once @roost-glyph-error is added and matches, the warning goes away
 printf 'set -g @roost-glyph-error   "[x]"\n' >> "$gcdir/roost/roost.conf"
-out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" "$DOC" 2>&1)"
+out="$(run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$gcdir" 2>&1)"
 case "$out" in
   *"@roost-glyph-error"*) assert_eq "warned" "silent" "doctor is silent once the error glyph matches its set" ;;
   *) assert_eq ok ok "doctor is silent once the error glyph matches its set" ;;
@@ -171,7 +282,7 @@ set -g @roost-glyph-working "[~]"
 set -g @roost-glyph-done    "[+]"
 set -g @roost-glyph-idle    "[·]"
 EOF
-out="$(HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" 2>&1)"
+out="$(run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" 2>&1)"
 assert_contains "$out" "sets @roost-glyph-error to '(X)'" "doctor quotes the custom error glyph the config actually holds"
 assert_contains "$out" "the 'ascii' set's own error glyph is '[x]'" "doctor quotes the set's own error glyph for comparison"
 assert_contains "$out" "if you chose that yourself there is nothing to fix" "doctor offers the deliberate-choice reading instead of asserting a cause"
@@ -179,7 +290,7 @@ case "$out" in
   *"has no @roost-glyph-error line"*) assert_eq "claimed-missing" "described-mismatch" "doctor does not tell a user with a custom error glyph that the line is missing" ;;
   *) assert_eq ok ok "doctor does not tell a user with a custom error glyph that the line is missing" ;;
 esac
-HOME="$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" "$DOC" >/dev/null 2>&1
+run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" >/dev/null 2>&1
 assert_eq "$?" "0" "a custom error glyph does not fail doctor (informational only)"
 rm -rf "$cudir" "$gchome"
 
@@ -203,12 +314,12 @@ rm -rf "$cudir" "$gchome"
 # unset, and its notify-backend line (scripts/roost-notify --which) falls
 # back through $TMUX and then to that same `-L roost` when ROOST_NOTIFY_SOCK
 # is unset -- the same hazard already pinned above, at the top of this file.
-# Pin HOME to a fresh temp dir for every case below (never the real $HOME),
-# PWD to that same dir where a case needs project/local resolution, and reuse
-# $DOC (both socket variables are already inert, set at the top), so this
-# suite never reads the real settings.json, the real opencode plugin
-# directory, or contacts -L roost.
-RDOC="$DOC"
+# Every case below therefore goes through run_doctor, which pins HOME and the
+# five paths derived from it to a fresh temp dir (never the real $HOME), and
+# cds to that same dir where a case needs project/local resolution -- both
+# socket variables are already inert, set at the top -- so this suite never
+# reads the real settings.json, the real opencode plugin directory, or
+# contacts -L roost.
 
 # stale: settings.json still names the old amux-agent-state hook command
 stalehome="$(mktemp -d /tmp/amx.XXXX)"
@@ -216,11 +327,11 @@ mkdir -p "$stalehome/.claude"
 cat > "$stalehome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-out="$(HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(run_doctor "$stalehome" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "amux-agent-state" "roost doctor warns when settings.json still references amux-agent-state"
 assert_contains "$out" "roost-agent-state" "roost doctor names the roost-agent-state fix"
 assert_contains "$out" "user settings" "roost doctor labels which settings file is stale (user)"
-HOME="$stalehome" XDG_CONFIG_HOME="$stalehome/.config" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
+run_doctor "$stalehome" COLORTERM=truecolor >/dev/null 2>&1
 assert_eq "$?" "0" "a stale hook reference does not fail doctor (warning only)"
 rm -rf "$stalehome"
 
@@ -235,7 +346,7 @@ mkdir -p "$cleanhome/.claude"
 cat > "$cleanhome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/roost-agent-state done"}]}]}}
 EOF
-out="$(HOME="$cleanhome" XDG_CONFIG_HOME="$cleanhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(run_doctor "$cleanhome" COLORTERM=truecolor 2>&1)"
 case "$out" in
   *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent once settings.json is migrated, even with 'amux' in the checkout path" ;;
   *) assert_eq ok ok "roost doctor is silent once settings.json is migrated, even with 'amux' in the checkout path" ;;
@@ -244,7 +355,7 @@ rm -rf "$cleanhome"
 
 # absent: no settings.json at all -> silent, not a crash
 absenthome="$(mktemp -d /tmp/amx.XXXX)"
-out="$(HOME="$absenthome" XDG_CONFIG_HOME="$absenthome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(run_doctor "$absenthome" COLORTERM=truecolor 2>&1)"
 case "$out" in
   *"amux-agent-state"*) assert_eq "warned" "silent" "roost doctor is silent when settings.json is absent" ;;
   *) assert_eq ok ok "roost doctor is silent when settings.json is absent" ;;
@@ -263,7 +374,7 @@ else
   mkdir -p "$unreadhome/.claude"
   printf '{"hooks":{}}' > "$unreadhome/.claude/settings.json"
   chmod 000 "$unreadhome/.claude/settings.json"
-  out="$(HOME="$unreadhome" XDG_CONFIG_HOME="$unreadhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+  out="$(run_doctor "$unreadhome" COLORTERM=truecolor 2>&1)"
   # The specific phrase from the STALE-hook check's own unreadable branch,
   # not just "not readable" generically -- the pre-existing "Claude hooks
   # wired" check also says "not readable" for the same file, so a looser
@@ -283,7 +394,7 @@ mkdir -p "$projhome/.claude"
 cat > "$projhome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-out="$(cd "$projhome" && HOME="$projhome" XDG_CONFIG_HOME="$projhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(cd "$projhome" && run_doctor "$projhome" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "project settings" "roost doctor warns on a stale project .claude/settings.json (cwd-relative, not just \$HOME)"
 rm -rf "$projhome"
 
@@ -295,7 +406,7 @@ mkdir -p "$localhome/.claude"
 cat > "$localhome/.claude/settings.local.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-out="$(cd "$localhome" && HOME="$localhome" XDG_CONFIG_HOME="$localhome/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(cd "$localhome" && run_doctor "$localhome" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "local settings" "roost doctor warns on a stale local .claude/settings.local.json"
 rm -rf "$localhome"
 
@@ -315,7 +426,7 @@ if command -v git >/dev/null 2>&1; then
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
   git -C "$wtroot/main" worktree add -q "$wtroot/wt" -b wtbranch >/dev/null 2>&1
-  out="$(cd "$wtroot/wt" && HOME="$wtroot" XDG_CONFIG_HOME="$wtroot/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+  out="$(cd "$wtroot/wt" && run_doctor "$wtroot" COLORTERM=truecolor 2>&1)"
   assert_contains "$out" "local settings" "roost doctor resolves local settings through a worktree to the main checkout"
   rm -rf "$wtroot"
 else
@@ -329,7 +440,7 @@ fi
 ocstale="$(mktemp -d /tmp/amx.XXXX)"
 mkdir -p "$ocstale/.config/opencode/plugin"
 printf 'not the real plugin\n' > "$ocstale/.config/opencode/plugin/amux.js"
-out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(run_doctor "$ocstale" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "opencode/plugin/amux.js" "roost doctor warns when the old opencode plugin file still exists"
 assert_contains "$out" "no reason to keep the old name around" "roost doctor names the exact fix and frames it as a harmless leftover, not a coexistence need"
 assert_contains "$out" "rm \"" "roost doctor prints an exact rm command for the stale plugin file"
@@ -337,7 +448,7 @@ assert_contains "$out" "ln -s \"" "roost doctor prints an exact ln -s command na
 
 # and once it's gone, silent
 rm "$ocstale/.config/opencode/plugin/amux.js"
-out="$(HOME="$ocstale" XDG_CONFIG_HOME="$ocstale/.config" COLORTERM=truecolor "$RDOC" 2>&1)"
+out="$(run_doctor "$ocstale" COLORTERM=truecolor 2>&1)"
 case "$out" in
   *"opencode/plugin/amux.js"*) assert_eq "warned" "silent" "roost doctor is silent once the old opencode plugin file is gone" ;;
   *) assert_eq ok ok "roost doctor is silent once the old opencode plugin file is gone" ;;
@@ -360,7 +471,7 @@ printf '#!/bin/sh\nexit 0\n' > "$cxshim/codex"
 chmod +x "$cxshim/codex"
 cxhome="$(mktemp -d /tmp/amx.XXXX)"
 HOOK="$HERE/adapters/codex/roost-codex-hook"
-rdoctor() { PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor "$RDOC" 2>&1; }
+rdoctor() { run_doctor "$EMPTY" PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor 2>&1; }
 
 # 1. codex present, nothing written
 out="$(rdoctor)"
@@ -408,7 +519,212 @@ assert_contains "$out" "trusted all four" "doctor confirms a fully trusted codex
 
 # ...and none of it is ever a hard failure: most users do not have codex, and a
 # missing adapter for a harness you do not run is not a broken roost.
-PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor "$RDOC" >/dev/null 2>&1
+run_doctor "$EMPTY" PATH="$cxshim:$PATH" CODEX_HOME="$cxhome" COLORTERM=truecolor >/dev/null 2>&1
 assert_eq "$?" "0" "the codex checks never fail doctor"
 
 rm -rf "$cxshim" "$cxhome"
+
+# === roost doctor: the adapter advice points at `roost install` ===
+# `roost install` performs all five of these fixes in one go, so every warn
+# that hands the user a command to paste now names it too.
+#
+# The paste-command STAYS. The installer cannot run everywhere doctor can:
+# the two hook files need python3 or jq to edit, a foreign file at an adapter
+# path is left alone rather than replaced, and a read-only home cannot be
+# written at all. On any of those machines the pasted command is the only fix
+# there is, so the tail is an addition to it and never a replacement -- both
+# halves are asserted below, on the same line, for that reason.
+
+# doc_line NEEDLE REPORT -> the first line of REPORT containing NEEDLE, or the
+# empty string.
+#
+# Every assertion in this section is pinned to ONE line through this rather
+# than run against the whole report, because "roost install" now appears in
+# five separate lines: a whole-output assert_contains would go green on any of
+# them, including with the line it names deleted. That exact false pass has
+# already happened twice in this plan.
+#
+# bash's own parameter expansion and `read`, with no `tr` and no `cut`: the
+# thin PATHs this file builds elsewhere carry neither, and a silently absent
+# `tr` in a pipeline is a no-op that makes the filter match everything.
+doc_line() {
+  local needle="$1" hay="$2" line found=""
+  while IFS= read -r line; do
+    case "$line" in
+      *"$needle"*) [ -z "$found" ] && found="$line" ;;
+    esac
+  done <<EOF
+$hay
+EOF
+  printf '%s' "$found"
+}
+
+# All four optional harnesses faked onto PATH at once, each pointed at an
+# empty home of its own, so one run produces all five "not installed" lines --
+# the claude one comes for free, since an empty HOME has no settings.json.
+insthome="$(mktemp -d /tmp/amx.XXXX)"
+instshim="$(mktemp -d /tmp/amx.XXXX)"
+for _h in opencode copilot pi codex; do
+  printf '#!/bin/sh\nexit 0\n' > "$instshim/$_h"; chmod +x "$instshim/$_h"
+done
+out="$(run_doctor "$insthome" COLORTERM=truecolor PATH="$instshim:$PATH" 2>&1)"
+
+l="$(doc_line "opencode found, roost plugin not installed" "$out")"
+assert_contains "$l" "ln -s " "doctor still prints the opencode symlink command"
+assert_contains "$l" "or run: roost install" "the opencode not-installed line also points at roost install"
+
+l="$(doc_line "copilot found, roost extension not installed" "$out")"
+assert_contains "$l" "ln -s " "doctor still prints the copilot symlink command"
+assert_contains "$l" "or run: roost install" "the copilot not-installed line also points at roost install"
+
+l="$(doc_line "pi found, roost extension not installed" "$out")"
+assert_contains "$l" "ln -s " "doctor still prints the pi symlink command"
+assert_contains "$l" "or run: roost install" "the pi not-installed line also points at roost install"
+
+l="$(doc_line "codex found, roost hooks not written" "$out")"
+assert_contains "$l" "run: roost hooks codex," "doctor still prints the codex hooks command"
+assert_contains "$l" "or run: roost install" "the codex hooks line also points at roost install"
+
+l="$(doc_line "Claude hooks not found in" "$out")"
+assert_contains "$l" "run: roost hooks," "doctor still prints the claude hooks command"
+assert_contains "$l" "or run: roost install" "the claude hooks line also points at roost install"
+
+# and none of this is a failure: advice is advice
+run_doctor "$insthome" COLORTERM=truecolor PATH="$instshim:$PATH" >/dev/null 2>&1
+assert_eq "$?" "0" "the adapter advice never fails doctor"
+rm -rf "$insthome" "$instshim"
+
+# --- ...and every OTHER state roost install resolves says so too ---
+# The five lines above were the "not installed" ones. `roost install` also
+# relinks a dangling adapter, merges the codex hooks into a file that has none
+# of roost's, sets copilot's EXTENSIONS flag, and rewrites a Claude Stop hook
+# that predates --stop-hook -- verified against the real installer, not
+# inferred: seeded into one box, `roost install --yes` turned all six warnings
+# below into ✓ lines. So each of them carries the tail as well, and
+# site/content/docs says every state the installer can resolve does.
+fixhome="$(mktemp -d /tmp/amx.XXXX)"
+fixshim="$(mktemp -d /tmp/amx.XXXX)"
+for _h in opencode copilot pi codex; do
+  printf '#!/bin/sh\nexit 0\n' > "$fixshim/$_h"; chmod +x "$fixshim/$_h"
+done
+mkdir -p "$fixhome/.config/opencode/plugin" "$fixhome/.pi/agent/extensions" \
+         "$fixhome/.copilot/extensions/roost" "$fixhome/.codex" "$fixhome/.claude"
+ln -s /nonexistent/gone.js  "$fixhome/.config/opencode/plugin/roost.js"
+ln -s /nonexistent/gone.ts  "$fixhome/.pi/agent/extensions/roost.ts"
+ln -s /nonexistent/gone.mjs "$fixhome/.copilot/extensions/roost/extension.mjs"
+printf '%s' '{"theme":"dark"}' > "$fixhome/.copilot/settings.json"
+printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"/somebody/else"}]}]}}' \
+  > "$fixhome/.codex/hooks.json"
+# A Claude Stop hook from before the reply channel existed: roost's own script,
+# no --stop-hook. The installer replaces it with the current shape.
+printf '%s' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/old/checkout/scripts/roost-agent-state done"}]}]}}' \
+  > "$fixhome/.claude/settings.json"
+fixout="$(run_doctor "$fixhome" COLORTERM=truecolor PATH="$fixshim:$PATH" 2>&1)"
+
+for _needle in "opencode plugin symlink at" "copilot extension symlink at" \
+               "pi extension symlink at" "copilot extensions are off by default" \
+               "does not reference roost-codex-hook" "has no --stop-hook on the Stop hook"; do
+  l="$(doc_line "$_needle" "$fixout")"
+  # That the line fired at all, before asking what it ends with: a needle that
+  # matched nothing would make the tail assertion below pass on an empty
+  # string in every shell, which is the false pass doc_line already exists for.
+  [ -n "$l" ]; assert_true $? "doctor still reports: $_needle"
+  assert_contains "$l" "or run: roost install" \
+    "the line for '$_needle' points at roost install"
+done
+
+run_doctor "$fixhome" COLORTERM=truecolor PATH="$fixshim:$PATH" >/dev/null 2>&1
+assert_eq "$?" "0" "the resolvable-state advice never fails doctor"
+rm -rf "$fixhome"
+
+# --- and the states roost install REFUSES must NOT claim it ---
+# The installer's second load-bearing property is that a path which is not
+# ours is never replaced, and a hook pointing at a different checkout is a hard
+# refusal. Telling a user `roost install` fixes either would be a lie, and the
+# tail is exactly the kind of thing that gets pasted onto a whole block of
+# similar-looking lines. Pinned here so it cannot be.
+refhome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$refhome/.config/opencode/plugin" "$refhome/.pi/agent/extensions" \
+         "$refhome/.copilot/extensions/roost" "$refhome/.codex"
+printf 'somebody else\n' > "$refhome/.config/opencode/plugin/roost.js"
+printf 'somebody else\n' > "$refhome/.pi/agent/extensions/roost.ts"
+printf 'somebody else\n' > "$refhome/.copilot/extensions/roost/extension.mjs"
+printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"/another/checkout/adapters/codex/roost-codex-hook"}]}]}}' \
+  > "$refhome/.codex/hooks.json"
+refout="$(run_doctor "$refhome" COLORTERM=truecolor PATH="$fixshim:$PATH" 2>&1)"
+for _needle in "opencode plugin at" "copilot extension at" "pi extension at" \
+               "wires a roost-codex-hook from a different checkout"; do
+  l="$(doc_line "$_needle" "$refout")"
+  [ -n "$l" ]; assert_true $? "doctor still reports: $_needle"
+  case "$l" in
+    *"or run: roost install"*) tail_claimed=1 ;;
+    *) tail_claimed=0 ;;
+  esac
+  assert_eq "$tail_claimed" "0" \
+    "the line for '$_needle' does NOT point at roost install, which refuses it"
+done
+rm -rf "$refhome" "$fixshim"
+
+# === roost doctor honours $CLAUDE_SETTINGS ===
+# doctor takes this path from roost_adapter_settings (scripts/lib/roost-adapters.sh)
+# rather than spelling ${CLAUDE_SETTINGS:-...} out itself, so doctor's report
+# and roost install's write can never disagree about which file they mean --
+# the divergence that file's header exists to prevent. Nothing covered the
+# override before this: every case above exercises the default.
+cshome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$cshome/.claude" "$cshome/elsewhere"
+# The DEFAULT location is deliberately populated, and with a STALE hook, so
+# that an implementation which ignored $CLAUDE_SETTINGS would not merely look
+# similar -- it would name this path and warn about amux-agent-state, and both
+# assertions below would catch it.
+cat > "$cshome/.claude/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
+EOF
+cat > "$cshome/elsewhere/settings.json" <<'EOF'
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/roost/scripts/roost-agent-state done --stop-hook"}]}]}}
+EOF
+out="$(run_doctor "$cshome" CLAUDE_SETTINGS="$cshome/elsewhere/settings.json" COLORTERM=truecolor 2>&1)"
+assert_contains "$out" "Claude hooks wired in $cshome/elsewhere/settings.json" \
+  "doctor checks the file \$CLAUDE_SETTINGS names, not \$HOME/.claude/settings.json"
+case "$out" in *"$cshome/.claude/settings.json"*) csleak=1 ;; *) csleak=0 ;; esac
+[ "$csleak" -eq 0 ]
+assert_true $? "doctor never reads \$HOME/.claude/settings.json when \$CLAUDE_SETTINGS names another file"
+rm -rf "$cshome"
+
+# --- nothing escaped the sandbox --------------------------------------------
+# Last, because both halves have to see every invocation above. Same shape,
+# and the same order of operations, as tests/test-install.sh's: check the
+# detector, then ask it about the real thing. "Found nothing" is exactly what
+# a detector aimed at the wrong path also says, and this suite has been fooled
+# by that shape more than once -- a probe pointed at a filename the code never
+# reads, a `tr` that silently deleted its own input.
+#
+# The read half first, because it is the one that fires here. doctor never
+# writes, so a variable this file forgot does not leave a file behind; it
+# produces a REPORT LINE naming a path under $CANARY. run_doctor logged every
+# line of every run for this.
+#
+# The detector's own check is one deliberately unpinned run -- exactly the bug
+# this file had -- which must name the canary in its own report. It is kept
+# out of the log on purpose: it does not go through run_doctor.
+leak="$("$DOC" 2>&1 || true)"
+assert_contains "$leak" "$CANARY" \
+  "an unpinned roost doctor run names the canary (the read detector can see a leak)"
+
+case "$(cat "$TMP/every-report" 2>/dev/null)" in
+  *"$CANARY"*) named=1 ;;
+  *)           named=0 ;;
+esac
+assert_eq "$named" "0" "no roost doctor invocation read outside its own sandbox"
+
+# The write half. It reports nothing today and is expected to: doctor is
+# read-only. It is here because the canary is one guard, not two, and because
+# the first thing that ever writes through this file -- doctor gaining a
+# cache, a later case reaching for `roost install` -- lands in it.
+mkdir -p "$CANARY"; : > "$CANARY/detector-check"
+assert_contains "$(canary_leaks)" "detector-check" \
+  "the sandbox canary reports a file when there is one"
+rm -f "$CANARY/detector-check"
+
+assert_eq "$(canary_leaks)" "" \
+  "no roost doctor invocation wrote outside its sandbox"

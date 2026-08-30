@@ -65,6 +65,32 @@ assert_prefix() {
   esac
 }
 
+assert_true() {
+  # assert_true <exit-status> <label>
+  # For a boolean condition that has no two values worth naming (an
+  # `assert_eq ok ok` reads as passing no matter what the condition was —
+  # tests/lib.sh already rejects that shape in assert_prefix's own comment).
+  # Pass the status of the actual test command, evaluated immediately
+  # before the call: `[ -z "$x" ]; assert_true $? "x is empty"`.
+  if [ "$1" -eq 0 ] 2>/dev/null; then
+    ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "$2"
+  else
+    ROOST_TESTS_FAIL=$((ROOST_TESTS_FAIL+1)); printf '  FAIL: %s\n       exit status was [%s], wanted 0\n' "$2" "$1"
+  fi
+}
+
+assert_file_absent() {
+  # assert_file_absent <path> <label> -- <path> may be an unquoted glob; a
+  # pattern that matches nothing stays literal and -e on it correctly reads
+  # false, which is exactly the "no backup file exists" case callers use
+  # this for.
+  if [ ! -e "$1" ]; then
+    ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "$2"
+  else
+    ROOST_TESTS_FAIL=$((ROOST_TESTS_FAIL+1)); printf '  FAIL: %s\n       [%s] exists\n' "$2" "$1"
+  fi
+}
+
 require_pane() {
   # require_pane <pane-id> <label>
   # A split-window (or new-window) that runs out of room prints an EMPTY pane
