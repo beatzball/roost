@@ -126,12 +126,18 @@ wire_notice() {
   say "  and a prompt here would eat the rest of it. Wiring therefore runs"
   say "  unattended, exactly as \`roost install --yes\` would."
   say ""
+  # The list is complete on purpose, EXTENSIONS included. This is the one path
+  # where nobody was asked, so this block is the whole of what the user has to
+  # check the run against -- and the flag is a write in a file the symlink half
+  # never touches, backed up like any other. A notice that under-lists what it
+  # writes is worse than no notice: it reads as an inventory.
   say "  It touches only harnesses you already have installed, and only"
   say "  their own agent config: one symlink each for opencode, pi and"
-  say "  copilot, and roost's hook merged into claude's and codex's"
-  say "  settings. Every file it edits is backed up first, beside itself,"
-  say "  as .roost-bak-<timestamp>. Anything that is not roost's own is"
-  say "  left exactly as it was found and reported instead."
+  say "  copilot, roost's hook merged into claude's and codex's settings,"
+  say "  and copilot's EXTENSIONS feature flag turned on."
+  say "  Every file it edits is backed up first, beside itself, as"
+  say "  .roost-bak-<timestamp>. Anything that is not roost's own is left"
+  say "  exactly as it was found and reported instead."
   say ""
   say "  Skip this entirely: re-run install.sh with --no-wire."
   say "  ------------------------------------------------------------------"

@@ -83,7 +83,7 @@ case "$(_settings_state "$settings")" in
       # who wired the other three hooks and deliberately skipped Stop) costs a
       # line of advice, while the false negative costs the feature.
       grep -q -- --stop-hook "$settings" 2>/dev/null \
-        || warn "$settings has no --stop-hook on the Stop hook — roost read will fall back to the pane's screen; re-run: roost hooks"
+        || warn "$settings has no --stop-hook on the Stop hook — roost read will fall back to the pane's screen; re-run: roost hooks, or run: roost install"
     else
       warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install"
     fi
@@ -92,6 +92,22 @@ case "$(_settings_state "$settings")" in
   absent)     warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install" ;;
 esac
 
+# Which warnings end with ", or run: roost install", and which must not. The
+# tail goes on every state that command actually resolves -- and it resolves
+# more than the "not installed" ones: it relinks a DANGLING adapter (that link
+# is ours and broken, so replacing it loses nothing), merges its hooks into a
+# codex hooks.json that names none of them, sets copilot's EXTENSIONS flag, and
+# replaces a Claude Stop hook that predates --stop-hook with the current shape.
+# Measured against the real installer on a seeded box, all six went to ✓.
+#
+# It must NOT go on a state the installer refuses, and those sit right beside
+# these: something that is not roost's at an adapter path is never replaced,
+# and a hook pointing at a DIFFERENT checkout is a hard refusal. A tail there
+# would send a user to a command that will read their file, decline, and leave
+# them exactly where they started. tests/test-doctor.sh pins both directions,
+# because a tail is the kind of thing that gets pasted onto a whole block of
+# lines that look alike.
+#
 # roost.js is the target every opencode-plugin symlink should point at (used
 # below, and by the two stale-install checks further down) — computed once,
 # unconditionally, since a leftover amux.js can exist whether or not the
@@ -193,7 +209,7 @@ if command -v opencode >/dev/null 2>&1; then
     # old checkout that got removed) reads as simply absent, and the "not
     # installed" branch's `ln -s` then fails with "File exists" — the link
     # itself is still there, just pointing nowhere. Name the real fix.
-    warn "opencode plugin symlink at $ocplug is dangling — run: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\""
+    warn "opencode plugin symlink at $ocplug is dangling — run: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\", or run: roost install"
   elif [ ! -e "$ocplug" ]; then
     warn "opencode found, roost plugin not installed — run: mkdir -p \"$(dirname "$ocplug")\" && ln -s \"$ocwant\" \"$ocplug\", or run: roost install"
   elif [ "$ocplug" -ef "$ocwant" ]; then
@@ -211,7 +227,7 @@ if command -v copilot >/dev/null 2>&1; then
     # -e follows symlinks, so a DANGLING link (an old checkout that got removed)
     # reads as simply absent, and the "not installed" branch's `ln -s` then
     # fails with "File exists". Name the real fix.
-    warn "copilot extension symlink at $cpext is dangling — run: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\""
+    warn "copilot extension symlink at $cpext is dangling — run: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\", or run: roost install"
   elif [ ! -e "$cpext" ]; then
     warn "copilot found, roost extension not installed — run: mkdir -p \"$(dirname "$cpext")\" && ln -s \"$cpwant\" \"$cpext\", or run: roost install"
   elif [ "$cpext" -ef "$cpwant" ]; then
@@ -238,7 +254,7 @@ if command -v copilot >/dev/null 2>&1; then
   if [ -f "$cpsettings" ] && grep -q '"EXTENSIONS"' "$cpsettings" 2>/dev/null; then
     ok "copilot settings.json names the EXTENSIONS feature flag"
   else
-    warn "copilot extensions are off by default — launch panes as \"copilot --experimental\", or add {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}} to $cpsettings"
+    warn "copilot extensions are off by default — launch panes as \"copilot --experimental\", or add {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}} to $cpsettings, or run: roost install"
   fi
 
   # Second gate, and this one cannot be checked from disk at all. In interactive
@@ -259,7 +275,7 @@ if command -v pi >/dev/null 2>&1; then
     # -e follows symlinks, so a DANGLING link (an old checkout that got removed)
     # reads as simply absent, and the "not installed" branch's `ln -s` then
     # fails with "File exists". Name the real fix.
-    warn "pi extension symlink at $piext is dangling — run: rm \"$piext\" && ln -s \"$piwant\" \"$piext\""
+    warn "pi extension symlink at $piext is dangling — run: rm \"$piext\" && ln -s \"$piwant\" \"$piext\", or run: roost install"
   elif [ ! -e "$piext" ]; then
     warn "pi found, roost extension not installed — run: mkdir -p \"$(dirname "$piext")\" && ln -s \"$piwant\" \"$piext\", or run: roost install"
   elif [ "$piext" -ef "$piwant" ]; then
@@ -321,7 +337,7 @@ if command -v codex >/dev/null 2>&1; then
   elif [ ! -r "$cxhooks" ]; then
     warn "$cxhooks exists but is not readable — could not check whether codex hooks are wired"
   elif ! grep -qF roost-codex-hook "$cxhooks" 2>/dev/null; then
-    warn "$cxhooks does not reference roost-codex-hook — run: roost hooks codex"
+    warn "$cxhooks does not reference roost-codex-hook — run: roost hooks codex, or run: roost install"
   elif ! grep -qF "$cxwant" "$cxhooks" 2>/dev/null; then
     warn "$cxhooks wires a roost-codex-hook from a different checkout — this one is $cxwant; re-run: roost hooks codex"
   else

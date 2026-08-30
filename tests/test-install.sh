@@ -216,6 +216,12 @@ assert_contains "$out" "WIRING YOUR AGENTS -- nothing to answer" \
   "the piped install announces the wiring before it runs"
 assert_contains "$out" "Every file it edits is backed up first" \
   "the notice says every edited file is backed up"
+# The list has to be COMPLETE, not nearly. This is the one path where nobody
+# was asked, so it is the whole of what the user gets to check the run
+# against -- and copilot's EXTENSIONS flag is a write the same run makes, and
+# backs up, in a file the symlink half never touches.
+assert_contains "$out" "EXTENSIONS" \
+  "the notice lists copilot's EXTENSIONS flag, which the same run writes"
 assert_contains "$out" "Skip this entirely: re-run install.sh with --no-wire." \
   "the notice names the way out"
 link="$(wire_adapter wired)"

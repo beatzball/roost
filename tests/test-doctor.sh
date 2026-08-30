@@ -502,6 +502,86 @@ HOME="$insthome" CLAUDE_SETTINGS="$insthome/.claude/settings.json" XDG_CONFIG_HO
 assert_eq "$?" "0" "the adapter advice never fails doctor"
 rm -rf "$insthome" "$instshim"
 
+# --- ...and every OTHER state roost install resolves says so too ---
+# The five lines above were the "not installed" ones. `roost install` also
+# relinks a dangling adapter, merges the codex hooks into a file that has none
+# of roost's, sets copilot's EXTENSIONS flag, and rewrites a Claude Stop hook
+# that predates --stop-hook -- verified against the real installer, not
+# inferred: seeded into one box, `roost install --yes` turned all six warnings
+# below into ✓ lines. So each of them carries the tail as well, and
+# site/content/docs says every state the installer can resolve does.
+fixhome="$(mktemp -d /tmp/amx.XXXX)"
+fixshim="$(mktemp -d /tmp/amx.XXXX)"
+for _h in opencode copilot pi codex; do
+  printf '#!/bin/sh\nexit 0\n' > "$fixshim/$_h"; chmod +x "$fixshim/$_h"
+done
+mkdir -p "$fixhome/.config/opencode/plugin" "$fixhome/.pi/agent/extensions" \
+         "$fixhome/.copilot/extensions/roost" "$fixhome/.codex" "$fixhome/.claude"
+ln -s /nonexistent/gone.js  "$fixhome/.config/opencode/plugin/roost.js"
+ln -s /nonexistent/gone.ts  "$fixhome/.pi/agent/extensions/roost.ts"
+ln -s /nonexistent/gone.mjs "$fixhome/.copilot/extensions/roost/extension.mjs"
+printf '%s' '{"theme":"dark"}' > "$fixhome/.copilot/settings.json"
+printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"/somebody/else"}]}]}}' \
+  > "$fixhome/.codex/hooks.json"
+# A Claude Stop hook from before the reply channel existed: roost's own script,
+# no --stop-hook. The installer replaces it with the current shape.
+printf '%s' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/old/checkout/scripts/roost-agent-state done"}]}]}}' \
+  > "$fixhome/.claude/settings.json"
+fixout="$(HOME="$fixhome" CLAUDE_SETTINGS="$fixhome/.claude/settings.json" \
+  XDG_CONFIG_HOME="$fixhome/.config" COPILOT_HOME="$fixhome/.copilot" \
+  PI_CODING_AGENT_DIR="$fixhome/.pi/agent" CODEX_HOME="$fixhome/.codex" \
+  COLORTERM=truecolor PATH="$fixshim:$PATH" "$RDOC" 2>&1)"
+
+for _needle in "opencode plugin symlink at" "copilot extension symlink at" \
+               "pi extension symlink at" "copilot extensions are off by default" \
+               "does not reference roost-codex-hook" "has no --stop-hook on the Stop hook"; do
+  l="$(doc_line "$_needle" "$fixout")"
+  # That the line fired at all, before asking what it ends with: a needle that
+  # matched nothing would make the tail assertion below pass on an empty
+  # string in every shell, which is the false pass doc_line already exists for.
+  [ -n "$l" ]; assert_true $? "doctor still reports: $_needle"
+  assert_contains "$l" "or run: roost install" \
+    "the line for '$_needle' points at roost install"
+done
+
+HOME="$fixhome" CLAUDE_SETTINGS="$fixhome/.claude/settings.json" \
+  XDG_CONFIG_HOME="$fixhome/.config" COPILOT_HOME="$fixhome/.copilot" \
+  PI_CODING_AGENT_DIR="$fixhome/.pi/agent" CODEX_HOME="$fixhome/.codex" \
+  COLORTERM=truecolor PATH="$fixshim:$PATH" "$RDOC" >/dev/null 2>&1
+assert_eq "$?" "0" "the resolvable-state advice never fails doctor"
+rm -rf "$fixhome"
+
+# --- and the states roost install REFUSES must NOT claim it ---
+# The installer's second load-bearing property is that a path which is not
+# ours is never replaced, and a hook pointing at a different checkout is a hard
+# refusal. Telling a user `roost install` fixes either would be a lie, and the
+# tail is exactly the kind of thing that gets pasted onto a whole block of
+# similar-looking lines. Pinned here so it cannot be.
+refhome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$refhome/.config/opencode/plugin" "$refhome/.pi/agent/extensions" \
+         "$refhome/.copilot/extensions/roost" "$refhome/.codex"
+printf 'somebody else\n' > "$refhome/.config/opencode/plugin/roost.js"
+printf 'somebody else\n' > "$refhome/.pi/agent/extensions/roost.ts"
+printf 'somebody else\n' > "$refhome/.copilot/extensions/roost/extension.mjs"
+printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"/another/checkout/adapters/codex/roost-codex-hook"}]}]}}' \
+  > "$refhome/.codex/hooks.json"
+refout="$(HOME="$refhome" CLAUDE_SETTINGS="$refhome/.claude/settings.json" \
+  XDG_CONFIG_HOME="$refhome/.config" COPILOT_HOME="$refhome/.copilot" \
+  PI_CODING_AGENT_DIR="$refhome/.pi/agent" CODEX_HOME="$refhome/.codex" \
+  COLORTERM=truecolor PATH="$fixshim:$PATH" "$RDOC" 2>&1)"
+for _needle in "opencode plugin at" "copilot extension at" "pi extension at" \
+               "wires a roost-codex-hook from a different checkout"; do
+  l="$(doc_line "$_needle" "$refout")"
+  [ -n "$l" ]; assert_true $? "doctor still reports: $_needle"
+  case "$l" in
+    *"or run: roost install"*) tail_claimed=1 ;;
+    *) tail_claimed=0 ;;
+  esac
+  assert_eq "$tail_claimed" "0" \
+    "the line for '$_needle' does NOT point at roost install, which refuses it"
+done
+rm -rf "$refhome" "$fixshim"
+
 # === roost doctor honours $CLAUDE_SETTINGS ===
 # doctor takes this path from roost_adapter_settings (scripts/lib/roost-adapters.sh)
 # rather than spelling ${CLAUDE_SETTINGS:-...} out itself, so doctor's report

@@ -35,10 +35,20 @@ roost_adapter_home() {
 # $CLAUDE_SETTINGS is honoured because roost-doctor honoured it first; a
 # report and an installer that disagreed about which file they mean is the
 # exact failure this file's header exists to prevent. Both callers are on this
-# function now — scripts/roost-doctor sources this file and asks it for the
-# path it reports on — so no copy is left to drift. Named by file and not by
-# line number, because the line number this comment used to carry is exactly
-# what went stale first.
+# function FOR CLAUDE — scripts/roost-doctor sources this file and asks it for
+# the path it reports on — which is the one that matters most, because it is
+# the path `roost install` writes to under an override the user chose.
+#
+# The rest of the duplication is still here, and this comment used to say it
+# was gone. roost-doctor spells copilot's settings.json and codex's hooks.json
+# itself, and builds the three adapter paths and their targets from its own
+# expressions rather than from roost_adapter_path / roost_adapter_target.
+# Pre-existing, and none of those copies honour an override this file does not
+# — but "no copy is left to drift" is not true of them, and the next person
+# must not read it as an invariant they can lean on.
+#
+# Named by file and not by line number, because the line number this comment
+# used to carry is exactly what went stale first.
 #
 # Prints nothing for a harness with no JSON config of its own (the symlink
 # three), the same way roost_adapter_path prints nothing for codex.

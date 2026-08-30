@@ -138,8 +138,14 @@ roost          # start/attach the default session ("main")
 ```
 
 `roost doctor` is the one to run if a pane is not badging: it names the harness
-that is not wired, and every one of those lines ends with
-`, or run: roost install`.
+that is not wired, and every state `roost install` can resolve ends its line
+with `, or run: roost install` — a missing adapter, a dangling one, a codex
+`hooks.json` with none of roost's handlers, copilot's `EXTENSIONS` flag, a
+Claude Stop hook from before `--stop-hook` existed.
+
+A line **without** that tail is one no installer may fix for you: something
+that is not roost's sitting at an adapter path, hooks pointing at a different
+checkout, or one of the two prompts a human has to answer.
 
 Detach with the prefix then `d`, like any tmux. The prefix is `Ctrl-s`.
 
