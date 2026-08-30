@@ -680,12 +680,14 @@ assert_contains "$out" "different checkout" \
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "claude wired elsewhere: refusing one step does not abandon the others"
 
-# --- someone ELSE's hook under one of the four events -> refuse ------------
-# scripts/lib/roost-json.sh's hooks-merge REPLACES an event it writes, so
-# merging over a PostToolUse that carries the user's own formatter would
-# delete it with nothing printed. "A path that is not ours is never replaced"
-# is one of the three load-bearing properties in scripts/roost-install's
-# header; a hook entry inside a file is no different from a file.
+# --- someone ELSE's hook in one of the four events -> kept, roost added ----
+# roost's entry JOINS the event's array; the user's stays. This is not a
+# preference: hooks-merge used to assign over the whole array, and a
+# PostToolUse carrying a formatter came back with that entry gone -- rc 0,
+# backup taken, nothing printed. A PostToolUse formatter or linter is one of
+# the most common Claude Code setups. Refusing the whole step instead would
+# have denied roost to exactly the people most likely to want it, so the fix
+# is in scripts/lib/roost-json.sh and this case pins the caller's half.
 box="$TMP/claudeuserhook"
 cset="$box/home/.claude/settings.json"
 mkdir -p "$box/home/.claude"
@@ -693,19 +695,59 @@ cat > "$cset" <<'EOF'
 {
   "hooks": {
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "my-own-formatter" } ] }
+      { "matcher": "Edit",
+        "hooks": [ { "type": "command", "command": "my-own-formatter" } ] }
     ]
   }
 }
 EOF
-fbefore="$(cksum < "$cset")"
+cbefore="$(cat "$cset")"
 out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
-assert_eq "$rc" "0" "claude with a user's own hook: exits 0"
-assert_eq "$(cksum < "$cset")" "$fbefore" \
-  "claude with a user's own hook: settings.json is byte-identical after"
-assert_eq "$(bak_count "$cset")" "0" "claude with a user's own hook: no backup was taken"
-assert_contains "$out" "my-own-formatter" \
-  "claude with a user's own hook: the output names the hook it refuses to overwrite"
+assert_eq "$rc" "0" "claude beside a user's own hook: exits 0"
+if command -v python3 >/dev/null 2>&1; then
+  # The MATCHER is asserted, not just the command. It is the field a
+  # rebuild-from-the-command-string implementation would quietly drop, and
+  # losing it silently widens a hook the user had scoped to Edit.
+  assert_eq "$(claude_event "$cset" PostToolUse | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)[0]))')" \
+    '{"matcher": "Edit", "hooks": [{"type": "command", "command": "my-own-formatter"}]}' \
+    "claude beside a user's own hook: their entry survives with its matcher, value for value"
+  assert_eq "$(claude_event "$cset" PostToolUse | python3 -c 'import json,sys
+print(len(json.load(sys.stdin)))')" "2" \
+    "claude beside a user's own hook: roost's entry joins it rather than replacing it"
+  assert_eq "$(claude_event "$cset" PostToolUse | python3 -c 'import json,sys
+print(json.load(sys.stdin)[1]["hooks"][0]["command"])')" \
+    "$HERE/scripts/roost-agent-state working" \
+    "claude beside a user's own hook: roost's entry is the one that was added"
+fi
+assert_eq "$(bak_count "$cset")" "1" "claude beside a user's own hook: a backup was taken"
+assert_eq "$(cat "$(bak_of "$cset")" 2>/dev/null)" "$cbefore" \
+  "claude beside a user's own hook: the backup holds the pre-run bytes"
+# Requirement: a user with their own hooks must be able to SEE they were kept,
+# without going and diffing the file.
+# The phrasing from the WRITING block, not the bare word: the plan line above
+# also says the entry is kept, so a needle of "kept" alone goes green with the
+# line that reports what actually happened deleted.
+assert_contains "$out" "kept the 1 entry already in those events" \
+  "claude beside a user's own hook: the write says the existing entry was kept"
+
+# Re-running must not stack a second roost entry beside it. Asserted as a
+# COUNT: "roost's hook is present" stays true while duplicates pile up one per
+# run, so presence alone cannot see this.
+cbefore="$(cat "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude beside a user's own hook, re-run: exits 0"
+assert_eq "$(cat "$cset")" "$cbefore" \
+  "claude beside a user's own hook, re-run: settings.json is byte-identical"
+assert_eq "$(bak_count "$cset")" "1" \
+  "claude beside a user's own hook, re-run: no second backup was taken"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(claude_event "$cset" PostToolUse | python3 -c 'import json,sys
+print(len(json.load(sys.stdin)))')" "2" \
+    "claude beside a user's own hook, re-run: still exactly two entries"
+fi
+assert_contains "$out" "Already correct: opencode, claude" \
+  "claude beside a user's own hook, re-run: nothing left to do"
 
 # --- malformed settings.json -> exit 1, no write, no backup ----------------
 box="$TMP/claudebad"
@@ -829,6 +871,38 @@ if command -v jq >/dev/null 2>&1; then
   run_install "$box" "$JQ_SHIM" --yes >/dev/null
   assert_eq "$(cat "$cset")" "$cbefore" "claude under jq: a re-run is byte-identical"
   assert_eq "$(bak_count "$cset")" "1" "claude under jq: a re-run takes no second backup"
+
+  # The append path under jq. The probe has a whole second implementation for
+  # this engine, and "kept somebody else's entry" is the branch where getting
+  # it wrong destroys data rather than merely reporting oddly.
+  box="$TMP/claudejqappend"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  cat > "$cset" <<'EOF'
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Edit",
+        "hooks": [ { "type": "command", "command": "my-own-formatter" } ] }
+    ]
+  }
+}
+EOF
+  out="$(run_install "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, beside a user's hook: exits 0"
+  assert_eq "$(jq -c '.hooks.PostToolUse[0]' "$cset" 2>/dev/null)" \
+    '{"matcher":"Edit","hooks":[{"type":"command","command":"my-own-formatter"}]}' \
+    "claude under jq, beside a user's hook: their entry survives with its matcher"
+  assert_eq "$(jq '.hooks.PostToolUse | length' "$cset" 2>/dev/null)" "2" \
+    "claude under jq, beside a user's hook: roost's entry joins it"
+  assert_contains "$out" "kept the 1 entry already in those events" \
+    "claude under jq, beside a user's hook: the write says what was kept"
+  cbefore="$(cat "$cset")"
+  run_install "$box" "$JQ_SHIM" --yes >/dev/null
+  assert_eq "$(cat "$cset")" "$cbefore" \
+    "claude under jq, beside a user's hook: a re-run is byte-identical"
+  assert_eq "$(jq '.hooks.PostToolUse | length' "$cset" 2>/dev/null)" "2" \
+    "claude under jq, beside a user's hook: a re-run adds no second entry"
 
   box="$TMP/claudejqforeign"
   cset="$box/home/.claude/settings.json"
@@ -986,9 +1060,11 @@ assert_contains "$out" "re-hash" \
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "codex wired elsewhere: refusing one step does not abandon the others"
 
-# --- somebody else's handler on one of roost's OWN four events -> refuse ---
-# Same reasoning as the claude case: hooks-merge replaces the event it writes,
-# so merging here would delete a handler that is not ours.
+# --- somebody else's handler on one of roost's OWN four events -> kept -----
+# codex's events are arrays too, so roost's handler joins rather than
+# replacing. Safe by the measured hash fact: the hash codex stores is per
+# handler and over the parsed struct, so a new neighbour arriving in the same
+# array is invisible to an already-trusted handler.
 box="$TMP/codexclash"
 chooks="$box/home/.codex/hooks.json"
 mkdir -p "$box/home/.codex"
@@ -1001,15 +1077,51 @@ cat > "$chooks" <<'EOF'
   }
 }
 EOF
+cbefore="$(cat "$chooks")"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex beside another tool's handler: exits 0"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(codex_event_of "$chooks" PostToolUse | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)[0]))')" \
+    '{"hooks": [{"type": "command", "command": "somebody-elses-codex-hook", "timeout": 3}]}' \
+    "codex beside another tool's handler: theirs survives, value for value"
+  assert_eq "$(codex_event_of "$chooks" PostToolUse | python3 -c 'import json,sys
+print(len(json.load(sys.stdin)))')" "2" \
+    "codex beside another tool's handler: roost's is appended, not substituted"
+  assert_eq "$(codex_event_of "$chooks" PostToolUse | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)[1]))')" \
+    "$(codex_hooks_want | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)["PostToolUse"][0]))')" \
+    "codex beside another tool's handler: roost's handler is byte-exact where it landed"
+fi
+assert_eq "$(bak_count "$chooks")" "1" "codex beside another tool's handler: a backup was taken"
+assert_eq "$(cat "$(bak_of "$chooks")" 2>/dev/null)" "$cbefore" \
+  "codex beside another tool's handler: the backup holds the pre-run bytes"
+assert_contains "$out" "kept the 1 entry already in those events" \
+  "codex beside another tool's handler: the write says the existing entry was kept"
+cbefore="$(cat "$chooks")"
+run_install "$box" "$CODEX_SHIM" --yes >/dev/null
+assert_eq "$(cat "$chooks")" "$cbefore" \
+  "codex beside another tool's handler, re-run: hooks.json is byte-identical"
+assert_eq "$(bak_count "$chooks")" "1" \
+  "codex beside another tool's handler, re-run: no second backup"
+
+# --- malformed hooks.json -> exit 1, no write, no backup -------------------
+# The codex half of the claude case in section 13. Same code path, but the
+# path is only proven for the mode it is exercised in -- and a hooks.json
+# hand-edited into invalidity is exactly the state a codex user gets into.
+box="$TMP/codexbad"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+printf '{ "hooks": { "Stop": [ }\n' > "$chooks"
 fbefore="$(cksum < "$chooks")"
 out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
-assert_eq "$rc" "0" "codex with another tool's handler: exits 0"
+assert_eq "$rc" "1" "codex malformed hooks.json: exits 1"
 assert_eq "$(cksum < "$chooks")" "$fbefore" \
-  "codex with another tool's handler: hooks.json is byte-identical after"
-assert_eq "$(bak_count "$chooks")" "0" \
-  "codex with another tool's handler: no backup was taken"
-assert_contains "$out" "somebody-elses-codex-hook" \
-  "codex with another tool's handler: the output names what it refuses to overwrite"
+  "codex malformed hooks.json: the file is byte-identical after"
+assert_eq "$(bak_count "$chooks")" "0" "codex malformed hooks.json: no backup was taken"
+assert_contains "$out" "Trust all and continue" \
+  "codex malformed hooks.json: the trust step is still printed"
 
 # --- no JSON tool -> print the block, still exit 0, still say to trust -----
 box="$TMP/codexnotool"

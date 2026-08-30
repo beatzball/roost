@@ -226,22 +226,28 @@ resolve_link() { # resolve_link PATH
 # json_probe MODE FILE [PATCH WANT] -> one word on stdout, optionally followed
 # by a TAB and the offending command string:
 #
-#   ours            nothing to do — the file already says exactly what roost
-#                   would write
+#   ours            nothing to do — every one of roost's entries is already
+#                   there, pointing at this checkout
 #   merge           roost's entries are absent, incomplete, or an older shape
-#                   of ROOST'S OWN — safe to write
+#                   of ROOST'S OWN — safe to write, and nothing else is there
+#   append N        the same, except N entries belonging to someone else sit
+#                   in those events. They are KEPT; roost's join them
 #   other-checkout  a roost hook is there, pointing at a DIFFERENT checkout
-#   other-hook      somebody else's hook occupies an event roost writes
 #   unreadable      the file exists and cannot be read
-#   malformed       it does not parse, or the engine could not answer
+#   malformed       it does not parse, an event roost writes is not an array,
+#                   or the engine could not answer
 #
-# Why the last two are refusals and not a guess: `hooks-merge` in
-# scripts/lib/roost-json.sh REPLACES each event it writes. Merging over a
-# PostToolUse that carries the user's own formatter would delete it with
-# nothing printed anywhere — the same failure as `ln -sf` over someone's own
-# extension, which this command's header calls out as one of its three
-# load-bearing properties. A hook entry inside a file is no different from a
-# file.
+# `append` is a write, not a refusal, and it used to be the other way round.
+# The refusal was correct while scripts/lib/roost-json.sh REPLACED each event
+# it wrote — merging over a PostToolUse carrying the user's own formatter
+# deleted it, rc 0, nothing printed — but refusing meant anyone with a
+# formatter hook got no roost automation at all, which is most of the people
+# who would want it. The merge appends now, so the honest answer is to write
+# and SAY what was kept.
+#
+# other-checkout is still a hard refusal and is the most important behaviour
+# in this file. See the codex note further down for why rewriting one would be
+# worse than doing nothing.
 #
 # EVENTS ARE NOT LISTED HERE. They are read out of PATCH — the very document
 # roost-hooks.sh is about to merge — so an event added there is checked here
@@ -304,40 +310,47 @@ def main():
         print("malformed")
         return
 
-    gap = False
-    checkout = None
-    other = None
+    # Asked ENTRY BY ENTRY, not event by event, because the merge appends
+    # entry by entry. "Is this event already what roost would write" was the
+    # right question only while the merge assigned over the whole array; now
+    # the question is whether each of roost's entries is present, and who owns
+    # each of the ones that are not roost's.
+    gap = False       # something of roost's is missing -> a write is needed
+    kept = 0          # entries belonging to someone else, which survive it
+    checkout = None   # a roost entry from a DIFFERENT checkout -> refuse
     for event in patch:
-        if event not in hooks:
-            gap = True
-            continue
-        if hooks[event] == patch[event]:
-            continue
-        # Present but not what roost would write. Whose is it?
-        cmds = []
-        commands(hooks[event], cmds)
-        ours = True
-        for cmd in cmds:
-            if cmd == want or cmd.startswith(want + " "):
-                continue
-            ours = False
-            if marker in cmd:
-                if checkout is None:
+        existing = hooks.get(event, [])
+        # No append means anything here, and roost does not get to decide what
+        # it meant. roost_json_merge refuses it in the same words.
+        if not isinstance(existing, list):
+            print("malformed")
+            return
+        for entry in patch[event]:
+            if entry not in existing:
+                gap = True
+        for entry in existing:
+            if entry in patch[event]:
+                continue          # roost's own, already exactly right
+            cmds = []
+            commands(entry, cmds)
+            mine = bool(cmds)
+            for cmd in cmds:
+                if cmd == want or cmd.startswith(want + " "):
+                    continue
+                mine = False
+                if marker in cmd and checkout is None:
                     checkout = cmd
-            elif other is None:
-                other = cmd
-        # Every command under it is already this checkout's, just in an older
-        # shape (or the event is there and empty). Rewriting roost's own entry
-        # loses nothing.
-        if ours:
-            gap = True
+            if mine:
+                # This checkout's, in an older shape. The merge drops it and
+                # appends the canonical one, so a write IS needed.
+                gap = True
+            else:
+                kept += 1
 
     if checkout is not None:
         print("other-checkout\t" + checkout)
-    elif other is not None:
-        print("other-hook\t" + other)
     elif gap:
-        print("merge")
+        print(("append\t%d" % kept) if kept else "merge")
     else:
         print("ours")
 
@@ -360,24 +373,27 @@ else .[0] as $d
   else
     ($patch.hooks) as $p
     | ($want | split("/") | .[-1]) as $marker
-    | ( [ ($p | keys_unsorted[]) as $ev
-          | if (($d.hooks | has($ev)) | not) then ["merge"]
-            elif ($d.hooks[$ev] == $p[$ev]) then []
-            else
-              ( [ ($d.hooks[$ev] | cmds)[]
-                  | select(((. == $want) or startswith($want + " ")) | not) ] ) as $bad
-              | if ($bad | length) == 0 then ["merge"]
-                else [ $bad[]
-                       | if (index($marker) != null) then "other-checkout\t" + .
-                         else "other-hook\t" + . end ]
-                end
-            end ] | flatten ) as $all
-    | ( [ $all[] | select(startswith("other-checkout")) ] ) as $oc
-    | ( [ $all[] | select(startswith("other-hook")) ] ) as $oh
-    | if ($oc | length) > 0 then $oc[0]
-      elif ($oh | length) > 0 then $oh[0]
-      elif ($all | index("merge")) then "merge"
-      else "ours" end
+    | if any($p | keys_unsorted[]; (($d.hooks[.]) // []) | type != "array") then "malformed"
+      else
+      ( [ ($p | keys_unsorted[]) as $ev
+          | (($d.hooks[$ev]) // []) as $ex
+          | ( [ $p[$ev][] as $pe | select(any($ex[]; . == $pe) | not) | "gap" ] )
+            + ( [ $ex[] as $ee | select(any($p[$ev][]; . == $ee) | not)
+                  | ($ee | cmds) as $c
+                  | if (($c | length) > 0) and (all($c[]; . == $want or startswith($want + " ")))
+                    then "gap"
+                    else ( [ $c[] | select(((. == $want) or startswith($want + " ")) | not)
+                             | select(index($marker) != null) ] ) as $bad
+                         | if ($bad | length) > 0 then "other-checkout\t" + $bad[0] else "kept" end
+                    end ] )
+        ] | flatten ) as $all
+      | ( [ $all[] | select(startswith("other-checkout")) ] ) as $oc
+      | ( [ $all[] | select(. == "kept") ] | length ) as $nkept
+      | if ($oc | length) > 0 then $oc[0]
+        elif ($all | index("gap")) then
+          (if $nkept > 0 then "append\t" + ($nkept | tostring) else "merge" end)
+        else "ours" end
+      end
   end
 end
 JQ
@@ -399,7 +415,7 @@ json_probe() { # json_probe MODE FILE [PATCH WANT]
                "$(json_probe__jq)" "$file" 2>/dev/null)" ;;
   esac
   case "$out" in
-    ours|merge|other-checkout*|other-hook*|malformed) printf '%s' "$out" ;;
+    ours|merge|append*|other-checkout*|malformed) printf '%s' "$out" ;;
     # An engine that died, or an answer this does not recognise. Reported as
     # malformed rather than guessed at: the write path then refuses and says
     # so, and nothing is written on the strength of an answer nobody
@@ -488,7 +504,9 @@ DETECTED="${DETECTED# }"
 # The harnesses configured by editing a JSON file rather than by a symlink.
 # One name per task as they land; the machinery below is shared.
 #
-#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t LABEL
+#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t KIND \t LABEL
+#                 KIND is `merge`, or `append:N` when N entries belonging to
+#                 someone else are in those events and will be kept
 #   JSON_OK       HARNESS \t REAL_PATH
 #   JSON_REFUSED  HARNESS \t REAL_PATH \t WHY   (WHY runs to end of line)
 #   JSON_PRINT    HARNESS \t print|notool
@@ -563,7 +581,14 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
       # better message than this could produce — and routing it that way is
       # what keeps `--dry-run` at exit 0 while an attempted run exits 1.
       merge|malformed)
-        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_label
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}merge$TAB$json_label
+" ;;
+      # Same write, but somebody else's entries are in those events and are
+      # going to survive it. Carried through so the writing block can say so:
+      # a user with their own hooks should be able to see they were kept
+      # without going and diffing the file.
+      append)
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}append:$json_detail$TAB$json_label
 " ;;
       ours)
         JSON_OK="$JSON_OK$h$TAB$json_real
@@ -573,9 +598,6 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
       # one would arrive with no harness and no path.
       other-checkout)
         JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a different checkout: $json_detail
-" ;;
-      other-hook)
-        JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}another tool's hook already owns an event roost writes: $json_detail
 " ;;
       unreadable)
         JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}it exists and could not be read
@@ -619,9 +641,13 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
   # Same column, same rule: the exact file, and what goes into it. When the
   # config path is a symlink the REAL file is the one named on the first line,
   # because that is the file whose bytes change.
-  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg label; do
+  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg kind label; do
     [ -n "$h" ] || continue
     printf '  %-6s %s\n         %s\n' merge "$real" "$label"
+    case "$kind" in
+      append:1) printf '         (the 1 entry already in those events is kept)\n' ;;
+      append:*) printf '         (the %s entries already in those events are kept)\n' "${kind#append:}" ;;
+    esac
     [ "$real" = "$cfg" ] || printf '         (%s is a symlink to it)\n' "$cfg"
   done
   printf '\n'
@@ -747,7 +773,7 @@ EOF
   # here-string again, and for the same reason: $failed and $UNDO must survive
   # the loop.
   json_reindented=0
-  while IFS="$TAB" read -r h real cfg label; do
+  while IFS="$TAB" read -r h real cfg kind label; do
     [ -n "${h:-}" ] || continue
 
     # Whether the file was there BEFORE this write decides what the undo line
@@ -782,6 +808,14 @@ EOF
           continue
         fi
         printf '  merged   %s\n' "$real"
+        # Said out loud, because the alternative — roost's entry replacing
+        # theirs — is exactly what this used to do, and a user who has been
+        # bitten by a tool rewriting their hooks has no reason to take it on
+        # trust.
+        case "$kind" in
+          append:1) printf '           kept the 1 entry already in those events; roost joined it\n' ;;
+          append:*) printf '           kept the %s entries already in those events; roost joined them\n' "${kind#append:}" ;;
+        esac
         [ "$real" = "$cfg" ] || \
           printf '           (%s is a symlink — written through to the real file above,\n           so your dotfiles repo still owns it)\n' "$cfg"
         if [ -n "$json_bak" ]; then
