@@ -105,8 +105,15 @@ def main():
         sys.stderr.write("roost-json: cannot apply mode '%s': %s\n" % (mode, exc))
         sys.exit(1)
 
-    json.dump(data, sys.stdout, indent=2)
-    sys.stdout.write("\n")
+    # ensure_ascii=False + writing to the raw byte stream: a settings file
+    # with an accented path or an emoji in a statusLine command must come
+    # back with the SAME bytes it had (modulo indentation), not \uXXXX
+    # escapes. Writing to sys.stdout directly would pick whatever encoding
+    # the environment's locale gives sys.stdout, which is not guaranteed to
+    # be UTF-8 (and a mismatch there would raise, not silently mangle) — so
+    # encode explicitly and write bytes.
+    out = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    sys.stdout.buffer.write(out.encode("utf-8"))
 
 main()
 PY
