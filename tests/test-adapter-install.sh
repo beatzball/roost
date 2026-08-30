@@ -847,6 +847,106 @@ assert_eq "$(bak_count "$link")" "0" \
 assert_contains "$out" "$real" \
   "claude via a symlink: the output says which file it actually wrote"
 
+# --- a DIRECTORY where the config file goes -> refused, and said so --------
+# `[ -f ]` reads a directory as absent, so this used to take the create
+# branch: the temp file was moved INSIDE the directory and the run reported
+# "needed no change" and exited 0. A directory there is pathological, but
+# "needed no change" is the one message a user reads to conclude they are
+# already wired up, and a wrong one sends them away satisfied.
+box="$TMP/claudedir"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$cset"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "1" "claude with a directory at the config path: exits 1"
+[ -d "$cset" ]; assert_true $? "claude with a directory at the config path: it is still a directory"
+assert_eq "$(find "$cset" -mindepth 1 | wc -l | tr -d ' ')" "0" \
+  "claude with a directory at the config path: nothing was left inside it"
+case "$out" in *"needed no change"*) s=claimed ;; *) s=honest ;; esac
+assert_eq "$s" "honest" \
+  "claude with a directory at the config path: it does NOT report itself as already correct"
+
+# --- a command string with a newline in it is not rendered as a note -------
+# $json_detail is text out of the user's own JSON, and the refusal records are
+# newline-separated. An embedded newline used to split one record into two, so
+# the second half arrived with no harness and no path and was printed as its
+# own "Still manual" note -- telling the user to run `roost hooks <their
+# text>`. Nothing executes, and the file is still correctly left alone; the
+# point is that text from a file roost is READING must never come back out as
+# an instruction roost is GIVING.
+box="$TMP/claudeinject"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+printf '%s\n' '{ "hooks": { "Notification": [ { "hooks": [ { "type": "command", "command": "/other/checkout/scripts/roost-agent-state working\nrm -rf /tmp/whatever" } ] } ] } }' > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude with a newline in a command: exits 0"
+assert_eq "$(cksum < "$cset")" "$fbefore" \
+  "claude with a newline in a command: settings.json is byte-identical after"
+assert_eq "$(bak_count "$cset")" "0" "claude with a newline in a command: no backup was taken"
+assert_contains "$out" "different checkout" \
+  "claude with a newline in a command: the real refusal is still reported"
+case "$out" in *"whatever: left alone"*) s=leaked ;; *) s=contained ;; esac
+assert_eq "$s" "contained" \
+  "claude with a newline in a command: no second note is fabricated from the user's text"
+# The positive half, and it is the one that matters. Absence alone passes when
+# the detail comes out EMPTY -- which is exactly what happened first time
+# round: the stripping was written with `tr`, the harness shim carries no
+# `tr`, and the whole string vanished. This asserts the flattened text is
+# still reported, on one line, so a sanitiser that silently deletes
+# everything fails here.
+assert_contains "$out" \
+  "different checkout: /other/checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever" \
+  "claude with a newline in a command: the command is still reported, flattened onto one line"
+case "$out" in *"roost hooks rm"*) s=leaked ;; *) s=contained ;; esac
+assert_eq "$s" "contained" \
+  "claude with a newline in a command: no command is suggested that names the user's text"
+
+# --- a hand-customised roost entry is replaced, and the run SAYS so --------
+# An entry whose every command points at this checkout is roost's own, so the
+# merge drops it and appends the canonical one -- that is the convergence
+# mechanism, and it is how an older shape of roost's entry gets updated. But
+# a user who changed the matcher deliberately gets it reverted, and from the
+# accounting's point of view nothing of "theirs" was there, so no kept-line
+# fires. They should be able to see it from the output, not from a diff.
+box="$TMP/claudecustom"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+cat > "$cset" <<EOF
+{
+  "hooks": {
+    "Notification": [
+      { "matcher": "my_custom",
+        "hooks": [ { "type": "command", "command": "$HERE/scripts/roost-agent-state blocked" } ] }
+    ]
+  }
+}
+EOF
+cbefore="$(cat "$cset")"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude with a customised roost entry: exits 0"
+# Both halves, and the WRITE phrasing is spelled out rather than matched on
+# the bare word: the plan line above also says "replaced", so a needle of
+# "replaced" alone goes green with the line reporting what actually happened
+# deleted. That exact survivor turned up twice in this batch.
+assert_contains "$out" "a roost entry already there is replaced with the current one" \
+  "claude with a customised roost entry: the plan warns before the prompt"
+assert_contains "$out" "replaced 1 roost entry of its own with the current one" \
+  "claude with a customised roost entry: the write reports it afterwards"
+assert_contains "$out" "the backup above still has what it said" \
+  "claude with a customised roost entry: it points at where their version went"
+assert_eq "$(bak_count "$cset")" "1" "claude with a customised roost entry: a backup was taken"
+assert_eq "$(cat "$(bak_of "$cset")" 2>/dev/null)" "$cbefore" \
+  "claude with a customised roost entry: the backup still holds their version"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(claude_event "$cset" Notification)" "$(claude_want Notification)" \
+    "claude with a customised roost entry: the canonical entry is what is there now"
+fi
+# And the point of saying it: a run that changed nothing of the user's must
+# NOT claim it kept something, or the two messages stop meaning anything.
+case "$out" in *"kept the"*) s=claimed ;; *) s=quiet ;; esac
+assert_eq "$s" "quiet" \
+  "claude with a customised roost entry: it does not also claim to have kept an entry"
+
 # --- the same merge, driven by jq instead of python3 -----------------------
 # Both engines have to reach the same verdict, because which one a machine has
 # is not the user's choice to make. The interesting half is the REFUSAL: an
@@ -1191,7 +1291,7 @@ assert_eq "$rc" "0" "copilot flag already true: exits 0"
 assert_eq "$(cksum < "$cps")" "$fbefore" \
   "copilot flag already true: settings.json is byte-identical after"
 assert_eq "$(bak_count "$cps")" "0" "copilot flag already true: no backup was taken"
-case "$out" in *"merge  $cps"*) s=planned ;; *) s=absent ;; esac
+case "$out" in *"enable $cps"*) s=planned ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "copilot flag already true: no write is even PLANNED for it"
 
 # --- explicitly FALSE -> it must be turned on -----------------------------
@@ -1199,6 +1299,20 @@ assert_eq "$s" "absent" "copilot flag already true: no write is even PLANNED for
 # comment: a file that sets it to false reads as set. The installer cannot
 # afford that reading -- it would leave the extension off forever while
 # reporting success.
+# Setting a boolean flag is not a merge in the sense the two hook files are,
+# and calling it one in the plan reads as "roost is about to rewrite my
+# copilot settings". Its own verb -- and asserted, because the case above
+# proves only that some string is ABSENT, which a renamed verb satisfies for
+# the wrong reason.
+box="$TMP/copilotverb"
+cps="$box/home/.copilot/settings.json"
+mkdir -p "$box/home/.copilot"
+printf '{"theme":"dark"}\n' > "$cps"
+out="$(run_install "$box" "$COPILOT_SHIM" --dry-run --yes)"; rc=$?
+assert_eq "$rc" "0" "copilot plan verb: --dry-run exits 0"
+assert_contains "$out" "enable $cps" \
+  "copilot plan verb: the flag step is planned as its own action, not as a merge"
+
 box="$TMP/copilotfalse"
 cps="$box/home/.copilot/settings.json"
 mkdir -p "$box/home/.copilot"
