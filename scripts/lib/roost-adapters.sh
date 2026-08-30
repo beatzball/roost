@@ -21,21 +21,32 @@ roost_adapter_home() {
 
 # _roost_adapter_root — the checkout root, for roost_adapter_target's install
 # targets. A lib cannot depend on a caller's variable name (roost-validate
-# calls its own copy $HERE; bin/roost calls its own $ROOST_HOME), so this
-# takes $ROOST_HOME when a caller has already resolved one, and otherwise
-# resolves it from this file's own location the same way bin/roost resolves
-# its own — following symlinks, then two directories up from
-# scripts/lib/roost-adapters.sh to the checkout root.
+# calls its own copy $HERE; bin/roost calls its own $ROOST_HOME) OR on an
+# inherited environment variable of any name: `bin/roost` exports ROOST_HOME
+# into every pane of the session it starts (`t set-environment -g ROOST_HOME
+# ...`), so a process running inside a roost session — including roost
+# validate run by hand from a SECOND checkout, inside a server the FIRST
+# checkout started — would otherwise read the wrong checkout's root. Measured
+# consequence: with that branch in place, `roost_adapter_state opencode` for
+# one unchanged on-disk symlink returned `foreign` outside a roost pane and
+# `ok` inside one, and on the write path `offer_adapter_install` would have
+# created a symlink pointing at the OTHER checkout while the report claimed it
+# linked this one. So this always resolves fresh from this file's own
+# location — following symlinks, then two directories up from
+# scripts/lib/roost-adapters.sh to the checkout root — the same way bin/roost
+# resolves its own, and never reads $ROOST_HOME.
 _roost_adapter_root() {
-  if [ -n "${ROOST_HOME:-}" ]; then printf '%s' "$ROOST_HOME"; return; fi
-  local source dir
+  local source dir root
   source="${BASH_SOURCE[0]}"
   while [ -L "$source" ]; do
     dir="$(cd -P "$(dirname "$source")" && pwd)"
     source="$(readlink "$source")"
     [[ "$source" != /* ]] && source="$dir/$source"
   done
-  printf '%s' "$(cd -P "$(dirname "$source")/../.." && pwd)"
+  root="$(cd -P "$(dirname "$source")/../.." && pwd)"
+  # Strip a trailing slash so a pathologically-resolved root can never turn
+  # the caller's "$root/adapters/..." into "$root//adapters/...".
+  printf '%s' "${root%/}"
 }
 
 # roost_adapter_path / roost_adapter_target HARNESS — the symlink roost wants,

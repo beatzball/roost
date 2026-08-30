@@ -16,25 +16,41 @@
 # Moved here verbatim from bin/roost — do not edit a command or a timeout in
 # roost_hooks_codex, ever.
 #
-# Requires $ROOST_HOME set by the caller (bin/roost and the installer both
-# resolve their own before sourcing this).
+# Resolves its own checkout root rather than trusting an inherited
+# $ROOST_HOME, for the same reason scripts/lib/roost-adapters.sh does (see its
+# _roost_adapter_root comment): bin/roost exports ROOST_HOME into every pane
+# of the session it starts, so a caller running inside a roost session could
+# otherwise print a hook pointing at a DIFFERENT checkout than the one whose
+# `roost hooks` it just ran.
+_roost_hooks_root() {
+  local source dir root
+  source="${BASH_SOURCE[0]}"
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  root="$(cd -P "$(dirname "$source")/../.." && pwd)"
+  printf '%s' "${root%/}"
+}
 
 roost_hooks_claude() {
+  local home; home="$(_roost_hooks_root)"
   cat <<JSON
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
+      { "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state working" } ] }
     ],
     "Notification": [
       { "matcher": "permission_prompt",
-        "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state blocked" } ] }
+        "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state blocked" } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
+      { "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state working" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state done --stop-hook" } ] }
+      { "hooks": [ { "type": "command", "command": "$home/scripts/roost-agent-state done --stop-hook" } ] }
     ]
   }
 }
@@ -42,20 +58,21 @@ JSON
 }
 
 roost_hooks_codex() {
+  local home; home="$(_roost_hooks_root)"
   cat <<JSON
 {
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook UserPromptSubmit", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook UserPromptSubmit", "timeout": 10 } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook PostToolUse", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook PostToolUse", "timeout": 10 } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook PermissionRequest", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook PermissionRequest", "timeout": 10 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$home/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
     ]
   }
 }
