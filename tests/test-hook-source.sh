@@ -47,20 +47,39 @@ assert_eq "$codex_out" "$expected_codex" \
 # shared lib" from "duplicated inline and kept in sync by hand" — and a
 # hand-kept duplicate is exactly the failure mode this task exists to close
 # (see the header). So pin the SOURCE as well as the output: bin/roost must
-# source scripts/lib/roost-hooks.sh and call its two functions, and must not
-# carry a second copy of the frozen codex handler command literal.
-# grep -q, not assert_contains on the whole file: assert_contains prints its
-# full first argument on a FAIL, and that argument here would be bin/roost's
-# entire source — noise that would bury the one line worth reading.
+# CALL scripts/lib/roost-hooks.sh's two functions, and must not carry a second
+# copy of either JSON body's command literal.
+#
+# The call-site checks below strip comment-only lines first and then require
+# the function name as a whole word, not a bare substring grep. bin/roost's
+# own comment above its `. .../roost-hooks.sh` line names both functions in
+# prose ("roost_hooks_claude / roost_hooks_codex print the JSON object..."),
+# so a plain `grep -q roost_hooks_claude bin/roost` is true whether or not
+# anything actually CALLS it — proven by reintroducing a hand-kept duplicate
+# in a scratch copy: the old, unanchored version of this check kept passing
+# with the call deleted and only the comment left behind (pasted in the PR
+# body). Comment lines are identified the plain-text way (first non-blank
+# character is #), which is exactly how every comment in this file is
+# written; it does not need to handle a `#` inside a string literal because
+# neither bin/roost nor any file this test reads puts one at the start of a
+# line.
+bin_code="$(grep -v '^[[:space:]]*#' "$HERE/bin/roost")"
+word_called() {
+  # word_called TEXT NAME -> success if NAME appears in TEXT as a whole word.
+  printf '%s' "$1" | grep -Eq "(^|[^A-Za-z0-9_])$2([^A-Za-z0-9_]|\$)"
+}
 grep -q 'lib/roost-hooks.sh' "$HERE/bin/roost" && s=yes || s=no
 assert_eq "$s" "yes" "bin/roost sources scripts/lib/roost-hooks.sh"
-grep -q 'roost_hooks_claude' "$HERE/bin/roost" && s=yes || s=no
-assert_eq "$s" "yes" "bin/roost calls roost_hooks_claude"
-grep -q 'roost_hooks_codex' "$HERE/bin/roost" && s=yes || s=no
-assert_eq "$s" "yes" "bin/roost calls roost_hooks_codex"
+word_called "$bin_code" roost_hooks_claude && s=yes || s=no
+assert_eq "$s" "yes" "bin/roost actually CALLS roost_hooks_claude (not just mentions it in a comment)"
+word_called "$bin_code" roost_hooks_codex && s=yes || s=no
+assert_eq "$s" "yes" "bin/roost actually CALLS roost_hooks_codex (not just mentions it in a comment)"
 bin_codex_copies="$(grep -c 'adapters/codex/roost-codex-hook.*timeout' "$HERE/bin/roost" 2>/dev/null || true)"
 assert_eq "${bin_codex_copies:-0}" "0" \
   "bin/roost no longer carries its own copy of the frozen codex handler objects"
+bin_claude_copies="$(grep -c 'roost-agent-state working"' "$HERE/bin/roost" 2>/dev/null || true)"
+assert_eq "${bin_claude_copies:-0}" "0" \
+  "bin/roost no longer carries its own copy of the claude hook JSON body"
 
 # --- the four frozen codex handler objects, individually --------------------
 # Checked on each handler separately, and for both facts named in the task
