@@ -79,7 +79,7 @@ slice="$1"; shift
 trap - EXIT
 offer_adapter_install
 rc=$?
-# The four things the report is made of, in a shape no prose line can collide
+# The five things the report is made of, in a shape no prose line can collide
 # with. Asserting on the offer's console prose alone is how a case goes green
 # against the wrong line; these are the values themselves.
 printf '\n===RESULT===\n'
@@ -90,6 +90,12 @@ printf '%s' "$INSTALLED_LINKS" | while read -r p; do
 done
 printf '%s' "$BLOCKED_LINKS" | while IFS="$(printf '\t')" read -r h p; do
   [ -n "$h" ] && printf 'BLOCKED\t%s\t%s\n' "$h" "$p"
+done
+# :- so that a slice which does not define this variable at all fails the
+# assertions that name it, rather than dying on `set -u` and taking every
+# other case in the file down with it.
+printf '%s' "${ALREADY_LINKED:-}" | while IFS="$(printf '\t')" read -r h p; do
+  [ -n "$h" ] && printf 'ALREADY\t%s\t%s\n' "$h" "$p"
 done
 rm -rf "$WORK"
 DRIVER
@@ -332,7 +338,84 @@ case "$res" in *"INSTALLED	"*) s=some ;; *) s=none ;; esac
 assert_eq "$s" "none" "all linked already: no undo line is offered for a link this run did not make"
 
 # ===========================================================================
-# 9. the file itself
+# 9. a link this run really did create, whose TARGET does not exist
+# ===========================================================================
+# The report is built from what the INSTALLER did, not from what the disk
+# looks like afterwards, and this is the case that tells the two apart. With
+# the adapter file missing from the checkout, `ln -s` still succeeds — a
+# symlink to a path that is not there is a symlink — so the installer creates
+# it, says so, and exits 0. Reading the state back afterwards answers a
+# different question: the link points at nothing, so it is `dangling`.
+#
+# Deriving the report from that state filed a link this run had just created
+# under BLOCKED_LINKS, which report_install renders to the tester as "left
+# alone", and printed no undo line for it. A report that changed the machine
+# it ran on and did not say so is the worse of the two directions, in
+# report_install's own words.
+box="$TMP/deadtarget"
+mkdir -p "$box/home"
+# Moved rather than deleted: $CO is one copy shared by every case in this
+# file, and a later case linking a pi adapter that is not there would be a
+# different test than the one it says it is.
+mv "$CO/adapters/pi/roost.ts" "$TMP/pi-roost.ts.away"
+out="$(run_offer "$box" --install)"
+mv "$TMP/pi-roost.ts.away" "$CO/adapters/pi/roost.ts"
+res="$(result_of "$out")"
+dtpath="$(apath "$box" pi)"
+assert_eq "$(readlink "$dtpath" 2>/dev/null)" "$(atarget pi)" \
+  "dead target: the link really was created, pointing into this checkout"
+assert_contains "$res" "INSTALLED	$dtpath" \
+  "dead target: a link this run created is recorded for the undo"
+case "$res" in *"BLOCKED	pi	"*) s=blocked ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "dead target: a link this run created is not reported as left alone"
+assert_contains "$res" \
+  "DECISION	offered and accepted — this run created 3 adapter symlink(s); see the undo below" \
+  "dead target: the count includes the link whose target is missing"
+
+# ===========================================================================
+# 10. a link that appeared from OUTSIDE this run is not claimed as its work
+# ===========================================================================
+# The other direction. validate's question sits there for up to 60 seconds,
+# and a tester can link an adapter by hand in another terminal while it does.
+# The installer sees the path already correct, writes nothing and records
+# nothing — so validate must not count it, and must not print `rm <path>`
+# under "This run created the following symlinks on this machine". Telling
+# someone to delete a link they made themselves is not an undo.
+#
+# The stand-in for that other terminal is a wrapper around the installer:
+# validate calls it by path, so replacing that path for one case reproduces
+# the race exactly, with the real installer still doing the real work.
+box="$TMP/raced"
+mkdir -p "$box/home"
+rcpath="$(apath "$box" pi)"
+mv "$CO/scripts/roost-install" "$CO/scripts/roost-install.real"
+cat > "$CO/scripts/roost-install" <<WRAP
+#!/usr/bin/env bash
+mkdir -p "\$(dirname "$rcpath")"
+ln -s "$(atarget pi)" "$rcpath"
+exec "$CO/scripts/roost-install.real" "\$@"
+WRAP
+chmod +x "$CO/scripts/roost-install"
+out="$(run_offer "$box" --install)"
+mv "$CO/scripts/roost-install.real" "$CO/scripts/roost-install"
+res="$(result_of "$out")"
+assert_eq "$(readlink "$rcpath" 2>/dev/null)" "$(atarget pi)" \
+  "raced: the link the other terminal made is still there"
+case "$res" in *"INSTALLED	$rcpath"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "raced: a link this run did not make is never offered as an undo"
+case "$res" in *"BLOCKED	pi	"*) s=blocked ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "raced: a correctly linked path is not reported as something left alone"
+assert_contains "$res" "ALREADY	pi	$rcpath" \
+  "raced: pi is reported as already linked, by something other than this run"
+assert_contains "$res" \
+  "DECISION	offered and accepted — this run created 2 adapter symlink(s); see the undo below" \
+  "raced: the count is only the two this run really created"
+
+# ===========================================================================
+# 11. the file itself
 # ===========================================================================
 bash -n "$REPO/scripts/roost-validate"; assert_true $? "scripts/roost-validate parses as bash"
 # bash 3.2 is the floor (AGENTS.md / the spec's global constraints): no

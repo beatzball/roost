@@ -1595,7 +1595,113 @@ assert_contains "$upd_line" "does not pull new code" \
   "the roost update help line says it does not fetch new roost code"
 
 # ===========================================================================
-# 18. Hygiene
+# 18. --records: the machine-readable record of what this run actually wrote
+# ===========================================================================
+# The reason it exists: `roost validate` used to rebuild its report by reading
+# the adapter state back off the disk after the installer had run, and "is it
+# linked now" is a different question from "did this run link it". The two
+# diverge in both directions -- a link created against a target that does not
+# exist reads back as `dangling`, and a link a tester makes in another
+# terminal while validate's prompt is open reads back as `ok` -- so the report
+# both hid a write and claimed one. This file is the installer stating what it
+# did, and it is the only thing validate is allowed to build that report from.
+#
+# TAB-separated, one line per path the run reached a final outcome for:
+#   VERB \t HARNESS \t PATH \t UNDO
+# VERB is wrote | unchanged | refused | failed, and UNDO is empty for
+# everything but `wrote`.
+TAB="$(printf '\t')"
+records_of() { cat "$1" 2>/dev/null; }
+
+box="$TMP/records"
+recs="$TMP/records.tsv"
+out="$(run_install "$box" "$ALL_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "--records: the run still exits 0"
+for h in opencode pi copilot; do
+  p="$(adapter_path_in "$box" "$h")"
+  assert_contains "$(records_of "$recs")" "wrote$TAB$h$TAB$p${TAB}rm \"$p\"" \
+    "--records: $h is recorded as written, with its own undo command"
+done
+# The undo lines in the record and the undo lines the human sees are the same
+# lines. Two spellings of "what this run wrote" is the drift this file exists
+# to prevent, so they are compared rather than each asserted alone.
+rec_undo="$(records_of "$recs" | while IFS="$TAB" read -r v h p u; do
+  [ "$v" = wrote ] && printf '%s\n' "$u"; done | sort)"
+human_undo="$(printf '%s\n' "$out" | sed -n 's/^  rm "/rm "/p' | sort)"
+assert_eq "$rec_undo" "$human_undo" \
+  "--records: the recorded undo lines are the ones printed to the human"
+
+# A second run wrote nothing. `unchanged` is not the absence of a line: the
+# absence of a line is what a failed write looks like, and validate has to be
+# able to tell "already correct" from "could not do it" without going back to
+# the disk.
+recs2="$TMP/records2.tsv"
+out2="$(run_install "$box" "$ALL_SHIM" --yes --records "$recs2")"
+for h in opencode pi copilot; do
+  p="$(adapter_path_in "$box" "$h")"
+  assert_contains "$(records_of "$recs2")" "unchanged$TAB$h$TAB$p$TAB" \
+    "--records: a re-run records $h as unchanged"
+done
+n="$(grep -c "^wrote$TAB" "$recs2" || true)"
+assert_eq "${n:-0}" "0" "--records: a re-run records no write at all"
+
+# A foreign path is `refused`, never a silent gap.
+box="$TMP/records-foreign"
+mkdir -p "$box/home/.pi/agent/extensions"
+printf 'my own extension\n' > "$box/home/.pi/agent/extensions/roost.ts"
+recs3="$TMP/records3.tsv"
+run_install "$box" "$ALL_SHIM" --yes --records "$recs3" >/dev/null
+fpath="$(adapter_path_in "$box" pi)"
+assert_contains "$(records_of "$recs3")" "refused${TAB}pi$TAB$fpath$TAB" \
+  "--records: a foreign path is recorded as refused"
+case "$(records_of "$recs3")" in *"wrote${TAB}pi$TAB"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "--records: a path this run refused is never recorded as written"
+
+# --dry-run wrote nothing, so it records no write. The file is still created
+# and truncated, so a caller can tell "the installer ran and wrote nothing"
+# from "the installer never got far enough to touch this file".
+box="$TMP/records-dry"
+recs4="$TMP/records4.tsv"
+run_install "$box" "$ALL_SHIM" --dry-run --records "$recs4" >/dev/null
+assert_true "$([ -f "$recs4" ] && printf 0 || printf 1)" \
+  "--records: --dry-run still creates the records file"
+n="$(grep -c "^wrote$TAB" "$recs4" || true)"
+assert_eq "${n:-0}" "0" "--records: --dry-run records no write"
+
+# The JSON writes are in the record too. A record of "what this run wrote"
+# that quietly covered only the symlinks would be a trap for the next caller,
+# and the undo for a merge is a `cp` from the backup, not an `rm`.
+box="$TMP/records-json"
+recs5="$TMP/records5.tsv"
+run_install "$box" "$ALL_JSON_SHIM" --yes --only claude --records "$recs5" >/dev/null
+cset="$box/home/.claude/settings.json"
+assert_contains "$(records_of "$recs5")" "wrote${TAB}claude$TAB$cset${TAB}rm \"$cset\"" \
+  "--records: a settings.json this run created records an rm as its undo"
+run_install "$box" "$ALL_JSON_SHIM" --yes --only claude --records "$TMP/records5b.tsv" >/dev/null
+assert_contains "$(records_of "$TMP/records5b.tsv")" "unchanged${TAB}claude$TAB$cset$TAB" \
+  "--records: a settings.json already carrying roost's hooks records as unchanged"
+
+# The human-facing output is byte-identical with the flag and without it. This
+# is the constraint the flag was added under: it is opt-in and machine-only,
+# and a run someone is watching must not get noisier because validate wanted a
+# record. Two fresh boxes, with the box path folded out, because the same box
+# twice is not the same run.
+box_a="$TMP/records-quiet-a"; box_b="$TMP/records-quiet-b"
+out_a="$(run_install "$box_a" "$ALL_JSON_SHIM" --yes --records "$TMP/records6.tsv")"
+out_b="$(run_install "$box_b" "$ALL_JSON_SHIM" --yes)"
+assert_eq "${out_a//$box_a/BOX}" "${out_b//$box_b/BOX}" \
+  "--records: the output a human reads is byte-identical with and without it"
+
+# A missing value is a usage error, for the same reason --only's is: a caller
+# whose variable was unset must not get a silent run with no record, which
+# reads to validate exactly like a run that wrote nothing.
+run_install "$TMP/records-noval" "$ALL_SHIM" --records >/dev/null 2>&1
+assert_eq "$?" "2" "--records with no value exits 2"
+run_install "$TMP/records-flagval" "$ALL_SHIM" --records --yes >/dev/null 2>&1
+assert_eq "$?" "2" "--records swallowing a following flag as its value exits 2"
+
+# ===========================================================================
+# 19. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"

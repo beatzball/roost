@@ -1090,10 +1090,11 @@ h_adapter_fix() {
 INSTALL_DECISION=""     # one line, for the report
 INSTALLED_LINKS=""      # newline-separated paths this run created
 BLOCKED_LINKS=""        # newline-separated "harness<TAB>path" it refused to touch
+ALREADY_LINKED=""       # newline-separated "harness<TAB>path" linked by someone else
 INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
 
 offer_adapter_install() {
-  local h path ans created=0 only install_out install_rc
+  local h path ans created=0 only install_out install_rc records verb
 
   if [ "$LOCAL" -eq 1 ]; then
     # --local builds its own scratch config directory per harness and links the
@@ -1209,31 +1210,73 @@ offer_adapter_install() {
   # whole plan again in a different shape; two plans for one answer reads as
   # two things happening. On a FAILURE that output is the only explanation
   # there is, so that is where it gets printed.
-  install_out="$("$HERE/scripts/roost-install" --symlinks-only --yes --only "$only" 2>&1)"
+  #
+  # --records is the fifth part of the invocation and it is what this report is
+  # built from. Not stdout: the capture above is printed verbatim on a failure
+  # and machine lines threaded through it would be noise on the one path where
+  # that output is the tester's only explanation.
+  #
+  # Created here rather than left to the installer so that the read below
+  # cannot fail on a missing file: an installer that never started at all must
+  # leave an EMPTY record, which reads as "no verdict for any candidate", not
+  # a redirect error on validate's own stderr.
+  records="$WORK/install-records.tsv"
+  : > "$records"
+  install_out="$("$HERE/scripts/roost-install" --symlinks-only --yes --only "$only" \
+    --records "$records" 2>&1)"
   install_rc=$?
 
+  # WHAT THE INSTALLER DID, not what the disk looks like now. Those are two
+  # different questions and they were measured diverging in both directions:
+  #
+  #   It lost a link it HAD created. With an adapter file absent from the
+  #   checkout, `ln -s` still succeeds — a symlink to a path that is not there
+  #   is a symlink — so the installer created it and exited 0, but the state
+  #   read back `dangling`, so this loop filed it under BLOCKED_LINKS, which
+  #   report_install renders to the tester as "left alone", and printed no
+  #   undo line for it. A report that changed the machine it ran on and did
+  #   not say so is the worse of the two directions, in report_install's own
+  #   words.
+  #
+  #   It claimed one it had NOT. A tester who links an adapter by hand in
+  #   another terminal while the 60-second question sits there leaves the path
+  #   `ok`; the installer sees that, writes nothing and says so — and this
+  #   loop counted it and emitted `rm <path>` under "This run created the
+  #   following symlinks". Telling someone to delete a link they made
+  #   themselves is not an undo.
+  #
+  # The installer already knows exactly what it wrote, so the record is read
+  # rather than re-derived. A candidate the record says nothing about is one
+  # the installer never reached a verdict on — a crash, a refusal to start —
+  # and the honest report for that is the same as for a failed write.
   for h in $INSTALL_CANDIDATES; do
     path="$(roost_adapter_path "$h")"
-    # Read back off the disk, not parsed out of the installer's output. The
-    # state table is the one thing both scripts already agree on, and a report
-    # assembled from another script's prose goes wrong the first time someone
-    # rewords a line.
-    #
-    # The precaution the old inline loop took — re-checking the state
-    # immediately before writing, because a tester could have been fixing
-    # things in another terminal while the prompt sat there — has not been
-    # dropped: `roost install` takes it for each link, in the same words, at
-    # the point where it matters.
-    if [ "$(roost_adapter_state "$h")" = ok ]; then
-      INSTALLED_LINKS="$INSTALLED_LINKS$path
+    verb=""
+    # Matched on harness AND path: a harness can own more than one record in a
+    # full run (copilot has both a symlink and a settings file), and only the
+    # line about THIS path answers the question being asked.
+    while IFS="$(printf '\t')" read -r v vh vpath vundo; do
+      [ "${vh:-}" = "$h" ] && [ "${vpath:-}" = "$path" ] && verb="$v"
+    done < "$records"
+    case "$verb" in
+      wrote)
+        INSTALLED_LINKS="$INSTALLED_LINKS$path
 "
-      created=$((created + 1))
-      printf '  linked %s\n' "$path"
-    else
-      BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+        created=$((created + 1))
+        printf '  linked %s\n' "$path" ;;
+      # Correct on disk, and not this run's doing. Neither an undo line nor a
+      # "left alone because something that is not ours is there" row: both
+      # would be false, and the second is the one that would send a tester
+      # looking for a conflict that does not exist.
+      unchanged)
+        ALREADY_LINKED="$ALREADY_LINKED$h	$path
 "
-      printf '  could NOT link %s\n' "$path"
-    fi
+        printf '  already linked %s — not by this run\n' "$path" ;;
+      *)
+        BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+"
+        printf '  could NOT link %s\n' "$path" ;;
+    esac
   done
   if [ "$install_rc" -ne 0 ]; then
     printf '\n  roost install exited %s. Its own output:\n\n' "$install_rc"
@@ -1269,6 +1312,17 @@ run these lines; removing a symlink cannot affect anything it pointed at:"
     printf '```\n\n' >> "$BODY"
     record WARN 1 "this run wrote to your machine" \
       "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) after you agreed; the undo commands are in §1"
+  fi
+  if [ -n "$ALREADY_LINKED" ]; then
+    para "**Already linked, but not by this run.** Each path below was correct by the
+time the installer reached it — linked from another terminal while the question
+above was open, most likely. Nothing was written to them and no undo is offered:
+removing a link this run did not create is not an undo of anything."
+    printf '| Harness | Path already linked |\n|---|---|\n' >> "$BODY"
+    printf '%s' "$ALREADY_LINKED" | while IFS="$(printf '\t')" read -r h path; do
+      [ -n "$h" ] && printf '| %s | `%s` |\n' "$h" "$path" | redact >> "$BODY"
+    done
+    printf '\n' >> "$BODY"
   fi
   if [ -n "$BLOCKED_LINKS" ]; then
     para "**Left alone.** Something that is not this checkout's adapter already sits

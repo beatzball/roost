@@ -92,6 +92,9 @@ ASSUME_YES=0
 DRY_RUN=0
 PRINT_ONLY=0
 SYMLINKS_ONLY=0
+# Where to write the machine-readable record, or empty for "do not". Opt-in
+# on purpose: see record_outcome below.
+RECORDS=""
 ONLY=""
 # Whether --only was GIVEN, tracked apart from its value. The two are not the
 # same question, and conflating them is what let an empty value read as "no
@@ -104,7 +107,8 @@ usage() { # usage RC — to stdout for --help, to stderr for a usage error
   {
     cat <<'USAGE'
 usage: roost install [-y|--yes] [--dry-run] [--only H[,H...]]
-                     [--print-only] [--symlinks-only] [-h|--help]
+                     [--print-only] [--symlinks-only] [--records FILE]
+                     [-h|--help]
 
 Wires every installed harness to this roost checkout. Prints the plan first,
 asks once, and never replaces a file that is not roost's own.
@@ -118,6 +122,10 @@ asks once, and never replaces a file that is not roost's own.
   --symlinks-only   the adapter symlinks and nothing else. This is the mode
                     `roost validate` invokes after its own prompt, so that
                     a validation run writes symlinks and nothing else.
+  --records FILE    write a machine-readable record of what this run did to
+                    FILE, for a caller assembling its own report. Adds
+                    nothing to the output above. `roost validate` is the one
+                    caller; see the comment on record_outcome for the shape.
   -h, --help        this text.
 
 Exit codes: 0 everything it could do succeeded, even with manual steps left.
@@ -133,6 +141,21 @@ while [ "$#" -gt 0 ]; do
     --dry-run)       DRY_RUN=1; shift ;;
     --print-only)    PRINT_ONLY=1; shift ;;
     --symlinks-only) SYMLINKS_ONLY=1; shift ;;
+    # The SAME missing-value guard --only carries, and for the same class of
+    # reason. A caller whose variable was unset would otherwise get a run
+    # with no record at all, which to the caller reads exactly like a run
+    # that wrote nothing -- the one failure mode a report cannot tell from
+    # success.
+    --records)
+      case "${2:-}" in
+        ''|-*) printf 'roost install: --records needs a file path\n' >&2; usage 2 ;;
+      esac
+      RECORDS="$2"; shift 2 ;;
+    --records=*)
+      case "${1#*=}" in
+        ''|-*) printf 'roost install: --records needs a file path\n' >&2; usage 2 ;;
+      esac
+      RECORDS="${1#*=}"; shift ;;
     --only)
       # A following flag is not a value. `--only --yes` must fail as a missing
       # argument rather than silently restricting the run to a harness called
@@ -190,6 +213,50 @@ if [ "$ONLY_GIVEN" -eq 1 ]; then
   fi
 fi
 ONLY_LIST="${ONLY_LIST# }"
+
+# --- the machine-readable record -------------------------------------------
+# record_outcome VERB HARNESS PATH [UNDO] -- one TAB-separated line per path
+# this run reached a FINAL outcome for, appended to --records' file:
+#
+#   wrote      this run changed that path. UNDO is the exact command that
+#              puts it back -- `rm` for a link or a file this run created,
+#              `cp` from the backup for a merge into a file that was there.
+#   unchanged  it was already correct. Written by nobody this run, and
+#              deliberately NOT the same as no line at all.
+#   refused    something that is not this checkout's is there, or the path
+#              changed underneath the run after the plan was printed.
+#   failed     the write was attempted and did not work.
+#
+# WHY A FILE AND NOT STDOUT. `roost validate` captures this command's output
+# and prints it verbatim when a write fails -- that output is the only
+# explanation a tester gets on the one path where it matters, and machine
+# lines interleaved through it would be exactly the noise this flag promised
+# not to add. A separate stream also cannot be broken by a caller that
+# reworded a human line.
+#
+# WHY VALIDATE NEEDS IT AT ALL, rather than reading roost_adapter_state back
+# off the disk afterwards: "is it linked now" is a different question from
+# "did this run link it", and the two diverge in both directions. A link
+# created against an adapter file that is not in the checkout is a real write
+# that reads back as `dangling`; a link a tester makes in another terminal
+# while validate's 60-second prompt is open reads back as `ok` and this run
+# did not make it. Deriving the report from the disk therefore both hid a
+# write and claimed one. This function is the installer saying what it did.
+record_outcome() { # record_outcome VERB HARNESS PATH [UNDO]
+  [ -n "$RECORDS" ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}" >> "$RECORDS"
+}
+
+# Truncated up front, and a failure here is fatal rather than ignored. An
+# append-only record that a previous run had already filled in would tell the
+# caller this run wrote things it never touched, and a record file that
+# cannot be written at all must not read as a run that did nothing.
+if [ -n "$RECORDS" ]; then
+  : > "$RECORDS" || {
+    printf "roost install: --records: cannot write '%s'\n" "$RECORDS" >&2
+    exit 2
+  }
+fi
 
 in_scope() { # in_scope HARNESS
   [ -n "$ONLY_LIST" ] || return 0
@@ -493,7 +560,8 @@ for h in $HARNESSES; do
 
   case "$(roost_adapter_state "$h")" in
     ok)      OK_STEPS="$OK_STEPS$h$TAB$(roost_adapter_path "$h")
-" ;;
+"
+             record_outcome unchanged "$h" "$(roost_adapter_path "$h")" ;;
     missing) LINK_STEPS="${LINK_STEPS}link$TAB$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
 " ;;
     # A dangling symlink is OURS and broken — the checkout it pointed at moved
@@ -502,7 +570,8 @@ for h in $HARNESSES; do
     dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
 " ;;
     foreign) REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
-" ;;
+"
+             record_outcome refused "$h" "$(roost_adapter_path "$h")" ;;
     # `none` is claude and codex: no symlink-shaped adapter exists for them.
     none) : ;;
   esac
@@ -623,16 +692,19 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
 " ;;
       ours)
         JSON_OK="$JSON_OK$h$TAB$json_real
-" ;;
+"
+        record_outcome unchanged "$h" "$json_real" ;;
       # WHY is one LINE, detail included. These records are newline-separated,
       # so a two-line reason would be read back as two records and the second
       # one would arrive with no harness and no path.
       other-checkout)
         JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a different checkout: $json_detail
-" ;;
+"
+        record_outcome refused "$h" "$json_real" ;;
       unreadable)
         JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}it exists and could not be read
-" ;;
+"
+        record_outcome refused "$h" "$json_real" ;;
     esac
   done
 fi
@@ -785,11 +857,13 @@ if [ "$do_writes" -eq 1 ]; then
       link:missing|relink:dangling) : ;;
       *:ok)
         printf '  %s was already linked by the time this ran — left alone\n' "$h"
+        record_outcome unchanged "$h" "$path"
         continue ;;
       *)
         printf '  %s changed underneath this run (now: %s) — left alone\n' "$h" "$state"
         REFUSED="$REFUSED$h$TAB$path$TAB$target
 "
+        record_outcome refused "$h" "$path"
         continue ;;
     esac
 
@@ -803,8 +877,10 @@ if [ "$do_writes" -eq 1 ]; then
       printf '  %-8s %s\n' "${action}ed" "$path"
       UNDO="${UNDO}rm \"$path\"
 "
+      record_outcome wrote "$h" "$path" "rm \"$path\""
     else
       printf '  could NOT %s %s\n' "$action" "$path" >&2
+      record_outcome failed "$h" "$path"
       failed=1
     fi
   done <<EOF
@@ -847,6 +923,7 @@ EOF
           # Nothing changed after all. The probe said a write was needed and
           # the merge disagreed; say so rather than claiming a write.
           printf '  %s needed no change: %s\n' "$h" "$real"
+          record_outcome unchanged "$h" "$real"
           continue
         fi
         case "$h" in copilot) printf '  enabled  %s\n' "$real" ;;
@@ -858,9 +935,11 @@ EOF
           json_reindented=1
           UNDO="${UNDO}cp \"$json_bak\" \"$real\"
 "
+          record_outcome wrote "$h" "$real" "cp \"$json_bak\" \"$real\""
         else
           UNDO="${UNDO}rm \"$real\"
 "
+          record_outcome wrote "$h" "$real" "rm \"$real\""
         fi
         # Both said out loud, after the backup line so "the backup above" is
         # true. The first because roost's entry REPLACING theirs is exactly
@@ -889,6 +968,7 @@ EOF
         # 1, 2 and 5 all mean the same thing to a user: nothing was written,
         # no backup was taken, and the engine's own message is above.
         printf '  could NOT write %s\n' "$real" >&2
+        record_outcome failed "$h" "$real"
         failed=1 ;;
     esac
   done <<EOF
