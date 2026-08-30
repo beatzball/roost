@@ -129,6 +129,38 @@ Then `roost install` for the wiring half, or wire each harness yourself from
 The launcher resolves its own location (following symlinks), so it finds its
 config and scripts no matter where you run it from.
 
+## Upgrading
+
+**To upgrade roost, run the install command again.** There is no separate
+upgrade command:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
+```
+
+On a machine that already has roost it does three things instead of the first
+two: `git pull --ff-only` in the clone it made, skip the `PATH` line it added
+the first time rather than adding it twice, and wire your agents again. That
+last one matters more than it sounds — a release can add an adapter for a
+harness that had none, and codex records roost's hook by absolute path, so a
+checkout you have moved or re-cloned needs wiring again either way.
+
+Three things to know:
+
+- **Running `./install.sh` from inside a clone does not pull.** It installs
+  that checkout exactly as it stands, on purpose, so it can never yank code out
+  from under someone working in it. That is the one case where you have to
+  `git pull` yourself first.
+- **A clone you have committed to is never clobbered.** The pull is
+  `--ff-only`, so where it cannot fast-forward it says `could not update;
+  keeping what is there` and carries on with the `PATH` and wiring steps rather
+  than stopping. Nothing of yours is rewritten; sort that checkout out yourself
+  when you want the new code.
+- **`roost install` and `roost update` do not fetch new code.** They wire your
+  harnesses to the checkout you already have, and that is all. When git already
+  knows locally that your checkout is behind, they tell you how far and print
+  the `git pull` to run — they never go to the network to find out.
+
 ## First run
 
 ```sh

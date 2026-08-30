@@ -142,6 +142,34 @@ export PATH="$PWD/roost/bin:$PATH"   # add to your shell's startup file
 The launcher resolves its own location (following symlinks), so it finds its
 config and scripts no matter where you run it from.
 
+## Upgrading
+
+**The upgrade command is the install command.** Run it again:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
+```
+
+Against a clone that is already there it does three things: `git pull
+--ff-only`, skip the `PATH` line it added last time, and re-wire your agents.
+That last part is not busywork — a release can add an adapter, and codex's
+`hooks.json` names roost by absolute path, so a checkout you moved or re-cloned
+has to be wired again.
+
+Three things worth knowing:
+
+- **`./install.sh` from inside a clone does not pull.** It takes the
+  "installing from this checkout" branch (`install.sh:81`) and installs that
+  checkout exactly as it stands, deliberately — so it never yanks code out from
+  under someone working in it. Pull that one yourself.
+- **`--ff-only` refuses rather than clobbers.** A clone with local commits or a
+  diverged branch warns `could not update; keeping what is there`, and the run
+  carries on with the `PATH` and wiring steps rather than aborting.
+- **`roost install` / `roost update` do not fetch.** They re-wire the checkout
+  you have; they never touch roost's own code. When git already knows locally
+  that the checkout is behind, they say how far and print the `git pull` to run
+  — they do not fetch to find out.
+
 ## Quick start
 
 ```sh
