@@ -113,14 +113,19 @@ roost validate
 
 It takes a while, so start it and walk away. Every wait is bounded, so it cannot sit there forever, and it writes the report even when something fails. A wait that runs out is reported as a **timeout**, not as a failure — against a real account a turn with tool calls can take minutes.
 
+It asks **one** question first. If a roost adapter symlink is missing — the install step `roost doctor` already prints — it lists what it would create and asks once, for all of them together. Say yes and it links them and tests those harnesses; say nothing and after 60 seconds it takes that as no and skips them, exactly as before. It creates **symlinks and nothing else**: no hooks file, no codex trust, no settings change, no provider configuration. The report lists every link it made with a one-line `rm` to undo it. `--install` and `--no-install` answer it up front for an unattended run, which otherwise defaults to no.
+
 What it will not do:
 
 - **Touch your tmux.** It runs its own server on its own socket in a temp directory and tears it down at the end, including when it fails.
-- **Change your configuration.** It reads what each harness already has and writes none of it. It will not install an adapter or write a hooks file: where one is missing, that harness is skipped and the report prints the exact command to fix it, so a second run covers it.
-- **Log in to anything.** It uses the credential already on your machine and never asks for one. A harness that is not set up is skipped, with that as the reason.
+- **Replace a file you put there.** If something that is not this checkout's adapter already sits where a symlink would go — your own extension, or a link to a checkout you deleted — it leaves it alone, names it in the report, and skips that harness.
+- **Change your configuration beyond those symlinks.** It reads what each harness already has and writes none of it. A missing **provider** is never something it arranges: that is your account, and the harness is skipped with that as the reason.
+- **Log in to anything.** It uses the credential already on your machine and never asks for one.
 - **Send your home directory to us.** Absolute paths, your username and your hostname are substituted before anything is written, and the report says so. Pass `--keep-home-paths` if you would rather send it raw.
 
 Claude Code is the one harness it will not drive: there is no way to isolate its configuration without taking the credential with it.
+
+One thing worth knowing before you read your own report: **the real-provider path has never run on our machines**, because none of them has an account wired for these harnesses. Everything we tested took the `--local` path. If a result looks odd, treat it as a genuine finding and tell us rather than assuming it is your setup.
 
 `roost validate --quick` skips the slowest part (this repo's own ollama-based smoke suites) and still produces a full report.
 

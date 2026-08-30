@@ -305,11 +305,22 @@ that by hand and fill in a form. Hand-copied observations are the least
 reliable evidence available, and the field most often left blank was the one
 that mattered most: a suite's exit code, as opposed to its PASS/FAIL counts.
 
-Its boundaries are in the file's own header and are not negotiable: its own
-`-S` socket in a `mktemp -d` (never the caller's tmux, never a live `-L roost`
-server), no authentication ever, no configuration written and nothing installed
-— a harness whose adapter is missing is SKIPPED with doctor's own fix command
-rather than driven into a column of red — every wait bounded, and the report
+It asks exactly one question before it starts, and the split behind it is worth
+keeping straight. A missing **provider** is the tester's account and is never
+ours to arrange — that stays a SKIP. A missing **adapter symlink** is the
+install step of the thing they agreed to test, `roost doctor` already prints
+the command, and skipping four harnesses to make someone run four commands and
+start again puts back the manual work this script exists to remove. So it lists
+what is missing, asks once for all of them, and links them on a yes. Symlinks
+and adapters only — no hooks file, no codex trust, no `settings.json`, no
+provider config, since each of those carries a credential or needs an answer at
+an interactive prompt. It never replaces a path that is not already our symlink,
+and the report prints an `rm` for every link the run created. `--install` /
+`--no-install` answer it up front; a pipe with neither defaults to no.
+
+Its other boundaries are in the file's own header and are not negotiable: its
+own `-S` socket in a `mktemp -d` (never the caller's tmux, never a live
+`-L roost` server), no authentication ever, every wait bounded, and the report
 assembled from an `EXIT` trap so a crash halfway through still leaves a file
 worth sending. Absolute paths, usernames and hostnames are substituted before
 anything is written; `--keep-home-paths` turns that off.

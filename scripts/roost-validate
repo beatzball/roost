@@ -99,6 +99,11 @@ RUN_SMOKE=1
 # ollama in a scratch config directory instead.
 LOCAL=0
 ASSUME_YES=0
+# "" = ask once, interactively, defaulting to no. 1 = link without asking.
+# 0 = never link. See offer_adapter_install for why this is one question rather
+# than one per harness.
+INSTALL_ADAPTERS=""
+
 # The smoke suites are minutes each against a local model. A bound is not
 # optional here: an ollama that stops responding mid-suite turns every one of
 # their `wait_state ... 240` loops into a wall-clock hour with nothing to show.
@@ -118,7 +123,10 @@ costs a small amount of money (a handful of one-line prompts per harness).
                       instead of your accounts. Costs nothing, and tests our
                       rig rather than your setup — the report says which ran.
   --quick             skip this repo's own tests/live/*-smoke.sh suites
-  --yes               do not pause for the cost notice before starting
+  --yes               answer yes without asking: link any missing adapter
+                      symlinks, and do not pause for the cost notice
+  --install           link missing adapter symlinks without asking
+  --no-install        never link anything; skip those harnesses instead
   --keep-home-paths   do NOT redact \$HOME, your username or your hostname
   --model NAME        ollama model, --local only (default: $MODEL)
   --big-model NAME    ollama model for the codex escalation case, --local only
@@ -133,6 +141,8 @@ while [ "$#" -gt 0 ]; do
     --quick|--no-smoke) RUN_SMOKE=0; shift ;;
     --local)           LOCAL=1; shift ;;
     --yes|-y)          ASSUME_YES=1; shift ;;
+    --install)         INSTALL_ADAPTERS=1; shift ;;
+    --no-install)      INSTALL_ADAPTERS=0; shift ;;
     --keep-home-paths) REDACT=0; shift ;;
     --model)           [ "$#" -ge 2 ] || usage; MODEL="$2"; shift 2 ;;
     --big-model)       [ "$#" -ge 2 ] || usage; BIGMODEL="$2"; shift 2 ;;
@@ -356,9 +366,17 @@ teardown_rig() {
 assemble() {
   [ "$ASSEMBLED" -eq 1 ] && return 0
   ASSEMBLED=1
-  local ended dur
-  ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  dur=$(( $(date -u +%s) - STARTED_EPOCH ))
+  local ended dur now
+  ended="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  now="$(date -u +%s 2>/dev/null)"
+  # First line only, and a fallback for each. When this runs from a signal
+  # handler a command substitution can come back carrying output that was in
+  # flight when the signal landed — measured: `ended` came back as the
+  # timestamp with an interrupted progress line stuck to it, which then broke
+  # the arithmetic below. Neither value is worth failing the report over.
+  ended="${ended%%$'\n'*}"; now="${now%%$'\n'*}"
+  case "$now" in ''|*[!0-9]*) now="$STARTED_EPOCH" ;; esac
+  dur=$(( now - STARTED_EPOCH ))
   {
     printf '# roost validation report\n\n'
     printf 'Written by `roost validate` (report format v%s). ' "$ROOST_VALIDATE_FORMAT"
@@ -370,6 +388,7 @@ assemble() {
     printf '| Drive mode | %s |\n' "$([ "$LOCAL" -eq 1 ] && echo 'local ollama (`--local`) — our rig, not your setup' || echo 'your own configured providers (the default)')"
     [ "$LOCAL" -eq 1 ] && printf '| Local model | `%s` |\n' "$MODEL"
     printf '| Home paths redacted | %s |\n' "$([ "$REDACT" -eq 1 ] && echo yes || echo 'no (--keep-home-paths)')"
+    printf '| Adapter symlinks | %s |\n' "${INSTALL_DECISION:-not reached}" | redact
     printf '\n'
 
     if [ "$COMPLETED" -ne 1 ]; then
@@ -423,6 +442,14 @@ assemble() {
 
 on_exit() {
   local rc=$?
+  # THE EXIT TRAP MUST NOT BE ABLE TO FAIL. It is the only thing that writes
+  # the report, so an error inside it costs the tester the entire run — which
+  # is exactly what happened when this script was run as `roost validate | head`
+  # to watch it start: head closed the pipe, SIGPIPE arrived in the middle of a
+  # printf, and the trap that ran next died on an unbound variable and left a
+  # zero-byte report. `set -u` is the right setting for the body of this script
+  # and the wrong one for its last act.
+  set +u
   teardown_rig
   assemble
   rm -rf "$WORK" 2>/dev/null
@@ -434,10 +461,17 @@ on_exit() {
 }
 COMPLETED=0
 trap on_exit EXIT
-# A Ctrl-C must reach the EXIT trap rather than killing the shell outright,
+# Any of these must reach the EXIT trap rather than killing the shell outright,
 # or a tester who gets bored at minute 30 loses every measurement taken so far
 # AND leaves a scratch tmux server running.
-trap 'exit 130' INT TERM
+#
+# PIPE is on this list because of a real failure, found by running this script
+# with `| head -30` to watch it start: head closed the pipe, the next progress
+# line raised SIGPIPE, and bash died WITHOUT running the EXIT trap. The report
+# file was zero bytes. That is precisely the promise this script makes and
+# breaks — a run that got most of the way and left nothing — and it costs one
+# word here to keep. HUP is the same case with the terminal window closed.
+trap 'exit 130' INT TERM HUP PIPE
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -590,6 +624,8 @@ this repo's own smoke suites in section 4, and by section 5 only when
     kv "commit" "not a git checkout"
   fi
   printf '\n' >> "$BODY"
+  report_install
+
   if have roost; then
     record PASS 1 "roost is on PATH" "$(command -v roost)"
   else
@@ -953,6 +989,49 @@ h_config_missing() {
   return 0
 }
 
+# h_adapter_path / h_adapter_target HARNESS — the symlink roost wants, and what
+# it must point at. One pair, used by the state check, the install offer and the
+# skip text, so those three can never disagree about which file they mean.
+h_adapter_path() {
+  local home; home="$(h_real_home "$1")"
+  case "$1" in
+    opencode) printf '%s/plugin/roost.js' "$home" ;;
+    pi)       printf '%s/extensions/roost.ts' "$home" ;;
+    copilot)  printf '%s/extensions/roost/extension.mjs' "$home" ;;
+  esac
+}
+h_adapter_target() {
+  case "$1" in
+    opencode) printf '%s/adapters/opencode/roost.js' "$HERE" ;;
+    pi)       printf '%s/adapters/pi/roost.ts' "$HERE" ;;
+    copilot)  printf '%s/adapters/copilot/extension.mjs' "$HERE" ;;
+  esac
+}
+
+# h_adapter_state HARNESS -> ok | missing | foreign | none
+#
+#   ok       the symlink is there and points at THIS checkout
+#   missing  nothing at that path at all — safe to create
+#   foreign  something else is there. Could be another checkout's link, could
+#            be the tester's own extension, could be a dangling link to a
+#            checkout they deleted. roost validate does not touch any of them.
+#            A tester who keeps their own extension at that path must not lose
+#            it to a validation run, and "it is probably ours" is not a good
+#            enough reason to delete a file (AGENTS.md §9 — verify, do not
+#            assume). Reported with the exact fix so they can decide.
+#   none     this harness has no symlink-shaped adapter (codex uses a hooks
+#            file and a trust prompt, and both are out of scope for installing)
+h_adapter_state() {
+  local h="$1" path want
+  case "$h" in opencode|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
+  path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
+  elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'foreign'   # dangling
+  elif [ "$path" -ef "$want" ]; then printf 'ok'
+  else printf 'foreign'
+  fi
+}
+
 # h_adapter_fix HARNESS -> the exact command that would install the missing
 # adapter, or nothing when it is already installed.
 #
@@ -960,26 +1039,32 @@ h_config_missing() {
 # the deliberate choice: without the adapter the pane is never badged, so every
 # badge assertion would fail for a reason that has nothing to do with roost's
 # behaviour — and a report full of red about an install step nobody took is
-# worse than four honest SKIPs carrying the fix. These are the same checks and
-# the same fixes `roost doctor` prints, deliberately duplicated in the shape a
-# skip reason needs rather than factored out, because doctor's output is prose
-# for a human at a terminal and this is one line for a table.
+# worse than an honest SKIP carrying the fix. These are the same checks and the
+# same fixes `roost doctor` prints, deliberately duplicated in the shape a skip
+# reason needs rather than factored out, because doctor's output is prose for a
+# human at a terminal and this is one line for a table.
+#
+# By the time this runs, offer_adapter_install has already had its one chance
+# to create the missing ones — so anything left here is either a path roost
+# will not touch, or an answer of no.
 h_adapter_fix() {
-  local h="$1" home want have n ev
+  local h="$1" home want path n ev
   home="$(h_real_home "$h")"
   case "$h" in
-    opencode)
-      want="$HERE/adapters/opencode/roost.js"; have="$home/plugin/roost.js"
-      [ -e "$have" ] && [ "$have" -ef "$want" ] && return 0
-      printf 'the opencode plugin is not linked to this checkout — run: mkdir -p "%s/plugin" && ln -sf "%s" "%s"' "$home" "$want" "$have" ;;
-    pi)
-      want="$HERE/adapters/pi/roost.ts"; have="$home/extensions/roost.ts"
-      [ -e "$have" ] && [ "$have" -ef "$want" ] && return 0
-      printf 'the pi extension is not linked to this checkout — run: mkdir -p "%s/extensions" && ln -sf "%s" "%s"' "$home" "$want" "$have" ;;
-    copilot)
-      want="$HERE/adapters/copilot/extension.mjs"; have="$home/extensions/roost/extension.mjs"
-      [ -e "$have" ] && [ "$have" -ef "$want" ] && return 0
-      printf 'the copilot extension is not linked to this checkout — run: mkdir -p "%s/extensions/roost" && ln -sf "%s" "%s"' "$home" "$want" "$have" ;;
+    opencode|pi|copilot)
+      path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+      case "$(h_adapter_state "$h")" in
+        ok) return 0 ;;
+        missing)
+          printf 'the %s adapter is not linked — run: mkdir -p "%s" && ln -s "%s" "%s"' \
+            "$h" "$(dirname "$path")" "$want" "$path" ;;
+        *)
+          # Never a bare `ln -sf` here. Overwriting is the tester's call to
+          # make, not a command roost hands them without saying what is there.
+          printf 'something other than this checkout is already at %s (roost validate will not replace it) — check it, then: rm "%s" && ln -s "%s" "%s"' \
+            "$path" "$path" "$want" "$path" ;;
+      esac
+      return 0 ;;
     codex)
       want="$HERE/adapters/codex/roost-codex-hook"
       if [ ! -s "$home/hooks.json" ] || ! grep -qF "$want" "$home/hooks.json" 2>/dev/null; then
@@ -993,6 +1078,10 @@ h_adapter_fix() {
       # inferred. Counting rather than testing for presence separates "never
       # trusted" (0) from "trusted, then hooks.json was hand-edited" (1-3),
       # which are different problems.
+      #
+      # Neither half of this is offered as an install. The hooks file is
+      # content rather than a link, and the trust is an answer only a human can
+      # give at codex's own prompt — so both stay a printed instruction.
       n=0
       for ev in user_prompt_submit post_tool_use permission_request stop; do
         grep -qF "$home/hooks.json:$ev:0:0" "$home/config.toml" 2>/dev/null && n=$((n + 1))
@@ -1000,6 +1089,174 @@ h_adapter_fix() {
       [ "$n" -eq 4 ] && return 0
       printf 'codex has trusted %s of the 4 roost hooks, so the rest are silently skipped — run: codex, then answer "Trust all and continue" at "Hooks need review"' "$n" ;;
   esac
+  return 0
+}
+
+# --- the adapter install offer ----------------------------------------------
+#
+# ONE question, asked once, before anything else runs.
+#
+# The reasoning that put this here rather than leaving the run read-only: two
+# different things were being skipped for what looked like the same reason, and
+# only one of them is the tester's to decide.
+#
+#   - A missing PROVIDER is their account. Not ours to arrange, and a run that
+#     tried would be asking them to log in. Still a SKIP, always.
+#   - A missing adapter SYMLINK is the install step of the very thing they
+#     agreed to test. `roost doctor` already prints the exact command; the
+#     tester installed roost in order to exercise these adapters. Skipping four
+#     harnesses and telling them to run four commands and start again puts back
+#     exactly the manual work this script exists to remove.
+#
+# What it will not do, and these are limits rather than a to-do list: only
+# symlinks, and only adapters. No hooks file, no codex trust, no settings.json,
+# no provider config — each of those either carries a credential or needs an
+# answer at an interactive prompt, and neither belongs in a run the tester is
+# meant to walk away from. And it never replaces a path that is not already our
+# symlink: someone's own extension living there must not be lost to a
+# validation run.
+INSTALL_DECISION=""     # one line, for the report
+INSTALLED_LINKS=""      # newline-separated paths this run created
+BLOCKED_LINKS=""        # newline-separated "harness<TAB>path" it refused to touch
+INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
+
+offer_adapter_install() {
+  local h st path want ans created=0
+
+  if [ "$LOCAL" -eq 1 ]; then
+    # --local builds its own scratch config directory per harness and links the
+    # adapters in there, so there is nothing on the real machine to offer.
+    INSTALL_DECISION="not applicable — --local links the adapters inside its own scratch config directories"
+    return 0
+  fi
+
+  for h in opencode pi copilot; do
+    have "$h" || continue
+    case "$(h_adapter_state "$h")" in
+      missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
+      foreign) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(h_adapter_path "$h")
+" ;;
+    esac
+  done
+
+  if [ -n "$BLOCKED_LINKS" ]; then
+    printf '  Note: something that is not this checkout already sits where an adapter\n'
+    printf '  would go. Those are left alone, and named in the report:\n\n'
+    printf '%s' "$BLOCKED_LINKS" | while IFS="$(printf '\t')" read -r h path; do
+      [ -n "$h" ] && printf '    %-9s %s\n' "$h" "$path"
+    done
+    printf '\n'
+  fi
+
+  if [ -z "$INSTALL_CANDIDATES" ]; then
+    INSTALL_DECISION="nothing to install — every adapter for an installed harness was already linked to this checkout"
+    printf '  Adapters: all linked to this checkout already. Nothing to install.\n\n'
+    return 0
+  fi
+
+  printf '  These roost adapters are not linked yet. Without them the pane is never\n'
+  printf '  badged, so those harnesses would be skipped:\n\n'
+  for h in $INSTALL_CANDIDATES; do
+    printf '    %-9s %s\n' "$h" "$(h_adapter_path "$h")"
+    printf '    %-9s   -> %s\n' "" "$(h_adapter_target "$h")"
+  done
+  printf '\n  Creating them is a symlink each, nothing else — no hooks file, no trust,\n'
+  printf '  no settings change, no provider config. The report prints the one-line\n'
+  printf '  undo for every link this run makes.\n\n'
+
+  # Decide, in three ways, and never hang in any of them.
+  if [ "$INSTALL_ADAPTERS" = 0 ]; then
+    ans=n
+    printf '  --no-install was passed. Skipping those harnesses.\n\n'
+  elif [ "$INSTALL_ADAPTERS" = 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
+    ans=y
+    printf '  Linking them (--install/--yes).\n\n'
+  elif [ -t 0 ]; then
+    # Bounded, and it defaults to NO. A tester who started this and walked
+    # away has not agreed to anything being written to their machine, and the
+    # whole promise of the run is that walking away is fine — so silence has to
+    # mean the conservative answer, not the convenient one.
+    printf '  Link them and test those harnesses? [y/N] (no answer in 60s = no) '
+    read -r -t 60 ans || ans=n
+    printf '\n'
+  else
+    # A pipe, a cron, a CI step. Nobody is there to consent, so nothing is
+    # written; --install is how an unattended run opts in explicitly.
+    ans=n
+    printf '  Not a terminal, so nothing was asked and nothing was linked.\n'
+    printf '  Pass --install to link them in an unattended run.\n\n'
+  fi
+
+  case "${ans:-n}" in
+    y|Y|yes|YES) : ;;
+    *)
+      INSTALL_DECISION="offered and declined — $(printf '%s' "$INSTALL_CANDIDATES" | sed 's/^ //; s/ /, /g') stayed unlinked, and those harnesses are skipped below with the exact command"
+      INSTALL_CANDIDATES=""
+      return 0 ;;
+  esac
+
+  for h in $INSTALL_CANDIDATES; do
+    path="$(h_adapter_path "$h")"; want="$(h_adapter_target "$h")"
+    # Re-checked immediately before writing, not trusted from the loop above.
+    # The gap between the two is small and a tester could have been fixing
+    # things in another terminal while the prompt sat there — and this is the
+    # one place in the whole script that creates a file on their machine.
+    [ "$(h_adapter_state "$h")" = missing ] || { BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+"; continue; }
+    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$want" "$path" 2>/dev/null; then
+      INSTALLED_LINKS="$INSTALLED_LINKS$path
+"
+      created=$((created + 1))
+      printf '  linked %s\n' "$path"
+    else
+      BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
+"
+      printf '  could NOT link %s\n' "$path"
+    fi
+  done
+  printf '\n'
+  INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s); see the undo below"
+  return 0
+}
+
+# report_install — the record of it, in section 1. Prominent on purpose: a
+# report that changed the machine it ran on and did not say so is worse than
+# one that skipped.
+report_install() {
+  sub "Adapter links"
+  para "**$INSTALL_DECISION**"
+  if [ -n "$INSTALLED_LINKS" ]; then
+    para "**This run created the following symlinks on this machine.** They are
+symlinks into the roost checkout and nothing else was written — no hooks file,
+no trust granted, no settings edited, no provider configuration. To undo them,
+run these lines; removing a symlink cannot affect anything it pointed at:"
+    printf '```sh\n' >> "$BODY"
+    # $HOME, not the ~ that redact() leaves behind. A tilde inside double
+    # quotes is a literal tilde to every shell — `rm "~/.pi/..."` fails with
+    # "No such file or directory" — so a redacted undo line was not actually
+    # paste-able, which for the one part of the report that changes the
+    # tester's machine back is worse than printing nothing. $HOME expands
+    # inside double quotes, survives a path with a space in it, and reveals
+    # exactly as little as the tilde did.
+    printf '%s' "$INSTALLED_LINKS" | while read -r path; do
+      [ -n "$path" ] && printf 'rm "%s"\n' "$path" | redact | sed 's|^rm "~/|rm "$HOME/|' >> "$BODY"
+    done
+    printf '```\n\n' >> "$BODY"
+    record WARN 1 "this run wrote to your machine" \
+      "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) after you agreed; the undo commands are in §1"
+  fi
+  if [ -n "$BLOCKED_LINKS" ]; then
+    para "**Left alone.** Something that is not this checkout's adapter already sits
+at each path below — another checkout's link, a link to a checkout that has been
+deleted, or an extension of your own. roost validate does not replace any of
+them, so the harness is skipped instead and section 5 carries the exact command
+if you decide you want it relinked."
+    printf '| Harness | Path already in use |\n|---|---|\n' >> "$BODY"
+    printf '%s' "$BLOCKED_LINKS" | while IFS="$(printf '\t')" read -r h path; do
+      [ -n "$h" ] && printf '| %s | `%s` |\n' "$h" "$path" | redact >> "$BODY"
+    done
+    printf '\n' >> "$BODY"
+  fi
   return 0
 }
 
@@ -1301,7 +1558,7 @@ TOML
 # with a bypass flag: a gate that is skipped in testing is a gate whose silent
 # failure mode is never seen.
 h_startup() {
-  local h="$1" p="$2"
+  local h="$1" p="$2" n
   case "$h" in
     pi)
       # pi asks to trust a project only when it finds project-local config.
@@ -1310,14 +1567,43 @@ h_startup() {
       wait_screen "$p" "Trust" 5 && { T send-keys -t "$p" Enter; sleep 2; }
       ;;
     copilot)
-      wait_screen "$p" "Do you trust" 60 || return 1
+      wait_screen "$p" "Do you trust" 90 || return 1
       T send-keys -t "$p" Enter; sleep 3
+      # SECOND, and only ever seen against a real COPILOT_HOME: copilot follows
+      # the trust prompt with a "Restore interrupted sessions" picker whenever
+      # it has session history to offer. A scratch home has none, so this
+      # screen does not exist under --local and existed in no rig this script
+      # was built against — it turned up the first time the default mode drove
+      # a real copilot, and it stopped the run dead at "a startup prompt never
+      # appeared". Esc is the picker's own "start fresh", which is what a
+      # validation run wants: it restores nothing and changes no session.
+      #
+      # ONE Esc, then wait for the picker to actually go. Pressing it again on
+      # a screen that has already been dismissed is how a TUI gets told to
+      # quit, and the picker's own redraw leaves the pane briefly blank, so a
+      # "is it gone yet" check can succeed a beat before it has settled.
+      # Only ever waited for in the default mode. A --local run builds a brand
+      # new COPILOT_HOME, so it has no history to be offered and this would be
+      # thirty seconds of waiting for a screen that cannot appear.
+      if [ "$H_MODE" = real ] && wait_screen "$p" "Restore interrupted sessions" 30; then
+        T send-keys -t "$p" Escape
+        n=0
+        while [ "$n" -lt 20 ]; do
+          T capture-pane -p -t "$p" | grep -qF "Restore interrupted sessions" || break
+          sleep 1; n=$((n + 1))
+        done
+        sleep 2
+      fi
       # Copilot asks, once per directory, to approve the adapter's elevated
-      # permissions. Denying it stops the extension loading entirely, and there
-      # is no global pre-approval — so this is a hard requirement for the drive
-      # rather than an assertion.
-      wait_screen "$p" "wants elevated" 60 || return 1
-      T send-keys -t "$p" Enter; sleep 3
+      # permissions. Denying it stops the extension loading entirely and there
+      # is no global pre-approval — but it is answered rather than REQUIRED
+      # here: whether it appears depends on the extension having loaded, which
+      # is the thing under test. Failing setup on its absence would report a
+      # missing badge as a rig failure and hide the finding. If it does not
+      # come, the drive continues and the badge assertions say what happened.
+      if wait_screen "$p" "wants elevated" 60; then
+        T send-keys -t "$p" Enter; sleep 3
+      fi
       ;;
     codex)
       # Two gates, in this order. The directory one should not appear at all —
@@ -1702,7 +1988,15 @@ once, because a single poll cannot tell a stale badge from a live one:
 frozen one against a moving clock is what staleness looks like.
 
 Every harness below says which mode it ran in, and which provider and model
-actually answered. A report that does not say that is nearly worthless."
+actually answered. A report that does not say that is nearly worthless.
+
+> **Worth knowing before you read the results.** The default mode — driving a
+> harness against a real, paid provider — has never been exercised on our own
+> machines, because none of them has an account wired for these harnesses. Every
+> test we ran of this script took the \`--local\` path or the skip path. So if
+> something here looks odd, treat it as a genuine finding and tell us rather
+> than assuming it is your setup. Your run may well be the first time this code
+> path has ever driven a real turn."
 
   if ! rig_up; then
     record FAIL 5 "the throwaway roost server started" "tmux would not start a server on this run's own socket; no drive could run"
@@ -1856,6 +2150,13 @@ else
 fi
 printf '\n'
 
+# The adapter offer comes FIRST, before the cost notice, because its answer
+# changes which harnesses the cost notice is about: declining it means fewer
+# harnesses are driven and less is spent. Both questions are asked before any
+# measurement begins, so the tester answers everything up front and then walks
+# away — which is the promise this script makes.
+offer_adapter_install
+
 # The cost notice. In the default mode this run spends the tester's own money,
 # and it must say so where they will see it rather than in a manual — but it
 # also promises they can walk away, so it cannot sit at a prompt forever. The
@@ -1875,8 +2176,9 @@ if [ "$LOCAL" -eq 0 ]; then
   whatever tool calls the model decides to make answering them. On four
   harnesses that is roughly a dozen short turns in total.
 
-  It will not log in to anything, will not change any configuration, and will
-  not install anything. A harness that is not already set up is skipped.
+  It will not log in to anything, and beyond any adapter symlink you just
+  agreed to it changes no configuration. A harness with no provider wired is
+  skipped -- that is your account, and not ours to arrange.
 
   Run it with --local instead to drive a local ollama and spend nothing.
 
