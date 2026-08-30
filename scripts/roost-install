@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+# roost install — wire every installed harness to THIS checkout.
+#
+# One command, safe to re-run, that does everything that can be done without a
+# human answering a prompt and names precisely what is left.
+#
+# What this file does today: detection, the plan, the prompt, the flags, the
+# exit codes, and the three adapter symlinks (opencode, pi, copilot). The
+# claude/codex/copilot JSON steps are NOT here yet — see "WHERE THE JSON STEPS
+# GO" below for the frame they slot into. Until they land, this command names
+# them in the closing manual block instead of performing them, which is
+# honest rather than aspirational: a user who runs it and reads the output
+# knows exactly what is and is not wired.
+#
+# Three properties are load-bearing and every change must keep them:
+#
+#   - Nothing is written without consent. `read -r -t 60`, and BOTH a timeout
+#     and a non-terminal resolve to no. Someone who started this and walked
+#     away has agreed to nothing being written to their machine, and a pipe or
+#     a CI step has nobody in it to agree.
+#   - A path that is not ours is never replaced. Not moved, not backed up and
+#     overwritten, not `ln -sf`'d. It is left exactly as found and the manual
+#     command is printed instead. Someone's own extension must never be lost
+#     to an install run.
+#   - --dry-run writes NOTHING, `mkdir -p` included. An empty directory left
+#     behind by a run that promised to change nothing is still a change.
+set -u
+
+# --- this checkout ---------------------------------------------------------
+# Resolved from this file's own location, never from an inherited $ROOST_HOME.
+# bin/roost does `set-environment -g ROOST_HOME` (bin/roost:89), so EVERY pane
+# of a roost session exports it pointing at whichever checkout started the
+# server — and an installer that trusted it, run from a second checkout inside
+# that session, would cheerfully create symlinks into the FIRST one while
+# reporting that it had linked this one. scripts/lib/roost-adapters.sh's
+# _roost_adapter_root comment records the measured version of that bug.
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _dir="$(cd -P "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  case "$_self" in /*) : ;; *) _self="$_dir/$_self" ;; esac
+done
+HERE="$(cd -P "$(dirname "$_self")/.." && pwd)"
+HERE="${HERE%/}"
+
+# roost_adapter_home / _path / _target / _state — the one table of where each
+# adapter goes, shared with roost validate and roost doctor so a report and an
+# install plan can never disagree about which file either of them means.
+. "$HERE/scripts/lib/roost-adapters.sh"
+# roost_hooks_claude / roost_hooks_codex — the ONE definition of the hook JSON
+# bodies, used by --print-only. Never re-typed here: codex stores a hash of
+# each normalised handler object and silently skips any handler whose hash no
+# longer matches, so a second copy that drifts by one byte un-badges every
+# machine that had already granted trust.
+. "$HERE/scripts/lib/roost-hooks.sh"
+
+# Detection order, and the only names --only will accept.
+HARNESSES="opencode pi copilot claude codex"
+
+# --- flags -----------------------------------------------------------------
+ASSUME_YES=0
+DRY_RUN=0
+PRINT_ONLY=0
+SYMLINKS_ONLY=0
+ONLY=""
+
+usage() { # usage RC — to stdout for --help, to stderr for a usage error
+  local rc="$1" out=1
+  [ "$rc" -eq 0 ] || out=2
+  {
+    cat <<'USAGE'
+usage: roost install [-y|--yes] [--dry-run] [--only H[,H...]]
+                     [--print-only] [--symlinks-only] [-h|--help]
+
+Wires every installed harness to this roost checkout. Prints the plan first,
+asks once, and never replaces a file that is not roost's own.
+
+  -y, --yes         do not ask. Required for an unattended run: with no
+                    terminal, silence is taken as no and nothing is written.
+  --dry-run         print the plan and change nothing at all. Exits 0.
+  --only H[,H...]   restrict to these harnesses (opencode, pi, copilot,
+                    claude, codex). Anything else is left completely alone.
+  --print-only      never edit a JSON file; print the blocks to paste instead.
+  --symlinks-only   the adapter symlinks and nothing else. This is what
+                    `roost validate` invokes.
+  -h, --help        this text.
+
+Exit codes: 0 everything it could do succeeded, even with manual steps left.
+1 a write failed. 2 usage.
+USAGE
+  } >&"$out"
+  exit "$rc"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -y|--yes)        ASSUME_YES=1; shift ;;
+    --dry-run)       DRY_RUN=1; shift ;;
+    --print-only)    PRINT_ONLY=1; shift ;;
+    --symlinks-only) SYMLINKS_ONLY=1; shift ;;
+    --only)
+      # A following flag is not a value. `--only --yes` must fail as a missing
+      # argument rather than silently restricting the run to a harness called
+      # "--yes" and then linking nothing.
+      case "${2:-}" in
+        ''|-*) printf 'roost install: --only needs a harness list\n' >&2; usage 2 ;;
+      esac
+      ONLY="$2"; shift 2 ;;
+    --only=*)        ONLY="${1#*=}"; shift ;;
+    -h|--help)       usage 0 ;;
+    *) printf "roost install: unknown argument '%s'\n" "$1" >&2; usage 2 ;;
+  esac
+done
+
+# --only is validated against the known names BEFORE anything is detected or
+# printed. A typo'd harness silently restricting the run to nothing at all
+# would exit 0 having done nothing, which reads exactly like a successful
+# no-op — the one failure mode a user cannot tell from success.
+ONLY_LIST=""
+if [ -n "$ONLY" ]; then
+  # Bash's own substitution, not `tr`: this runs before roost has told the
+  # user anything, and a thin PATH must not turn a typo'd --only into a silent
+  # empty restriction that then links everything.
+  for h in ${ONLY//,/ }; do
+    case " $HARNESSES " in
+      *" $h "*) ONLY_LIST="$ONLY_LIST $h" ;;
+      *) printf "roost install: --only: unknown harness '%s' (known: %s)\n" \
+           "$h" "$HARNESSES" >&2; exit 2 ;;
+    esac
+  done
+fi
+
+in_scope() { # in_scope HARNESS
+  [ -n "$ONLY_LIST" ] || return 0
+  case " $ONLY_LIST " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# --- plan ------------------------------------------------------------------
+# Records are tab-separated lines in a newline-separated string: bash 3.2 is
+# the floor here, so no associative arrays, and roost-validate already uses
+# this shape for BLOCKED_LINKS.
+#
+#   LINK_STEPS   ACTION \t HARNESS \t PATH \t TARGET   (ACTION: link | relink)
+#   OK_STEPS     HARNESS \t PATH
+#   REFUSED      HARNESS \t PATH \t TARGET
+LINK_STEPS=""
+OK_STEPS=""
+REFUSED=""
+DETECTED=""
+TAB="$(printf '\t')"
+
+for h in $HARNESSES; do
+  in_scope "$h" || continue
+  # A harness that is not installed is not mentioned at all. Not "skipped",
+  # not "not found" — an install report should be about this machine, and a
+  # list of five harnesses of which the user has two is noise they have to
+  # read past every single run.
+  command -v "$h" >/dev/null 2>&1 || continue
+  DETECTED="$DETECTED $h"
+
+  case "$(roost_adapter_state "$h")" in
+    ok)      OK_STEPS="$OK_STEPS$h$TAB$(roost_adapter_path "$h")
+" ;;
+    missing) LINK_STEPS="${LINK_STEPS}link$TAB$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
+" ;;
+    # A dangling symlink is OURS and broken — the checkout it pointed at moved
+    # or was deleted — so replacing it loses nothing. This is the whole reason
+    # roost_adapter_state reports `dangling` separately from `foreign`.
+    dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
+" ;;
+    foreign) REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
+" ;;
+    # `none` is claude and codex: no symlink-shaped adapter exists for them.
+    none) : ;;
+  esac
+done
+
+DETECTED="${DETECTED# }"
+
+if [ -z "$DETECTED" ]; then
+  printf 'roost install: no supported harness found on PATH — nothing to do.\n'
+  printf '  Looked for: %s\n' "$HARNESSES"
+  exit 0
+fi
+
+printf 'roost install — wiring these harnesses to\n  %s\n\n' "$HERE"
+printf 'Detected: %s\n\n' "${DETECTED// /, }"
+
+if [ -n "$LINK_STEPS" ]; then
+  printf 'Will write:\n'
+  # Every planned write, with the exact target path, printed BEFORE anything
+  # happens. "link the opencode adapter" is not something a user can check;
+  # a full path is.
+  printf '%s' "$LINK_STEPS" | while IFS="$TAB" read -r action h path target; do
+    [ -n "$action" ] || continue
+    printf '  %-6s %s\n         -> %s\n' "$action" "$path" "$target"
+  done
+  printf '\n'
+fi
+
+if [ -n "$OK_STEPS" ]; then
+  # One summary line, not a line each. An `ok` adapter is the boring case and
+  # the point of running this twice is that the second run is quiet.
+  ok_names=""
+  while IFS="$TAB" read -r h path; do
+    [ -n "${h:-}" ] && ok_names="$ok_names $h"
+  done <<EOF
+$OK_STEPS
+EOF
+  ok_names="${ok_names# }"
+  printf 'Already correct: %s\n\n' "${ok_names// /, }"
+fi
+
+if [ -n "$REFUSED" ]; then
+  printf 'Will NOT touch — something that is not this checkout is already there:\n'
+  printf '%s' "$REFUSED" | while IFS="$TAB" read -r h path target; do
+    [ -n "$h" ] || continue
+    printf '  %s\n' "$path"
+  done
+  printf '\n'
+fi
+
+# --- consent ---------------------------------------------------------------
+do_writes=0
+if [ -z "$LINK_STEPS" ]; then
+  # Nothing to ask about. Asking anyway trains people to type y without
+  # reading, which is the opposite of what the prompt is for.
+  :
+elif [ "$DRY_RUN" -eq 1 ]; then
+  printf -- '--dry-run: nothing above was written.\n\n'
+elif [ "$ASSUME_YES" -eq 1 ]; then
+  do_writes=1
+elif [ -t 0 ]; then
+  # 60s and then no. The promise of the prompt is that walking away is safe,
+  # so silence has to resolve to the conservative answer, not the convenient
+  # one. `read` returns non-zero on both the timeout and EOF; both mean no.
+  ans=n
+  printf 'Write the above? [y/N] (no answer in 60s = no) '
+  read -r -t 60 ans || ans=n
+  printf '\n'
+  case "${ans:-n}" in y|Y|yes|YES) do_writes=1 ;; *) printf 'Nothing was written.\n\n' ;; esac
+else
+  # A pipe, a cron, a CI step. Nobody is there to consent — and a "y" arriving
+  # on a non-terminal stdin is not a person answering, it is whatever the
+  # caller happened to have on stdin. --yes is how an unattended run opts in
+  # explicitly, and it is the only way.
+  printf 'Not a terminal, so nothing was asked and nothing was written.\n'
+  printf 'Pass --yes to write in an unattended run.\n\n'
+fi
+
+# --- do it -----------------------------------------------------------------
+failed=0
+UNDO=""
+
+if [ "$do_writes" -eq 1 ]; then
+  printf 'Writing:\n'
+  # A `while read` over a pipeline runs in a subshell in bash 3.2, where
+  # $failed and $UNDO would be lost on the way out. A here-string keeps the
+  # loop in this shell.
+  while IFS="$TAB" read -r action h path target; do
+    [ -n "${action:-}" ] || continue
+
+    # Re-checked immediately before writing rather than trusted from the plan
+    # above. The prompt may have sat there for a minute, and this is the one
+    # place in the command that creates something on someone's machine —
+    # roost-validate's offer_adapter_install takes the same precaution for the
+    # same reason.
+    state="$(roost_adapter_state "$h")"
+    case "$action:$state" in
+      link:missing|relink:dangling) : ;;
+      *:ok)
+        printf '  %s was already linked by the time this ran — left alone\n' "$h"
+        continue ;;
+      *)
+        printf '  %s changed underneath this run (now: %s) — left alone\n' "$h" "$state"
+        REFUSED="$REFUSED$h$TAB$path$TAB$target
+"
+        continue ;;
+    esac
+
+    if [ "$action" = relink ]; then
+      # Only ever a link we already know is dangling, re-verified one line
+      # above. Never a bare `rm` of whatever happens to be at the path.
+      rm -f "$path" 2>/dev/null
+    fi
+
+    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$target" "$path" 2>/dev/null; then
+      printf '  %-8s %s\n' "${action}ed" "$path"
+      UNDO="$UNDO$path
+"
+    else
+      printf '  could NOT %s %s\n' "$action" "$path" >&2
+      failed=1
+    fi
+  done <<EOF
+$LINK_STEPS
+EOF
+  printf '\n'
+fi
+
+# --- undo ------------------------------------------------------------------
+# Only for what THIS run wrote. Printing `rm` lines for links that were
+# already correct is how someone deletes a working install while trying to
+# undo a run that did nothing.
+if [ -n "$UNDO" ]; then
+  printf 'To undo exactly what this run wrote (removing a symlink cannot affect\nwhat it pointed at):\n'
+  printf '%s' "$UNDO" | while read -r path; do
+    [ -n "$path" ] && printf '  rm "%s"\n' "$path"
+  done
+  printf '\n'
+fi
+
+# --- what is still manual --------------------------------------------------
+# Only the steps that actually apply on THIS machine, after what this run
+# actually did.
+manual=""
+# Entries are separated by a blank line. Several of them are three or four
+# lines long and carry a command to paste; run together they read as one wall
+# of text and the command lines stop standing out, which is the only part
+# anyone is going to act on.
+add_manual() { manual="$manual$1
+
+"; }
+
+if [ -n "$REFUSED" ]; then
+  # Never a bare `ln -sf`. Overwriting is the user's call to make, not
+  # something roost hands them without first saying what is there.
+  while IFS="$TAB" read -r h path target; do
+    [ -n "${h:-}" ] || continue
+    add_manual "$h: something that is not this checkout is at
+    $path
+  roost install will not replace it. If you are sure you want roost's adapter
+  there instead, look at the file first, then:
+    rm \"$path\" && ln -s \"$target\" \"$path\""
+  done <<EOF
+$REFUSED
+EOF
+fi
+
+# WHERE THE JSON STEPS GO
+# -----------------------
+# The claude, codex and copilot JSON writes are the next task. They become
+# steps planned alongside LINK_STEPS above, executed under the same single
+# consent, and then they DROP OUT of the manual notes below — each note here
+# exists only because the corresponding write does not happen yet. What must
+# survive that change: --print-only keeps printing the block instead of
+# writing it, --symlinks-only keeps skipping the JSON entirely (it is what
+# `roost validate` invokes, and validate's report promises that nothing but
+# symlinks was written), and the codex trust prompt and the copilot
+# per-directory approval stay listed forever — they are prompts no tool can
+# answer, not steps waiting to be automated.
+if [ "$SYMLINKS_ONLY" -eq 0 ]; then
+  case " $DETECTED " in *" claude "*)
+    if [ "$PRINT_ONLY" -eq 1 ]; then
+      add_manual "claude: merge this into ${HOME:-~}/.claude/settings.json, into any
+  \"hooks\" object already there:
+$(roost_hooks_claude)"
+    else
+      add_manual "claude: roost's hooks are not written for you yet. Run
+    roost hooks claude
+  and merge the JSON object it prints into ${HOME:-~}/.claude/settings.json."
+    fi
+  ;; esac
+
+  case " $DETECTED " in *" codex "*)
+    codex_home="$(roost_adapter_home codex)"
+    if [ "$PRINT_ONLY" -eq 1 ]; then
+      add_manual "codex: put this in $codex_home/hooks.json:
+$(roost_hooks_codex)"
+    else
+      add_manual "codex: roost's hooks are not written for you yet. Run
+    roost hooks codex
+  and put the JSON object it prints in $codex_home/hooks.json."
+    fi
+    # Unconditional, and it always will be. Codex skips every hook until a
+    # human answers this, there is no file on disk that records the answer,
+    # and no tool can answer it for them.
+    add_manual "codex: start \`codex\` and answer \"Trust all and continue\" at its
+  \"Hooks need review\" prompt. Until then codex silently runs no hook at all
+  and its pane will not badge."
+  ;; esac
+
+  case " $DETECTED " in *" copilot "*)
+    copilot_home="$(roost_adapter_home copilot)"
+    add_manual "copilot: the EXTENSIONS feature flag is not set for you yet. Add
+    {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}}
+  to $copilot_home/settings.json (merging, not replacing)."
+    # Also permanent. copilot persists nothing for this, so there is no file
+    # to read and no way to tell "not yet asked" from "denied".
+    add_manual "copilot: the first time you run it in a directory, answer Yes to the
+  extension's \"wants to: handle permission requests\" prompt. Once per
+  directory, and nothing on disk records it."
+  ;; esac
+fi
+
+if [ -n "$manual" ]; then
+  printf 'Still manual:\n\n'
+  printf '%s' "$manual" | sed 's/^/  /; s/^  $//'
+  printf '\n'
+fi
+
+# --- exit ------------------------------------------------------------------
+# 0 covers "everything it could do succeeded", refusals and leftover manual
+# steps included: a foreign path left alone is this command working correctly,
+# not failing. Only a write that was attempted and did not happen is a 1.
+if [ "$failed" -ne 0 ]; then
+  printf 'roost install: at least one write failed (see above).\n' >&2
+  exit 1
+fi
+exit 0
