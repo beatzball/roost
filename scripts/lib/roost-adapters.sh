@@ -27,17 +27,18 @@ roost_adapter_home() {
 # roost_adapter_settings HARNESS — the JSON file roost has to edit for the
 # harnesses that are configured by JSON rather than by a symlink. Added
 # because scripts/roost-install had restated claude's path inline and
-# scripts/roost-doctor:63 spells the same thing with a $CLAUDE_SETTINGS
-# override in front of it — two definitions of one path, and roost install is
-# about to start WRITING to it (spec Tasks 5-7), where a divergence stops
-# being cosmetic. One definition, here, for the same reason
-# roost_adapter_path exists for the symlink three.
+# scripts/roost-doctor kept its own copy of the same expression, the
+# $CLAUDE_SETTINGS override and all — two definitions of one path, and roost install WRITES to that
+# path, which is where a divergence stops being cosmetic. One definition,
+# here, for the same reason roost_adapter_path exists for the symlink three.
 #
-# $CLAUDE_SETTINGS is honoured because roost-doctor already honours it; a
+# $CLAUDE_SETTINGS is honoured because roost-doctor honoured it first; a
 # report and an installer that disagreed about which file they mean is the
-# exact failure this file's header exists to prevent. roost-doctor should
-# adopt this function rather than keep its own copy of the expression — left
-# alone here only because that file is another task's to touch.
+# exact failure this file's header exists to prevent. Both callers are on this
+# function now — scripts/roost-doctor sources this file and asks it for the
+# path it reports on — so no copy is left to drift. Named by file and not by
+# line number, because the line number this comment used to carry is exactly
+# what went stale first.
 #
 # Prints nothing for a harness with no JSON config of its own (the symlink
 # three), the same way roost_adapter_path prints nothing for codex.
