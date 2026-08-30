@@ -26,6 +26,8 @@
 #   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
+#   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout
+#   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status             list running sessions + agents
@@ -195,6 +197,20 @@ case "${1:-up}" in
     # explicit checks. It writes one file and prints its path.
     shift
     exec "$ROOST_HOME/scripts/roost-validate" "$@"
+    ;;
+  install|update)
+    # `update` is an ALIAS, not a second arm: one shift, one exec, so the two
+    # spellings cannot drift. They are the same command because re-running the
+    # installer IS the update -- it is idempotent, it relinks whatever now
+    # points somewhere else, and it names what it left alone. What it does NOT
+    # do is fetch new roost code, which is why the help line for `update` says
+    # so out loud; the installer prints its own note when this checkout is
+    # behind its upstream.
+    #
+    # tests/test-adapter-install.sh compares the two --dry-run outputs byte for
+    # byte, which is what pins the alias rather than merely the arm.
+    shift
+    exec "$ROOST_HOME/scripts/roost-install" "$@"
     ;;
   init)
     exec "$ROOST_HOME/scripts/roost-init"
@@ -736,5 +752,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac
