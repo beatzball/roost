@@ -1015,7 +1015,111 @@ assert_eq "$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_codex "$HERE$code
   "the installer's CODEX_TARGET is the same path roost-hooks.sh defaults to"
 
 # ===========================================================================
-# 15. Hygiene
+# 15. copilot: the EXTENSIONS feature flag
+# ===========================================================================
+# COPILOT_HOME, never the XDG path -- AGENTS.md §8 exists for this harness
+# specifically. run_install sets it, and the path below is spelled the way the
+# installer computes it rather than restated from the docs.
+COPILOT_SHIM="$(make_json_shim copilot)"
+
+# --- an existing settings.json -> the flag lands, the rest survives --------
+box="$TMP/copilotflag"
+cps="$box/home/.copilot/settings.json"
+mkdir -p "$box/home/.copilot"
+cat > "$cps" <<'EOF'
+{
+  "theme": "dark",
+  "enabledFeatureFlags": {
+    "SOME_OTHER_FLAG": true
+  }
+}
+EOF
+cbefore="$(cat "$cps")"
+out="$(run_install "$box" "$COPILOT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "copilot flag: exits 0"
+after="$(cat "$cps")"
+assert_contains "$after" '"EXTENSIONS": true' "copilot flag: the flag is set"
+assert_contains "$after" '"SOME_OTHER_FLAG": true' "copilot flag: the neighbouring flag survives"
+assert_contains "$after" '"theme": "dark"' "copilot flag: the unrelated top-level key survives"
+assert_eq "$(bak_count "$cps")" "1" "copilot flag: exactly one backup was taken"
+assert_eq "$(cat "$(bak_of "$cps")" 2>/dev/null)" "$cbefore" \
+  "copilot flag: the backup holds the pre-run bytes"
+
+# --- already true -> no write, no backup ----------------------------------
+# Written on ONE line on purpose. roost_json_merge compares rendered bytes, so
+# a canonically-indented fixture would come back identical whatever the
+# installer decided and this case would pass with the "already set" check
+# wired to nothing. Here the merge WOULD rewrite the file (reindenting it and
+# taking a backup) unless the flag is read from the parsed document first.
+box="$TMP/copilotset"
+cps="$box/home/.copilot/settings.json"
+mkdir -p "$box/home/.copilot"
+printf '{"enabledFeatureFlags":{"EXTENSIONS":true},"theme":"dark"}\n' > "$cps"
+fbefore="$(cksum < "$cps")"
+out="$(run_install "$box" "$COPILOT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "copilot flag already true: exits 0"
+assert_eq "$(cksum < "$cps")" "$fbefore" \
+  "copilot flag already true: settings.json is byte-identical after"
+assert_eq "$(bak_count "$cps")" "0" "copilot flag already true: no backup was taken"
+case "$out" in *"merge  $cps"*) s=planned ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "copilot flag already true: no write is even PLANNED for it"
+
+# --- explicitly FALSE -> it must be turned on -----------------------------
+# scripts/roost-doctor:233 greps for the flag's NAME and says so in its own
+# comment: a file that sets it to false reads as set. The installer cannot
+# afford that reading -- it would leave the extension off forever while
+# reporting success.
+box="$TMP/copilotfalse"
+cps="$box/home/.copilot/settings.json"
+mkdir -p "$box/home/.copilot"
+printf '{"enabledFeatureFlags":{"EXTENSIONS":false}}\n' > "$cps"
+out="$(run_install "$box" "$COPILOT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "copilot flag set to false: exits 0"
+assert_contains "$(cat "$cps")" '"EXTENSIONS": true' \
+  "copilot flag set to false: it is turned on rather than read as already set"
+
+# --- no settings.json at all -> it is created, and no backup --------------
+box="$TMP/copilotnew"
+cps="$box/home/.copilot/settings.json"
+out="$(run_install "$box" "$COPILOT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "copilot fresh: exits 0"
+assert_contains "$(cat "$cps" 2>/dev/null)" '"EXTENSIONS": true' \
+  "copilot fresh: settings.json is created with the flag on"
+assert_eq "$(bak_count "$cps")" "0" \
+  "copilot fresh: creating a file that did not exist takes no backup"
+
+# --- malformed -> exit 1, no write, no backup -----------------------------
+box="$TMP/copilotbad"
+cps="$box/home/.copilot/settings.json"
+mkdir -p "$box/home/.copilot"
+printf 'not json at all\n' > "$cps"
+fbefore="$(cksum < "$cps")"
+out="$(run_install "$box" "$COPILOT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "1" "copilot malformed settings.json: exits 1"
+assert_eq "$(cksum < "$cps")" "$fbefore" \
+  "copilot malformed settings.json: the file is byte-identical after"
+assert_eq "$(bak_count "$cps")" "0" "copilot malformed settings.json: no backup was taken"
+
+# --- the per-directory approval notice, on every path ---------------------
+# Copilot asks once per directory to approve the extension ("wants to: handle
+# permission requests") and denying stops it loading. scripts/roost-doctor:239
+# records that choosing plain "Yes" persists NOTHING, so there is no file to
+# read and no way to tell "not yet asked" from "denied". It is a prompt no
+# tool can answer, not a step waiting to be automated, so it is printed
+# whatever this run did -- including the run that wrote nothing at all.
+for probe in copilotflag copilotset copilotnew; do
+  out="$(run_install "$TMP/$probe" "$COPILOT_SHIM" --yes)"
+  assert_contains "$out" "wants to: handle permission requests" \
+    "copilot ($probe): the per-directory approval notice is printed"
+done
+out="$(run_install "$TMP/copilotnotool" "$ALL_SHIM" --yes)"
+assert_contains "$out" "wants to: handle permission requests" \
+  "copilot with no JSON tool: the per-directory approval notice is printed"
+assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
+  "copilot with no JSON tool: settings.json is not written"
+
+# ===========================================================================
+# 16. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
@@ -1024,7 +1128,7 @@ bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
 n="$(grep -cE 'declare -A|\$\{[A-Za-z_]+\^\^|printf .*\\u[0-9a-fA-F]{4}' "$INSTALL" || true)"
 assert_eq "${n:-0}" "0" "scripts/roost-install uses no bash-4-only construct"
 
-rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CODEX_SHIM"
+rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CODEX_SHIM" "$COPILOT_SHIM"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

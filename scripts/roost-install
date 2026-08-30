@@ -5,12 +5,11 @@
 # human answering a prompt and names precisely what is left.
 #
 # What this file does today: detection, the plan, the prompt, the flags, the
-# exit codes, the three adapter symlinks (opencode, pi, copilot), and the
-# claude and codex hook files. The copilot feature flag is NOT here yet — see
-# "WHERE THE JSON STEPS GO" below for the frame it slots into. Until it lands,
-# this command names it in the closing manual block instead of performing it,
-# which is honest rather than aspirational: a user who runs it and reads the
-# output knows exactly what is and is not wired.
+# exit codes, the three adapter symlinks (opencode, pi, copilot), the claude
+# and codex hook files, and copilot's EXTENSIONS feature flag. What is left in
+# the closing manual block is what no tool can do: a file roost refused to
+# edit because it is not ours, the two prompts a human has to answer, and the
+# blocks to paste when there is no JSON tool on the machine.
 #
 # Four properties are load-bearing and every change must keep them:
 #
@@ -463,7 +462,7 @@ DETECTED="${DETECTED# }"
 # REAL_PATH and CONFIG_PATH differ only when the config file is a symlink —
 # see resolve_link. Everything downstream writes to REAL_PATH and mentions
 # CONFIG_PATH, because that is the one the user knows the file by.
-JSON_HARNESSES="claude codex"
+JSON_HARNESSES="claude codex copilot"
 JSON_STEPS=""
 JSON_OK=""
 JSON_REFUSED=""
@@ -486,13 +485,26 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
     json_real="$(resolve_link "$json_cfg")"
     case "$h" in
       claude)
+        json_probe_mode=hooks
         json_want="$CLAUDE_TARGET"
         json_patch="$(roost_hooks_claude "$CLAUDE_TARGET")"
         json_label="roost's four Claude hooks" ;;
       codex)
+        json_probe_mode=hooks
         json_want="$CODEX_TARGET"
         json_patch="$(roost_hooks_codex "$CODEX_TARGET")"
         json_label="roost's four codex handlers" ;;
+      # Not a hook file: one boolean, and no target script to compare against.
+      # The question is only whether it is already true, and it is asked of
+      # the PARSED document -- scripts/roost-doctor:233 greps for the flag's
+      # name and its own comment records the cost, that a file setting it to
+      # false reads as set. Doctor can afford that; an installer that took it
+      # would leave the extension off forever and report success.
+      copilot)
+        json_probe_mode=flag
+        json_want=""
+        json_patch=""
+        json_label="copilot's EXTENSIONS feature flag" ;;
     esac
 
     if [ "$JSON_MODE" != write ]; then
@@ -502,7 +514,7 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
     fi
 
     if [ -e "$json_real" ]; then
-      json_answer="$(json_probe hooks "$json_real" "$json_patch" "$json_want")"
+      json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want")"
     else
       json_answer=merge
     fi
@@ -716,6 +728,7 @@ EOF
       # about them moved. The handlers roost's own merge would REPLACE are the
       # ones the probe has already refused to touch.
       codex)  json_bak="$(roost_json_merge "$real" codex-hooks  "$CODEX_TARGET")";  rc=$? ;;
+      copilot) json_bak="$(roost_json_merge "$real" copilot-flag)"; rc=$? ;;
       *)      json_bak=""; rc=2 ;;
     esac
 
@@ -894,11 +907,21 @@ $(roost_hooks_codex)" ;;
 
   case " $DETECTED " in *" copilot "*)
     copilot_settings="$(roost_adapter_settings copilot)"
-    add_manual "copilot: the EXTENSIONS feature flag is not set for you yet. Add
+    case "$JSON_MODE" in
+      print)
+        add_manual "copilot: --print-only, so nothing was written. Add
     {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}}
-  to $copilot_settings (merging, not replacing)."
-    # Also permanent. copilot persists nothing for this, so there is no file
-    # to read and no way to tell "not yet asked" from "denied".
+  to $copilot_settings (merging, not replacing)." ;;
+      notool)
+        add_manual "copilot: neither python3 nor jq is on this PATH, so roost cannot edit
+  JSON here. Nothing was written. Add
+    {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}}
+  to $copilot_settings (merging, not replacing)." ;;
+    esac
+    # Permanent, and printed on every path including the ones that wrote
+    # nothing. copilot persists nothing for this, so there is no file to read
+    # and no way to tell "not yet asked" from "denied" — do not try to detect
+    # it, say it plainly instead.
     add_manual "copilot: the first time you run it in a directory, answer Yes to the
   extension's \"wants to: handle permission requests\" prompt. Once per
   directory, and nothing on disk records it."
