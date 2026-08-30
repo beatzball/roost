@@ -29,10 +29,13 @@
 #     change, so it makes every other backup less trustworthy.
 set -u
 
-# NOTE ON TENSE: `--symlinks-only` is written for `roost validate`, but
-# nothing calls it yet — bin/roost gains its `install)` case in Task 9, and
-# roost-validate swaps its own offer_adapter_install for a call to it in Task
-# 10. Every reference to that caller is deliberately future tense.
+# `--symlinks-only` is written for `roost validate`, and validate's
+# offer_adapter_install now calls it — `--symlinks-only --yes --only <the
+# harnesses it offered>` — instead of carrying its own copy of the mkdir and
+# the ln. That caller's policy is narrower than this command's on purpose, and
+# the one place they differ is a DANGLING adapter link: relinking one is right
+# here and wrong there, which is why validate restricts the run with --only
+# rather than letting this command decide.
 #
 # --- this checkout ---------------------------------------------------------
 # Resolved from this file's own location, never from an inherited $ROOST_HOME.
@@ -113,8 +116,8 @@ asks once, and never replaces a file that is not roost's own.
                     claude, codex). Anything else is left completely alone.
   --print-only      never edit a JSON file; print the blocks to paste instead.
   --symlinks-only   the adapter symlinks and nothing else. This is the mode
-                    `roost validate` will invoke, once Task 10 replaces its
-                    own offer_adapter_install with a call to it.
+                    `roost validate` invokes after its own prompt, so that
+                    a validation run writes symlinks and nothing else.
   -h, --help        this text.
 
 Exit codes: 0 everything it could do succeeded, even with manual steps left.
@@ -772,9 +775,11 @@ if [ "$do_writes" -eq 1 ]; then
 
     # Re-checked immediately before writing rather than trusted from the plan
     # above. The prompt may have sat there for a minute, and this is the one
-    # place in the command that creates something on someone's machine —
-    # roost-validate's offer_adapter_install takes the same precaution for the
-    # same reason.
+    # place in the command that creates something on someone's machine.
+    # roost-validate's offer_adapter_install used to take the same precaution
+    # in its own loop and now relies on this one, having asked its question
+    # and handed the writing over — so this check is the only thing standing
+    # between that prompt's minute and a path that changed underneath it.
     state="$(roost_adapter_state "$h")"
     case "$action:$state" in
       link:missing|relink:dangling) : ;;
@@ -954,7 +959,7 @@ fi
 #
 # What must keep being true: --print-only keeps printing the block instead of
 # writing it, --symlinks-only keeps skipping the JSON entirely (it is what
-# `roost validate` WILL invoke — Task 10 — and validate's report promises that
+# `roost validate` invokes, and validate's report promises the tester that
 # nothing but symlinks was written), and the codex trust prompt and the copilot
 # per-directory approval stay listed forever — they are prompts no tool can
 # answer, not steps waiting to be automated.

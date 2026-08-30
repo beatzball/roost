@@ -454,13 +454,12 @@ rm -rf "$shim"
 # ===========================================================================
 # 10. --symlinks-only -> the three links, and no JSON advice at all
 # ===========================================================================
-# This is the mode `roost validate` WILL call (`roost install --symlinks-only
-# --yes`) -- not yet: roost install is not dispatched from bin/roost until
-# Task 9, and roost-validate still carries its own offer_adapter_install until
-# Task 10. Pinned now anyway, because it is the reason the mode exists:
+# This is the mode `roost validate` calls, and the reason the mode exists:
 # validate writes its result into a report that promises "nothing else was
 # written -- no hooks file, no trust granted, no settings edited", so this
-# output has to be about symlinks and nothing else.
+# output has to be about symlinks and nothing else. What validate does with
+# the mode -- the flags it passes, and the policy those flags express -- is
+# tests/test-validate-install.sh; this section is about the mode itself.
 box="$TMP/symonly"
 out="$(run_install "$box" "$ALL_SHIM" --symlinks-only --yes)"; rc=$?
 assert_eq "$rc" "0" "--symlinks-only: exits 0"

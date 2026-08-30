@@ -1077,13 +1077,23 @@ h_adapter_fix() {
 # meant to walk away from. And it never replaces a path that is not already our
 # symlink: someone's own extension living there must not be lost to a
 # validation run.
+#
+# THE LINKS THEMSELVES are `roost install --symlinks-only`'s job, not this
+# function's. The question, the explanation around it and the default-no are
+# validate's; the mkdir and the ln are not, and this function carried a second
+# copy of them until scripts/roost-install existed. Two copies of "create this
+# symlink unless something that is not ours is already there" is exactly the
+# drift AGENTS.md §5 warns about, and the installer is the copy with a test
+# file of its own around it. What stayed here is everything above: the limits
+# listed in the paragraph above are enforced by HOW it is invoked, and the
+# report is still assembled here.
 INSTALL_DECISION=""     # one line, for the report
 INSTALLED_LINKS=""      # newline-separated paths this run created
 BLOCKED_LINKS=""        # newline-separated "harness<TAB>path" it refused to touch
 INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
 
 offer_adapter_install() {
-  local h st path want ans created=0
+  local h path ans created=0 only install_out install_rc
 
   if [ "$LOCAL" -eq 1 ]; then
     # --local builds its own scratch config directory per harness and links the
@@ -1159,15 +1169,62 @@ offer_adapter_install() {
       return 0 ;;
   esac
 
+  # The three flags are the policy above, expressed as an invocation:
+  #
+  #   --symlinks-only  only symlinks, and only adapters. No hooks file, no
+  #                    codex trust, no settings.json, no provider config —
+  #                    report_install promises the tester in writing that
+  #                    nothing else was written, and this is what makes that
+  #                    promise true rather than merely intended.
+  #   --yes            the tester has ALREADY answered, in validate's own words
+  #                    and under validate's own 60-second default-no. The
+  #                    installer's prompt would be a second question, asked
+  #                    without the explanation that makes the first one fair.
+  #   --only           the candidate list IS the policy, and this is not
+  #                    belt-and-braces. Left unrestricted, `roost install`
+  #                    would also RELINK a dangling adapter — the right call
+  #                    for the installer, whose job is to leave the machine
+  #                    wired, and the wrong one here: validate treats dangling
+  #                    exactly like foreign (see the loop above and
+  #                    h_adapter_fix), and BLOCKED_LINKS has already been
+  #                    collected, so a relink would leave the report saying
+  #                    "left alone" about a path this run had just rewritten.
+  #
+  # Called by path from $HERE rather than as `roost install`, and never via
+  # $ROOST_HOME: bin/roost exports that into every pane of the session it
+  # started, so a validate run inside a roost session started from ANOTHER
+  # checkout would install that one's adapters while reporting this one's.
+  # scripts/lib/roost-adapters.sh's _roost_adapter_root comment records the
+  # measured version of that bug.
+  only=""
+  for h in $INSTALL_CANDIDATES; do only="$only,$h"; done
+  # Bash's own expansion, not `tr` or `cut`. Neither is guaranteed to be on a
+  # thin PATH, and a no-op here would hand the installer an empty --only, which
+  # it rightly refuses as a usage error — so nothing would be linked and the
+  # report would say two things at once.
+  only="${only#,}"
+
+  # Captured rather than passed straight through. The tester has just read
+  # validate's own list of these exact paths, and the installer prints its
+  # whole plan again in a different shape; two plans for one answer reads as
+  # two things happening. On a FAILURE that output is the only explanation
+  # there is, so that is where it gets printed.
+  install_out="$("$HERE/scripts/roost-install" --symlinks-only --yes --only "$only" 2>&1)"
+  install_rc=$?
+
   for h in $INSTALL_CANDIDATES; do
-    path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
-    # Re-checked immediately before writing, not trusted from the loop above.
-    # The gap between the two is small and a tester could have been fixing
-    # things in another terminal while the prompt sat there — and this is the
-    # one place in the whole script that creates a file on their machine.
-    [ "$(roost_adapter_state "$h")" = missing ] || { BLOCKED_LINKS="$BLOCKED_LINKS$h	$path
-"; continue; }
-    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$want" "$path" 2>/dev/null; then
+    path="$(roost_adapter_path "$h")"
+    # Read back off the disk, not parsed out of the installer's output. The
+    # state table is the one thing both scripts already agree on, and a report
+    # assembled from another script's prose goes wrong the first time someone
+    # rewords a line.
+    #
+    # The precaution the old inline loop took — re-checking the state
+    # immediately before writing, because a tester could have been fixing
+    # things in another terminal while the prompt sat there — has not been
+    # dropped: `roost install` takes it for each link, in the same words, at
+    # the point where it matters.
+    if [ "$(roost_adapter_state "$h")" = ok ]; then
       INSTALLED_LINKS="$INSTALLED_LINKS$path
 "
       created=$((created + 1))
@@ -1178,6 +1235,10 @@ offer_adapter_install() {
       printf '  could NOT link %s\n' "$path"
     fi
   done
+  if [ "$install_rc" -ne 0 ]; then
+    printf '\n  roost install exited %s. Its own output:\n\n' "$install_rc"
+    printf '%s\n' "$install_out"
+  fi
   printf '\n'
   INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s); see the undo below"
   return 0
