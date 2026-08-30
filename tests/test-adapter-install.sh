@@ -1119,7 +1119,153 @@ assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
   "copilot with no JSON tool: settings.json is not written"
 
 # ===========================================================================
-# 16. Hygiene
+# 16. Saying when the checkout itself is behind its upstream
+# ===========================================================================
+# `roost update` is an alias for `roost install` (Task 9), so people will
+# reasonably expect it to update roost's own code. It does not, and must not:
+# the checkout may be someone's dev tree with local work in it. All this does
+# is SAY so, from what git already knows locally -- never a fetch, which would
+# be a surprise network call inside an installer, and never a pull.
+if command -v git >/dev/null 2>&1; then
+  # A scratch checkout carrying the files roost-install needs to run. Copies,
+  # not symlinks: the installer resolves its own location through a symlink
+  # chain (that is how it refuses to trust an inherited $ROOST_HOME), so a
+  # symlink here would resolve straight back to the real worktree and every
+  # case below would be measuring THIS repo's upstream instead of the
+  # fixture's.
+  mkcheckout() { # mkcheckout DIR
+    mkdir -p "$1/scripts/lib"
+    cp "$HERE/scripts/roost-install" "$1/scripts/roost-install"
+    cp "$HERE/scripts/lib/roost-adapters.sh" \
+       "$HERE/scripts/lib/roost-hooks.sh" \
+       "$HERE/scripts/lib/roost-json.sh" "$1/scripts/lib/"
+  }
+  # An empty hooks directory, and a fixture identity. These repos exist for
+  # four seconds inside a mktemp dir; pointing them at an empty hooksPath
+  # keeps the machine's global hooks (which scan staged content and commit
+  # messages for a real identity) out of a fixture that has neither, and
+  # naming an identity here means the case does not depend on the runner
+  # having one configured.
+  mkdir -p "$TMP/nohooks"
+  fixture_git() { git -c core.hooksPath="$TMP/nohooks" \
+                      -c user.email=roost-tests@example.invalid \
+                      -c user.name='roost tests' -c commit.gpgsign=false "$@"; }
+
+  # A recording git for the RUN itself: log the arguments, then hand over to
+  # the real one. `pull` or `fetch` appearing in that log is the failure this
+  # step exists to prevent, and it cannot be seen any other way -- a fetch
+  # against an up-to-date remote changes nothing observable on disk.
+  gitlog="$TMP/git-invocations.log"
+  : > "$gitlog"
+  GIT_SHIM="$(make_json_shim opencode)"
+  cat > "$GIT_SHIM/git" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$gitlog"
+exec "$(command -v git)" "\$@"
+EOF
+  chmod +x "$GIT_SHIM/git"
+
+  # run_install drives \$INSTALL, and these cases need the copy inside the
+  # fixture rather than the one in this worktree. Swapping the variable reuses
+  # the one sandboxed harness (all five home variables, a replaced PATH)
+  # instead of growing a second one that could drift out of step with it.
+  real_install="$INSTALL"
+
+  # --- one commit behind -> say so, and touch nothing -----------------------
+  origin="$TMP/gitorigin"
+  mkcheckout "$origin"
+  fixture_git -C "$origin" init -q
+  fixture_git -C "$origin" add -A
+  fixture_git -C "$origin" commit -q -m "fixture"
+  # NOT "gitbehind": the installer prints this path in its header, so a fixture
+  # directory carrying the word would make the "says nothing about being
+  # behind" cases below match the path instead of a note.
+  co="$TMP/gitclone"
+  fixture_git clone -q "$origin" "$co"
+  printf 'later\n' > "$origin/NEWER"
+  fixture_git -C "$origin" add -A
+  fixture_git -C "$origin" commit -q -m "one more"
+  # The fetch that makes the clone KNOW it is behind happens here, in the
+  # setup, precisely because the installer is not allowed to do it.
+  fixture_git -C "$co" fetch -q
+  upname="$(git -C "$co" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+
+  INSTALL="$co/scripts/roost-install"
+  : > "$gitlog"
+  out="$(run_install "$TMP/gitclonebox" "$GIT_SHIM" --yes)"; rc=$?
+  INSTALL="$real_install"
+  assert_eq "$rc" "0" "behind upstream: exits 0 (it is a note, not a problem)"
+  assert_contains "$out" "1 commit behind $upname" \
+    "behind upstream: the line names how far behind and what it tracks"
+  # Resolved with `cd -P`, because the installer resolves its OWN location
+  # that way and /tmp is a symlink to /private/tmp on macOS -- the raw $co
+  # would never match, on that platform only.
+  co_real="$(cd -P "$co" && pwd)"
+  assert_contains "$out" "git -C \"$co_real\" pull" \
+    "behind upstream: the line prints the command to run, against the right checkout"
+  grep -Eq '(^| )(pull|fetch)( |$)' "$gitlog" && s=ran || s=never
+  assert_eq "$s" "never" "behind upstream: the run neither pulled nor fetched"
+  assert_eq "$(git -C "$co" rev-parse HEAD)" \
+            "$(git -C "$origin" rev-parse 'HEAD^')" \
+    "behind upstream: the checkout is still where it was"
+
+  # --- no harness on PATH at all -> the note still gets out -----------------
+  # A different exit path: with nothing detected the command says so and
+  # leaves early, and a note printed only on the other branch would be missing
+  # exactly where someone is most likely to be looking at a stale checkout.
+  NOHARNESS_SHIM="$(make_json_shim)"
+  cp "$GIT_SHIM/git" "$NOHARNESS_SHIM/git"
+  INSTALL="$co/scripts/roost-install"
+  out="$(run_install "$TMP/gitclonenone" "$NOHARNESS_SHIM" --yes)"; rc=$?
+  INSTALL="$real_install"
+  assert_eq "$rc" "0" "behind upstream, no harness: exits 0"
+  assert_contains "$out" "no supported harness found" \
+    "behind upstream, no harness: it still says nothing was found"
+  assert_contains "$out" "1 commit behind $upname" \
+    "behind upstream, no harness: the note is printed on that path too"
+  rm -rf "$NOHARNESS_SHIM"
+
+  # --- up to date -> silent -------------------------------------------------
+  fixture_git -C "$co" merge -q --ff-only "$upname"
+  INSTALL="$co/scripts/roost-install"
+  out="$(run_install "$TMP/gitcurrentbox" "$GIT_SHIM" --yes)"; rc=$?
+  INSTALL="$real_install"
+  assert_eq "$rc" "0" "up to date: exits 0"
+  case "$out" in *behind*) s=said ;; *) s=silent ;; esac
+  assert_eq "$s" "silent" "up to date: nothing is said about being behind"
+
+  # --- a repo with no upstream -> silent ------------------------------------
+  noup="$TMP/gitnoupstream"
+  mkcheckout "$noup"
+  fixture_git -C "$noup" init -q
+  fixture_git -C "$noup" add -A
+  fixture_git -C "$noup" commit -q -m "fixture"
+  INSTALL="$noup/scripts/roost-install"
+  out="$(run_install "$TMP/gitnoupbox" "$GIT_SHIM" --yes)"; rc=$?
+  INSTALL="$real_install"
+  assert_eq "$rc" "0" "no upstream: exits 0"
+  case "$out" in *behind*) s=said ;; *) s=silent ;; esac
+  assert_eq "$s" "silent" "no upstream: nothing is said about being behind"
+  case "$out" in *fatal*|*"no upstream"*) s=leaked ;; *) s=quiet ;; esac
+  assert_eq "$s" "quiet" "no upstream: git's own complaint is not printed at the user"
+
+  # --- not a git repo at all (a tarball install) -> silent ------------------
+  tarball="$TMP/gittarball"
+  mkcheckout "$tarball"
+  INSTALL="$tarball/scripts/roost-install"
+  out="$(run_install "$TMP/gittarballbox" "$GIT_SHIM" --yes)"; rc=$?
+  INSTALL="$real_install"
+  assert_eq "$rc" "0" "not a repo: exits 0"
+  case "$out" in *fatal*|*"not a git repository"*|*behind*) s=said ;; *) s=silent ;; esac
+  assert_eq "$s" "silent" "not a repo: no git error and no note -- a tarball install is normal"
+
+  rm -rf "$GIT_SHIM"
+else
+  assert_true 0 "upstream-note cases skipped (git needed)"
+fi
+
+# ===========================================================================
+# 17. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"

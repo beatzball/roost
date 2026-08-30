@@ -408,6 +408,40 @@ json_probe() { # json_probe MODE FILE [PATCH WANT]
   esac
 }
 
+# --- is this checkout itself behind? ---------------------------------------
+# `roost update` is an alias for `roost install` (Task 9), so people will
+# reasonably expect it to update roost's own code. It does not, and must not:
+# the checkout may be someone's dev tree with local work in it, and this tool
+# does not get to run `git pull` over that. All it does is SAY so.
+#
+# It NEVER fetches. A fetch inside an installer is a surprise network call —
+# on a metered link, behind a proxy, or in a CI step that has no credentials —
+# and this command has never made one. The cost is honest and worth stating:
+# what it reads is as current as the user's last fetch and no more, so it can
+# be silent on a checkout that is in fact behind. Silent-when-unsure is the
+# right side to err on for a line nobody asked for.
+#
+# Silent on every uninteresting answer: git not installed, not a repo at all
+# (a tarball install must not print a git error at someone who did nothing
+# wrong), no upstream configured, or already current.
+upstream_note() {
+  local up n word
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # The abbreviated name is for the MESSAGE only. The count is asked with the
+  # literal @{upstream}, so a remote branch whose name needs quoting cannot
+  # turn into a ref this fails to resolve and then silently reports as zero.
+  up="$(git -C "$HERE" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)" || return 0
+  [ -n "$up" ] || return 0
+  n="$(git -C "$HERE" rev-list --count 'HEAD..@{upstream}' 2>/dev/null)" || return 0
+  case "$n" in ''|0) return 0 ;; esac
+  word=commits; [ "$n" = 1 ] && word=commit
+  printf 'This checkout is %s %s behind %s.\n' "$n" "$word" "$up"
+  printf '  roost install wires harnesses to this checkout; it does not update roost\n'
+  printf '  itself, and it has not fetched — this is what git already knew locally.\n'
+  printf '  To update the code:  git -C "%s" pull\n\n' "$HERE"
+}
+
 # --- plan ------------------------------------------------------------------
 # Records are tab-separated lines in a newline-separated string: bash 3.2 is
 # the floor here, so no associative arrays, and roost-validate already uses
@@ -560,11 +594,18 @@ if [ -z "$DETECTED" ]; then
   else
     printf '  Looked for: %s\n' "$HARNESSES"
   fi
+  # Printed on this path too, and not only on the one below. Someone running
+  # this on a machine with no harness on PATH is quite likely to be looking at
+  # a checkout that has not been updated in a while, which is exactly when the
+  # note is worth having.
+  printf '\n'
+  upstream_note
   exit 0
 fi
 
 printf 'roost install — wiring these harnesses to\n  %s\n\n' "$HERE"
 printf 'Detected: %s\n\n' "${DETECTED// /, }"
+upstream_note
 
 if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
   printf 'Will write:\n'
