@@ -1,0 +1,56 @@
+# Write the JSON object below to $CODEX_HOME/hooks.json ($CODEX_HOME defaults
+# to ~/.codex). Then start `codex`, and at its "Hooks need review" prompt
+# choose "Trust all and continue". Until you do, every hook is skipped —
+# see the warning further down. Outside roost these hooks are silent no-ops.
+#
+# Copy the object, NOT these comment lines: hooks.json is strict JSON and has
+# no comment syntax.
+#
+# | codex hook          | state                                |
+# |---------------------|--------------------------------------|
+# | UserPromptSubmit    | working                              |
+# | PostToolUse         | working (and it is what clears 🛑)    |
+# | PermissionRequest   | blocked                              |
+# | Stop                | done, plus the turn's reply          |
+#
+# PostToolUse is what clears 🛑. No hook fires when you answer a permission
+# dialog, so it is the first observable event afterwards — measured on
+# codex-cli 0.151.0, one second after "1. Yes, proceed".
+#
+# There is deliberately no error entry. Codex has twelve hook events and none of
+# them reports an error, so a turn that dies on the provider ends ✅ done rather
+# than 💥. See docs/known-gaps.md, which says so plainly, and the Codex section
+# of site/content/docs/state-badges.md, which says it to users.
+#
+# THESE FOUR HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
+# stores a hash of each normalised handler in $CODEX_HOME/config.toml and
+# SKIPS any handler whose hash no longer matches — with nothing printed on
+# stdout, on stderr, or in the TUI. Measured on codex-cli 0.150.1: appending one
+# argument to a command string took 8 of 8 hooks down, and changing a single
+# timeout from 10 to 11 took 7 of 8 down. So editing a command or a timeout in a
+# later roost release would silently un-badge every machine that had already
+# granted trust. Everything roost might want to change later lives inside
+# adapters/codex/roost-codex-hook instead, which codex re-reads on every run and
+# never hashes. Adding a NEW event to this file is safe (measured on 0.151.0:
+# the handlers already trusted kept firing); editing one that is already here is
+# not.
+#
+# The trust prompt vouches for a PATH, not for the code at that path. Anyone who
+# can write adapters/codex/roost-codex-hook changes what runs, with no second
+# review. That is codex's model, not something roost adds.
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook UserPromptSubmit", "timeout": 10 } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook PostToolUse", "timeout": 10 } ] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook PermissionRequest", "timeout": 10 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
+    ]
+  }
+}

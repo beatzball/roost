@@ -62,6 +62,11 @@ ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 # server, so roost_self_socket recognises only a socket path ending /roost.
 . "$ROOST_HOME/scripts/lib/roost-socket.sh"
 roost_self_socket
+# roost_hooks_claude / roost_hooks_codex print the JSON object `roost hooks`
+# shows below its own explanatory comments. Shared with the installer, which
+# needs the identical bytes — see that file's header for why editing them
+# there or here is not safe.
+. "$ROOST_HOME/scripts/lib/roost-hooks.sh"
 SOCKET="${ROOST_SOCKET:-${ROOST_SELF_SOCK:-roost}}"
 case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
 DEFAULT_SESSION="main"
@@ -294,23 +299,8 @@ case "${1:-up}" in
 # The trust prompt vouches for a PATH, not for the code at that path. Anyone who
 # can write adapters/codex/roost-codex-hook changes what runs, with no second
 # review. That is codex's model, not something roost adds.
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook UserPromptSubmit", "timeout": 10 } ] }
-    ],
-    "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook PostToolUse", "timeout": 10 } ] }
-    ],
-    "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook PermissionRequest", "timeout": 10 } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
-    ]
-  }
-}
 JSON
+        roost_hooks_codex
         exit 0
         ;;
       *) echo "usage: roost hooks [claude|codex]" >&2; exit 2 ;;
@@ -327,24 +317,8 @@ JSON
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — \`roost
 # read\` just falls back to scraping the pane's screen, and tells you it did.
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
-    ],
-    "Notification": [
-      { "matcher": "permission_prompt",
-        "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state blocked" } ] }
-    ],
-    "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state done --stop-hook" } ] }
-    ]
-  }
-}
 JSON
+    roost_hooks_claude
     ;;
   ssh)
     host="${2:?usage: roost ssh HOST [ARGS...]}"; shift 2
