@@ -219,6 +219,28 @@ JSON
       "[$tool] append: a second codex merge adds no second roost handler"
     rm -rf "$cxa"
 
+    # A path that exists and is not a REGULAR file. `[ -f ]` reads a
+    # directory as "does not exist", so this used to take the create branch:
+    # the `mv` moved the temp file INSIDE the directory, the caller was told
+    # the merge was a no-op, and the run exited 0. Nothing was lost, and a
+    # directory at that path is pathological -- but "needed no change" is the
+    # one message in this tool a user reads to conclude they are already set
+    # up, so it must never be wrong. Guarded here rather than in the caller,
+    # so the next caller inherits it.
+    local dd
+    dd="$(mktemp -d /tmp/amx.XXXX)"
+    mkdir -p "$dd/settings.json"
+    merge_under "$shim" "$dd/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" \
+      >/dev/null 2>"$dd/err"
+    [ "$?" -ne 0 ]; assert_true $? "[$tool] a directory at the config path is refused"
+    [ -d "$dd/settings.json" ]; assert_true $? "[$tool] that directory is still a directory"
+    assert_eq "$(find "$dd/settings.json" -mindepth 1 | wc -l | tr -d ' ')" "0" \
+      "[$tool] nothing was left inside it"
+    assert_file_absent "$dd"/settings.json.roost-bak-* \
+      "[$tool] a directory at the config path takes no backup"
+    [ -s "$dd/err" ]; assert_true $? "[$tool] the refusal says something on stderr"
+    rm -rf "$dd"
+
     # An event whose value is not an array cannot be appended to, and roost
     # does not get to decide what it meant. Refused, with the file untouched
     # and no backup -- the same answer as any other shape it cannot read.

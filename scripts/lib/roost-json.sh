@@ -360,6 +360,29 @@ roost_json_merge() {
   tool="$(roost_json_tool)"
   [ -n "$tool" ] || return 3
 
+  # FILE is either absent or a regular file. Anything else — a directory, a
+  # fifo, a device — is refused before a single other thing happens.
+  #
+  # This is not defensive padding. `[ -f ]` below reads a DIRECTORY as "does
+  # not exist", so the create branch ran, the `mv` at the end moved the temp
+  # file INSIDE the directory, the caller compared nothing to nothing and
+  # reported the merge as a no-op, and the run exited 0 leaving a stray
+  # .roost-json.XXXXXX in there. Nothing was destroyed and a directory at a
+  # config path is pathological — but "needed no change" is the one message
+  # in this tool that a user reads to conclude they are already wired up, and
+  # it must never be wrong.
+  #
+  # `-e` is deliberately not the whole test: a symlink pointing at nothing is
+  # -e false but -L true, and that is still a path this must not silently
+  # write a regular file over. -f covers it, because -f follows the link and
+  # is false for a broken one.
+  if [ -e "$file" ] || [ -L "$file" ]; then
+    if [ ! -f "$file" ]; then
+      printf 'roost-json: %s exists and is not a regular file — nothing written\n' "$file" >&2
+      return 1
+    fi
+  fi
+
   # Translate a public hook mode into the engines' `hooks-merge` plus the
   # patch document roost-hooks.sh prints. An unrecognised mode is passed
   # through untouched so the engine still reports it as unknown (status 2)
