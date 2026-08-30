@@ -85,11 +85,27 @@ copilot  +5s  badge=[blocked] since=1788058761
          roost send -> exit 3
 ```
 
-opencode does **not** have it: the same drive left `blocked` 1s after Esc and
-`roost send` then exited 0. So the hole is per adapter and tracks the event the
-adapter clears on, not something general to roost — which is what makes the
-first candidate below (confirm the badge against the pane) the fix for all
-three at once rather than three separate ones.
+**Re-measured on codex against its REAL provider**, not the local rig: an
+OpenAI account signed in with ChatGPT, `gpt-5.6-luna`, no tool-stripping proxy
+in the loop, hooks installed from `roost hooks codex` and trusted through
+codex's own prompt. It reproduces identically, so this is not an artefact of a
+small local model or of the rig that drives one:
+
+```
++5s   badge=[blocked] since=1788078805
++68s  badge=[blocked] since=1788078805   age=63s, frozen
+screen: "✗ You canceled the request to run echo roost-validate-escalate"
+        "■ Conversation interrupted"     -- no dialog on screen
+roost send -> exit 3
+```
+
+opencode does **not** have it, and that has now been measured twice: once
+against local ollama and once against an opencode free cloud model over the
+network. Both left `blocked` 1s after Esc, and `roost send` then exited 0. So
+the hole is per adapter and tracks the event the adapter clears on, not
+something general to roost and not something about the provider — which is what
+makes the first candidate below (confirm the badge against the pane) the fix for
+all three at once rather than three separate ones.
 
 **Not fixed here, because the fix is a behaviour change to the guard**, and
 that is its own task. Two candidates, neither implemented:
