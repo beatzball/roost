@@ -120,6 +120,127 @@ run_case() {
   assert_true $? "[$tool] second merge is byte-identical (idempotent)"
   assert_file_absent "$d"/settings.json.roost-bak-* "[$tool] idempotent re-merge makes no backup"
 
+  # -- APPEND, never replace: a user's own entry in one of roost's own four
+  #    events survives, matcher and all --
+  #
+  # This was a real defect, not a hypothetical: `hooks[event] = patch[event]`
+  # replaced the whole array, so a settings.json whose PostToolUse carried
+  # {"matcher": "Edit", "hooks": [{"command": "my-own-formatter"}]} came back
+  # with that entry GONE -- rc 0, backup taken, nothing printed. A PostToolUse
+  # formatter or linter is one of the most common Claude Code setups, so this
+  # would have hit a large share of users on their first `roost install`.
+  #
+  # Roost's entry now joins the array. Idempotence comes from the TARGET path,
+  # not from position: an existing entry whose commands all point at this
+  # checkout's target is roost's own and is dropped before the patch's copy is
+  # appended, so re-running converges instead of stacking duplicates.
+  if command -v jq >/dev/null 2>&1; then
+    local ud ulen ucmd
+    ud="$(mktemp -d /tmp/amx.XXXX)"
+    cat > "$ud/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Edit",
+        "hooks": [ { "type": "command", "command": "my-own-formatter" } ] }
+    ]
+  }
+}
+JSON
+    merge_under "$shim" "$ud/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" >/dev/null 2>&1
+    assert_true $? "[$tool] append: a merge over a user's own entry exits 0"
+    assert_eq "$(jq -c '.hooks.PostToolUse[0]' "$ud/settings.json" 2>/dev/null)" \
+      '{"matcher":"Edit","hooks":[{"type":"command","command":"my-own-formatter"}]}' \
+      "[$tool] append: the user's PostToolUse entry survives with its matcher intact"
+    ulen="$(jq '.hooks.PostToolUse | length' "$ud/settings.json" 2>/dev/null)"
+    assert_eq "$ulen" "2" "[$tool] append: roost's entry joins the array rather than replacing it"
+    ucmd="$(jq -r '.hooks.PostToolUse[1].hooks[0].command' "$ud/settings.json" 2>/dev/null)"
+    assert_eq "$ucmd" "/checkout/scripts/roost-agent-state working" \
+      "[$tool] append: roost's entry is the one that was added"
+    # Idempotence asserted as a COUNT. "roost's hook is present" stays true
+    # while duplicates pile up one per run, so presence alone cannot see this.
+    merge_under "$shim" "$ud/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" >/dev/null 2>&1
+    assert_eq "$(jq '.hooks.PostToolUse | length' "$ud/settings.json" 2>/dev/null)" "2" \
+      "[$tool] append: a second merge adds no second roost entry"
+    assert_eq "$(jq -c '.hooks.PostToolUse[0]' "$ud/settings.json" 2>/dev/null)" \
+      '{"matcher":"Edit","hooks":[{"type":"command","command":"my-own-formatter"}]}' \
+      "[$tool] append: the user's entry is still first and still intact after a re-merge"
+
+    # A roost entry from a DIFFERENT checkout is not ours to drop. It is left
+    # in place like any other stranger's hook, and this checkout's entry is
+    # appended beside it -- scripts/roost-install refuses that whole case
+    # before it ever reaches here, so what matters at this layer is only that
+    # nothing is destroyed.
+    local fd
+    fd="$(mktemp -d /tmp/amx.XXXX)"
+    cat > "$fd/settings.json" <<'JSON'
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "/other/checkout/scripts/roost-agent-state done --stop-hook" } ] }
+    ]
+  }
+}
+JSON
+    merge_under "$shim" "$fd/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" >/dev/null 2>&1
+    assert_eq "$(jq -r '.hooks.Stop[0].hooks[0].command' "$fd/settings.json" 2>/dev/null)" \
+      "/other/checkout/scripts/roost-agent-state done --stop-hook" \
+      "[$tool] append: another checkout's roost entry is left alone, not rewritten"
+    assert_eq "$(jq '.hooks.Stop | length' "$fd/settings.json" 2>/dev/null)" "2" \
+      "[$tool] append: this checkout's entry is added beside it"
+    rm -rf "$fd"
+
+    # codex's events are arrays too, and the same fix has to hold there. Per
+    # the measured hash fact (scripts/lib/roost-hooks.sh's header), adding a
+    # handler to an event does not disturb an already-trusted handler: the
+    # hash is per handler and over the parsed struct, so a neighbour arriving
+    # in the same array changes nothing codex can see.
+    local cxa
+    cxa="$(mktemp -d /tmp/amx.XXXX)"
+    cat > "$cxa/hooks.json" <<'JSON'
+{
+  "hooks": {
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "somebody-elses-codex-hook", "timeout": 3 } ] }
+    ]
+  }
+}
+JSON
+    merge_under "$shim" "$cxa/hooks.json" codex-hooks "/checkout/adapters/codex/roost-codex-hook" >/dev/null 2>&1
+    assert_true $? "[$tool] append: a codex merge over another handler exits 0"
+    assert_eq "$(jq -c '.hooks.PostToolUse[0]' "$cxa/hooks.json" 2>/dev/null)" \
+      '{"hooks":[{"type":"command","command":"somebody-elses-codex-hook","timeout":3}]}' \
+      "[$tool] append: the other codex handler survives, value for value"
+    assert_eq "$(jq -c '.hooks.PostToolUse[1]' "$cxa/hooks.json" 2>/dev/null)" \
+      '{"hooks":[{"type":"command","command":"/checkout/adapters/codex/roost-codex-hook PostToolUse","timeout":10}]}' \
+      "[$tool] append: roost's codex handler is appended beside it, byte-exact"
+    merge_under "$shim" "$cxa/hooks.json" codex-hooks "/checkout/adapters/codex/roost-codex-hook" >/dev/null 2>&1
+    assert_eq "$(jq '.hooks.PostToolUse | length' "$cxa/hooks.json" 2>/dev/null)" "2" \
+      "[$tool] append: a second codex merge adds no second roost handler"
+    rm -rf "$cxa"
+
+    # An event whose value is not an array cannot be appended to, and roost
+    # does not get to decide what it meant. Refused, with the file untouched
+    # and no backup -- the same answer as any other shape it cannot read.
+    local nd nbefore
+    nd="$(mktemp -d /tmp/amx.XXXX)"
+    printf '{"hooks":{"Stop":{"not":"an array"}}}' > "$nd/settings.json"
+    nbefore="$(cat "$nd/settings.json")"
+    merge_under "$shim" "$nd/settings.json" claude-hooks "/checkout/scripts/roost-agent-state" \
+      >/dev/null 2>"$nd/err"
+    [ "$?" -ne 0 ]; assert_true $? "[$tool] append: an event that is not an array is refused"
+    assert_eq "$(cat "$nd/settings.json")" "$nbefore" \
+      "[$tool] append: that file is byte-identical after"
+    assert_file_absent "$nd"/settings.json.roost-bak-* \
+      "[$tool] append: no backup was taken for a refusal"
+    [ -s "$nd/err" ]; assert_true $? "[$tool] append: the refusal says something on stderr"
+    rm -rf "$nd"
+
+    rm -rf "$ud"
+  else
+    assert_true 0 "[$tool] append cases skipped (jq needed to read the result back)"
+  fi
+
   # -- genuine JSON syntax error: non-zero, untouched, no backup --
   # python3 folds every malformed-input case into exit 1. jq's OWN parse
   # error (a real syntax error, not just "not one object") is forwarded as

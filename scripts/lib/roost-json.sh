@@ -78,6 +78,41 @@ roost_json__py_script() {
 import json
 import sys
 
+
+def _commands(node, out):
+    # Every value of a "command" key, at any depth. Walking for the KEY rather
+    # than for a fixed shape means a hand-written entry that nests differently
+    # is still read: reading it as empty would classify somebody else's hook
+    # as roost's own and drop it, which is the exact failure this whole
+    # function exists to prevent.
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "command" and isinstance(value, str):
+                out.append(value)
+            else:
+                _commands(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _commands(value, out)
+
+
+def _is_roosts(entry, want):
+    # True only when the entry has at least one command and EVERY one of them
+    # invokes this checkout's target. A mixed entry — somebody who hand-merged
+    # roost's command into their own group — is deliberately not ours: it is
+    # left alone, and roost's canonical entry is appended beside it. That
+    # costs one duplicate invocation of a hook that is idempotent anyway,
+    # where the alternative costs the user their own command.
+    commands = []
+    _commands(entry, commands)
+    if not commands:
+        return False
+    for command in commands:
+        if command != want and not command.startswith(want + " "):
+            return False
+    return True
+
+
 def main():
     mode = sys.argv[1]
     args = sys.argv[2:]
@@ -93,15 +128,44 @@ def main():
     try:
         if mode == "hooks-merge":
             # argv[2] is a whole JSON document {"hooks": {...}} produced by
-            # scripts/lib/roost-hooks.sh. Its events are copied in ITS order,
-            # so a key already in the file is updated where it stands and a
-            # new one is appended after the existing ones — which is what
-            # makes a re-merge byte-identical. Every hook the file already
-            # had under a different event name is left alone.
+            # scripts/lib/roost-hooks.sh; argv[3] is the target script those
+            # entries invoke. Its events are visited in ITS order, so an event
+            # already in the file is updated where it stands and a new one is
+            # appended after the existing ones — which is what makes a
+            # re-merge byte-identical. Every hook the file already had under a
+            # different event name is left alone.
+            #
+            # APPEND, NEVER REPLACE, and this cost a real bug to learn. This
+            # was `hooks[event] = patch["hooks"][event]`, which threw away the
+            # whole array: a settings.json whose PostToolUse held
+            # {"matcher": "Edit", "hooks": [{"command": "my-own-formatter"}]}
+            # came back with that entry gone — rc 0, backup taken, nothing
+            # printed anywhere. A PostToolUse formatter or linter is one of
+            # the most common Claude Code setups.
+            #
+            # Idempotence therefore cannot come from position. It comes from
+            # the TARGET: an entry whose every command already points at this
+            # checkout's script is roost's own, so it is dropped and the
+            # patch's copy is appended in its place. Re-running converges
+            # instead of stacking a duplicate per run. An entry pointing at a
+            # DIFFERENT checkout is not ours and is left where it is — that
+            # case is refused by scripts/roost-install long before it reaches
+            # here, and at this layer the only thing that matters is that
+            # nothing is destroyed.
             patch = json.loads(args[0])
+            want = args[1]
             hooks = data.setdefault("hooks", {})
             for event in patch["hooks"]:
-                hooks[event] = patch["hooks"][event]
+                existing = hooks.get(event, [])
+                # Not an array, so there is no "append" that means anything.
+                # Refuse rather than guess: this raises, and the handler below
+                # turns it into exit 1 with the file untouched.
+                if not isinstance(existing, list):
+                    raise ValueError(
+                        "hooks.%s is not an array, so roost cannot add an "
+                        "entry to it without deciding what it meant" % event)
+                kept = [e for e in existing if not _is_roosts(e, want)]
+                hooks[event] = kept + patch["hooks"][event]
         elif mode == "copilot-flag":
             flags = data.setdefault("enabledFeatureFlags", {})
             flags["EXTENSIONS"] = True
@@ -185,19 +249,43 @@ roost_json__jq_run() {
 
   case "$mode" in
     hooks-merge)
-      # `+` on two objects is jq's spelling of the python branch above: the
-      # left object keeps its own key order, a key present on both takes the
-      # right's value in place, and a key only on the right is appended after
-      # them. So both engines produce the same bytes for the same input, and
-      # a re-merge changes nothing.
-      local patch="${1:-}"
+      # jq's spelling of the python branch above, and it has to agree with it
+      # byte for byte: an event already in the file keeps its position and
+      # gains roost's entry at the END of its array, an event only in the
+      # patch is appended after the existing ones, and an entry already
+      # pointing at this checkout is dropped first so a re-merge converges
+      # rather than stacking duplicates.
+      local patch="${1:-}" want="${2:-}"
       if [ -z "$patch" ]; then
         printf "roost-json: cannot apply mode 'hooks-merge': no patch document\n" >&2
         return 1
       fi
-      jq --indent 2 --argjson patch "$patch" \
-        '.hooks = ((.hooks // {}) + $patch.hooks)' \
-        "$input" > "$out"
+      if [ -z "$want" ]; then
+        printf "roost-json: cannot apply mode 'hooks-merge': no target script\n" >&2
+        return 1
+      fi
+      # Checked BEFORE the merge rather than inside it, because jq's own
+      # `error` exits 5 and 5 already means "a genuine JSON syntax error" in
+      # this file's contract. A wrong shape is a 1 under both engines, and
+      # saying so here keeps that promise without overloading jq's status.
+      if ! jq -e --argjson patch "$patch" \
+             '. as $d | all($patch.hooks | keys_unsorted[]; (($d.hooks[.]) // []) | type == "array")' \
+             "$input" >/dev/null 2>&1; then
+        printf "roost-json: cannot apply mode 'hooks-merge': an event in %s is not an array, so roost cannot add an entry to it without deciding what it meant\n" \
+          "$input" >&2
+        return 1
+      fi
+      jq --indent 2 --argjson patch "$patch" --arg want "$want" '
+        def cmds: [ .. | objects | to_entries[] | select(.key == "command") | .value | select(type == "string") ];
+        # The same test as python3'"'"'s _is_roosts: at least one command, and
+        # every one of them invoking this checkout'"'"'s target.
+        def is_roosts($w): (cmds) as $c
+          | (($c | length) > 0) and (all($c[]; . == $w or startswith($w + " ")));
+        reduce ($patch.hooks | keys_unsorted[]) as $ev
+          (.hooks = (.hooks // {});
+           .hooks[$ev] = (((.hooks[$ev] // []) | map(select(is_roosts($want) | not)))
+                          + $patch.hooks[$ev]))
+      ' "$input" > "$out"
       ;;
     copilot-flag)
       jq --indent 2 '.enabledFeatureFlags.EXTENSIONS = true' "$input" > "$out"
@@ -211,9 +299,16 @@ roost_json__jq_run() {
 
 # roost_json_merge FILE MODE [ARGS...] -> apply MODE to FILE (treated as "{}"
 # when FILE does not exist), writing the result atomically. Modes:
-#   claude-hooks TARGET_SCRIPT   merge the four roost hook entries into .hooks
-#   codex-hooks  TARGET_SCRIPT   merge the four roost handlers into .hooks
+#   claude-hooks TARGET_SCRIPT   add the four roost hook entries to .hooks
+#   codex-hooks  TARGET_SCRIPT   add the four roost handlers to .hooks
 #   copilot-flag                 set .enabledFeatureFlags.EXTENSIONS = true
+#
+# The two hook modes APPEND. Each of roost's four entries joins whatever that
+# event already holds; nothing already there is replaced or dropped, with the
+# single exception of a previous entry of ROOST'S OWN pointing at the same
+# TARGET_SCRIPT, which is removed so that re-running converges instead of
+# stacking one duplicate per run. An entry belonging to a different checkout,
+# or to another tool entirely, is left exactly where it is.
 #
 # The two hook modes are translated here into the engines' internal
 # `hooks-merge` mode, whose patch document is whatever
@@ -226,6 +321,11 @@ roost_json__jq_run() {
 # Every other top-level key, and every other key already inside .hooks (or
 # .enabledFeatureFlags), is left exactly as it was. Key order survives: only
 # indentation is normalised, to 2 spaces.
+#
+# One extra way to get a 1: an event roost writes whose value is not an array.
+# There is no append that means anything there, so it is refused rather than
+# guessed at, with the file untouched and no backup — the same answer as any
+# other shape this cannot read.
 #
 # Exit status:
 #   0  success — either FILE was written (and, if it existed before, backed
@@ -274,8 +374,11 @@ roost_json_merge() {
       fi
       engine_mode=hooks-merge
       case "$mode" in
-        claude-hooks) set -- "$(roost_hooks_claude "$target")" ;;
-        codex-hooks)  set -- "$(roost_hooks_codex  "$target")" ;;
+        # The TARGET goes through as well as the patch. hooks-merge needs it
+        # to tell roost's own existing entry (drop it, re-append the patch's)
+        # from a stranger's (leave it exactly where it is).
+        claude-hooks) set -- "$(roost_hooks_claude "$target")" "$target" ;;
+        codex-hooks)  set -- "$(roost_hooks_codex  "$target")" "$target" ;;
       esac
       ;;
   esac
