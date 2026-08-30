@@ -290,6 +290,16 @@ roost_json_merge() {
   if [ "$existed" -eq 1 ]; then
     bak="$(roost_json_backup "$file")" || { rm -f "$tmp"; return 1; }
     printf '%s\n' "$bak"
+
+    # mktemp creates 0600, and mv carries that mode onto the target — so
+    # without this, a -rw-r--r-- settings file would silently become
+    # -rw-------. GNU-first, BSD-fallback `stat`, same as
+    # roost_cfg_set in roost-config.sh: GNU `stat -f` means "filesystem
+    # status" and succeeds on the wrong thing rather than failing, so the
+    # order cannot be reversed.
+    local perm
+    perm="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null)"
+    [ -n "$perm" ] && chmod "$perm" "$tmp"
   fi
 
   mv "$tmp" "$file"
