@@ -79,6 +79,21 @@ case "$(_settings_state "$settings")" in
       # line of advice, while the false negative costs the feature.
       grep -q -- --stop-hook "$settings" 2>/dev/null \
         || warn "$settings has no --stop-hook on the Stop hook — roost read will fall back to the pane's screen; re-run: roost hooks"
+      # Same shape, same reason, for the SessionStart context hook. A config
+      # copied from `roost hooks` before that hook existed badges perfectly
+      # and injects nothing, so the only symptom is an agent that does not
+      # know it is inside roost — and the way THAT shows up is a bare
+      # `tmux split-window` aimed at the user's ordinary server. There is no
+      # error to notice; nothing is printed anywhere. So it has to be named
+      # here, on the terminal of the person who can re-run the command.
+      #
+      # Matched on the script's name anywhere in the file rather than on the
+      # SessionStart key's own array, for the reason the check above gives:
+      # matching a JSON key's array with grep is how a check ends up quietly
+      # wrong, and the false positive costs a line of advice while the false
+      # negative costs the feature.
+      grep -q roost-session-context "$settings" 2>/dev/null \
+        || warn "$settings has no SessionStart hook — agents will not be told they are inside roost; re-run: roost hooks"
     else
       warn "Claude hooks not found in $settings — run: roost hooks"
     fi
