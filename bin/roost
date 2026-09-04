@@ -327,8 +327,27 @@ JSON
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — \`roost
 # read\` just falls back to scraping the pane's screen, and tells you it did.
+#
+# SessionStart is the odd one out: the other four report state OUTWARD, and it
+# is the only one that feeds context IN. It tells the agent it is inside roost
+# and gives it its own pane id, so it reaches for \`roost split\` rather than a
+# bare \`tmux split-window\` that would target the user's ordinary tmux server.
+#
+# Its "matcher": "*" is a deliberate choice, not a default. SessionStart fires
+# for five sources — startup, resume, clear, compact and fork — and NONE of
+# them leaves the preamble in place: startup and fork have no context yet,
+# /clear wipes it, and compact replaces it with a summary that drops it. So all
+# five need the injection, and naming a subset would also silently skip
+# whichever source Claude Code adds next. The cost of the one case that is
+# arguably redundant (resume, where the original injection may still be in the
+# transcript) is a few duplicated lines; the cost of missing one is an agent
+# that has forgotten which server it is on.
 {
   "hooks": {
+    "SessionStart": [
+      { "matcher": "*",
+        "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-session-context" } ] }
+    ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "$ROOST_HOME/scripts/roost-agent-state working" } ] }
     ],
