@@ -47,6 +47,13 @@ import tty
 delay = float(sys.argv[1])
 submitted_path = sys.argv[2]
 headcut = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+# COLLAPSE models the behaviour that made the fix look broken against a real
+# agent: Claude Code renders a bracketed paste as a `[Pasted text #N]`
+# placeholder instead of the text, so the message is nowhere on screen and any
+# check that reads the screen for it can never match. The text is still
+# submitted in full — the placeholder is a rendering, not a loss.
+collapse = len(sys.argv) > 4 and sys.argv[4] == "collapse"
+pastes = 0
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
 out = sys.stdout
@@ -57,6 +64,14 @@ try:
     time.sleep(delay)
     termios.tcflush(fd, termios.TCIFLUSH)
     tty.setcbreak(fd)                    # ICANON off, ECHO on: a drawn input box
+    # Request bracketed paste (DECSET 2004), which is what a real TUI does when
+    # it takes the terminal over. This is not decoration: tmux's `paste-buffer
+    # -p` only wraps the text in \e[200~ / \e[201~ if the APPLICATION has asked
+    # for bracketed paste. Without this line the markers never arrive, the
+    # fixture sees ordinary typing, and a test written to exercise the paste
+    # path silently exercises the old one instead — which is exactly what
+    # happened the first time this test was run.
+    out.write("\x1b[?2004h")
     out.write(PROMPT)
     out.flush()
     line = []
@@ -73,7 +88,22 @@ try:
             headcut -= drop
             if not chunk:
                 continue
-        for ch in chunk.decode("utf-8", "replace"):
+        text = chunk.decode("utf-8", "replace")
+        # Honour bracketed paste the way a real TUI does: the \e[200~ / \e[201~
+        # markers say "one block of pasted text, not typing" and are consumed,
+        # not shown. Without this they would be echoed into the input box and
+        # written into the submitted line, and every assertion about what
+        # arrived would be off by the length of two escape sequences.
+        pasted = "\x1b[200~" in text
+        text = text.replace("\x1b[200~", "").replace("\x1b[201~", "")
+        if collapse and pasted:
+            # Buffer the whole block, draw a placeholder, echo nothing of it.
+            pastes += 1
+            line.append(text)
+            out.write("[Pasted text #%d]" % pastes)
+            out.flush()
+            continue
+        for ch in text:
             if ch in ("\r", "\n"):
                 submitted.write("".join(line) + "\n")
                 line = []

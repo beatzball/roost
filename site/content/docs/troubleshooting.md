@@ -62,22 +62,24 @@ The exit code tells you which failure it is:
 
 ## Only the end of my message arrived
 
-You spawned a pane and sent it a briefing straight away. The agent answered as
-if it had been given only the last part of it, and `roost send` exited 0.
+You sent an agent a long briefing and it answered as if it had been given only
+the last part of it, with `roost send` reporting success.
 
-`roost spawn` prints the pane id when the **pane** exists, not when the agent
-inside it is ready. A TUI that is starting up discards whatever was typed
-before it took the terminal over, so the front of your message is destroyed and
-the remainder reads like a complete one. It is a startup race, not a length
-limit — it was first measured on a 3466-byte message.
+Typed at speed, an agent's input box can keep only the last chunk of a large
+message and discard the front. Measured against Claude Code 2.1.263: a
+3502-byte message arrived as its last 436 bytes.
 
-Current roost confirms the beginning of the message is on the pane before
-pressing Enter, retypes if it is not, and refuses to submit anything it cannot
-confirm. If you are seeing this, run `roost doctor` — the machine is on an
-older roost.
+Current roost sends a **bracketed paste** instead of typing, which the agent
+treats as one block, and the whole message arrives. If you are seeing this, the
+machine is on an older roost — run `roost doctor`.
 
-Until it is updated, the reliable workaround is the one people arrived at
-anyway: write the briefing to a file and send the path.
+The workaround for an older machine is the one people arrived at anyway: write
+the briefing to a file and send the path.
+
+## My message shows as `[Pasted text #1]` instead of the text
+
+Nothing is wrong. That is how the agent renders a pasted block. The full message
+is submitted; only the on-screen rendering is a placeholder.
 
 ## A pane refuses every send but has no dialog
 

@@ -99,42 +99,55 @@ A reply longer than 12 KB is stored truncated, keeping the beginning, with a mar
 |------|---------|------------|
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
-| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, was too long for tmux, or was typed but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
+| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, or was delivered but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
 | `1` (`usage:` message) | a missing argument | caller bug, not a delivery failure |
 
-### Sending to a pane that is still starting up
+### Long messages, and why they used to arrive with the front missing
 
-`roost spawn` prints a pane id as soon as the **pane** exists. The agent inside
-it is not reading the keyboard yet. When a TUI does start reading, it takes the
-terminal over and throws away everything typed before that moment — that is how
-it avoids acting on keys meant for the shell it replaced.
+`roost send` delivers your message as a **bracketed paste**, not as typing.
 
-Send into that window and the **front** of your message is destroyed. The rest
-arrives looking like a whole message. This is not a length limit: it was first
-measured on a 3466-byte brief, of which about the last 450 bytes survived.
+That distinction is the whole reason long messages work. Typed at speed, an
+agent's input box could keep only the last chunk of a big message and throw the
+front away — measured against Claude Code 2.1.263, a 3502-byte briefing arrived
+as its last 436 bytes, with no error and exit 0. The receiving agent answered a
+message whose first three thousand bytes it had never seen.
 
-`roost send` now types the message, then confirms the beginning of it is
-actually on the pane before pressing Enter, and retypes if it is not. So:
+A bracketed paste tells the application "this is one block of pasted text",
+which is a different code path in the agent, and the same bytes then arrive
+whole. If you have been writing briefings to a file and sending the path
+instead, you no longer need to.
 
-- a message sent to a pane that is still booting waits for it and lands whole;
-- a message that cannot be confirmed is **never submitted**, and `send` exits 1
-  saying so, rather than exiting 0 over a half-delivered brief.
+Two consequences worth knowing:
 
-It gives up after 15 seconds by default. Change that with:
+- **There is no practical length limit any more.** The old ceiling was about
+  16 KB, and it came from the message travelling on a tmux command line; it now
+  travels over standard input. A 20 KB message is delivered whole.
+- **The pane may show `[Pasted text #1]` instead of your text.** That is the
+  agent's rendering of a paste, not a truncation. The full message is submitted.
+
+`roost send` also confirms the message actually reached the pane before it
+presses Enter, and retries if it did not — a pane that is still booting can
+discard input, which is the other way a briefing used to vanish. If it cannot
+confirm delivery it **submits nothing** and exits 1, so a caller in a loop
+retries instead of moving on. It gives up after 15 seconds by default:
 
 ```sh
 tmux -L roost set-option -g @roost-send-ready-timeout 30
 ```
 
-Two things to know:
+### Privacy: what a send leaves behind
 
-- A pane that does not echo what it is given — a masked prompt, or a program
-  reading raw input without drawing it — cannot be confirmed either, so `send`
-  will report failure there rather than guess. Nothing is submitted in that
-  case.
-- A message longer than about 16344 bytes is refused outright by tmux, which
-  caps the whole command. `send` says so and names the length. Write it to a
-  file and send the path.
+The message passes through one tmux buffer on the way to the pane, and roost is
+deliberate about it:
+
+- **One buffer, reused** (`roost-send`), so sends never pile up.
+- **Deleted as it is pasted**, and deleted again on every failure path — a send
+  whose pane dies mid-flight leaves nothing in the buffer list.
+- **Never copied to your system clipboard.** The tmux flag that would do that
+  (`-w`) is never passed.
+
+You can check the first two yourself with `prefix + =`, which lists tmux's
+buffers: a send should add nothing to it.
 
 ### Why a blocked target is refused
 

@@ -183,6 +183,93 @@ finding 1 is finding 2 wearing a disguise.
 
 ---
 
+### THE FIX: bracketed paste. roost was holding it wrong.
+
+Everything above says the loss is upstream and roost cannot make the bytes
+arrive. That was true of the transport roost was using, and false in general.
+The coordinator found it: **only the transport differed.**
+
+| transport | head | tail | agent obeyed an instruction placed FIRST? |
+| --- | --- | --- | --- |
+| `send-keys -l` (what roost did) | **eaten** | survived | no — never saw it |
+| `load-buffer` + `paste-buffer -p` | **survived** | survived | **yes** |
+
+`-p` wraps the text in `\e[200~` / `\e[201~`, the escape sequence that tells an
+application "this is a paste, not typing". That is a different code path in the
+agent, and it does not chunk-and-discard. The two regimes in the section above
+are now explained: the "collapsed" one *was* the paste path, arrived at by
+accident whenever the receiver's heuristics happened to fire.
+
+**An earlier probe here said bracketed paste did NOT help, and that probe was
+wrong.** It polled `@agent_state` for `done` and then read `@roost-reply`
+directly with `show-options`. Immediately after `Enter` the pane still reads
+`done` from the PREVIOUS turn — the hook has not stamped `working` yet — so the
+loop broke instantly and returned the previous turn's answer, which was
+byte-identical to the run before it. That is the stale-reply bug from finding 4,
+and the probe walked around the fix for it by using `show-options` instead of
+`roost read`, so it got no staleness notice. Every live probe here now waits for
+`working` before it waits for `done`.
+
+**Implemented** in `bin/roost`'s `send` arm:
+
+```sh
+printf '%s' "$msg" | t load-buffer -b roost-send -
+t paste-buffer -p -d -b roost-send -t "$tgt"
+```
+
+**Proven live**, twice, against real Claude Code panes, with the instruction at
+byte 0 so that obeying it is proof the head arrived — not an inference:
+
+| sent | instruction at | agent replied | stderr |
+| --- | --- | --- | --- |
+| 3502 bytes | byte 0 | `ROOSTOK` | — |
+| 5000 bytes | byte 0 | `PASTE2OK` | none |
+
+**The ~16344-byte ceiling went with it.** The message now travels over stdin to
+`load-buffer` instead of on a tmux command line, so it is not a command any
+more. A 20 KB message is delivered whole; the test that used to assert an error
+at 20 KB now asserts delivery.
+
+**Measured, not assumed:** a bracketed paste does **not** auto-submit. The text
+lands in the input box and the pane's state does not change, so the existing
+Enter-and-verify loop stays and is not double-submitting.
+
+**Privacy, three rules with a test each rather than a comment.** A tmux buffer
+is visible to the human at `prefix + =`, and an agent's message can carry things
+nobody wants in a picker.
+
+- **One named buffer**, reused — ten sends leave the buffer stack empty.
+- **`paste-buffer -d`** — gone the instant it is pasted.
+- **Never `-w`**, the flag that would reach the system clipboard. Asserted on
+  the source, deliberately: a test that wrote to the developer's real pasteboard
+  to prove roost does not would be the only thing in the suite that did. The
+  measurement was made once by hand with a canary and the macOS pasteboard was
+  byte-identical across a send.
+- **Cleanup on failure paths**, via a trap covering `EXIT INT TERM`.
+
+**Mutation testing found a hole, and it is the reason that last item is
+covered.** Deleting the trap entirely left every assertion green: a never-ready
+pane still *accepts* the paste, so `-d` removes the buffer without the trap
+doing anything. The test now kills the pane mid-send, so a load has no paste to
+follow it, and removing the trap turns it red.
+
+Six mutations, each confirmed to turn a specific assertion red: drop `-d`; drop
+the trap; add `-w`; revert to `send-keys`; drop the placeholder branch; and stop
+the fixture requesting bracketed-paste mode.
+
+**One more thing the live run caught before the tests did.** Claude Code renders
+a paste as `[Pasted text #N]`, so the message is nowhere on screen and the head
+check can never match. Unfixed, `roost send` retried seven times and exited 1
+having submitted nothing — against exactly the target it exists to drive. A
+placeholder now counts as the expected success rendering and is not warned
+about; a changed screen with neither the message nor a placeholder still is.
+`tests/fixtures/cold-start-tui.py` grew a `collapse` mode to cover it, and had
+to be taught to emit `\e[?2004h` first: **tmux only inserts the paste markers if
+the application has requested bracketed-paste mode**, so without that line the
+paste test silently exercised the old path instead.
+
+---
+
 ### The law, measured: 1022-byte chunks, and a second regime that loses nothing
 
 The coordinator's model was right in shape and wrong in one number, and the

@@ -175,24 +175,22 @@ assert_contains "$err" "nothing was submitted" \
   "...and says plainly that nothing was submitted"
 tmux -S "$s" set-option -gu @roost-send-ready-timeout
 
-# --- 3. the over-long message must name its real cause ----------------------
+# --- 3. the old ~16344-byte command ceiling is GONE ---------------------------
 #
-# tmux rejects the whole `send-keys` COMMAND above ~16344 bytes. Nothing is
-# ever half-typed there — that part was already safe — but the pane is alive
-# and idle, so "pane may have died" sent the caller to look at the one thing
-# that was not wrong.
+# It was never a property of the message, only of how the message travelled:
+# `send-keys -l` puts the whole text on a tmux COMMAND LINE, and tmux refuses a
+# command over ~16384 bytes. The text now goes over STDIN to `load-buffer`, so
+# the ceiling does not apply to it at all. This used to assert exit 1 and an
+# error naming 16344; it asserts delivery instead, which is the same fact from
+# the other side.
 read -r p f <<<"$(pane_for 0)"
 sleep 1.0
-big="$(LC_ALL=C awk 'BEGIN{s="";while(length(s)<20000)s=s "z";printf "%s", substr(s,1,20000)}')"
+big="HEAD-MARKER-0001 $(LC_ALL=C awk 'BEGIN{s="";while(length(s)<20000)s=s "z";printf "%s", substr(s,1,20000)}') TAIL-MARKER-9999"
 err="$("$ROOST" send "$p" "$big" 2>&1 >/dev/null)"; rc=$?
-assert_eq "$rc" "1" "an over-long message exits 1"
-assert_contains "$err" "too long" "an over-long message says it is too long"
-assert_contains "$err" "16344" "an over-long message names the limit it must get under"
-assert_contains "$err" "20000" "an over-long message names how long it actually was"
-case "$err" in
-  *"may have died"*) assert_eq "blames the pane" "names the length" \
-     "an over-long message does not blame the pane" ;;
-  *) assert_eq ok ok "an over-long message does not blame the pane" ;;
-esac
-assert_eq "$(cat "$f" 2>/dev/null || true)" "" \
-  "an over-long message submits nothing at all"
+sleep 1.2
+got="$(cat "$f" 2>/dev/null || true)"
+assert_eq "$rc" "0" "a 20KB message now exits 0 — the command-length ceiling is gone"
+assert_contains "$got" "HEAD-MARKER-0001" "a 20KB message delivers its head"
+assert_contains "$got" "TAIL-MARKER-9999" "a 20KB message delivers its tail"
+assert_eq "$(printf '%s\n' "$got" | grep -c 'HEAD-MARKER-0001')" "1" \
+  "a 20KB message is delivered exactly once"

@@ -596,15 +596,44 @@ JSON
       esac
     }
 
-    # stderr is captured rather than dropped so that tmux's two failures here
-    # can be told apart. Over the command-length cap it says "command too long"
-    # — or "failed to send command" right at the boundary, which is the same
-    # cause wearing a different message — and for a pane that has gone away it
-    # says something else entirely. Reporting the first as "pane may have died"
-    # sent callers to inspect a pane that was alive, idle and blameless.
+    # THE TRANSPORT IS THE FIX. `send-keys -l` types the message as very fast
+    # KEYSTROKES, and Claude Code 2.1.263 answers that by keeping only the last
+    # partial chunk of it: measured, discarded = 1022 x floor(n/1022), so a
+    # 3502-byte brief arrives as its last 436 bytes. A bracketed paste is a
+    # different thing to the receiving application — the \e[200~ / \e[201~
+    # markers say "this is one block of pasted text, not typing" — and the same
+    # 3502 bytes then arrive whole, proven by putting the instruction at the
+    # very START of the message and getting it obeyed.
+    #
+    # The message travels over STDIN to load-buffer, never on a tmux command
+    # line, so the ~16344-byte command-length ceiling stops applying to it
+    # as well. Two problems, one transport.
+    #
+    # -b names ONE buffer that every send reuses, so sends cannot pile up in the
+    # buffer stack. -d deletes it as it is pasted. Neither is tidiness: tmux
+    # buffers are visible to the human at `prefix + =`, and an agent's message
+    # is not something to leave sitting in a picker. -w is the flag that would
+    # reach the SYSTEM clipboard and is never passed — measured, with a canary:
+    # the macOS pasteboard is byte-identical across a send.
+    ROOST_SEND_BUF=roost-send
+    # Deletes the buffer on EVERY way out of this command, not just the happy
+    # one. A send that dies between the load and the paste — a pane that goes
+    # away, a signal — would otherwise leave the whole message in the buffer
+    # list, which is the exact thing -d exists to prevent.
+    trap 't delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true' EXIT INT TERM
+
+    # stderr is captured rather than dropped so that tmux's failures here can be
+    # told apart: a pane that has gone away says one thing, and an over-long
+    # command another ("command too long", or "failed to send command" right at
+    # the boundary — the same cause wearing a different message). Reporting
+    # either as "pane may have died" sent callers to inspect a pane that was
+    # alive, idle and blameless.
     type_message() {
-      senderr="$(t send-keys -t "$tgt" -l -- "$msg" 2>&1 >/dev/null)"
-      return $?
+      local rc
+      senderr="$(printf '%s' "$msg" | t load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
+      [ "$rc" -eq 0 ] || return "$rc"
+      senderr="$(t paste-buffer -p -d -b "$ROOST_SEND_BUF" -t "$tgt" 2>&1 >/dev/null)"; rc=$?
+      return "$rc"
     }
 
     # This one's status is NOT discarded: unlike the Enters below (where
@@ -620,8 +649,11 @@ JSON
           # print a number smaller than the limit next to a message saying the
           # limit was exceeded.
           bytes="$(printf '%s' "$msg" | LC_ALL=C wc -c | tr -d ' ')"
-          echo "roost send: message too long for tmux — $bytes bytes, and the whole send-keys command must stay under about 16344 — nothing was typed" >&2
-          echo "roost send: write the message to a file and send the path instead" >&2
+          # Reachable only if tmux refuses the load or the paste itself. The
+          # command-length ceiling that used to dominate here does not apply to
+          # the message any more — it travels over stdin — so this no longer
+          # tells anyone to go and write a file.
+          echo "roost send: tmux refused a $bytes-byte message — nothing was delivered: $senderr" >&2
           ;;
         *)
           echo "roost send: failed to type text into '$raw' (pane may have died): $senderr" >&2
@@ -635,10 +667,15 @@ JSON
     # race: the first copy is GONE, not late. The flush that ate it happened
     # once, at takeover, so no amount of patience brings it back.
     #
-    # C-u before each retype so that a pane which DID accept the earlier copy,
+    # C-u before each retry so that a pane which DID accept the earlier copy,
     # but renders it somewhere this check cannot see, ends up holding one
     # message rather than two. At an empty input line it is a no-op everywhere
     # it is understood.
+    #
+    # Measured, and it is why the Enter below still has to be sent: a bracketed
+    # paste does NOT auto-submit. The text lands in the input box and stays
+    # there, and the pane's state does not change — so the submit loop is not
+    # double-submitting anything.
     if [ "$verifiable" = 1 ]; then
       waited=0
       until screen_has_head; do
@@ -671,7 +708,17 @@ JSON
         # falls through to the failure below, which is the cold-start case.
         post="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
         if [ "$post" != "$pre" ]; then
-          echo "roost send: '$raw' accepted the keys but does not show them (a collapsed paste, or a pane that does not echo), so the CONTENT could not be verified — submitting anyway" >&2
+          # A paste PLACEHOLDER is not an unknown, it is the expected success
+          # rendering: the pane took the block, decided it was a paste, and drew
+          # a stand-in for it. Warning about that would fire on every long send
+          # to a real agent — noise that trains a reader to ignore the notice
+          # for the case where it means something. So the notice is kept for the
+          # genuinely unexplained shape only: the screen changed, the message is
+          # not on it, and there is no placeholder to account for that either.
+          case "$post" in
+            *Pastedtext*) : ;;
+            *) echo "roost send: '$raw' accepted the keys but does not show them (a pane that does not echo what it is given), so the CONTENT could not be verified — submitting anyway" >&2 ;;
+          esac
         else
           # Exit 1, the documented "delivery to a valid target failed — retry
           # the same target" code. NOTHING has been submitted: the Enter below
