@@ -1,0 +1,1169 @@
+#!/usr/bin/env bash
+# roost install — wire every installed harness to THIS checkout.
+#
+# One command, safe to re-run, that does everything that can be done without a
+# human answering a prompt and names precisely what is left.
+#
+# What this file does today: detection, the plan, the prompt, the flags, the
+# exit codes, the three adapter symlinks (opencode, pi, copilot), the claude
+# and codex hook files, and copilot's EXTENSIONS feature flag. What is left in
+# the closing manual block is what no tool can do: a file roost refused to
+# edit because it is not ours, the two prompts a human has to answer, and the
+# blocks to paste when there is no JSON tool on the machine.
+#
+# Four properties are load-bearing and every change must keep them:
+#
+#   - Nothing is written without consent. `read -r -t 60`, and BOTH a timeout
+#     and a non-terminal resolve to no. Someone who started this and walked
+#     away has agreed to nothing being written to their machine, and a pipe or
+#     a CI step has nobody in it to agree.
+#   - A path that is not ours is never replaced. Not moved, not backed up and
+#     overwritten, not `ln -sf`'d. It is left exactly as found and the manual
+#     command is printed instead. Someone's own extension must never be lost
+#     to an install run.
+#   - --dry-run writes NOTHING, `mkdir -p` included. An empty directory left
+#     behind by a run that promised to change nothing is still a change.
+#   - A backup is taken only immediately before a write that is really going
+#     to happen. A `.roost-bak-*` beside a file nothing changed is a bug, not
+#     a safety margin: it is indistinguishable from one that records a real
+#     change, so it makes every other backup less trustworthy.
+set -u
+
+# `--symlinks-only` is written for `roost validate`, and validate's
+# offer_adapter_install now calls it — `--symlinks-only --yes --only <the
+# harnesses it offered>` — instead of carrying its own copy of the mkdir and
+# the ln. That caller's policy is narrower than this command's on purpose, and
+# the one place they differ is a DANGLING adapter link: relinking one is right
+# here and wrong there, which is why validate restricts the run with --only
+# rather than letting this command decide.
+#
+# --- this checkout ---------------------------------------------------------
+# Resolved from this file's own location, never from an inherited $ROOST_HOME.
+# bin/roost does `set-environment -g ROOST_HOME` (bin/roost:89), so EVERY pane
+# of a roost session exports it pointing at whichever checkout started the
+# server — and an installer that trusted it, run from a second checkout inside
+# that session, would cheerfully create symlinks into the FIRST one while
+# reporting that it had linked this one. scripts/lib/roost-adapters.sh's
+# _roost_adapter_root comment records the measured version of that bug.
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _dir="$(cd -P "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  case "$_self" in /*) : ;; *) _self="$_dir/$_self" ;; esac
+done
+HERE="$(cd -P "$(dirname "$_self")/.." && pwd)"
+HERE="${HERE%/}"
+
+# roost_adapter_home / _path / _target / _state — the one table of where each
+# adapter goes, shared with roost validate and roost doctor so a report and an
+# install plan can never disagree about which file either of them means.
+. "$HERE/scripts/lib/roost-adapters.sh"
+# roost_hooks_claude / roost_hooks_codex — the ONE definition of the hook JSON
+# bodies, used by --print-only. Never re-typed here: codex stores a hash of
+# each normalised handler object and silently skips any handler whose hash no
+# longer matches, so a second copy that drifts by one byte un-badges every
+# machine that had already granted trust.
+. "$HERE/scripts/lib/roost-hooks.sh"
+# roost_json_tool / roost_json_merge / roost_json_backup — the atomic,
+# backed-up JSON writer. It is the only thing here that edits a config file,
+# and it is the reason this command can promise that a malformed input is left
+# untouched: every non-zero status it returns leaves the file alone and takes
+# no backup.
+. "$HERE/scripts/lib/roost-json.sh"
+
+# The hook target scripts, for the merge and for telling "already wired to
+# THIS checkout" from "wired to a different one".
+#
+# roost-hooks.sh names the same two paths as ITS defaults, and these two lines
+# are the second spelling. That is a real drift risk — a mismatch would write
+# hooks pointing at a script that is not there, and a hook that cannot exec
+# just never badges, silently — so tests/test-adapter-install.sh renders the
+# block both ways and compares, and will fail the moment they disagree. The
+# duplication is not avoidable today: roost_json_merge takes the SCRIPT path
+# from its caller, and roost-hooks.sh exposes no accessor for its own default.
+CLAUDE_TARGET="$HERE/scripts/roost-agent-state"
+CODEX_TARGET="$HERE/adapters/codex/roost-codex-hook"
+
+# Detection order, and the only names --only will accept.
+HARNESSES="opencode pi copilot claude codex"
+
+# --- flags -----------------------------------------------------------------
+ASSUME_YES=0
+DRY_RUN=0
+PRINT_ONLY=0
+SYMLINKS_ONLY=0
+# Where to write the machine-readable record, or empty for "do not". Opt-in
+# on purpose: see record_outcome below.
+RECORDS=""
+ONLY=""
+# Whether --only was GIVEN, tracked apart from its value. The two are not the
+# same question, and conflating them is what let an empty value read as "no
+# restriction" instead of "a restriction naming nothing".
+ONLY_GIVEN=0
+
+usage() { # usage RC — to stdout for --help, to stderr for a usage error
+  local rc="$1" out=1
+  [ "$rc" -eq 0 ] || out=2
+  {
+    cat <<'USAGE'
+usage: roost install [-y|--yes] [--dry-run] [--only H[,H...]]
+                     [--print-only] [--symlinks-only] [--records FILE]
+                     [-h|--help]
+
+Wires every installed harness to this roost checkout. Prints the plan first,
+asks once, and never replaces a file that is not roost's own.
+
+  -y, --yes         do not ask. Required for an unattended run: with no
+                    terminal, silence is taken as no and nothing is written.
+  --dry-run         print the plan and change nothing at all. Exits 0.
+  --only H[,H...]   restrict to these harnesses (opencode, pi, copilot,
+                    claude, codex). Anything else is left completely alone.
+  --print-only      never edit a JSON file; print the blocks to paste instead.
+  --symlinks-only   the adapter symlinks and nothing else. This is the mode
+                    `roost validate` invokes after its own prompt, so that
+                    a validation run writes symlinks and nothing else.
+  --records FILE    write a machine-readable record of what this run did to
+                    FILE, for a caller assembling its own report. Adds
+                    nothing to the output above. `roost validate` is the one
+                    caller; see the comment on record_outcome for the shape.
+  -h, --help        this text.
+
+Exit codes: 0 everything it could do succeeded, even with manual steps left.
+1 a write failed. 2 usage.
+USAGE
+  } >&"$out"
+  exit "$rc"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -y|--yes)        ASSUME_YES=1; shift ;;
+    --dry-run)       DRY_RUN=1; shift ;;
+    --print-only)    PRINT_ONLY=1; shift ;;
+    --symlinks-only) SYMLINKS_ONLY=1; shift ;;
+    # The SAME missing-value guard --only carries, and for the same class of
+    # reason. A caller whose variable was unset would otherwise get a run
+    # with no record at all, which to the caller reads exactly like a run
+    # that wrote nothing -- the one failure mode a report cannot tell from
+    # success.
+    --records)
+      case "${2:-}" in
+        ''|-*) printf 'roost install: --records needs a file path\n' >&2; usage 2 ;;
+      esac
+      RECORDS="$2"; shift 2 ;;
+    --records=*)
+      case "${1#*=}" in
+        ''|-*) printf 'roost install: --records needs a file path\n' >&2; usage 2 ;;
+      esac
+      RECORDS="${1#*=}"; shift ;;
+    --only)
+      # A following flag is not a value. `--only --yes` must fail as a missing
+      # argument rather than silently restricting the run to a harness called
+      # "--yes" and then linking nothing.
+      case "${2:-}" in
+        ''|-*) printf 'roost install: --only needs a harness list\n' >&2; usage 2 ;;
+      esac
+      ONLY_GIVEN=1; ONLY="$2"; shift 2 ;;
+    # The SAME guard, on the other spelling. `--only=` with an empty value used
+    # to slip past it and then, being empty, past the `[ -n "$ONLY" ]` test
+    # below as well — so the restriction was DROPPED rather than emptied and
+    # the run linked every harness. `roost install --only="$HARNESS" --yes` in
+    # a wrapper where $HARNESS is unset is the realistic way to get there.
+    --only=*)
+      case "${1#*=}" in
+        ''|-*) printf 'roost install: --only needs a harness list\n' >&2; usage 2 ;;
+      esac
+      ONLY_GIVEN=1; ONLY="${1#*=}"; shift ;;
+    -h|--help)       usage 0 ;;
+    *) printf "roost install: unknown argument '%s'\n" "$1" >&2; usage 2 ;;
+  esac
+done
+
+# --only is validated against the known names BEFORE anything is detected or
+# printed. A typo'd harness silently restricting the run to nothing at all
+# would exit 0 having done nothing, which reads exactly like a successful
+# no-op — the one failure mode a user cannot tell from success.
+#
+# THE INVARIANT, and it is a safety one: if --only was given at all, it must
+# end up naming at least one real harness, or this exits 2. Anything else —
+# `--only=`, `--only ,`, `--only ' '` — is a caller error, and the one
+# interpretation that must never be reachable is "no restriction". The blast
+# radius of getting that wrong is not just the three symlinks: it is claude's
+# settings.json, codex's hooks.json and copilot's settings.json written on a
+# machine whose caller explicitly scoped them out.
+ONLY_LIST=""
+if [ "$ONLY_GIVEN" -eq 1 ]; then
+  # Bash's own substitution, not `tr`: this runs before roost has told the
+  # user anything, and a thin PATH must not turn a typo'd --only into a silent
+  # empty restriction that then links everything.
+  for h in ${ONLY//,/ }; do
+    case " $HARNESSES " in
+      *" $h "*) ONLY_LIST="$ONLY_LIST $h" ;;
+      *) printf "roost install: --only: unknown harness '%s' (known: %s)\n" \
+           "$h" "$HARNESSES" >&2; exit 2 ;;
+    esac
+  done
+  # Non-empty but reducing to no words at all: separators only, or whitespace.
+  # Caught here rather than left to `in_scope`, which reads an empty ONLY_LIST
+  # as "unrestricted" — correct for a run with no --only, catastrophic for one
+  # that had it.
+  if [ -z "$ONLY_LIST" ]; then
+    printf "roost install: --only: no harness named (known: %s)\n" "$HARNESSES" >&2
+    exit 2
+  fi
+fi
+ONLY_LIST="${ONLY_LIST# }"
+
+# --- the machine-readable record -------------------------------------------
+# record_outcome VERB HARNESS PATH [UNDO] -- one TAB-separated line per path
+# this run reached a FINAL outcome for, appended to --records' file:
+#
+#   wrote      this run changed that path. UNDO is the exact command that
+#              puts it back -- `rm` for a link or a file this run created,
+#              `cp` from the backup for a merge into a file that was there.
+#   unchanged  it was already correct. Written by nobody this run, and
+#              deliberately NOT the same as no line at all.
+#   refused    something that is not this checkout's is there, or the path
+#              changed underneath the run after the plan was printed.
+#   failed     the write was attempted and did not work.
+#
+# WHY A FILE AND NOT STDOUT. `roost validate` captures this command's output
+# and prints it verbatim when a write fails -- that output is the only
+# explanation a tester gets on the one path where it matters, and machine
+# lines interleaved through it would be exactly the noise this flag promised
+# not to add. A separate stream also cannot be broken by a caller that
+# reworded a human line.
+#
+# WHY VALIDATE NEEDS IT AT ALL, rather than reading roost_adapter_state back
+# off the disk afterwards: "is it linked now" is a different question from
+# "did this run link it", and the two diverge in both directions. A link
+# created against an adapter file that is not in the checkout is a real write
+# that reads back as `dangling`; a link a tester makes in another terminal
+# while validate's 60-second prompt is open reads back as `ok` and this run
+# did not make it. Deriving the report from the disk therefore both hid a
+# write and claimed one. This function is the installer saying what it did.
+record_outcome() { # record_outcome VERB HARNESS PATH [UNDO]
+  [ -n "$RECORDS" ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:-}" >> "$RECORDS"
+}
+
+# Truncated up front, and a failure here is fatal rather than ignored. An
+# append-only record that a previous run had already filled in would tell the
+# caller this run wrote things it never touched, and a record file that
+# cannot be written at all must not read as a run that did nothing.
+if [ -n "$RECORDS" ]; then
+  : > "$RECORDS" || {
+    printf "roost install: --records: cannot write '%s'\n" "$RECORDS" >&2
+    exit 2
+  }
+fi
+
+in_scope() { # in_scope HARNESS
+  [ -n "$ONLY_LIST" ] || return 0
+  case " $ONLY_LIST " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# --- config files that are really symlinks ---------------------------------
+# resolve_link PATH -> the real path a symlink chain ends at (PATH itself when
+# it is not a link).
+#
+# Keeping ~/.claude/settings.json symlinked into a dotfiles repo is common in
+# this audience, and every naive check gets it wrong in the same direction:
+# `[ -f ]` FOLLOWS the link, so the file reads as present, and then the
+# temp-file-plus-`mv` write drops a regular file over the link. The dotfiles
+# repo stops being the source of that file, the user's VCS never sees the
+# change, and nothing says so. Resolving first also keeps the write atomic for
+# the right file: roost_json_merge puts its temp file in `dirname FILE`, which
+# has to be the REAL file's directory or the `mv` crosses filesystems.
+#
+# Bounded rather than `while [ -L ]` forever: a symlink loop is rare and
+# self-inflicted, but an installer that hangs on one is worse than one that
+# gives up and writes to the link itself, which is what the caller would have
+# done anyway.
+resolve_link() { # resolve_link PATH
+  local p="$1" d n=0
+  while [ -L "$p" ] && [ "$n" -lt 20 ]; do
+    d="$(cd -P "$(dirname "$p")" 2>/dev/null && pwd)" || break
+    p="$(readlink "$p")"
+    case "$p" in /*) : ;; *) p="$d/$p" ;; esac
+    n=$((n + 1))
+  done
+  printf '%s' "$p"
+}
+
+# --- reading a config file before writing it -------------------------------
+# json_probe MODE FILE [PATCH WANT] -> one word on stdout, optionally followed
+# by a TAB and the offending command string:
+#
+#   ours            nothing to do — every one of roost's entries is already
+#                   there, pointing at this checkout
+#   write K R       a write is due. K entries belonging to someone else sit in
+#                   those events and are KEPT; R entries of ROOST'S OWN are
+#                   not the current shape and are replaced by it. `write 0 0`
+#                   covers the two nothing-there-yet cases as well: a
+#                   settings.json with no "hooks" key, and a copilot file whose
+#                   EXTENSIONS flag is absent or false. Both parse perfectly,
+#                   so neither is `malformed` -- and an engine answering in a
+#                   FIFTH word would be, because the dispatcher below accepts
+#                   only the four listed here and reports anything else as a
+#                   file it could not parse
+#   other-checkout  a roost hook is there, pointing at a DIFFERENT checkout
+#   unreadable      the file exists and cannot be read
+#   malformed       it does not parse, an event roost writes is not an array,
+#                   or the engine could not answer
+#
+# A `write` with K > 0 is not a refusal, and it used to be one.
+# The refusal was correct while scripts/lib/roost-json.sh REPLACED each event
+# it wrote — merging over a PostToolUse carrying the user's own formatter
+# deleted it, rc 0, nothing printed — but refusing meant anyone with a
+# formatter hook got no roost automation at all, which is most of the people
+# who would want it. The merge appends now, so the honest answer is to write
+# and SAY what was kept.
+#
+# other-checkout is still a hard refusal and is the most important behaviour
+# in this file. See the codex note further down for why rewriting one would be
+# worse than doing nothing.
+#
+# EVENTS ARE NOT LISTED HERE. They are read out of PATCH — the very document
+# roost-hooks.sh is about to merge — so an event added there is checked here
+# without anybody remembering to. Same for the marker: it is the basename of
+# WANT, so "roost-agent-state" and "roost-codex-hook" are each written down
+# once, in the target path, and nowhere else.
+#
+# Both engines are implemented because roost_json_merge supports both, and a
+# probe that only understood python3 would leave a jq-only machine unable to
+# tell "already wired" from "wired somewhere else" — the one distinction that
+# decides whether anything is written at all.
+json_probe__py() {
+  cat <<'PY'
+import json
+import sys
+
+
+def commands(node, out):
+    # Every value of a "command" key, at any depth. Claude nests them under
+    # hooks[event][group]["hooks"][n], codex the same way; walking for the key
+    # rather than for a fixed shape means a hand-written file that nests
+    # differently is still read, instead of silently reading as empty (which
+    # would classify someone's own hook as "no hook here" and overwrite it).
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "command" and isinstance(v, str):
+                out.append(v)
+            else:
+                commands(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            commands(v, out)
+
+
+def main():
+    mode = sys.argv[1]
+    try:
+        with open(sys.argv[2]) as fh:
+            data = json.load(fh)
+    except Exception:
+        print("malformed")
+        return
+    if not isinstance(data, dict):
+        print("malformed")
+        return
+
+    if mode == "flag":
+        # `write 0 0`, not a word of its own. There is no hook entry to keep or
+        # to replace when the question is one boolean, and a fourth outcome
+        # that the dispatcher below would have to learn -- and did not -- is
+        # how this came back as "malformed" for a file that parses fine.
+        flags = data.get("enabledFeatureFlags")
+        print("ours" if isinstance(flags, dict) and flags.get("EXTENSIONS") is True else "write\t0\t0")
+        return
+
+    patch = json.loads(sys.argv[3])["hooks"]
+    want = sys.argv[4]
+    marker = want.rsplit("/", 1)[-1]
+    hooks = data.get("hooks")
+    if hooks is None:
+        # A settings.json with no "hooks" key at all: the most ordinary claude
+        # file this command meets. Nothing of anyone's is in those events, so
+        # nothing is kept and nothing is replaced.
+        print("write\t0\t0")
+        return
+    if not isinstance(hooks, dict):
+        print("malformed")
+        return
+
+    # Asked ENTRY BY ENTRY, not event by event, because the merge appends
+    # entry by entry. "Is this event already what roost would write" was the
+    # right question only while the merge assigned over the whole array; now
+    # the question is whether each of roost's entries is present, and who owns
+    # each of the ones that are not roost's.
+    missing = False   # one of roost's entries is not there -> a write is due
+    kept = 0          # entries belonging to someone else, which survive it
+    replaced = 0      # entries of ROOST'S OWN that are not the current shape
+    checkout = None   # a roost entry from a DIFFERENT checkout -> refuse
+    for event in patch:
+        existing = hooks.get(event, [])
+        # No append means anything here, and roost does not get to decide what
+        # it meant. roost_json_merge refuses it in the same words.
+        if not isinstance(existing, list):
+            print("malformed")
+            return
+        for entry in patch[event]:
+            if entry not in existing:
+                missing = True
+        for entry in existing:
+            if entry in patch[event]:
+                continue          # roost's own, already exactly right
+            cmds = []
+            commands(entry, cmds)
+            mine = bool(cmds)
+            for cmd in cmds:
+                if cmd == want or cmd.startswith(want + " "):
+                    continue
+                mine = False
+                if marker in cmd and checkout is None:
+                    checkout = cmd
+            if mine:
+                # This checkout's, but not the shape roost writes today: an
+                # older release's entry, or one the user edited by hand. The
+                # merge drops it and appends the canonical one. Counted
+                # separately from `kept` because it is the one change a user
+                # cannot see in the accounting — nothing of "theirs" was
+                # there, so no kept-line would fire — and reverting somebody's
+                # deliberate edit in silence is exactly the kind of thing this
+                # command prints backups for.
+                replaced += 1
+            else:
+                kept += 1
+
+    if checkout is not None:
+        print("other-checkout\t" + checkout)
+    elif missing or replaced:
+        print("write\t%d\t%d" % (kept, replaced))
+    else:
+        print("ours")
+
+
+main()
+PY
+}
+
+json_probe__jq() {
+  cat <<'JQ'
+def cmds: [ .. | objects | to_entries[] | select(.key == "command") | .value | select(type == "string") ];
+if length != 1 then "malformed"
+else .[0] as $d
+| if ($d | type) != "object" then "malformed"
+  elif $mode == "flag" then
+    (if (($d.enabledFeatureFlags | type) == "object") and ($d.enabledFeatureFlags.EXTENSIONS == true)
+     then "ours" else "write\t0\t0" end)
+  elif ($d.hooks == null) then "write\t0\t0"
+  elif (($d.hooks | type) != "object") then "malformed"
+  else
+    ($patch.hooks) as $p
+    | ($want | split("/") | .[-1]) as $marker
+    | if any($p | keys_unsorted[]; (($d.hooks[.]) // []) | type != "array") then "malformed"
+      else
+      ( [ ($p | keys_unsorted[]) as $ev
+          | (($d.hooks[$ev]) // []) as $ex
+          | ( [ $p[$ev][] as $pe | select(any($ex[]; . == $pe) | not) | "missing" ] )
+            + ( [ $ex[] as $ee | select(any($p[$ev][]; . == $ee) | not)
+                  | ($ee | cmds) as $c
+                  | if (($c | length) > 0) and (all($c[]; . == $want or startswith($want + " ")))
+                    then "replaced"
+                    else ( [ $c[] | select(((. == $want) or startswith($want + " ")) | not)
+                             | select(index($marker) != null) ] ) as $bad
+                         | if ($bad | length) > 0 then "other-checkout\t" + $bad[0] else "kept" end
+                    end ] )
+        ] | flatten ) as $all
+      | ( [ $all[] | select(startswith("other-checkout")) ] ) as $oc
+      | ( [ $all[] | select(. == "kept") ] | length ) as $nkept
+      | ( [ $all[] | select(. == "replaced") ] | length ) as $nrepl
+      | if ($oc | length) > 0 then $oc[0]
+        elif ($all | index("missing")) or ($nrepl > 0) then
+          "write\t" + ($nkept | tostring) + "\t" + ($nrepl | tostring)
+        else "ours" end
+      end
+  end
+end
+JQ
+}
+
+json_probe() { # json_probe MODE FILE [PATCH WANT]
+  local mode="$1" file="$2" patch="${3:-}" want="${4:-}" out
+  # jq's --argjson needs a document even in flag mode, where none is used.
+  [ -n "$patch" ] || patch='"'"'{"hooks":{}}'"'"'
+  # -r before anything else: a file that exists and cannot be read must not
+  # come back as "malformed", which reads as "your file is broken" when the
+  # real answer is a mode or an owner.
+  [ -r "$file" ] || { printf 'unreadable'; return 0; }
+  case "$(roost_json_tool)" in
+    python3)
+      out="$(python3 -c "$(json_probe__py)" "$mode" "$file" "$patch" "$want" 2>/dev/null)" ;;
+    jq)
+      out="$(jq -r --slurp --arg mode "$mode" --argjson patch "$patch" --arg want "$want" \
+               "$(json_probe__jq)" "$file" 2>/dev/null)" ;;
+  esac
+  case "$out" in
+    ours|write*|other-checkout*|malformed) printf '%s' "$out" ;;
+    # An engine that died, or an answer this does not recognise. Reported as
+    # malformed rather than guessed at: the write path then refuses and says
+    # so, and nothing is written on the strength of an answer nobody
+    # understood.
+    *) printf 'malformed' ;;
+  esac
+}
+
+# --- is this checkout itself behind? ---------------------------------------
+# `roost update` is an alias for `roost install`, so people will
+# reasonably expect it to update roost's own code. It does not, and must not:
+# the checkout may be someone's dev tree with local work in it, and this tool
+# does not get to run `git pull` over that. All it does is SAY so.
+#
+# It NEVER fetches. A fetch inside an installer is a surprise network call —
+# on a metered link, behind a proxy, or in a CI step that has no credentials —
+# and this command has never made one. The cost is honest and worth stating:
+# what it reads is as current as the user's last fetch and no more, so it can
+# be silent on a checkout that is in fact behind. Silent-when-unsure is the
+# right side to err on for a line nobody asked for.
+#
+# Silent on every uninteresting answer: git not installed, not a repo at all
+# (a tarball install must not print a git error at someone who did nothing
+# wrong), no upstream configured, or already current.
+upstream_note() {
+  local up n word
+  command -v git >/dev/null 2>&1 || return 0
+  git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # The abbreviated name is for the MESSAGE only. The count is asked with the
+  # literal @{upstream}, so a remote branch whose name needs quoting cannot
+  # turn into a ref this fails to resolve and then silently reports as zero.
+  up="$(git -C "$HERE" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)" || return 0
+  [ -n "$up" ] || return 0
+  n="$(git -C "$HERE" rev-list --count 'HEAD..@{upstream}' 2>/dev/null)" || return 0
+  case "$n" in ''|0) return 0 ;; esac
+  word=commits; [ "$n" = 1 ] && word=commit
+  printf 'This checkout is %s %s behind %s.\n' "$n" "$word" "$up"
+  printf '  roost install wires harnesses to this checkout; it does not update roost\n'
+  printf '  itself, and it has not fetched — this is what git already knew locally.\n'
+  printf '  To update the code:  git -C "%s" pull\n\n' "$HERE"
+}
+
+# --- plan ------------------------------------------------------------------
+# Records are tab-separated lines in a newline-separated string: bash 3.2 is
+# the floor here, so no associative arrays, and roost-validate already uses
+# this shape for BLOCKED_LINKS.
+#
+#   LINK_STEPS   ACTION \t HARNESS \t PATH \t TARGET   (ACTION: link | relink)
+#   OK_STEPS     HARNESS \t PATH
+#   REFUSED      HARNESS \t PATH \t TARGET
+LINK_STEPS=""
+OK_STEPS=""
+REFUSED=""
+DETECTED=""
+TAB="$(printf '\t')"
+
+for h in $HARNESSES; do
+  in_scope "$h" || continue
+  # A harness that is not installed is not mentioned at all. Not "skipped",
+  # not "not found" — an install report should be about this machine, and a
+  # list of five harnesses of which the user has two is noise they have to
+  # read past every single run.
+  command -v "$h" >/dev/null 2>&1 || continue
+  DETECTED="$DETECTED $h"
+
+  case "$(roost_adapter_state "$h")" in
+    ok)      OK_STEPS="$OK_STEPS$h$TAB$(roost_adapter_path "$h")
+"
+             record_outcome unchanged "$h" "$(roost_adapter_path "$h")" ;;
+    missing) LINK_STEPS="${LINK_STEPS}link$TAB$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
+" ;;
+    # A dangling symlink is OURS and broken — the checkout it pointed at moved
+    # or was deleted — so replacing it loses nothing. This is the whole reason
+    # roost_adapter_state reports `dangling` separately from `foreign`.
+    dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
+" ;;
+    foreign) REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$h")$TAB$(roost_adapter_target "$h")
+"
+             record_outcome refused "$h" "$(roost_adapter_path "$h")" ;;
+    # `none` is claude and codex: no symlink-shaped adapter exists for them.
+    none) : ;;
+  esac
+done
+
+DETECTED="${DETECTED# }"
+
+# --- the JSON steps --------------------------------------------------------
+# The harnesses configured by editing a JSON file rather than by a symlink.
+# One name per task as they land; the machinery below is shared.
+#
+#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t KEPT \t REPLACED \t LABEL
+#                 KEPT     entries belonging to someone else that survive
+#                 REPLACED entries of roost's own that are not the current
+#                          shape and will be overwritten by it
+#   JSON_OK       HARNESS \t REAL_PATH
+#   JSON_REFUSED  HARNESS \t REAL_PATH \t WHY   (WHY runs to end of line)
+#
+# REAL_PATH and CONFIG_PATH differ only when the config file is a symlink —
+# see resolve_link. Everything downstream writes to REAL_PATH and mentions
+# CONFIG_PATH, because that is the one the user knows the file by.
+JSON_HARNESSES="claude codex copilot"
+JSON_STEPS=""
+JSON_OK=""
+JSON_REFUSED=""
+
+# print  — the user asked for the block instead of a write (--print-only)
+# notool — neither python3 nor jq is here, so roost CANNOT edit JSON. Not an
+#          error: scripts/lib/roost-json.sh returns 3 for exactly this and the
+#          contract is that the caller falls back to printing. The run carries
+#          on and still exits 0.
+# write  — the ordinary case.
+JSON_MODE=write
+[ "$PRINT_ONLY" -eq 1 ] && JSON_MODE=print
+[ -n "$(roost_json_tool)" ] || JSON_MODE=notool
+
+if [ "$SYMLINKS_ONLY" -eq 0 ]; then
+  for h in $JSON_HARNESSES; do
+    case " $DETECTED " in *" $h "*) : ;; *) continue ;; esac
+    json_cfg="$(roost_adapter_settings "$h")"
+    json_real="$(resolve_link "$json_cfg")"
+    case "$h" in
+      claude)
+        json_probe_mode=hooks
+        json_want="$CLAUDE_TARGET"
+        json_patch="$(roost_hooks_claude "$CLAUDE_TARGET")"
+        json_label="roost's four Claude hooks" ;;
+      codex)
+        json_probe_mode=hooks
+        json_want="$CODEX_TARGET"
+        json_patch="$(roost_hooks_codex "$CODEX_TARGET")"
+        json_label="roost's four codex handlers" ;;
+      # Not a hook file: one boolean, and no target script to compare against.
+      # The question is only whether it is already true, and it is asked of
+      # the PARSED document -- scripts/roost-doctor:233 greps for the flag's
+      # name and its own comment records the cost, that a file setting it to
+      # false reads as set. Doctor can afford that; an installer that took it
+      # would leave the extension off forever and report success.
+      copilot)
+        json_probe_mode=flag
+        json_want=""
+        json_patch=""
+        json_label="copilot's EXTENSIONS feature flag" ;;
+    esac
+
+    # Not a write: --print-only, or no JSON engine on the machine. Nothing is
+    # recorded here -- the manual block at the end re-derives both the harness
+    # list and the reason from $DETECTED and $JSON_MODE, which is where they
+    # have to be read from anyway.
+    [ "$JSON_MODE" = write ] || continue
+
+    if [ -e "$json_real" ]; then
+      json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want")"
+    else
+      json_answer="write${TAB}0${TAB}0"
+    fi
+    json_state="${json_answer%%$TAB*}"
+    json_rest="${json_answer#*$TAB}"
+    [ "$json_rest" = "$json_answer" ] && json_rest=""
+    json_kept="${json_rest%%$TAB*}"
+    json_repl="${json_rest#*$TAB}"
+    [ "$json_repl" = "$json_rest" ] && json_repl=0
+    # The detail is a COMMAND STRING out of the user's own JSON, and both the
+    # refusal records and the manual notes are newline-separated. An embedded
+    # newline split one record into two, and the orphaned half was printed as
+    # its own "Still manual" note — with no harness and no path, telling the
+    # user to run `roost hooks <their own text>`. Nothing executed and the
+    # file was still correctly left alone, but text out of a file roost is
+    # READING must never come back out as an instruction roost is GIVING.
+    # Tabs go too: they are this record format's field separator.
+    #
+    # Bash's own substitution, not `tr`, for the reason the --only guard above
+    # already gives at length: a thin PATH must not turn this into a silent
+    # no-op. It very nearly did — the suite's harness shim carries no `tr`, so
+    # the first version of this line produced an EMPTY detail on every run and
+    # the case that was supposed to prove the stripping passed because the
+    # text had vanished for the wrong reason.
+    json_detail="${json_rest//[$'\n\r\t']/}"
+
+    case "$json_state" in
+      # KEPT and REPLACED ride along so the writing block can report both:
+      # entries of somebody else's that survive this, and entries of roost's
+      # own that it overwrites with the current shape. A user should be able
+      # to see either from the output rather than from a diff.
+      #
+      # A malformed file is planned as a write rather than pre-refused here,
+      # deliberately. roost_json_merge parses it again at write time, refuses
+      # in the parser's OWN words, writes nothing and takes no backup — a
+      # better message than this could produce — and routing it that way is
+      # what keeps `--dry-run` at exit 0 while an attempted run exits 1.
+      write)
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_kept$TAB$json_repl$TAB$json_label
+" ;;
+      malformed)
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}0${TAB}0$TAB$json_label
+" ;;
+      ours)
+        JSON_OK="$JSON_OK$h$TAB$json_real
+"
+        record_outcome unchanged "$h" "$json_real" ;;
+      # WHY is one LINE, detail included. These records are newline-separated,
+      # so a two-line reason would be read back as two records and the second
+      # one would arrive with no harness and no path.
+      other-checkout)
+        JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a different checkout: $json_detail
+"
+        record_outcome refused "$h" "$json_real" ;;
+      unreadable)
+        JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}it exists and could not be read
+"
+        record_outcome refused "$h" "$json_real" ;;
+    esac
+  done
+fi
+
+if [ -z "$DETECTED" ]; then
+  printf 'roost install: no supported harness found on PATH — nothing to do.\n'
+  # What it ACTUALLY looked for. Under --only that is the restricted list, and
+  # printing all five would tell a user their harness was searched for and
+  # missing when it was never searched for at all.
+  if [ -n "$ONLY_LIST" ]; then
+    printf '  Looked for (--only): %s\n' "$ONLY_LIST"
+  else
+    printf '  Looked for: %s\n' "$HARNESSES"
+  fi
+  # Printed on this path too, and not only on the one below. Someone running
+  # this on a machine with no harness on PATH is quite likely to be looking at
+  # a checkout that has not been updated in a while, which is exactly when the
+  # note is worth having.
+  printf '\n'
+  upstream_note
+  exit 0
+fi
+
+printf 'roost install — wiring these harnesses to\n  %s\n\n' "$HERE"
+printf 'Detected: %s\n\n' "${DETECTED// /, }"
+upstream_note
+
+if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
+  printf 'Will write:\n'
+  # Every planned write, with the exact target path, printed BEFORE anything
+  # happens. "link the opencode adapter" is not something a user can check;
+  # a full path is.
+  printf '%s' "$LINK_STEPS" | while IFS="$TAB" read -r action h path target; do
+    [ -n "$action" ] || continue
+    printf '  %-6s %s\n         -> %s\n' "$action" "$path" "$target"
+  done
+  # Same column, same rule: the exact file, and what goes into it. When the
+  # config path is a symlink the REAL file is the one named on the first line,
+  # because that is the file whose bytes change.
+  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg kept replaced label; do
+    [ -n "$h" ] || continue
+    # Setting a boolean flag is not a merge in the sense the two hook files
+    # are, and one word for both reads as "roost is about to rewrite my
+    # copilot settings". Its own verb.
+    case "$h" in copilot) verb=enable ;; *) verb=merge ;; esac
+    printf '  %-6s %s\n         %s\n' "$verb" "$real" "$label"
+    case "$kept" in
+      0) : ;;
+      1) printf '         (the 1 entry already in those events is kept)\n' ;;
+      *) printf '         (the %s entries already in those events are kept)\n' "$kept" ;;
+    esac
+    case "$replaced" in
+      0) : ;;
+      *) printf '         (a roost entry already there is replaced with the current one)\n' ;;
+    esac
+    [ "$real" = "$cfg" ] || printf '         (%s is a symlink to it)\n' "$cfg"
+  done
+  printf '\n'
+fi
+
+if [ -n "$OK_STEPS$JSON_OK" ]; then
+  # One summary line, not a line each. An `ok` adapter is the boring case and
+  # the point of running this twice is that the second run is quiet.
+  #
+  # De-duplicated: copilot has BOTH a symlink and a settings file, so without
+  # this it reports itself twice on a machine where both are already right.
+  ok_names=""
+  while IFS="$TAB" read -r h path; do
+    [ -n "${h:-}" ] || continue
+    case " $ok_names " in *" $h "*) continue ;; esac
+    ok_names="$ok_names $h"
+  done <<EOF
+$OK_STEPS$JSON_OK
+EOF
+  ok_names="${ok_names# }"
+  printf 'Already correct: %s\n\n' "${ok_names// /, }"
+fi
+
+if [ -n "$REFUSED" ]; then
+  printf 'Will NOT touch — something that is not this checkout is already there:\n'
+  printf '%s' "$REFUSED" | while IFS="$TAB" read -r h path target; do
+    [ -n "$h" ] || continue
+    printf '  %s\n' "$path"
+  done
+  printf '\n'
+fi
+
+if [ -n "$JSON_REFUSED" ]; then
+  # Separate from the block above because the REASON is the useful part here
+  # and it differs per file, where a symlink refusal always means the same
+  # thing. Printed before the prompt, so anyone who says yes has already been
+  # told which of their files this run has decided to leave alone.
+  printf 'Will NOT edit — and the reason matters, so read it before answering:\n'
+  printf '%s' "$JSON_REFUSED" | while IFS="$TAB" read -r h path why; do
+    [ -n "$h" ] || continue
+    printf '  %s\n    %s\n' "$path" "$why"
+  done
+  printf '\n'
+fi
+
+# --- consent ---------------------------------------------------------------
+do_writes=0
+if [ -z "$LINK_STEPS$JSON_STEPS" ]; then
+  # Nothing to ask about. Asking anyway trains people to type y without
+  # reading, which is the opposite of what the prompt is for.
+  :
+elif [ "$DRY_RUN" -eq 1 ]; then
+  printf -- '--dry-run: nothing above was written.\n\n'
+elif [ "$ASSUME_YES" -eq 1 ]; then
+  do_writes=1
+elif [ -t 0 ]; then
+  # 60s and then no. The promise of the prompt is that walking away is safe,
+  # so silence has to resolve to the conservative answer, not the convenient
+  # one. `read` returns non-zero on both the timeout and EOF; both mean no.
+  ans=n
+  printf 'Write the above? [y/N] (no answer in 60s = no) '
+  read -r -t 60 ans || ans=n
+  printf '\n'
+  case "${ans:-n}" in y|Y|yes|YES) do_writes=1 ;; *) printf 'Nothing was written.\n\n' ;; esac
+else
+  # A pipe, a cron, a CI step. Nobody is there to consent — and a "y" arriving
+  # on a non-terminal stdin is not a person answering, it is whatever the
+  # caller happened to have on stdin. --yes is how an unattended run opts in
+  # explicitly, and it is the only way.
+  printf 'Not a terminal, so nothing was asked and nothing was written.\n'
+  printf 'Pass --yes to write in an unattended run.\n\n'
+fi
+
+# --- do it -----------------------------------------------------------------
+failed=0
+UNDO=""
+
+if [ "$do_writes" -eq 1 ]; then
+  printf 'Writing:\n'
+  # A `while read` over a pipeline runs in a subshell in bash 3.2, where
+  # $failed and $UNDO would be lost on the way out. A here-string keeps the
+  # loop in this shell.
+  while IFS="$TAB" read -r action h path target; do
+    [ -n "${action:-}" ] || continue
+
+    # Re-checked immediately before writing rather than trusted from the plan
+    # above. The prompt may have sat there for a minute, and this is the one
+    # place in the command that creates something on someone's machine.
+    # roost-validate's offer_adapter_install used to take the same precaution
+    # in its own loop and now relies on this one, having asked its question
+    # and handed the writing over — so this check is the only thing standing
+    # between that prompt's minute and a path that changed underneath it.
+    state="$(roost_adapter_state "$h")"
+    case "$action:$state" in
+      link:missing|relink:dangling) : ;;
+      *:ok)
+        printf '  %s was already linked by the time this ran — left alone\n' "$h"
+        record_outcome unchanged "$h" "$path"
+        continue ;;
+      *)
+        printf '  %s changed underneath this run (now: %s) — left alone\n' "$h" "$state"
+        REFUSED="$REFUSED$h$TAB$path$TAB$target
+"
+        record_outcome refused "$h" "$path"
+        continue ;;
+    esac
+
+    if [ "$action" = relink ]; then
+      # Only ever a link we already know is dangling, re-verified one line
+      # above. Never a bare `rm` of whatever happens to be at the path.
+      rm -f "$path" 2>/dev/null
+    fi
+
+    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$target" "$path" 2>/dev/null; then
+      printf '  %-8s %s\n' "${action}ed" "$path"
+      UNDO="${UNDO}rm \"$path\"
+"
+      record_outcome wrote "$h" "$path" "rm \"$path\""
+    else
+      printf '  could NOT %s %s\n' "$action" "$path" >&2
+      record_outcome failed "$h" "$path"
+      failed=1
+    fi
+  done <<EOF
+$LINK_STEPS
+EOF
+
+  # The JSON steps, under the SAME single consent as the symlinks above. A
+  # here-string again, and for the same reason: $failed and $UNDO must survive
+  # the loop.
+  json_reindented=0
+  while IFS="$TAB" read -r h real cfg kept replaced label; do
+    [ -n "${h:-}" ] || continue
+
+    # Whether the file was there BEFORE this write decides what the undo line
+    # says, and it has to be read now: after the merge the file exists either
+    # way.
+    json_existed=0
+    [ -e "$real" ] && json_existed=1
+
+    # roost_json_merge prints the backup path on stdout, and ONLY when it
+    # actually took one — an existing file whose content is about to change.
+    # Its stderr (a parser's complaint about a malformed file) is deliberately
+    # not captured: that message is the most useful thing this command can
+    # give someone whose settings.json will not parse.
+    case "$h" in
+      claude) json_bak="$(roost_json_merge "$real" claude-hooks "$CLAUDE_TARGET")"; rc=$? ;;
+      # Adding a NEW event to a hooks.json codex has already been trusted with
+      # is measured-safe on 0.151.0: the handlers already trusted keep firing,
+      # because their hashes are over their own parsed structs and nothing
+      # about them moved. The handlers roost's own merge would REPLACE are the
+      # ones the probe has already refused to touch.
+      codex)  json_bak="$(roost_json_merge "$real" codex-hooks  "$CODEX_TARGET")";  rc=$? ;;
+      copilot) json_bak="$(roost_json_merge "$real" copilot-flag)"; rc=$? ;;
+      *)      json_bak=""; rc=2 ;;
+    esac
+
+    case "$rc" in
+      0)
+        if [ "$json_existed" -eq 1 ] && [ -z "$json_bak" ]; then
+          # Nothing changed after all. The probe said a write was needed and
+          # the merge disagreed; say so rather than claiming a write.
+          printf '  %s needed no change: %s\n' "$h" "$real"
+          record_outcome unchanged "$h" "$real"
+          continue
+        fi
+        case "$h" in copilot) printf '  enabled  %s\n' "$real" ;;
+                     *)       printf '  merged   %s\n' "$real" ;; esac
+        [ "$real" = "$cfg" ] || \
+          printf '           (%s is a symlink — written through to the real file above,\n           so your dotfiles repo still owns it)\n' "$cfg"
+        if [ -n "$json_bak" ]; then
+          printf '           backup:  %s\n' "$json_bak"
+          json_reindented=1
+          UNDO="${UNDO}cp \"$json_bak\" \"$real\"
+"
+          record_outcome wrote "$h" "$real" "cp \"$json_bak\" \"$real\""
+        else
+          UNDO="${UNDO}rm \"$real\"
+"
+          record_outcome wrote "$h" "$real" "rm \"$real\""
+        fi
+        # Both said out loud, after the backup line so "the backup above" is
+        # true. The first because roost's entry REPLACING theirs is exactly
+        # what this used to do, and a user who has been bitten by a tool
+        # rewriting their hooks has no reason to take it on trust. The second
+        # because a roost entry someone customised by hand is reverted here —
+        # deliberately, it is how an older shape gets updated — and reverting
+        # somebody's edit in silence is the thing backups exist to make
+        # visible.
+        case "$kept" in
+          0) : ;;
+          1) printf '           kept the 1 entry already in those events; roost joined it\n' ;;
+          *) printf '           kept the %s entries already in those events; roost joined them\n' "$kept" ;;
+        esac
+        case "$replaced" in
+          0) : ;;
+          1) printf '           replaced 1 roost entry of its own with the current one\n' ;;
+          *) printf '           replaced %s roost entries of its own with the current ones\n' "$replaced" ;;
+        esac
+        case "$replaced" in
+          0) : ;;
+          *) [ -n "$json_bak" ] && printf '           (the backup above still has what it said)\n' ;;
+        esac
+        ;;
+      *)
+        # 1, 2 and 5 all mean the same thing to a user: nothing was written,
+        # no backup was taken, and the engine's own message is above.
+        printf '  could NOT write %s\n' "$real" >&2
+        record_outcome failed "$h" "$real"
+        failed=1 ;;
+    esac
+  done <<EOF
+$JSON_STEPS
+EOF
+
+  # Once per run, and only when a file that already existed was rewritten.
+  # Someone who diffs their settings.json afterwards finds every line changed
+  # and needs to have been told why, and where the original went.
+  if [ "$json_reindented" -eq 1 ]; then
+    printf '\n  A JSON round-trip renormalises the whole file to two spaces of\n'
+    printf '  indentation, so a diff will show lines this run did not mean to touch.\n'
+    printf '  Only whitespace moved; the backup above holds the original bytes.\n'
+  fi
+  printf '\n'
+fi
+
+# --- undo ------------------------------------------------------------------
+# Only for what THIS run wrote. Printing `rm` lines for links that were
+# already correct is how someone deletes a working install while trying to
+# undo a run that did nothing.
+if [ -n "$UNDO" ]; then
+  printf 'To undo exactly what this run wrote (removing a symlink cannot affect\nwhat it pointed at; a `cp` puts back the bytes the backup holds):\n'
+  # Whole commands, not bare paths: undoing a JSON merge is a restore from the
+  # backup, not a delete, and a user copying these lines must not have to work
+  # out which is which.
+  printf '%s' "$UNDO" | while read -r line; do
+    [ -n "$line" ] && printf '  %s\n' "$line"
+  done
+  printf '\n'
+fi
+
+# --- what is still manual --------------------------------------------------
+# Only the steps that actually apply on THIS machine, after what this run
+# actually did.
+manual=""
+# Entries are separated by a blank line. Several of them are three or four
+# lines long and carry a command to paste; run together they read as one wall
+# of text and the command lines stop standing out, which is the only part
+# anyone is going to act on.
+add_manual() { manual="$manual$1
+
+"; }
+
+if [ -n "$REFUSED" ]; then
+  # Never a bare `ln -sf`. Overwriting is the user's call to make, not
+  # something roost hands them without first saying what is there.
+  while IFS="$TAB" read -r h path target; do
+    [ -n "${h:-}" ] || continue
+    add_manual "$h: something that is not this checkout is at
+    $path
+  roost install will not replace it. If you are sure you want roost's adapter
+  there instead, look at the file first, then:
+    rm \"$path\" && ln -s \"$target\" \"$path\""
+  done <<EOF
+$REFUSED
+EOF
+fi
+
+# WHERE THE JSON STEPS GO
+# -----------------------
+# The claude, codex and copilot JSON writes are planned alongside LINK_STEPS
+# above and executed under the same single consent, so each one DROPS OUT of
+# the manual notes below the moment it is actually performed. A note here now
+# means one of three things and nothing else: the write was refused (the file
+# is not ours to change), --print-only asked for the block instead, or there
+# is no JSON tool on this machine.
+#
+# What must keep being true: --print-only keeps printing the block instead of
+# writing it, --symlinks-only keeps skipping the JSON entirely (it is what
+# `roost validate` invokes, and validate's report promises the tester that
+# nothing but symlinks was written), and the codex trust prompt and the copilot
+# per-directory approval stay listed forever — they are prompts no tool can
+# answer, not steps waiting to be automated.
+
+# A step this run would not or could not perform. One note per refusal,
+# carrying the reason the plan already printed plus the command that prints
+# the block to merge by hand.
+if [ -n "$JSON_REFUSED" ]; then
+  while IFS="$TAB" read -r h path why; do
+    [ -n "${h:-}" ] || continue
+    json_note="$h: left alone —
+    $path
+  $why
+  roost will not edit that file. Look at it first, then merge the object from
+    roost hooks $h
+  into it by hand, or move the entry that is already there out of the way."
+    # The one place in this command where helpfully fixing something would be
+    # worse than doing nothing, said in plain words because a reader who does
+    # not know this will reasonably assume the tool is being timid.
+    case "$h" in
+      codex) json_note="$json_note
+  Why roost will not just rewrite it: codex stores a hash of each handler and
+  silently skips any handler whose hash no longer matches — nothing on stdout,
+  nothing on stderr, nothing in its TUI. Rewriting that command string would
+  re-hash the handler and stop every badge on a machine that is working today,
+  with no way to notice. Doing nothing is deliberate." ;;
+    esac
+    add_manual "$json_note"
+  done <<EOF
+$JSON_REFUSED
+EOF
+fi
+
+if [ "$SYMLINKS_ONLY" -eq 0 ]; then
+  case " $DETECTED " in *" claude "*)
+    # The BLOCK itself, not a "run this to see it" — that is what --print-only
+    # is for, and on a machine with no JSON tool it is all roost can offer.
+    # The bytes come from roost-hooks.sh so they are the same ones `roost
+    # hooks` prints.
+    case "$JSON_MODE" in
+      print)
+        add_manual "claude: --print-only, so nothing was written. Merge this into
+    $(roost_adapter_settings claude)
+  into any \"hooks\" object already there:
+$(roost_hooks_claude)" ;;
+      notool)
+        add_manual "claude: neither python3 nor jq is on this PATH, so roost cannot edit
+  JSON here. Nothing was written. Merge this into
+    $(roost_adapter_settings claude)
+  into any \"hooks\" object already there:
+$(roost_hooks_claude)" ;;
+    esac
+  ;; esac
+
+  case " $DETECTED " in *" codex "*)
+    codex_hooks="$(roost_adapter_settings codex)"
+    case "$JSON_MODE" in
+      print)
+        add_manual "codex: --print-only, so nothing was written. Put this in
+    $codex_hooks
+$(roost_hooks_codex)" ;;
+      notool)
+        add_manual "codex: neither python3 nor jq is on this PATH, so roost cannot edit
+  JSON here. Nothing was written. Put this in
+    $codex_hooks
+$(roost_hooks_codex)" ;;
+    esac
+    # Unconditional, and it always will be — printed on every path, including
+    # the ones that wrote nothing at all. Codex skips every hook until a human
+    # answers this, there is no file on disk that records the answer, and no
+    # tool can answer it for them, so there is nothing roost could detect that
+    # would justify leaving it out.
+    add_manual "codex: start \`codex\` and answer \"Trust all and continue\" at its
+  \"Hooks need review\" prompt. Until then codex silently runs no hook at all
+  and its pane will not badge."
+  ;; esac
+
+  case " $DETECTED " in *" copilot "*)
+    copilot_settings="$(roost_adapter_settings copilot)"
+    case "$JSON_MODE" in
+      print)
+        add_manual "copilot: --print-only, so nothing was written. Add
+    {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}}
+  to $copilot_settings (merging, not replacing)." ;;
+      notool)
+        add_manual "copilot: neither python3 nor jq is on this PATH, so roost cannot edit
+  JSON here. Nothing was written. Add
+    {\"enabledFeatureFlags\": {\"EXTENSIONS\": true}}
+  to $copilot_settings (merging, not replacing)." ;;
+    esac
+    # Permanent, and printed on every path including the ones that wrote
+    # nothing. copilot persists nothing for this, so there is no file to read
+    # and no way to tell "not yet asked" from "denied" — do not try to detect
+    # it, say it plainly instead.
+    add_manual "copilot: the first time you run it in a directory, answer Yes to the
+  extension's \"wants to: handle permission requests\" prompt. Once per
+  directory, and nothing on disk records it."
+  ;; esac
+fi
+
+if [ -n "$manual" ]; then
+  printf 'Still manual:\n\n'
+  printf '%s' "$manual" | sed 's/^/  /; s/^  $//'
+  printf '\n'
+fi
+
+# --- exit ------------------------------------------------------------------
+# 0 covers "everything it could do succeeded", refusals and leftover manual
+# steps included: a foreign path left alone is this command working correctly,
+# not failing. Only a write that was attempted and did not happen is a 1.
+if [ "$failed" -ne 0 ]; then
+  printf 'roost install: at least one write failed (see above).\n' >&2
+  exit 1
+fi
+exit 0

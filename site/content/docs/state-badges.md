@@ -5,9 +5,50 @@ sidebar:
   order: 5
 ---
 
+## Wire everything at once
+
+If you installed roost with `curl … | sh`, this is already done — that
+installer wires your agents in the same step as the `PATH` line. Otherwise one
+command does the whole page:
+
+```sh
+roost install
+```
+
+It touches only harnesses you already have, prints the plan before it writes
+anything, and asks once. It creates the three adapter symlinks (opencode, pi,
+copilot), merges roost's four hooks into Claude's `settings.json`, writes
+codex's `hooks.json`, and turns on copilot's `EXTENSIONS` flag. `roost update`
+is a real alias for the same command — it re-wires, it does **not** fetch new
+roost code — so run either one again after installing a new harness or moving
+your checkout.
+
+It is safe to repeat. Hooks you already have are kept and roost's join them, a
+second run adds no duplicates, every file it edits is backed up beside itself
+as `<name>.roost-bak-<timestamp>`, and anything at an adapter path that is not
+roost's is left exactly as found and named rather than replaced.
+
+```sh
+roost install --dry-run     # print the plan, write nothing
+roost install --only pi     # one harness at a time
+roost install --print-only  # never edit JSON — print the blocks to paste
+roost install --help        # the rest of the flags
+```
+
+**Two steps it cannot do, because both are prompts a human answers:** codex's
+*"Trust all and continue"*, and copilot's per-directory *"wants to: handle
+permission requests"*. Both are described in their own sections below, and
+`roost install` lists whichever apply when it finishes.
+
+Everything below is that same wiring by hand. Reach for it on a machine with
+neither `python3` nor `jq`, when roost refused to touch a config file because
+it is not roost's, or when you would simply rather see what goes where.
+
 ## Claude Code (one-time)
 
-The badges are driven by four Claude Code hooks. Print the snippet:
+The badges are driven by four Claude Code hooks. `roost install` merges them
+into `~/.claude/settings.json` for you, keeping whatever is already in those
+events. To do it by hand, print the snippet:
 
 ```sh
 roost hooks
@@ -41,14 +82,15 @@ It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside a ro
 
 ## opencode
 
-**opencode** has an adapter in this repo. Symlink it into place:
+**opencode** has an adapter in this repo. `roost install --only opencode` links
+it. By hand:
 
 ```sh
 mkdir -p ~/.config/opencode/plugin
 ln -s "$HOME/path/to/roost/adapters/opencode/roost.js" ~/.config/opencode/plugin/roost.js
 ```
 
-A symlink rather than a copy, so updating roost updates the plugin. `roost doctor` prints this exact command with the real path for your checkout, so run that if you are unsure what to fill in — it also confirms once the plugin is linked.
+A symlink rather than a copy, so updating roost updates the plugin. `roost doctor` prints this exact command with the real path for your checkout, so run that if you are unsure what to fill in — it also confirms once the plugin is linked, and ends the line with `, or run: roost install`.
 
 One thing to check before you rely on it: the plugin runs **inside the opencode process that owns the pane**, which is how it knows which pane to badge. A plain `opencode` in a roost pane is exactly that. `opencode attach` against a detached `opencode serve` is not — there the plugin runs in the server, and the pane you are looking at is never badged.
 
@@ -85,7 +127,8 @@ That matters most in a script. If you loop `roost wait-done` over several agents
 
 ## GitHub Copilot CLI
 
-**GitHub Copilot CLI** has an adapter in this repo. Symlink it into place:
+**GitHub Copilot CLI** has an adapter in this repo. `roost install --only copilot`
+links it and turns on the feature flag below. By hand:
 
 ```sh
 mkdir -p ~/.copilot/extensions/roost
@@ -96,9 +139,9 @@ A symlink rather than a copy, so updating roost updates the extension. `roost do
 
 The directory name is yours; the file name is not — copilot looks for `extension.mjs` and nothing else. User scope (`~/.copilot/`) rather than a project's `.github/extensions/` matters: only user scope is loaded in both interactive and `copilot -p` mode.
 
-**Two things gate it, and both are silent when they are not met.** `roost doctor` checks the first and reminds you of the second.
+**Two things gate it, and both are silent when they are not met.** `roost install` does the first for you; `roost doctor` checks the first and reminds you of the second.
 
-1. **Extensions are off by default.** Either launch your panes as `copilot --experimental`, or put this in `~/.copilot/settings.json`:
+1. **Extensions are off by default.** `roost install` merges the flag into `~/.copilot/settings.json`. By hand, either launch your panes as `copilot --experimental`, or put this there yourself:
 
    ```json
    { "enabledFeatureFlags": { "EXTENSIONS": true } }
@@ -106,7 +149,7 @@ The directory name is yours; the file name is not — copilot looks for `extensi
 
    Without one of them copilot never reads the adapter, and says nothing about having skipped it.
 
-2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading; there is no global pre-approval, so a new worktree asks again.
+2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading; there is no global pre-approval, so a new worktree asks again. **This is one of the two steps no installer can do for you**: it is a prompt in copilot's own TUI, and nothing on disk records the answer.
 
 That second dialog is the price of the 🛑 badge, and it is worth being clear about why. Copilot only tells an extension a permission dialog has opened if that extension registers a permission handler — so without one, a pane sits on ⏳ working while you stare at a prompt, and `roost send` will happily type into it. roost registers the handler and returns the SDK's observe-only result: it sees the dialog and badges the pane, and **your dialog still opens and you still choose**. roost never answers a permission prompt.
 
@@ -124,7 +167,7 @@ That second dialog is the price of the 🛑 badge, and it is worth being clear a
 
 ## pi
 
-**pi** has an adapter in this repo. Symlink it into place:
+**pi** has an adapter in this repo. `roost install --only pi` links it. By hand:
 
 ```sh
 mkdir -p ~/.pi/agent/extensions
@@ -171,15 +214,17 @@ roost state working && pi -p "…" && roost state done
 `tests/live/pi-smoke.sh` drives real pi against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after a pi upgrade. It needs no account: it points pi at a local ollama.
 ## OpenAI Codex CLI
 
-**Codex** has an adapter in this repo. Unlike the two above it is not a symlink — codex is wired through hooks, like Claude Code. Print the config:
+**Codex** has an adapter in this repo. Unlike the symlinked ones it is wired through hooks, like Claude Code — `roost install --only codex` writes `~/.codex/hooks.json` for you. To do it by hand, print the config:
 
 ```sh
 roost hooks codex
 ```
 
-Write the JSON object it prints (not the comment lines — `hooks.json` is strict JSON) into `~/.codex/hooks.json`. Then start `codex` once and answer **"Trust all and continue"** at its `Hooks need review` prompt.
+Write the JSON object it prints (not the comment lines — `hooks.json` is strict JSON) into `~/.codex/hooks.json`. Then, either way, start `codex` once and answer **"Trust all and continue"** at its `Hooks need review` prompt.
 
-**That second step is not optional, and skipping it looks exactly like success.** Until you answer it, codex skips every hook and says nothing about having done so — your turns run normally and the pane simply never badges. `roost doctor` reads the trust entries and tells you which of the four are missing.
+**That second step is not optional, it is the other step no installer can do for you, and skipping it looks exactly like success.** Until you answer it, codex skips every hook and says nothing about having done so — your turns run normally and the pane simply never badges. `roost doctor` reads the trust entries and tells you which of the four are missing.
+
+One thing `roost install` will *not* do here: if `~/.codex/hooks.json` already points at a **different** roost checkout, it refuses and says so rather than rewriting it. That is deliberate, for the reason in the next paragraph but one — rewriting the command string re-hashes the handler, and codex then silently skips a hook a machine had already trusted.
 
 | codex hook | state |
 |------------|-------|

@@ -24,7 +24,8 @@ A pane is an agent only if it has been stamped, so a plain shell or a `tail -f` 
 ```
 bin/roost                   # launcher / CLI (up, session, new, spawn, split, whoami,
                             #   ssh, send, read, screen, reply, wait-done, state,
-                            #   hooks, doctor, init, settings, status, kill)
+                            #   hooks, doctor, validate, install, update, init,
+                            #   settings, status, kill)
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the
@@ -35,6 +36,8 @@ scripts/roost-notify        # cross-platform desktop notification delivery
 scripts/roost-doctor        # preflight checks (tmux version, truecolor, fzf, JSON
                             #   reader, hooks, adapter links, notifier)
 scripts/roost-init          # setup wizard (theme, glyphs, separator style, prints hooks)
+scripts/roost-install       # `roost install` / `roost update`: wire every installed
+                            #   harness to this checkout (symlinks + hook files)
 scripts/roost-settings      # live settings TUI (prefix S)
 scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
 scripts/roost-themes.sh     # built-in theme palettes

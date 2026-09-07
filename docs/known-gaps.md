@@ -43,18 +43,18 @@ is how a stale badge is told apart from a live one. Both triggers were re-run:
 Esc held `blocked` for 97 s, `4. No` for 46 s, neither self-healing. Answering
 **Yes** does clear it — the tool runs, `PostToolUse` fires, the pane goes
 `working` then `done` — so the surviving hole is exactly *decline* and
-*interrupt*, which the `roost hooks` comment in `bin/roost:240-241` and
+*interrupt*, which the `roost hooks` comment in `bin/roost:339-340` and
 `site/content/docs/state-badges.md` both describe only for the approve path.
 
 **Three consumers read that badge, and all three are wrong on a stale one:**
 
-- `roost send` — exit 3, forever (`bin/roost:346-350`).
-- `roost wait-done` — `busy()` counts `blocked` as busy (`bin/roost:593-613`),
+- `roost send` — exit 3, forever (`bin/roost:429-433`).
+- `roost wait-done` — `busy()` counts `blocked` as busy (`bin/roost:676-696`),
   so it blocks to its timeout and exits 1. The retry loop published at
   `site/content/docs/driving-a-fleet.md:111-117` retries **only** on exit 3, so
   it spins for as long as the script runs.
 - `roost read` — prints *"is blocked — this reply is from its previous turn"*
-  (`bin/roost:506-509`) about a reply that is in fact the current one.
+  (`bin/roost:589-592`) about a reply that is in fact the current one.
 
 **Why it is a live risk and not a note.** It needs a human keystroke to create,
 but it bites later and unattended: an orchestrating agent that hands work to a
@@ -113,7 +113,7 @@ that is its own task. Two candidates, neither implemented:
 - Have the `send` guard confirm the badge against the pane before refusing —
   `capture-pane` and look for the dialog — and downgrade to a warning when the
   screen disagrees. That trades the guard's current "exact, no scraping"
-  property (`bin/roost:338-340`) for freshness, so it needs deciding, not
+  property (`bin/roost:422-424`) for freshness, so it needs deciding, not
   assuming.
 - Have `roost doctor` report it. It reads no live pane state today, so this
   would be a new kind of check: list panes stamped `blocked` whose visible
@@ -176,7 +176,10 @@ that dialog and presses Enter on whatever is highlighted.
 
 **Why it shipped anyway.** The gate is codex's and cannot be answered from this
 side; `--dangerously-bypass-hook-trust` exists and roost does not use it or
-suggest it. `roost doctor` does what can be done — it reads the trust entries
+suggest it. This is one of the only two steps `roost install` cannot do (see
+the behaviour-change note below): the installer writes `hooks.json` and then
+prints this step on every run, including the runs that wrote nothing.
+`roost doctor` does the rest of what can be done — it reads the trust entries
 out of `$CODEX_HOME/config.toml` and counts them, so "installed" and "will run"
 are reported as the different claims they are.
 
@@ -195,11 +198,13 @@ neither one announces itself when it is not:
 1. Copilot's extension system is behind a feature flag that is off by default.
    Without `copilot --experimental` or `{"enabledFeatureFlags":
    {"EXTENSIONS": true}}` in `~/.copilot/settings.json`, copilot does not read
-   the first line of the adapter.
+   the first line of the adapter. **`roost install` writes that flag**, so a
+   machine wired by it is past this one; a machine wired by hand may not be.
 2. In interactive mode copilot asks the human, **once per directory**, to
    approve the extension — *"wants to: handle permission requests"*. Denying it
    prevents the extension loading. There is no global pre-approval, so every new
-   worktree asks again.
+   worktree asks again. This is one of the only two steps `roost install` cannot
+   do (see the behaviour-change note below).
 
 In both cases the turn runs normally and copilot prints nothing about having
 skipped anything. The pane simply stays unstamped, which roost renders exactly
@@ -212,14 +217,15 @@ refusal never fires. A copilot pane whose extension never loaded, sitting at a
 permission prompt, will take a `roost send` straight into that dialog and press
 Enter on whatever is highlighted.
 
-**Why it shipped anyway.** Both gates are copilot's, not roost's, and neither
-can be worked around from this side: the feature flag is a preview switch in the
-user's own config, and the consent is a TUI answer that persists nothing unless
-the human picks "always allow in this directory". `roost doctor` does what can
-be done — it reads `settings.json` for the flag and prints the exact fix, and it
-states the consent gate rather than inferring an answer to it (`AGENTS.md` §9,
-and the same discipline the adapter contract's T6 sets out). The install stanza
-in `site/content/docs/state-badges.md` names both before a user trusts the badge.
+**Why it shipped anyway.** Both gates are copilot's, not roost's. The flag is a
+switch in the user's own config, so `roost install` now sets it — that half is
+no longer manual. The consent is a TUI answer that persists nothing unless the
+human picks "always allow in this directory", and no tool can answer it from
+here. `roost doctor` does what can be done — it reads `settings.json` for the
+flag and prints the exact fix, and it states the consent gate rather than
+inferring an answer to it (`AGENTS.md` §9, and the same discipline the adapter
+contract's T6 sets out). The install stanza in
+`site/content/docs/state-badges.md` names both before a user trusts the badge.
 
 ### pi's `blocked` rides on an undocumented internal, and would fail silently
 
@@ -281,7 +287,183 @@ property that says a human is attached. Tier 0 covers the gap —
 `roost state working && pi -p "…" && roost state done` — and
 `site/content/docs/state-badges.md` prints that line in the pi section.
 
+### An opencode pane on a retrying-but-alive provider wears `error` mid-turn
+
+`adapters/opencode/roost.js` badges `error` at the second `retry` of a turn and
+then holds it. `RETRY_THRESHOLD` is 2 (`adapters/opencode/roost.js:38`), the
+count is raised in the `retry` branch (`:323-325`), and the `busy` branch is
+gated on `retries < RETRY_THRESHOLD` (`:319`) — so once the threshold trips,
+nothing reports `working` again until the turn ends. The gate is deliberate and
+the comment above it is right: opencode re-announces `busy` before every retry,
+so an ungated `busy` would flap the badge working/error around the whole retry
+loop and re-notify on each cycle (`:293-305`). `session.idle` resets the counter
+and stamps `done`.
+
+The threshold was tuned against a **dead** provider, where the retries never
+stop and `error` is correct and useful. A **rate-limited but alive** provider is
+indistinguishable from a dead one until the turn ends — so on a free tier, where
+retries are routine, a pane wears `error` through most of a turn that is
+working fine.
+
+**Input:** an opencode pane on a free cloud model (OpenCode Zen,
+`nemotron-3-ultra-free`), one ordinary turn.
+**Wrong output:** the pane badges 💥 `error` for minutes while the spinner
+animates, the context grows and tool calls land — and `roost wait-done` against
+it exits 1 with `is in error state, not done` (`bin/roost:719-722`), reporting a
+healthy turn as a corpse to whatever is coordinating it. One desktop
+notification fires with it (`scripts/roost-agent-state:201-220`); `set` bails on
+an unchanged state (`adapters/opencode/roost.js:208-212`), so it is one ping per
+turn, not one per retry.
+
+Measured from opencode's own log (`~/.local/share/opencode/log/opencode.log`),
+five entries across roughly two minutes of one turn:
+
+```
+23:47:14 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:48:12 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:48:23 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:48:26 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+23:49:22 ERROR stream error  providerID=opencode modelID=nemotron-3-ultra-free
+```
+
+opencode retried each one and carried on. The turn was healthy throughout.
+
+**This is a third shape of wrong badge, not either of the two already here.**
+It is not the stranded `blocked` at the top of this section: that one needs a
+human keystroke, never self-heals, and outlives the turn. It is not a stale
+badge either — `@agent_since` advances and the adapter is still reporting. The
+badge is *accurate about the turn as a whole* and wrong about the present
+moment, which is the only thing a glanceable badge is for.
+
+**Why it is a live risk and not a note.** It costs no keystroke to create — a
+free tier produces it on ordinary turns — and the consumer that acts on `error`
+acts on it wrongly: `wait-done` stops the moment it sees the badge, so a
+coordinating agent abandons a turn that would have finished on its own.
+
+**Why it is not worse than that.** It self-heals at the end of every turn:
+`session.idle` resets the counter and stamps `done`, so nothing is left stranded
+and no pane is unreachable the way a stuck `blocked` one is. It fails loud
+rather than silent — the opposite direction from the codex wrong-`done` entry
+above — and it costs one notification, not one per retry.
+
+**The fix is deliberately not in this PR.** #27 is the installer; this is an
+adapter change carrying its own risk, in the one code path that has already
+produced a real bug here (see *opencode counts retries too* below). Two
+directions, neither decided:
+
+- Let a genuine sign of forward progress after the retries — a tool call,
+  output tokens — return the badge to `working`. It preserves the dead-provider
+  behaviour and kills the false red. It has to be a one-way latch within the
+  turn rather than a plain reset of the counter, or it reintroduces exactly the
+  flapping `:293-305` exists to prevent.
+- Leave the logic alone and add a distinct state meaning "struggling but
+  alive", reserving `error` for actually dead. That is a new entry in the state
+  vocabulary — glyphs, `wait-done`, notifications, the adapter contract — so it
+  is by far the larger of the two.
+
+### A moved or re-cloned checkout stays un-wired, and doctor calls it healthy
+
+**The most serious of the six below, and it breaks a promise this repo makes
+in three places.** `README.md`, `site/content/docs/getting-started.md` and the
+`roost update` help line all say re-running the installer handles *"a moved or
+re-cloned checkout"*. It does not, for the two harnesses that matter most.
+
+**Input:** wire a machine from checkout A, then move or delete A and run
+`roost install` from checkout B.
+**Wrong output:** `opencode`, `pi` and `copilot` relink correctly — those are
+symlinks, and a broken one is recognised as `dangling` and replaced. `claude`
+and `codex` are refused instead, with *"a roost hook there points at a
+different checkout"*, on every re-run, forever. The refusal compares the path
+**string** only; it never asks whether that checkout still exists.
+
+Then `roost doctor` prints **`✓ Claude hooks wired in …`** for a hook whose
+command is a deleted directory, because `scripts/roost-doctor` tests it with
+`grep -q roost-agent-state "$settings"` — a substring match with no comparison
+against this checkout's own path. The codex branch of the same file does make
+that comparison; the claude branch does not.
+
+So the hook cannot run, the pane never badges, doctor reports it healthy, and
+the one command written to fix it refuses to.
+
+**Why it is still here:** the codex half of the refusal is correct and should
+stay — rewriting a codex handler re-hashes it and silently un-badges a machine
+that had already granted trust (see the entry above). Claude has no such
+mechanism, so refusing there buys nothing. The fix is to treat an
+`other-checkout` claude entry whose target **does not exist** as `dangling`
+(ours, broken, safe to replace), keep the codex refusal but state its real
+reason, give doctor's claude branch the path comparison codex already has, and
+correct the three docs. Left because it wants its own change with its own
+tests, not a hurried one folded into a merge.
+
+### A space in the checkout path silently un-wires every claude hook
+
+**Input:** install roost into a path containing a space, e.g.
+`/opt/My Tools/roost`.
+**Wrong output:** the hook command is written into `settings.json` unquoted, so
+the shell that runs it splits on the space and tries to execute `/opt/My`. The
+hook never fires and the pane never badges. The merge itself returns rc 0 and
+reports *"merged"* — nothing is printed anywhere. The same unquoted
+interpolation is where a path containing a `"` would break the JSON document.
+
+### The two JSON engines disagree about `{"hooks": null}`
+
+**Input:** a `settings.json` whose `hooks` key is explicitly `null`.
+**Wrong output:** which engine is installed decides what happens. `python3`
+exits 1 with a raw Python type error as its message; `jq` exits 0 and writes
+the file successfully. A user hitting this gets a different outcome on two
+machines with the same roost, and the python message names an internal type
+rather than the file.
+
+### The other-checkout refusal is checked at plan time, not at write time
+
+`scripts/roost-install` refuses to edit a config wired to a different checkout,
+but only while building its plan. The symlink write loop re-checks
+`roost_adapter_state` immediately before each `ln -s`; the JSON write loop
+calls `roost_json_merge` with no such re-check. A config that becomes
+another checkout's between the plan and the write is edited anyway. Small
+window, small fix, listed so it is not rediscovered.
+
+### A hardlinked settings.json is silently disconnected
+
+**Input:** a `~/.claude/settings.json` that is a hard link (link count 2), as
+some dotfile setups produce.
+**Wrong output:** the merge writes a temp file and `mv`s it over the target,
+which replaces the inode. The link count drops to 1 and the other name now
+points at the old content. Nothing warns. The atomic write is deliberate and
+correct for the crash case, so this is a real trade rather than an oversight —
+but an unwarned one.
+
+### A mis-quoted default in the patch argument
+
+One default in the merge path is a 14-byte string where an object was meant.
+It is inert today because every live caller passes the argument explicitly, so
+the default is never taken. Recorded because "inert today" is a property of
+the callers, not of the code.
+
+
 ## Behaviour changes
+
+### Wiring is part of installing now, and two prompts are all that is left
+
+**A note, not a defect.** Pointing roost at your agents used to be a separate
+manual step per harness. `curl … | sh` now does it in the same step as the
+`PATH` line, and `roost install` — alias `roost update`, the same code path —
+is the re-run for later: a harness installed since, a moved or re-cloned
+checkout, a release that adds an adapter. Neither fetches new roost code.
+
+**The only two steps `roost install` cannot do are prompts**, and it prints
+both on every run, including runs that wrote nothing:
+
+- codex — *"Trust all and continue"* at its `Hooks need review` prompt.
+- copilot — the per-directory *"wants to: handle permission requests"*.
+
+Neither can be answered from this side, and neither leaves anything on disk to
+detect, so both are stated rather than inferred. They are listed because they
+are permanent, not because they are outstanding work. What each costs on a
+machine where nobody has answered it is a different question, and it is a live
+risk that stays above: *"A codex adapter can be installed, correct, and
+silently switched off"* and *"A copilot pane can be badge-less, and nothing
+says so"*.
 
 ### `bin/roost` now addresses the roost server you are inside
 
@@ -374,6 +556,25 @@ has already produced a real bug here.
   sets `check_for_update_on_startup = false`, which is codex's own switch rather
   than a boundary roost enforces. Full write-up, and what it means for the next
   harness, in `docs/airig/issues/2026-08-29-codex-upgrades-its-own-host.md`.
+- `roost validate` now reports adapter links from the installer's own record
+  (`roost install --records`) rather than from the disk, which fixed two
+  divergences between "is it linked" and "did this run link it". One shape is
+  left, and it is wording in the report rather than anything the run does to
+  the machine: a candidate the installer reached no verdict on — a write that
+  failed, or an installer that could not start — lands in the same bucket as a
+  path roost refused to touch, and §1 renders that bucket as *"Something that
+  is not this checkout's adapter already sits at each path below"*, sending the
+  tester to look for a conflicting file that is not there. Measured by making
+  the write fail (`chmod 555` on the adapter's parent directory): the record
+  line comes back `failed<TAB>opencode<TAB><path>`, and validate files anything
+  that is not `wrote` or `unchanged` under `BLOCKED_LINKS`. Two things keep it
+  small — the run prints `could NOT link <path>` on stdout as it happens, and
+  §5 re-reads the disk, so for the same harness it says *"the adapter is not
+  linked — run: mkdir -p … && ln -s …"*. The two sections disagree and the one
+  carrying the fix is the correct one. Left because the honest fix is a fourth
+  bucket in `report_install` ("this run could not link it"), a report change
+  with its own test file, and because reaching it at all needs a directory
+  roost can read but not write.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at
