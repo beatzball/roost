@@ -183,6 +183,64 @@ finding 1 is finding 2 wearing a disguise.
 
 ---
 
+### The law, measured: 1022-byte chunks, and a second regime that loses nothing
+
+The coordinator's model was right in shape and wrong in one number, and the
+correction makes it exact. The chunk is **1022 bytes, not 1024**:
+
+> **discarded = 1022 × floor(n / 1022)   ·   survives = n mod 1022**
+
+It fits every datapoint from both rigs, with no fitting left over:
+
+| n | measured survivors | `n mod 1022` | source |
+| --- | --- | --- | --- |
+| 719 | whole | 719 | coordinator |
+| 1101 | 79 | 79 | coordinator — **exact** |
+| 3466 | 399 | 400 | coordinator — within its ±1 |
+| 3502 | 436 | 436 | coordinator, and reproduced here at the model level — **exact** |
+| 2100 | **56** | 56 | here, 3/3 identical runs |
+| 1023 | **1** | 1 | here |
+| 1024 | **2** | 2 | here |
+| 2048 | **4** | 4 | here |
+| 700 | 700 | 700 | here (below one chunk) |
+
+The 2100 row is the prediction test, and it is why the number changed: the
+1024-byte model predicted 52 survivors, the measurement said 56, three times
+out of three. 2100 − 56 = 2044 = 2 × 1022. Re-running the older points against
+1022 then made three of the four exact rather than approximate.
+
+**Task 1, the boundary:** head-loss begins at **n = 1022**. At 1021 and below
+nothing is lost. The 1023 → 1 and 1024 → 2 rows pin it from above, and each was
+derived by locating the surviving text as a substring of the known ruler, so a
+wrong reading cannot resemble a right one.
+
+**Task 3, the zero-length final chunk:** it does not arise, because a second
+regime takes over. Every size tested at an exact multiple of 1022 — 1022, 2044,
+3066 — collapsed into a `[Pasted text #N]` placeholder instead, 4 runs out of 4
+each, as did 1021. And a collapsed paste **loses nothing**: 1022 bytes were
+typed, collapsed to `[Pasted text #55]`, submitted, and the model answered
+`00000000100` — offset zero, the very start of the ruler.
+
+So there are two regimes, and which one applies is deterministic by size in
+everything tested here:
+
+| regime | what the input line shows | what the model receives |
+| --- | --- | --- |
+| paste-collapsed (1021, 1022, 2044, 3066) | `[Pasted text #N]` | **all of it** |
+| not collapsed (1023, 1024, 2048, 2100, 3502) | the surviving tail, raw | **`n mod 1022` bytes** |
+
+Why those sizes and not others is not established, and no rule is proposed for
+it here. What matters for the report is that the lossy regime obeys the law
+above exactly, and that the lossless one exists — a repro that lands in it will
+look like the bug is gone.
+
+**This does not change roost's side.** The earlier finding stands: the loss is
+above tmux, it is not an Enter-timing race, and a real bracketed paste does not
+avoid it. roost cannot make the bytes arrive; it can only refuse to call a
+partial delivery a success, which is what ships.
+
+---
+
 ### UPSTREAM REPORT — Claude Code 2.1.263 discards all but the final partial chunk of a large typed message
 
 **This is not a roost bug and roost cannot fix it.** Confirmed here with roost
