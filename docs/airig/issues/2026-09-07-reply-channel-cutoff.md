@@ -183,6 +183,87 @@ finding 1 is finding 2 wearing a disguise.
 
 ---
 
+### UPSTREAM REPORT — Claude Code 2.1.263 discards all but the final partial chunk of a large typed message
+
+**This is not a roost bug and roost cannot fix it.** Confirmed here with roost
+removed from the loop entirely, and confirmed at the level that matters: what
+the model received, not what the input line displayed.
+
+**Environment.** Claude Code 2.1.263, Opus 5 (1M context), macOS Darwin 25.3.0,
+tmux 3.6, pane 200x50, in a pane spawned into a live roost server.
+
+**Repro, with no roost involved.** Build a message whose padding is an offset
+ruler — every 10 bytes spell out their own end offset, `%010d` — so whatever
+survives names its own start. Put the instruction at the TAIL, where a head cut
+cannot reach it:
+
+```sh
+python3 -c 'import sys
+n=3502-92
+r="".join("%010d"%(i+10) for i in range(0,n,10))[:n]
+sys.stdout.write(r+"\n\nTASK: reply with ONLY the first 30 characters of this message. Nothing else. Use no tools.")' > /tmp/probe.txt
+tmux -S "$SOCK" send-keys -t "$PANE" -l -- "$(cat /tmp/probe.txt)"
+tmux -S "$SOCK" send-keys -t "$PANE" Enter
+```
+
+**Result.** The model answers `307000000030800000003090` — it received the
+message starting at offset ~3067 of 3502. The first ~3067 bytes do not reach it.
+The input line already shows the text starting at that same offset *before*
+Enter is pressed, so the loss happens on input, not on submit.
+
+**Three variables ruled out.**
+
+| varied | result |
+| --- | --- |
+| gap between the text and `Enter`: 0.3s vs **5s** | identical — model saw offset 3070 both times |
+| delivery method: `send-keys -l` vs `load-buffer` + `paste-buffer -p` (real bracketed paste) | identical — the bracketed paste collapsed to `[Pasted text #7]` and the model still saw offset 3070 |
+| roost in the loop at all | not needed to reproduce; every run above is bare tmux |
+
+The bracketed-paste result is the one that matters for roost: it is the strongest
+delivery primitive tmux has, it is what a terminal emulator uses for a real
+paste, and it does not help. There is no send-side change roost can make.
+
+**The model, from the coordinator's data plus these runs.** A reader doing
+1024-byte reads and *replacing* its buffer rather than appending: every complete
+chunk is discarded and only the final partial chunk survives.
+
+| sent | cut at | survives | fits `sent - 1024*floor(sent/1024)` |
+| --- | --- | --- | --- |
+| 719 | — | all of it | under one chunk, nothing lost |
+| 1101 | 1022 | ~79 | 1101 - 1024 = 77 |
+| 3466 | 3067 | ~399 | 3466 - 3072 = 394 |
+| 3502 | 3066/3067 | ~435 | 3502 - 3072 = 430 |
+
+The first three rows are the coordinator's; the fourth is reproduced here
+independently and at the model level.
+
+**Not yet measured, and it is what an upstream report still needs:**
+
+1. The exact byte at which head-loss starts. Four points that fit is not a
+   binary search.
+2. The prediction test: does 2100 bytes lose exactly its first 2048 and keep
+   ~52? A prediction that holds is worth more than four fitted points.
+3. The boundary case: a message of *exactly* 1024 or 2048 bytes. A zero-length
+   final chunk is the interesting one, and may be how a message vanishes
+   leaving no trace at all.
+
+Those three were attempted here and not completed. The sweep rig failed twice on
+its own cleanliness check — first comparing the input line against the empty
+string when a clean box still carries a cursor cell byte, then counting the
+digits in a human's own typed words — and the run was then abandoned because a
+person began typing into the probe pane. Both rig failures were caught by the
+check refusing to measure rather than by producing a plausible number, which is
+the only reason no fabricated boundary appears above.
+
+**One unexplained result, recorded rather than dropped.** A 6000-byte ruler sent
+earlier in the same session came back answered from offset **zero** — the head
+arrived. That pane had, moments before, taken seven retyped copies of the same
+message from a failed `roost send`, so it held several complete copies and the
+result is treated as contaminated, not as counter-evidence. It is written down
+because an unexplained green is exactly what section 0 is about.
+
+---
+
 ## 2. The cold-start race: the front of a message is destroyed, silently
 
 **Status: FIXED.** `bin/roost`, `tests/test-send-readiness.sh`,
