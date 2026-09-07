@@ -10,8 +10,15 @@ each agent is a pane. These commands let you coordinate with sibling agents.
 
 ## Preflight — are you inside roost?
 
-Run `roost whoami`. If it prints an id (e.g. `%7`), that is YOUR address and
-you're inside roost. If it errors ("not inside a roost session"), **stop** —
+If roost's `SessionStart` hook is wired, your context already opens with a line
+naming this pane — "This pane is `%7`". That id is YOUR address, and its
+presence means you are inside roost.
+
+**Its absence proves nothing.** That hook is opt-in: the user merges it into
+their Claude settings by hand, and a settings file written before the hook
+existed carries the four state hooks and not this one. So when there is no such
+line, run `roost whoami`. If it prints an id (e.g. `%7`), that is YOUR address
+and you're inside roost. If it errors ("not inside a roost session"), **stop** —
 you are not in roost; tell the user and do not run the rest.
 
 ## Coordinating agents: you never choose a server

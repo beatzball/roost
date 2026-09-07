@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# roost-session-context — tell a Claude session, at its start, that it is
+# running inside roost.
+#
+# Called by Claude Code's SessionStart hook (see `roost hooks`). It prints the
+# JSON that injects text into the session's context, naming this pane's own id
+# and steering the agent at roost's commands instead of bare tmux.
+#
+# The incident this exists for: an agent ran `tmux split-window` instead of
+# `roost split`. It landed in the right place only because $TMUX happened to be
+# inherited from the environment. Without that inheritance a bare `tmux`
+# command targets the DEFAULT server — the user's ordinary tmux, which roost
+# exists to leave alone. Nothing told the agent otherwise, because every other
+# roost hook reports state OUTWARD; this is the only one that feeds context IN.
+#
+#   usage: roost-session-context
+#
+# It is a deliberate silent no-op unless the agent is running inside a `roost`
+# server pane, so it is safe to wire into your GLOBAL Claude hooks — running
+# `claude` anywhere else prints nothing and changes nothing.
+set -euo pipefail
+
+# Resolve this script's own directory even when invoked via a symlink — the
+# same readlink loop as bin/roost and scripts/roost-agent-state, and for the
+# same reason: this hook is wired into ~/.claude/settings.json by ABSOLUTE
+# path, and that path can perfectly well be a symlink (an alias on PATH, a
+# compatibility shim left behind by a rename). Through one, $0 is the symlink,
+# so `dirname "$0"` names the WRONG directory and the sibling lookup below
+# would miss bin/roost — silently, since the failure path here is "print
+# nothing and exit 0", which is indistinguishable from "not inside roost".
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+# Am I inside a roost server AT ALL? This guard comes FIRST, before whoami, and
+# it is the same rule scripts/roost-agent-state applies for the same reason:
+# that file's header calls it "what makes a global Claude hook safe", and this
+# script is the second global Claude hook. Both are wired into
+# ~/.claude/settings.json by absolute path and both run for `claude` started
+# ANYWHERE, including inside the user's own everyday tmux.
+#
+# `roost whoami` alone is NOT that guard, and the difference is not theoretical
+# — measured, with a roost server running and $ROOST_SOCKET unset, from a pane
+# in an ordinary (non-roost) tmux: whoami printed `%0` and exited 0. It has to.
+# Its socket rule falls through "the roost server I am in" to the shared
+# production server BY NAME, so it asked the roost server about the caller's
+# pane id, and on that server `%0` is a real, live pane belonging to a
+# stranger. This script would then have told an agent in the user's ordinary
+# tmux that it was inside roost and that its address was another agent's pane
+# — and the first thing that agent does with a wrong id is `roost send` into
+# somebody else's session.
+#
+# That fallthrough is correct for every OTHER bin/roost command (`roost status`
+# typed from an ordinary shell must reach the real server). It is wrong only
+# here, where the question is not "which server do I drive" but "am I in one".
+# So ask the narrower question with the narrower rule, and keep whoami for what
+# it is good at: the id.
+. "$ROOST_HOME/scripts/lib/roost-socket.sh"
+roost_self_socket
+[ -n "$ROOST_SELF_SOCK" ] || exit 0
+
+# Ask `roost whoami` rather than re-deriving the pane id from $TMUX_PANE here.
+# whoami already resolves WHICH server this process is inside (the middle step
+# of bin/roost's socket rule) and it already errors, non-zero and on stderr,
+# for every not-inside-roost case. Re-implementing that would be a second copy
+# of the rule scripts/lib/roost-socket.sh exists to keep single — and the two
+# copies drifting apart is precisely the bug that file's header records.
+#
+# The fork this costs is the reason it is affordable HERE and not in
+# roost-agent-state: SessionStart fires ONCE per session, where PostToolUse
+# fires after every tool call of every live agent and Claude blocks on it.
+#
+# stderr is discarded: outside roost whoami prints "not inside a roost
+# session", and requirement three is that a non-roost user sees no change at
+# all. A visible stderr line would also reach Claude's transcript as a hook
+# error notice on every session start on that machine.
+pane="$("$ROOST_HOME/bin/roost" whoami 2>/dev/null || true)"
+
+# Not inside roost — say nothing, and exit 0.
+#
+# Exit 0 is load-bearing, not tidiness. Claude Code treats exit 2 from a
+# SessionStart hook as BLOCKING: it stops the session from starting at all. Any
+# other non-zero exit is non-blocking but still surfaces the first line of
+# stderr in the transcript as a hook error. Neither is an acceptable thing for
+# roost to do to someone who merely has the hook wired globally and is running
+# `claude` in an ordinary terminal. Every exit in this file is 0.
+[ -n "$pane" ] || exit 0
+
+# The id goes into a JSON string below, so refuse anything that is not the
+# shape tmux actually produces. `#{pane_id}` is always %<digits>, so this
+# rejects nothing real — it exists so that no future change to whoami, and no
+# stray line of output ahead of the id, can emit a quote or a backslash that
+# turns valid JSON into a parse error. A parse error here is invisible: the
+# session simply starts with no context and no message.
+case "$pane" in
+  %[0-9]*) case "${pane#%}" in *[!0-9]*) exit 0 ;; esac ;;
+  *) exit 0 ;;
+esac
+
+# The injected text. Keep it SHORT: this is prepended to every session on this
+# machine, it is paid for in tokens every time, and it is guidance — not a
+# manual. `roost help` is one command away for the rest.
+#
+# Written as a heredoc rather than printf for two reasons. First, the pane id
+# contains a `%`, which printf would read as a format specifier. Second, the
+# \n sequences below must survive into the output as the two literal characters
+# backslash-n: that is JSON's own newline escape, so the string arrives at
+# Claude with real line breaks without this script needing a JSON escaper.
+#
+# The four fields Claude Code reads from a SessionStart hook are
+# hookSpecificOutput.hookEventName (must be exactly "SessionStart"),
+# hookSpecificOutput.additionalContext (the text), and the optional
+# systemMessage / terminalSequence. Only the first two are wanted here: a
+# systemMessage would print a line to the user on every single session start.
+cat <<JSON
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "You are an agent running inside roost, a tmux \"agent view\" on its own separate server. This pane is $pane — that is your address, and how other agents reach you: roost send $pane \"...\".\nUse roost's own commands, not bare tmux: roost split and roost spawn to open a pane or a window, roost send to prompt another agent, roost status to list the fleet, roost read to collect a reply. A bare tmux command targets the DEFAULT server — the user's ordinary tmux, which roost exists to leave alone.\nNever run tmux kill-server without -S or -L naming a throwaway socket.\nRun roost help for the rest."
+  }
+}
+JSON
+
+exit 0

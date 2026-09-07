@@ -66,12 +66,24 @@ _roost_hooks_root() {
 # roost_hooks_claude [TARGET_SCRIPT] -- TARGET_SCRIPT defaults to this
 # checkout's own scripts/roost-agent-state.
 roost_hooks_claude() {
-  local target
+  local target context
   if [ $# -ge 1 ]; then target="$1"
   else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
+  # SessionStart runs a DIFFERENT script from the other four, so it cannot use
+  # $target. It is derived as a sibling of $target rather than from
+  # _roost_hooks_root because $target may have been injected by a caller (the
+  # installer, or a test with a fixed path) and must stay the authority on
+  # which directory these hooks point at -- deriving one from the root and one
+  # from the argument is how a wired config ends up half-pointing at two
+  # different checkouts.
+  context="${target%/*}/roost-session-context"
   cat <<JSON
 {
   "hooks": {
+    "SessionStart": [
+      { "matcher": "*",
+        "hooks": [ { "type": "command", "command": "$context" } ] }
+    ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "$target working" } ] }
     ],

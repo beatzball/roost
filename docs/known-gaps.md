@@ -361,6 +361,86 @@ directions, neither decided:
   vocabulary — glyphs, `wait-done`, notifications, the adapter contract — so it
   is by far the larger of the two.
 
+### A moved or re-cloned checkout stays un-wired, and doctor calls it healthy
+
+**The most serious of the six below, and it breaks a promise this repo makes
+in three places.** `README.md`, `site/content/docs/getting-started.md` and the
+`roost update` help line all say re-running the installer handles *"a moved or
+re-cloned checkout"*. It does not, for the two harnesses that matter most.
+
+**Input:** wire a machine from checkout A, then move or delete A and run
+`roost install` from checkout B.
+**Wrong output:** `opencode`, `pi` and `copilot` relink correctly — those are
+symlinks, and a broken one is recognised as `dangling` and replaced. `claude`
+and `codex` are refused instead, with *"a roost hook there points at a
+different checkout"*, on every re-run, forever. The refusal compares the path
+**string** only; it never asks whether that checkout still exists.
+
+Then `roost doctor` prints **`✓ Claude hooks wired in …`** for a hook whose
+command is a deleted directory, because `scripts/roost-doctor` tests it with
+`grep -q roost-agent-state "$settings"` — a substring match with no comparison
+against this checkout's own path. The codex branch of the same file does make
+that comparison; the claude branch does not.
+
+So the hook cannot run, the pane never badges, doctor reports it healthy, and
+the one command written to fix it refuses to.
+
+**Why it is still here:** the codex half of the refusal is correct and should
+stay — rewriting a codex handler re-hashes it and silently un-badges a machine
+that had already granted trust (see the entry above). Claude has no such
+mechanism, so refusing there buys nothing. The fix is to treat an
+`other-checkout` claude entry whose target **does not exist** as `dangling`
+(ours, broken, safe to replace), keep the codex refusal but state its real
+reason, give doctor's claude branch the path comparison codex already has, and
+correct the three docs. Left because it wants its own change with its own
+tests, not a hurried one folded into a merge.
+
+### A space in the checkout path silently un-wires every claude hook
+
+**Input:** install roost into a path containing a space, e.g.
+`/opt/My Tools/roost`.
+**Wrong output:** the hook command is written into `settings.json` unquoted, so
+the shell that runs it splits on the space and tries to execute `/opt/My`. The
+hook never fires and the pane never badges. The merge itself returns rc 0 and
+reports *"merged"* — nothing is printed anywhere. The same unquoted
+interpolation is where a path containing a `"` would break the JSON document.
+
+### The two JSON engines disagree about `{"hooks": null}`
+
+**Input:** a `settings.json` whose `hooks` key is explicitly `null`.
+**Wrong output:** which engine is installed decides what happens. `python3`
+exits 1 with a raw Python type error as its message; `jq` exits 0 and writes
+the file successfully. A user hitting this gets a different outcome on two
+machines with the same roost, and the python message names an internal type
+rather than the file.
+
+### The other-checkout refusal is checked at plan time, not at write time
+
+`scripts/roost-install` refuses to edit a config wired to a different checkout,
+but only while building its plan. The symlink write loop re-checks
+`roost_adapter_state` immediately before each `ln -s`; the JSON write loop
+calls `roost_json_merge` with no such re-check. A config that becomes
+another checkout's between the plan and the write is edited anyway. Small
+window, small fix, listed so it is not rediscovered.
+
+### A hardlinked settings.json is silently disconnected
+
+**Input:** a `~/.claude/settings.json` that is a hard link (link count 2), as
+some dotfile setups produce.
+**Wrong output:** the merge writes a temp file and `mv`s it over the target,
+which replaces the inode. The link count drops to 1 and the other name now
+points at the old content. Nothing warns. The atomic write is deliberate and
+correct for the crash case, so this is a real trade rather than an oversight —
+but an unwarned one.
+
+### A mis-quoted default in the patch argument
+
+One default in the merge path is a 14-byte string where an object was meant.
+It is inert today because every live caller passes the argument explicitly, so
+the default is never taken. Recorded because "inert today" is a property of
+the callers, not of the code.
+
+
 ## Behaviour changes
 
 ### Wiring is part of installing now, and two prompts are all that is left

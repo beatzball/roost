@@ -170,6 +170,20 @@ JSON
       '{"matcher":"Edit","hooks":[{"type":"command","command":"my-own-formatter"}]}' \
       "[$tool] append: the user's entry is still first and still intact after a re-merge"
 
+    # SessionStart, specifically. It is the one claude event whose command is a
+    # DIFFERENT script (roost-session-context, not roost-agent-state), so it is
+    # the one the ownership test can fail to recognise as roost's own. When it
+    # did, the entry was never dropped before the patch's copy was appended and
+    # every re-run stacked another -- rc 0, nothing printed, a settings.json
+    # that grew a duplicate hook per install. Asserted as a COUNT for the
+    # reason given above, and on the command as well, so a merge that keeps the
+    # count right by dropping the wrong entry still fails.
+    assert_eq "$(jq '.hooks.SessionStart | length' "$ud/settings.json" 2>/dev/null)" "1" \
+      "[$tool] append: a second merge adds no second SessionStart entry"
+    assert_eq "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$ud/settings.json" 2>/dev/null)" \
+      "/checkout/scripts/roost-session-context" \
+      "[$tool] append: the surviving SessionStart entry is this checkout's"
+
     # A roost entry from a DIFFERENT checkout is not ours to drop. It is left
     # in place like any other stranger's hook, and this checkout's entry is
     # appended beside it -- scripts/roost-install refuses that whole case

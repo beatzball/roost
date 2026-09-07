@@ -27,20 +27,23 @@ assert_eq "$claude_out" "$bare_out" \
 
 # --- byte-identical to the pre-refactor behaviour ---------------------------
 # tests/fixtures/hooks-claude.txt and hooks-codex.txt were captured by running
-# bin/roost as it stood at 3a1934e — the commit immediately before this file's
-# own, and before the claude/codex JSON bodies moved into
-# scripts/lib/roost-hooks.sh — inside this same checkout. @@ROOST_HOME@@ is a
+# bin/roost as it stood at d58ba14 — the tip of main this branch merges, and
+# the last commit before the claude/codex JSON bodies moved into
+# scripts/lib/roost-hooks.sh — inside this same checkout. The claude fixture
+# was re-captured at that commit rather than 3a1934e because main added the
+# SessionStart context hook in between; re-capturing is what proves the merge
+# carried that hook into the shared lib instead of dropping it. @@ROOST_HOME@@ is a
 # placeholder for this checkout's own absolute path, the only thing that can
 # differ between a fixture and a live run; AGENTS.md §1 forbids committing an
 # absolute home path, which is why the fixture carries a token instead of one.
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
-  "'roost hooks claude' is byte-identical to what 3a1934e printed"
+  "'roost hooks claude' is byte-identical to what d58ba14 printed"
 
 codex_out="$("$HERE/bin/roost" hooks codex)"
 expected_codex="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-codex.txt")"
 assert_eq "$codex_out" "$expected_codex" \
-  "'roost hooks codex' is byte-identical to what 3a1934e printed"
+  "'roost hooks codex' is byte-identical to what d58ba14 printed"
 
 # --- one copy of the bytes, not two -----------------------------------------
 # A test that only compared printed output cannot tell "sourced from the

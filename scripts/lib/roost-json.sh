@@ -96,19 +96,28 @@ def _commands(node, out):
             _commands(value, out)
 
 
-def _is_roosts(entry, want):
+def _is_roosts(entry, wants):
     # True only when the entry has at least one command and EVERY one of them
-    # invokes this checkout's target. A mixed entry — somebody who hand-merged
-    # roost's command into their own group — is deliberately not ours: it is
-    # left alone, and roost's canonical entry is appended beside it. That
-    # costs one duplicate invocation of a hook that is idempotent anyway,
-    # where the alternative costs the user their own command.
+    # invokes one of THIS checkout's targets. A mixed entry — somebody who
+    # hand-merged roost's command into their own group — is deliberately not
+    # ours: it is left alone, and roost's canonical entry is appended beside
+    # it. That costs one duplicate invocation of a hook that is idempotent
+    # anyway, where the alternative costs the user their own command.
+    #
+    # WANTS is a list, not one path, because the claude patch invokes TWO
+    # scripts: four events run scripts/roost-agent-state, and SessionStart
+    # runs scripts/roost-session-context. With a single want, SessionStart's
+    # own entry never matched, so it was never dropped before the patch's copy
+    # was appended — every re-run stacked another one and the merge stopped
+    # being idempotent (caught by tests/test-roost-json.sh's "second merge is
+    # byte-identical"). Matching against a list keeps that closed if a sixth
+    # event later invokes a third script.
     commands = []
     _commands(entry, commands)
     if not commands:
         return False
     for command in commands:
-        if command != want and not command.startswith(want + " "):
+        if not any(command == w or command.startswith(w + " ") for w in wants):
             return False
     return True
 
@@ -153,7 +162,11 @@ def main():
             # here, and at this layer the only thing that matters is that
             # nothing is destroyed.
             patch = json.loads(args[0])
-            want = args[1]
+            # Every remaining argument is an accepted target script. There is
+            # always at least one; claude passes two (see _is_roosts).
+            wants = [a for a in args[1:] if a]
+            if not wants:
+                raise ValueError("no target script")
             hooks = data.setdefault("hooks", {})
             for event in patch["hooks"]:
                 existing = hooks.get(event, [])
@@ -164,7 +177,7 @@ def main():
                     raise ValueError(
                         "hooks.%s is not an array, so roost cannot add an "
                         "entry to it without deciding what it meant" % event)
-                kept = [e for e in existing if not _is_roosts(e, want)]
+                kept = [e for e in existing if not _is_roosts(e, wants)]
                 hooks[event] = kept + patch["hooks"][event]
         elif mode == "copilot-flag":
             flags = data.setdefault("enabledFeatureFlags", {})
@@ -255,7 +268,10 @@ roost_json__jq_run() {
       # patch is appended after the existing ones, and an entry already
       # pointing at this checkout is dropped first so a re-merge converges
       # rather than stacking duplicates.
-      local patch="${1:-}" want="${2:-}"
+      # want2 is the claude patch's SECOND target script (roost-session-
+      # context); codex passes only one and leaves it empty. See the python
+      # engine's _is_roosts for why a single want is not enough.
+      local patch="${1:-}" want="${2:-}" want2="${3:-}"
       if [ -z "$patch" ]; then
         printf "roost-json: cannot apply mode 'hooks-merge': no patch document\n" >&2
         return 1
@@ -275,15 +291,21 @@ roost_json__jq_run() {
           "$input" >&2
         return 1
       fi
-      jq --indent 2 --argjson patch "$patch" --arg want "$want" '
+      jq --indent 2 --argjson patch "$patch" --arg want "$want" --arg want2 "$want2" '
         def cmds: [ .. | objects | to_entries[] | select(.key == "command") | .value | select(type == "string") ];
         # The same test as python3'"'"'s _is_roosts: at least one command, and
-        # every one of them invoking this checkout'"'"'s target.
-        def is_roosts($w): (cmds) as $c
-          | (($c | length) > 0) and (all($c[]; . == $w or startswith($w + " ")));
+        # every one of them invoking one of this checkout'"'"'s targets. The
+        # empty string is filtered out so codex, which passes only one target,
+        # cannot match an entry whose command happens to be "".
+        ([$want, $want2] | map(select(. != ""))) as $wants
+        | def is_roosts: (cmds) as $c
+          | (($c | length) > 0)
+            and (all($c[]; . as $cm
+                  | any($wants[]; . as $w
+                      | $cm == $w or ($cm | startswith($w + " ")))));
         reduce ($patch.hooks | keys_unsorted[]) as $ev
           (.hooks = (.hooks // {});
-           .hooks[$ev] = (((.hooks[$ev] // []) | map(select(is_roosts($want) | not)))
+           .hooks[$ev] = (((.hooks[$ev] // []) | map(select(is_roosts | not)))
                           + $patch.hooks[$ev]))
       ' "$input" > "$out"
       ;;
@@ -400,7 +422,14 @@ roost_json_merge() {
         # The TARGET goes through as well as the patch. hooks-merge needs it
         # to tell roost's own existing entry (drop it, re-append the patch's)
         # from a stranger's (leave it exactly where it is).
-        claude-hooks) set -- "$(roost_hooks_claude "$target")" "$target" ;;
+        #
+        # claude passes a SECOND target because its patch invokes two scripts:
+        # SessionStart runs scripts/roost-session-context, the other four run
+        # scripts/roost-agent-state. It is derived as a sibling of $target for
+        # the same reason roost_hooks_claude derives it that way — $target may
+        # have been injected by a caller or a test, and it stays the single
+        # authority on which directory these hooks point at.
+        claude-hooks) set -- "$(roost_hooks_claude "$target")" "$target" "${target%/*}/roost-session-context" ;;
         codex-hooks)  set -- "$(roost_hooks_codex  "$target")" "$target" ;;
       esac
       ;;
