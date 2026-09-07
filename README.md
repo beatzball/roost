@@ -68,6 +68,8 @@ need to hack on roost itself.
   and the installer wires whichever of them you have; anything else calls
   `roost state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
+- Optional: [`preen`](https://github.com/beatzball/preen) (renders an agent's
+  markdown for `roost read --render`; without it that flag prints the raw text)
 
 ## Install
 

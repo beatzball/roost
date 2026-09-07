@@ -61,6 +61,26 @@ The notice goes to stderr, so `roost read api | grep …` and loops over several
 
 Never treat a fallback result as an agent's answer. If the notice appeared, the reply was not collected.
 
+### Render the markdown: `roost read --render`
+
+Agents answer in markdown. `roost read` prints it raw, because that is what a
+script wants. Add `--render` (or `-r`) when a **person** is reading it, and the
+text is piped through [preen](https://github.com/beatzball/preen) instead:
+
+```sh
+roost read --render api
+roost read -r %12
+roost read -r api 20        # the line count still applies to a screen fallback
+```
+
+The flag goes in front of the target. It is opt-in and changes nothing else:
+plain `roost read` still emits the reply byte for byte, so existing pipelines
+and `grep`s are unaffected.
+
+If `preen` is not installed, `--render` prints the raw text and says so on
+stderr rather than failing. The reply is the payload; the rendering is a
+convenience.
+
 ### Agents with no adapter
 
 An agent whose harness roost has no plugin for can still take part, the same way it can badge itself with `roost state`:

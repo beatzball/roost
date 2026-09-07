@@ -18,7 +18,8 @@
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
 #                            type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
-#   roost read TGT [N]       print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr
+#   roost read [-r|--render] TGT [N]
+#                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the text through preen to render its markdown
 #   roost screen TGT [N]     print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
 #   roost reply TEXT...      record TEXT as this pane's reply, for another agent's `roost read`
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
@@ -138,6 +139,35 @@ reject_bad_name() {
 # @roost-reply exists — see docs/airig/issues/2026-08-21-read-returns-tui-chrome.md.
 screen_dump() {
   t capture-pane -p -t "$1" | grep -v '^[[:space:]]*$' | tail -n "$2"
+}
+
+# The `--render` half of `roost read`: hand the text to preen
+# (https://github.com/beatzball/preen), which renders markdown read on stdin.
+#
+# Opt-in, and nothing reaches this function unless --render was passed. The
+# default path must stay byte-identical: callers pipe `roost read` into grep
+# (tests/test-coordination.sh, tests/test-panes.sh) and one compares its whole
+# output against the recorded reply (tests/test-reply-channel.sh), so a
+# renderer in the default path would break every one of them.
+#
+# A renderer that is not installed must NOT fail the read. What the agent said
+# is the payload; the colour is a convenience, and a `roost read --render` that
+# exited non-zero on a machine without preen would strand a caller who only
+# wanted the text. So print the text unchanged and say why on stderr — stderr
+# for the same reason the screen-fallback notice below uses it: stdout is the
+# caller's pipe.
+#
+# `cat` rather than a re-read of the argument, because this reads stdin: it is
+# spliced onto the END of a pipeline, so the reply path and the screen-fallback
+# path share it without either having to buffer its text into a variable first.
+render_stdin() {
+  if command -v preen >/dev/null 2>&1; then
+    preen -
+    return
+  fi
+  echo "roost read: --render needs 'preen' on PATH — printing the raw text instead." >&2
+  echo "roost read: (install it from https://github.com/beatzball/preen)" >&2
+  cat
 }
 
 case "${1:-up}" in
@@ -575,7 +605,23 @@ JSON
     fi
     ;;
   read)
-    raw="${2:?usage: roost read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    # --render (-r) is accepted only in front of the target, matching send's
+    # --force above — but for a different reason. Here the flag is unambiguous
+    # wherever it appears, because read's positionals are a target and a line
+    # count and neither can look like it; the rule is kept anyway so the two
+    # commands are learned once, and so LINES stays the third word it has
+    # always been rather than moving when a flag is added after the target.
+    render=0
+    case "${2:-}" in
+      --render|-r)
+        render=1
+        # Drop "read" and the flag, then put the subcommand back so every
+        # positional reference below keeps its original number.
+        shift 2
+        set -- read "$@"
+        ;;
+    esac
+    raw="${2:?usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
     tgt="$(target "$raw")"
     # Prefer what the agent SAID over what its pane is DRAWING. An adapter
     # (the Claude Stop hook, adapters/opencode/roost.js) stamps @roost-reply
@@ -610,7 +656,14 @@ JSON
       # `tail -n` on it would chop the BEGINNING off a long answer, and
       # skills/roost/SKILL.md passes 40 today, which would silently truncate
       # anything longer. N describes the screen, and only the screen.
-      printf '%s\n' "$reply"
+      # Branch rather than always piping: with --render absent the reply must
+      # leave this command by exactly the printf it always has, unchanged down
+      # to the byte, because that is what callers diff against.
+      if [ "$render" -eq 1 ]; then
+        printf '%s\n' "$reply" | render_stdin
+      else
+        printf '%s\n' "$reply"
+      fi
       exit 0
     fi
     # Never return nothing. An empty result would be a worse failure than the
@@ -627,7 +680,15 @@ JSON
     # prepended to every single read.
     echo "roost read: no recorded reply for '$raw' — showing the pane's screen instead." >&2
     echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
-    screen_dump "$tgt" "$lines"
+    # The fallback renders too. --render describes what the caller wants done
+    # to the text, not which of the two sources it came from, and a flag that
+    # silently stopped working on the path that says "showing the pane's
+    # screen instead" would look like the renderer had failed.
+    if [ "$render" -eq 1 ]; then
+      screen_dump "$tgt" "$lines" | render_stdin
+    else
+      screen_dump "$tgt" "$lines"
+    fi
     ;;
   screen)
     # What `read` did before it learned to prefer a recorded reply, under a
@@ -767,5 +828,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac
