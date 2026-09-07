@@ -66,9 +66,35 @@ _settings_state() {
 # other two libs further down because the very next line needs it.
 . "$(dirname "$0")/lib/roost-adapters.sh"
 settings="$(roost_adapter_settings claude)"
+# This checkout's own hook command, for the same comparison the codex branch
+# further down has always made. Without it the claude check was `grep -q
+# roost-agent-state`, a substring match that is true for ANY roost's hook --
+# so a settings.json wired to a checkout that had since been moved, renamed or
+# deleted was reported as "wired". The pane never badges (the command is a
+# path that is not there), nothing is printed anywhere, and `roost install`
+# refuses to repair it because it correctly sees another checkout's hook. The
+# user is told everything is fine while nothing works. Found by the
+# multi-model review of #27; the codex branch was already right, which is what
+# made the gap visible.
+clwant="$(cd "$(dirname "$0")/.." && pwd)/scripts/roost-agent-state"
 case "$(_settings_state "$settings")" in
   ok)
-    if grep -q roost-agent-state "$settings" 2>/dev/null; then
+    # grep -F, like the codex branch: the needle is a filesystem path, and a
+    # basic-regex `.` in a dotted directory name matches any character, which
+    # makes a check that looks strict quietly permissive.
+    if ! grep -qF roost-agent-state "$settings" 2>/dev/null; then
+      warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install"
+    elif ! grep -qF "$clwant" "$settings" 2>/dev/null; then
+      # Deliberately does not try to say WHICH other checkout: reading it back
+      # out means parsing JSON, which doctor does not require a tool for, and
+      # printing a command string out of the user's own file as if it were
+      # roost's advice is a mistake scripts/roost-install already had to fix.
+      # Both fixes are named because the two cases want different ones: if
+      # that checkout is gone, `roost install` now heals it; if it is a second
+      # checkout you meant to keep, roost will not touch it and `roost hooks`
+      # is how you move it by hand.
+      warn "$settings wires a roost-agent-state from a different checkout — this one is $clwant; run: roost install (it repairs a checkout that has been moved or deleted), or re-run: roost hooks"
+    else
       ok "Claude hooks wired in $settings"
       # A config copied from `roost hooks` before the reply channel existed
       # badges perfectly and records no reply, so the only symptom is that
@@ -99,8 +125,6 @@ case "$(_settings_state "$settings")" in
       # negative costs the feature.
       grep -q roost-session-context "$settings" 2>/dev/null \
         || warn "$settings has no SessionStart hook — agents will not be told they are inside roost; re-run: roost hooks, or run: roost install"
-    else
-      warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install"
     fi
     ;;
   unreadable) warn "$settings exists but is not readable — could not check whether Claude hooks are wired" ;;
@@ -354,7 +378,25 @@ if command -v codex >/dev/null 2>&1; then
   elif ! grep -qF roost-codex-hook "$cxhooks" 2>/dev/null; then
     warn "$cxhooks does not reference roost-codex-hook — run: roost hooks codex, or run: roost install"
   elif ! grep -qF "$cxwant" "$cxhooks" 2>/dev/null; then
-    warn "$cxhooks wires a roost-codex-hook from a different checkout — this one is $cxwant; re-run: roost hooks codex"
+    # "A different checkout" is only true while that checkout still exists.
+    # Once it has been moved, renamed or deleted, saying so sends the reader
+    # looking for a checkout that is not there -- and this is the common case,
+    # because a checkout that is genuinely still around is one somebody keeps
+    # on purpose. scripts/roost-install draws the same distinction, in the
+    # same words; the two must agree or doctor's report and the installer's
+    # refusal describe different problems.
+    #
+    # The wired path is pulled out with grep -o rather than a JSON parser:
+    # doctor does not require jq or python3, and this is a message, not a
+    # decision. If the extraction finds nothing the check falls back to the
+    # original wording, which is the safe direction to be wrong in.
+    cxwired="$(grep -o '"[^"]*roost-codex-hook[^"]*"' "$cxhooks" 2>/dev/null | head -1 | tr -d '"')"
+    cxwired="${cxwired%%roost-codex-hook*}roost-codex-hook"
+    if [ -n "$cxwired" ] && [ ! -e "$cxwired" ]; then
+      warn "$cxhooks wires a roost-codex-hook from a checkout that no longer exists — this one is $cxwant; roost will not rewrite it (that would re-hash the handler and silently un-badge this machine), so fix it by hand: re-run: roost hooks codex"
+    else
+      warn "$cxhooks wires a roost-codex-hook from a different checkout — this one is $cxwant; re-run: roost hooks codex"
+    fi
   else
     ok "codex hooks wired in $cxhooks"
     # The trust key is "<absolute hooks.json path>:<snake_case event>:<group>:<handler>",

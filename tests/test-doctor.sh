@@ -353,6 +353,46 @@ case "$out" in
 esac
 rm -rf "$cleanhome"
 
+# other checkout: settings.json wires a roost-agent-state that belongs to a
+# DIFFERENT checkout. Doctor's codex branch has always compared the wired path
+# against this checkout's own; its claude branch tested only `grep -q
+# roost-agent-state`, a substring match that is true for anybody's roost. So a
+# hook pointing at a checkout that has been moved, renamed or deleted was
+# reported as "wired" -- the pane never badges, and the one command written to
+# fix it (roost install) refuses because it sees another checkout's hook. The
+# user is told everything is fine while nothing works.
+#
+# Two cases, because they want different advice. A checkout that still EXISTS
+# is somebody's deliberate second checkout and roost must not touch it. One
+# that is GONE is a dead hook, and saying so is the whole point.
+otherhome="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$otherhome/.claude" "$otherhome/live-checkout/scripts"
+: > "$otherhome/live-checkout/scripts/roost-agent-state"
+cat > "$otherhome/.claude/settings.json" <<EOF
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"$otherhome/live-checkout/scripts/roost-agent-state done"}]}]}}
+EOF
+out="$(run_doctor "$otherhome" COLORTERM=truecolor 2>&1)"
+case "$out" in
+  *"Claude hooks wired"*) assert_eq "said wired" "warned" \
+    "roost doctor does not call a hook from another checkout 'wired'" ;;
+  *) assert_eq ok ok "roost doctor does not call a hook from another checkout 'wired'" ;;
+esac
+assert_contains "$out" "different checkout" \
+  "roost doctor says the claude hook points at a different checkout"
+
+# ...and the same file, with that checkout deleted. This is the case the
+# multi-model review of #27 found: it must still not read as healthy.
+rm -rf "$otherhome/live-checkout"
+out="$(run_doctor "$otherhome" COLORTERM=truecolor 2>&1)"
+case "$out" in
+  *"Claude hooks wired"*) assert_eq "said wired" "warned" \
+    "roost doctor does not call a hook pointing at a DELETED checkout 'wired'" ;;
+  *) assert_eq ok ok "roost doctor does not call a hook pointing at a DELETED checkout 'wired'" ;;
+esac
+run_doctor "$otherhome" COLORTERM=truecolor >/dev/null 2>&1
+assert_eq "$?" "0" "a hook from another checkout does not fail doctor (warning only)"
+rm -rf "$otherhome"
+
 # absent: no settings.json at all -> silent, not a crash
 absenthome="$(mktemp -d /tmp/amx.XXXX)"
 out="$(run_doctor "$absenthome" COLORTERM=truecolor 2>&1)"
@@ -486,9 +526,30 @@ assert_contains "$out" "does not reference roost-codex-hook" "doctor spots a hoo
 # equivalent of the opencode "not this install" case, and it matters more here:
 # the trust entry is keyed by the hooks.json path, so a stale checkout path
 # fails at the exec rather than at the trust prompt.
-printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/somewhere/else/adapters/codex/roost-codex-hook Stop","timeout":10}]}]}}\n' > "$cxhome/hooks.json"
+# The other checkout EXISTS. Doctor now separates "a different checkout" from
+# "a checkout that no longer exists", because the second sends the reader
+# looking for something that is not there -- and scripts/roost-install draws
+# the same distinction in the same words. Case 3b below is the other half.
+cxother="$(mktemp -d /tmp/amx.XXXX)"
+mkdir -p "$cxother/adapters/codex"
+: > "$cxother/adapters/codex/roost-codex-hook"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s/adapters/codex/roost-codex-hook Stop","timeout":10}]}]}}\n' \
+  "$cxother" > "$cxhome/hooks.json"
 out="$(rdoctor)"
 assert_contains "$out" "different checkout" "doctor spots a roost-codex-hook from another checkout"
+
+# 3b. the same wiring, with that checkout deleted. Still a warning, and still
+# not repaired (rewriting a codex handler re-hashes it and silently un-badges
+# a machine that had already granted trust) -- but the REASON has to be true.
+rm -rf "$cxother"
+out="$(rdoctor)"
+assert_contains "$out" "no longer exists" \
+  "doctor says a codex hook's checkout is gone, not merely 'different'"
+case "$out" in
+  *"roost-codex-hook from a different checkout"*) s=misleading ;;
+  *) s=honest ;;
+esac
+assert_eq "$s" "honest" "doctor does not blame a different checkout when it is deleted"
 
 # 4. wired to THIS checkout, but never trusted — the silent-failure case
 "$HERE/bin/roost" hooks codex | sed -n '/^{/,$p' > "$cxhome/hooks.json"
@@ -617,7 +678,12 @@ printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"/somebody/
   > "$fixhome/.codex/hooks.json"
 # A Claude Stop hook from before the reply channel existed: roost's own script,
 # no --stop-hook. The installer replaces it with the current shape.
-printf '%s' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/old/checkout/scripts/roost-agent-state done"}]}]}}' \
+#
+# $HERE, not "/old/checkout": the subject of this case is the MISSING
+# --stop-hook, and doctor now compares the wired command against this
+# checkout's own path first. A foreign path would short-circuit into the
+# different-checkout warning and this case would stop testing what it names.
+printf '%s' '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"'"$HERE"'/scripts/roost-agent-state done"}]}]}}' \
   > "$fixhome/.claude/settings.json"
 fixout="$(run_doctor "$fixhome" COLORTERM=truecolor PATH="$fixshim:$PATH" 2>&1)"
 
@@ -649,7 +715,12 @@ mkdir -p "$refhome/.config/opencode/plugin" "$refhome/.pi/agent/extensions" \
 printf 'somebody else\n' > "$refhome/.config/opencode/plugin/roost.js"
 printf 'somebody else\n' > "$refhome/.pi/agent/extensions/roost.ts"
 printf 'somebody else\n' > "$refhome/.copilot/extensions/roost/extension.mjs"
-printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"/another/checkout/adapters/codex/roost-codex-hook"}]}]}}' \
+# A checkout that EXISTS, so the wording under test is the one this case
+# names. A deleted checkout gets a different (and equally install-free)
+# warning, covered in case 3b above.
+mkdir -p "$refhome/another-checkout/adapters/codex"
+: > "$refhome/another-checkout/adapters/codex/roost-codex-hook"
+printf '%s' '{"hooks":{"stop":[{"hooks":[{"type":"command","command":"'"$refhome"'/another-checkout/adapters/codex/roost-codex-hook"}]}]}}' \
   > "$refhome/.codex/hooks.json"
 refout="$(run_doctor "$refhome" COLORTERM=truecolor PATH="$fixshim:$PATH" 2>&1)"
 for _needle in "opencode plugin at" "copilot extension at" "pi extension at" \
@@ -680,8 +751,12 @@ mkdir -p "$cshome/.claude" "$cshome/elsewhere"
 cat > "$cshome/.claude/settings.json" <<'EOF'
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/amux/scripts/amux-agent-state done"}]}]}}
 EOF
-cat > "$cshome/elsewhere/settings.json" <<'EOF'
-{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/path/to/roost/scripts/roost-agent-state done --stop-hook"}]}]}}
+# $HERE, not a made-up path: doctor now compares the wired command against
+# THIS checkout's own scripts/roost-agent-state, so a fixture naming somebody
+# else's checkout would be warned about rather than reported as wired -- which
+# is a different case, tested above, and not what this one is about.
+cat > "$cshome/elsewhere/settings.json" <<EOF
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"$HERE/scripts/roost-agent-state done --stop-hook"}]}]}}
 EOF
 out="$(run_doctor "$cshome" CLAUDE_SETTINGS="$cshome/elsewhere/settings.json" COLORTERM=truecolor 2>&1)"
 assert_contains "$out" "Claude hooks wired in $cshome/elsewhere/settings.json" \

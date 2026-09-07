@@ -160,8 +160,12 @@ setdir="$(mktemp -d /tmp/amx.XXXX)"
 
 # A settings file in the shape someone gets by copying `roost hooks` BEFORE
 # this hook existed: the four state hooks, no SessionStart.
-printf '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/x/scripts/roost-agent-state working"}]}],"Stop":[{"hooks":[{"type":"command","command":"/x/scripts/roost-agent-state done --stop-hook"}]}]}}\n' \
-  > "$setdir/old.json"
+# $HERE, not "/x": doctor now compares the wired command against THIS
+# checkout's own scripts/roost-agent-state before it checks anything else, so
+# a made-up path short-circuits into the different-checkout warning and this
+# case stops testing the thing it names.
+printf '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"%s/scripts/roost-agent-state working"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s/scripts/roost-agent-state done --stop-hook"}]}]}}\n' \
+  "$HERE" "$HERE" > "$setdir/old.json"
 out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$cfgdir" CLAUDE_SETTINGS="$setdir/old.json" "$HERE/scripts/roost-doctor" 2>&1)"
 assert_contains "$out" "no SessionStart hook" "doctor names a settings file wired before SessionStart existed"
 

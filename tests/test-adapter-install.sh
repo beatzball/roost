@@ -665,7 +665,11 @@ fi
 # for the wrong reason.
 box="$TMP/claudeforeign"
 cset="$box/home/.claude/settings.json"
-mkdir -p "$box/home/.claude"
+mkdir -p "$box/home/.claude" "$TMP/some-other-checkout/scripts"
+# The other checkout's script really EXISTS. That is the whole distinction
+# this case now carries: a second checkout somebody deliberately keeps is not
+# roost's to rewrite. The sibling case below deletes it, and the answer flips.
+: > "$TMP/some-other-checkout/scripts/roost-agent-state"
 ( . "$HERE/scripts/lib/roost-hooks.sh"
   roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
 fbefore="$(cksum < "$cset")"
@@ -679,6 +683,61 @@ assert_contains "$out" "different checkout" \
   "claude wired elsewhere: the output says why it will not touch it"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "claude wired elsewhere: refusing one step does not abandon the others"
+
+# --- wired to a checkout that is GONE -> repair it, do not refuse forever ---
+# Found by the multi-model review of #27. A moved, renamed or re-cloned
+# checkout leaves a settings.json whose hook command is a path that no longer
+# exists. The symlink adapters heal that case already (a broken link is
+# `dangling`, and the installer relinks it); claude did not, because the
+# refusal compared the path STRING and never asked whether that checkout was
+# still there. So the hook could not run, the pane never badged, and every
+# re-run of `roost install` refused again -- while README.md and the `roost
+# update` help line both promise it handles "a moved or re-cloned checkout".
+#
+# The codex adapter deliberately does NOT get this treatment: rewriting a
+# codex handler re-hashes it and silently un-badges a machine that had already
+# granted trust, so there a refusal really is the lesser harm. See the codex
+# case further down, which pins that it still refuses AND that it now says the
+# true reason.
+box="$TMP/claudegone"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+# Generated the same way as the case above, from roost-hooks.sh, so the two
+# differ in exactly one thing: whether that path exists. It is never created.
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_claude "$TMP/deleted-checkout/scripts/roost-agent-state" ) > "$cset"
+out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude wired to a deleted checkout: exits 0"
+case "$out" in
+  *"different checkout"*) s=refused ;;
+  *) s=repaired ;;
+esac
+assert_eq "$s" "repaired" \
+  "claude wired to a deleted checkout: it is NOT refused as another checkout's"
+# The assertion that matters is the CONTENT, not the message: the file must
+# now name this checkout and must no longer name the dead one. A repair that
+# appended beside the dead entry would leave both, and the pane would still
+# carry a hook that cannot run.
+grep -qF "$HERE/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+  "claude wired to a deleted checkout: settings.json now names THIS checkout"
+grep -qF "$TMP/deleted-checkout/scripts/roost-agent-state" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" \
+  "claude wired to a deleted checkout: the dead entry is replaced, not appended beside"
+assert_eq "$(bak_count "$cset")" "1" \
+  "claude wired to a deleted checkout: a backup was taken before rewriting it"
+# The SessionStart entry specifically, and this one only an end-to-end run
+# found. SessionStart's command is roost-session-context -- the ONE claude
+# command that does not contain the marker (roost-agent-state) the dead-
+# checkout detection keys on. Matching the dead script path alone left it
+# classified as a stranger's hook: kept, with roost's own appended beside it.
+# The file came back with TWO SessionStart hooks, one of them a path that does
+# not exist, and every assertion above still passed. Matching the dead
+# DIRECTORY is what closes it.
+assert_eq "$(grep -c roost-session-context "$cset" 2>/dev/null)" "1" \
+  "claude wired to a deleted checkout: exactly one SessionStart hook survives"
+grep -qF "$TMP/deleted-checkout/scripts/roost-session-context" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" \
+  "claude wired to a deleted checkout: the dead SessionStart hook is gone too"
 
 # --- someone ELSE's hook in one of the four events -> kept, roost added ----
 # roost's entry JOINS the event's array; the user's stays. This is not a
@@ -875,8 +934,13 @@ assert_eq "$s" "honest" \
 # an instruction roost is GIVING.
 box="$TMP/claudeinject"
 cset="$box/home/.claude/settings.json"
-mkdir -p "$box/home/.claude"
-printf '%s\n' '{ "hooks": { "Notification": [ { "hooks": [ { "type": "command", "command": "/other/checkout/scripts/roost-agent-state working\nrm -rf /tmp/whatever" } ] } ] } }' > "$cset"
+mkdir -p "$box/home/.claude" "$TMP/inject-checkout/scripts"
+# The other checkout EXISTS, so this stays a refusal. Its subject is how the
+# refusal MESSAGE is rendered, and a checkout that is gone is now repaired
+# instead of refused -- which would leave this case with no refusal to render
+# and both assertions below passing on nothing.
+: > "$TMP/inject-checkout/scripts/roost-agent-state"
+printf '%s\n' '{ "hooks": { "Notification": [ { "hooks": [ { "type": "command", "command": "'"$TMP"'/inject-checkout/scripts/roost-agent-state working\nrm -rf /tmp/whatever" } ] } ] } }' > "$cset"
 fbefore="$(cksum < "$cset")"
 out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "claude with a newline in a command: exits 0"
@@ -895,7 +959,7 @@ assert_eq "$s" "contained" \
 # still reported, on one line, so a sanitiser that silently deletes
 # everything fails here.
 assert_contains "$out" \
-  "different checkout: /other/checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever" \
+  "different checkout: $TMP/inject-checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever" \
   "claude with a newline in a command: the command is still reported, flattened onto one line"
 case "$out" in *"roost hooks rm"*) s=leaked ;; *) s=contained ;; esac
 assert_eq "$s" "contained" \
@@ -1018,6 +1082,26 @@ EOF
     "claude under jq, wired elsewhere: no backup was taken"
   assert_contains "$out" "different checkout" \
     "claude under jq, wired elsewhere: refused for the same stated reason"
+
+  # ...and the repair, under jq. python3 is preferred, so every case above ran
+  # the python engine; without this the jq spelling of the dead-checkout logic
+  # would be shipped untested and could differ silently -- the whole reason
+  # this file runs a jq-only shim at all.
+  box="$TMP/claudejqgone"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_claude "$TMP/deleted-checkout-jq/scripts/roost-agent-state" ) > "$cset"
+  out="$(run_install "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, wired to a deleted checkout: exits 0"
+  case "$out" in *"different checkout"*) s=refused ;; *) s=repaired ;; esac
+  assert_eq "$s" "repaired" \
+    "claude under jq, wired to a deleted checkout: it is repaired, not refused"
+  grep -qF "$HERE/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+    "claude under jq, wired to a deleted checkout: settings.json now names THIS checkout"
+  grep -qF "$TMP/deleted-checkout-jq/scripts/roost-agent-state" "$cset" 2>/dev/null && s=left || s=gone
+  assert_eq "$s" "gone" \
+    "claude under jq, wired to a deleted checkout: the dead entry is replaced, not appended beside"
   rm -rf "$JQ_SHIM"
 fi
 
@@ -1143,7 +1227,13 @@ assert_contains "$out" "Trust all and continue" \
 # correctly would simply stop.
 box="$TMP/codexforeign"
 chooks="$box/home/.codex/hooks.json"
-mkdir -p "$box/home/.codex"
+mkdir -p "$box/home/.codex" "$TMP/some-other-checkout/adapters/codex"
+# The other checkout EXISTS, which is what makes "a different checkout" the
+# true reason here. The sibling case below deletes it: codex still refuses --
+# rewriting a trusted handler re-hashes it and silently un-badges the machine
+# -- but the REASON it prints changes, because "somebody else's checkout" is
+# no longer what it found.
+: > "$TMP/some-other-checkout/adapters/codex/roost-codex-hook"
 ( . "$HERE/scripts/lib/roost-hooks.sh"
   roost_hooks_codex "$TMP/some-other-checkout/adapters/codex/roost-codex-hook" ) > "$chooks"
 fbefore="$(cksum < "$chooks")"
@@ -1159,6 +1249,38 @@ assert_contains "$out" "re-hash" \
   "codex wired elsewhere: the output says in plain words why rewriting would be worse"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "codex wired elsewhere: refusing one step does not abandon the others"
+
+# --- codex wired to a checkout that is GONE -> still refuse, but say so ----
+# The deliberate asymmetry with claude, and the reason it is deliberate.
+# claude repairs this case (a dead hook is roost's own and broken, so it is
+# replaced). codex must NOT: its handler hashes live in config.toml, and
+# rewriting one re-hashes it, which silently un-badges a machine that had
+# already granted trust -- nothing printed on stdout, stderr or in the TUI.
+# So the refusal stays and only the REASON improves. Telling somebody their
+# config belongs to "a different checkout" when that checkout no longer exists
+# sends them looking for a checkout that is not there.
+box="$TMP/codexgone"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_codex "$TMP/deleted-checkout/adapters/codex/roost-codex-hook" ) > "$chooks"
+fbefore="$(cksum < "$chooks")"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex wired to a deleted checkout: exits 0"
+assert_eq "$(cksum < "$chooks")" "$fbefore" \
+  "codex wired to a deleted checkout: hooks.json is STILL byte-identical (the refusal stands)"
+assert_eq "$(bak_count "$chooks")" "0" \
+  "codex wired to a deleted checkout: no backup was taken"
+assert_contains "$out" "no longer exists" \
+  "codex wired to a deleted checkout: the reason names the real problem"
+assert_contains "$out" "re-hash" \
+  "codex wired to a deleted checkout: it still says why rewriting would be worse"
+case "$out" in
+  *"points at a different checkout"*) s=misleading ;;
+  *) s=honest ;;
+esac
+assert_eq "$s" "honest" \
+  "codex wired to a deleted checkout: it does NOT blame a different checkout"
 
 # --- somebody else's handler on one of roost's OWN four events -> kept -----
 # codex's events are arrays too, so roost's handler joins rather than
