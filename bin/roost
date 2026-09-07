@@ -535,14 +535,200 @@ JSON
       case "$last" in *"$1"*) return 0 ;; *) return 1 ;; esac
     }
 
+    # Typing is not delivery, and everything from here to the Enter exists to
+    # keep those two apart.
+    #
+    # THE RACE THIS CLOSES. `roost spawn` prints a pane id the moment the PANE
+    # exists, which is well before the agent inside it is reading its terminal.
+    # A TUI takes the tty over by putting it in raw mode and DISCARDING
+    # whatever is already buffered — that is how it avoids acting on keys that
+    # were meant for the shell it replaced — so everything typed before that
+    # instant is thrown away and the REMAINDER of the message arrives looking
+    # exactly like a whole one. Measured in the field: 3466 bytes sent to a
+    # freshly spawned Claude pane, roughly the last 450 delivered, the front
+    # gone, `roost send` exit 0. That is nowhere near tmux's ~16344-byte
+    # command cap — it is a startup race, not a size limit, which is why the
+    # workaround people reached for was "write a file and send the path": a
+    # file cannot be half-typed into a TUI that is not awake yet.
+    #
+    # The verification below this block could not see it, because it verifies
+    # the SUBMIT and never the CONTENT: it asks whether the input line has
+    # stopped holding the message, and a half-eaten message satisfies that
+    # exactly as well as a whole one. So the check added here is on the
+    # message's HEAD — the part a cold start eats, and therefore the only part
+    # worth looking for.
+    msg="$*"
+    # How long to keep trying before giving up and saying so. Generous on
+    # purpose: a cold agent can take several seconds to draw its input box, and
+    # a send that gave up after one second would be a worse tool than the one
+    # that lost the front quietly. Clamped by LENGTH first, then by value, the
+    # same way @roost-send-retries is above and for the same reason — a
+    # pathological digit string must not make the arithmetic itself slow.
+    ready_timeout="$(t show-options -gqv @roost-send-ready-timeout 2>/dev/null)"
+    case "$ready_timeout" in ''|*[!0-9]*) ready_timeout=15 ;; esac
+    [ "${#ready_timeout}" -gt 6 ] && ready_timeout=120
+    [ "$ready_timeout" -gt 120 ] 2>/dev/null && ready_timeout=120 || true
+
+    # Whitespace is stripped from BOTH sides of every comparison below. A TUI
+    # wraps a long line at its own width and `capture-pane` reports that wrap
+    # as a real newline, so a contiguous byte match against the raw screen
+    # would fail on any message wider than the input box — which is most of the
+    # messages worth worrying about. 24 characters is short enough to stay
+    # cheap and long enough not to collide with ordinary screen text.
+    head="$(printf '%s' "$msg" | tr -d '[:space:]' | cut -c1-24)"
+
+    # This check must only ever be wrong in ONE direction. If the head is
+    # already on screen before a single key is typed — a very short message, or
+    # a pane still showing an earlier copy of the same one — then finding it
+    # afterwards proves nothing at all. In that case verification is skipped
+    # rather than trusted: skipping degrades that one send to the pre-fix
+    # behaviour, while trusting it would hand back a false success, which is
+    # the exact failure being removed.
+    pre="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+    verifiable=1
+    [ -z "$head" ] && verifiable=0
+    case "$pre" in *"$head"*) verifiable=0 ;; esac
+
+    screen_has_head() {
+      case "$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)" in
+        *"$head"*) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+
+    # THE TRANSPORT IS THE FIX. `send-keys -l` types the message as very fast
+    # KEYSTROKES, and Claude Code 2.1.263 answers that by keeping only the last
+    # partial chunk of it: measured, discarded = 1022 x floor(n/1022), so a
+    # 3502-byte brief arrives as its last 436 bytes. A bracketed paste is a
+    # different thing to the receiving application — the \e[200~ / \e[201~
+    # markers say "this is one block of pasted text, not typing" — and the same
+    # 3502 bytes then arrive whole, proven by putting the instruction at the
+    # very START of the message and getting it obeyed.
+    #
+    # The message travels over STDIN to load-buffer, never on a tmux command
+    # line, so the ~16344-byte command-length ceiling stops applying to it
+    # as well. Two problems, one transport.
+    #
+    # -b names ONE buffer that every send reuses, so sends cannot pile up in the
+    # buffer stack. -d deletes it as it is pasted. Neither is tidiness: tmux
+    # buffers are visible to the human at `prefix + =`, and an agent's message
+    # is not something to leave sitting in a picker. -w is the flag that would
+    # reach the SYSTEM clipboard and is never passed — measured, with a canary:
+    # the macOS pasteboard is byte-identical across a send.
+    ROOST_SEND_BUF=roost-send
+    # Deletes the buffer on EVERY way out of this command, not just the happy
+    # one. A send that dies between the load and the paste — a pane that goes
+    # away, a signal — would otherwise leave the whole message in the buffer
+    # list, which is the exact thing -d exists to prevent.
+    trap 't delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true' EXIT INT TERM
+
+    # stderr is captured rather than dropped so that tmux's failures here can be
+    # told apart: a pane that has gone away says one thing, and an over-long
+    # command another ("command too long", or "failed to send command" right at
+    # the boundary — the same cause wearing a different message). Reporting
+    # either as "pane may have died" sent callers to inspect a pane that was
+    # alive, idle and blameless.
+    type_message() {
+      local rc
+      senderr="$(printf '%s' "$msg" | t load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
+      [ "$rc" -eq 0 ] || return "$rc"
+      senderr="$(t paste-buffer -p -d -b "$ROOST_SEND_BUF" -t "$tgt" 2>&1 >/dev/null)"; rc=$?
+      return "$rc"
+    }
+
     # This one's status is NOT discarded: unlike the Enters below (where
     # aborting mid-loop is the worse outcome), a failure HERE means the text
     # never reached the pane at all — there is nothing to retry or verify, so
     # let it surface as a loud failure instead of falling through to report
     # exit 0 for a message that was never typed.
-    if ! t send-keys -t "$tgt" -l -- "$*" 2>/dev/null; then
-      echo "roost send: failed to type text into '$raw' (pane may have died)" >&2
+    if ! type_message; then
+      case "$senderr" in
+        *"too long"*|*"failed to send command"*)
+          # A byte count, not ${#msg}: the budget tmux enforces is bytes, and
+          # under a UTF-8 locale bash would report characters — which would
+          # print a number smaller than the limit next to a message saying the
+          # limit was exceeded.
+          bytes="$(printf '%s' "$msg" | LC_ALL=C wc -c | tr -d ' ')"
+          # Reachable only if tmux refuses the load or the paste itself. The
+          # command-length ceiling that used to dominate here does not apply to
+          # the message any more — it travels over stdin — so this no longer
+          # tells anyone to go and write a file.
+          echo "roost send: tmux refused a $bytes-byte message — nothing was delivered: $senderr" >&2
+          ;;
+        *)
+          echo "roost send: failed to type text into '$raw' (pane may have died): $senderr" >&2
+          ;;
+      esac
       exit 1
+    fi
+
+    # Prove the head arrived, and keep trying until it does or the budget runs
+    # out. Retyping — rather than merely waiting — is what actually fixes the
+    # race: the first copy is GONE, not late. The flush that ate it happened
+    # once, at takeover, so no amount of patience brings it back.
+    #
+    # C-u before each retry so that a pane which DID accept the earlier copy,
+    # but renders it somewhere this check cannot see, ends up holding one
+    # message rather than two. At an empty input line it is a no-op everywhere
+    # it is understood.
+    #
+    # Measured, and it is why the Enter below still has to be sent: a bracketed
+    # paste does NOT auto-submit. The text lands in the input box and stays
+    # there, and the pane's state does not change — so the submit loop is not
+    # double-submitting anything.
+    if [ "$verifiable" = 1 ]; then
+      waited=0
+      until screen_has_head; do
+        [ "$waited" -ge "$ready_timeout" ] && break
+        sleep 2 2>/dev/null || true
+        waited=$((waited + 2))
+        screen_has_head && break
+        t send-keys -t "$tgt" C-u 2>/dev/null || true
+        type_message || true
+        sleep "$delay" 2>/dev/null || true
+      done
+      if ! screen_has_head; then
+        # Before failing, ask a weaker question that a real agent TUI can still
+        # answer: did the screen change at all?
+        #
+        # Measured against a live Claude Code 2.1.263 pane: a bulk `send-keys
+        # -l` is detected as a PASTE and collapsed to `[Pasted text #N]`
+        # placeholders — sometimes several for one send. The text is then
+        # nowhere on screen, so the head check above cannot pass no matter how
+        # long it waits or how often it retypes. Without this branch `roost
+        # send` retyped seven times and exited 1 having submitted nothing, on
+        # exactly the target it exists to drive. That trades a silent partial
+        # delivery for a loud total one, which is not the trade that was asked
+        # for.
+        #
+        # A changed screen proves the keystrokes were ACCEPTED. It does not
+        # prove all of them arrived, so this is not silent: the notice goes to
+        # stderr and names what could not be checked. The distinction that
+        # matters is kept — a pane that ate the keys and drew nothing still
+        # falls through to the failure below, which is the cold-start case.
+        post="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+        if [ "$post" != "$pre" ]; then
+          # A paste PLACEHOLDER is not an unknown, it is the expected success
+          # rendering: the pane took the block, decided it was a paste, and drew
+          # a stand-in for it. Warning about that would fire on every long send
+          # to a real agent — noise that trains a reader to ignore the notice
+          # for the case where it means something. So the notice is kept for the
+          # genuinely unexplained shape only: the screen changed, the message is
+          # not on it, and there is no placeholder to account for that either.
+          case "$post" in
+            *Pastedtext*) : ;;
+            *) echo "roost send: '$raw' accepted the keys but does not show them (a pane that does not echo what it is given), so the CONTENT could not be verified — submitting anyway" >&2 ;;
+          esac
+        else
+          # Exit 1, the documented "delivery to a valid target failed — retry
+          # the same target" code. NOTHING has been submitted: the Enter below
+          # is never reached, so a caller that retries cannot double-run
+          # anything.
+          echo "roost send: could not confirm the message reached '$raw' within ${ready_timeout}s — nothing was submitted" >&2
+          echo "roost send: the pane may still be starting up, or may not echo what it is given; \`roost screen $raw\` to look" >&2
+          exit 1
+        fi
+      fi
     fi
     sleep "$delay" 2>/dev/null || true
     before="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
@@ -602,8 +788,17 @@ JSON
       # is working or blocked has not finished the turn whose reply this would
       # be, so whatever is stored came from an earlier one.
       state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+      # `error` belongs here alongside working and blocked, and for a different
+      # reason than theirs. Those two mean the turn has not finished, so
+      # whatever is stored predates it. `error` means the turn finished BADLY,
+      # and every adapter drops the half-built reply on that path
+      # (adapters/opencode/roost.js and its copilot and pi equivalents all say
+      # so) precisely because a failed turn has no answer to publish. So a
+      # reply sitting on an errored pane cannot be that turn's, either — and
+      # this is the more ordinary route of the two, because a provider outage
+      # is an ordinary event where an interrupted turn is not.
       case "$state" in
-        working|blocked)
+        working|blocked|error)
           echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
       esac
       # $lines is deliberately NOT applied. A recorded reply is returned whole:
