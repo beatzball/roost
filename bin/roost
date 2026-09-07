@@ -651,12 +651,36 @@ JSON
         sleep "$delay" 2>/dev/null || true
       done
       if ! screen_has_head; then
-        # Exit 1, the documented "delivery to a valid target failed — retry the
-        # same target" code. NOTHING has been submitted: the Enter below is
-        # never reached, so a caller that retries cannot double-run anything.
-        echo "roost send: could not confirm the message reached '$raw' within ${ready_timeout}s — nothing was submitted" >&2
-        echo "roost send: the pane may still be starting up, or may not echo what it is given; \`roost screen $raw\` to look" >&2
-        exit 1
+        # Before failing, ask a weaker question that a real agent TUI can still
+        # answer: did the screen change at all?
+        #
+        # Measured against a live Claude Code 2.1.263 pane: a bulk `send-keys
+        # -l` is detected as a PASTE and collapsed to `[Pasted text #N]`
+        # placeholders — sometimes several for one send. The text is then
+        # nowhere on screen, so the head check above cannot pass no matter how
+        # long it waits or how often it retypes. Without this branch `roost
+        # send` retyped seven times and exited 1 having submitted nothing, on
+        # exactly the target it exists to drive. That trades a silent partial
+        # delivery for a loud total one, which is not the trade that was asked
+        # for.
+        #
+        # A changed screen proves the keystrokes were ACCEPTED. It does not
+        # prove all of them arrived, so this is not silent: the notice goes to
+        # stderr and names what could not be checked. The distinction that
+        # matters is kept — a pane that ate the keys and drew nothing still
+        # falls through to the failure below, which is the cold-start case.
+        post="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+        if [ "$post" != "$pre" ]; then
+          echo "roost send: '$raw' accepted the keys but does not show them (a collapsed paste, or a pane that does not echo), so the CONTENT could not be verified — submitting anyway" >&2
+        else
+          # Exit 1, the documented "delivery to a valid target failed — retry
+          # the same target" code. NOTHING has been submitted: the Enter below
+          # is never reached, so a caller that retries cannot double-run
+          # anything.
+          echo "roost send: could not confirm the message reached '$raw' within ${ready_timeout}s — nothing was submitted" >&2
+          echo "roost send: the pane may still be starting up, or may not echo what it is given; \`roost screen $raw\` to look" >&2
+          exit 1
+        fi
       fi
     fi
     sleep "$delay" 2>/dev/null || true

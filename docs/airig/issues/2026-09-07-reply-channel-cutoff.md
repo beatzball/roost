@@ -124,6 +124,65 @@ user put it, is that agents stop having conversations.
 
 ---
 
+### Measured against a live Claude Code pane (2026-09-07)
+
+Driven with a copy of `bin/roost` at a temp path, against a real Claude Code
+2.1.263 pane spawned into the live server. Three results, and the first two
+change the picture.
+
+**1. There is no fixed ~3066-byte input-path wall for a pane that is already
+ready.** A 6000-byte probe was sent whose padding is an offset ruler — every 10
+bytes spell out their own end offset — with the instruction at the TAIL, so it
+survives a head cut and the model's answer names the cut point directly. Claude
+answered with `000000001000000000200000000`: **offset zero. The head arrived.**
+
+That is not what a fixed size ceiling does. Whatever cut the two briefs at 3067
+and 3066 needs a condition this probe did not reproduce, and the obvious
+candidate is the one finding 2 is about: those briefs went to a pane that had
+just been spawned.
+
+**2. Claude Code collapses a bulk `send-keys` into `[Pasted text #N]`
+placeholders, and then the text is nowhere on screen.** Observed repeatedly; one
+6000-byte send became six placeholders at once. This broke the fix in finding 2
+against the very target it was written for: the head check reads the screen, the
+head was never on the screen, so `roost send` retyped seven times and exited 1
+having submitted nothing. Measured:
+
+```
+send exit=1
+roost send: could not confirm the message reached '%183' within 15s — nothing was submitted
+```
+
+That trades a silent partial delivery for a loud total one, which is worse. Now
+repaired: when the head cannot be found but the screen CHANGED, the keys were
+accepted and only the content is unverifiable, so `send` submits and says on
+stderr that it could not check the content. A pane that ate the keys and drew
+nothing still fails — that distinction is the cold-start case and it is kept.
+
+**3. The collapse is NOT deterministic by size, and the chunk size is
+UNMEASURED.** A sweep of 40/500/900/1000/1024/1100/2048/2100/3066/4000/6000
+bytes returned non-monotonic counts — 900 collapsed, 1024 and 3066 did not, 4000
+did. A non-monotonic result from a size sweep means the detector is measuring
+something other than size (timing, most likely), so no chunk-size number is
+recorded here. The tempting arithmetic — 3066 = 3 x 1022, three whole chunks
+eaten by a cold start, which would reconcile a timing race with a
+near-constant offset — is a HYPOTHESIS with no measurement behind it. It is
+written down so the next person tests it, not so they quote it.
+
+A later live re-run appeared to confirm the repair end to end, but the pane's
+input box still held text from the sweep above, so the message was contaminated
+and that run proves nothing. It is recorded here rather than dropped because a
+contaminated green is exactly the shape of result section 0 is about.
+
+### What is still needed
+
+Drive a FRESHLY SPAWNED Claude pane with the offset-ruler probe — the condition
+the field reports and the one this session did not reproduce — and read the cut
+offset straight off the model's answer. That is one turn, and it settles whether
+finding 1 is finding 2 wearing a disguise.
+
+---
+
 ## 2. The cold-start race: the front of a message is destroyed, silently
 
 **Status: FIXED.** `bin/roost`, `tests/test-send-readiness.sh`,
