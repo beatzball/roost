@@ -61,6 +61,23 @@ The notice goes to stderr, so `roost read api | grep …` and loops over several
 
 Never treat a fallback result as an agent's answer. If the notice appeared, the reply was not collected.
 
+### A reply is never served as fresher than it is
+
+A recorded reply stays on the pane until the next turn replaces it, which is
+deliberate — clearing it at the start of a turn would throw away an answer you
+were merely slow to collect. So `roost read` says on stderr when what it is
+handing you is not current:
+
+- the pane is **working** or **blocked** — the turn this reply would belong to
+  has not finished, so the reply is from an earlier one;
+- the pane is **errored** — that turn failed and published no answer at all, so
+  again the reply predates it.
+
+A turn that finishes having said nothing — it ended on a tool call, or was
+interrupted — clears the reply instead, so `roost read` gives you the
+self-announcing screen fallback rather than the previous turn's answer wearing
+this turn's badge.
+
 ### Agents with no adapter
 
 An agent whose harness roost has no plugin for can still take part, the same way it can badge itself with `roost state`:
@@ -82,8 +99,42 @@ A reply longer than 12 KB is stored truncated, keeping the beginning, with a mar
 |------|---------|------------|
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
-| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, or it was typed but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
+| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, was too long for tmux, or was typed but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
 | `1` (`usage:` message) | a missing argument | caller bug, not a delivery failure |
+
+### Sending to a pane that is still starting up
+
+`roost spawn` prints a pane id as soon as the **pane** exists. The agent inside
+it is not reading the keyboard yet. When a TUI does start reading, it takes the
+terminal over and throws away everything typed before that moment — that is how
+it avoids acting on keys meant for the shell it replaced.
+
+Send into that window and the **front** of your message is destroyed. The rest
+arrives looking like a whole message. This is not a length limit: it was first
+measured on a 3466-byte brief, of which about the last 450 bytes survived.
+
+`roost send` now types the message, then confirms the beginning of it is
+actually on the pane before pressing Enter, and retypes if it is not. So:
+
+- a message sent to a pane that is still booting waits for it and lands whole;
+- a message that cannot be confirmed is **never submitted**, and `send` exits 1
+  saying so, rather than exiting 0 over a half-delivered brief.
+
+It gives up after 15 seconds by default. Change that with:
+
+```sh
+tmux -L roost set-option -g @roost-send-ready-timeout 30
+```
+
+Two things to know:
+
+- A pane that does not echo what it is given — a masked prompt, or a program
+  reading raw input without drawing it — cannot be confirmed either, so `send`
+  will report failure there rather than guess. Nothing is submitted in that
+  case.
+- A message longer than about 16344 bytes is refused outright by tmux, which
+  caps the whole command. `send` says so and names the length. Write it to a
+  file and send the path.
 
 ### Why a blocked target is refused
 

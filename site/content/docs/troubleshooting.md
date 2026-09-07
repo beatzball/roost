@@ -57,8 +57,27 @@ The exit code tells you which failure it is:
 
 - **exit 3** — the target's badge says 🛑 blocked, so `send` refused rather than typing into a permission dialog. Answer the dialog and retry the same target. If the pane has no dialog on it, see [A pane refuses every send but has no dialog](#a-pane-refuses-every-send-but-has-no-dialog) below.
 - **exit 2** — the target does not exist or its pane is dead. Re-resolve the target.
-- **exit 1** with a `roost send:` message — delivery to a valid target failed. Retry the same target or look at the pane; do not re-resolve.
+- **exit 1** with a `roost send:` message — delivery to a valid target failed. Retry the same target or look at the pane; do not re-resolve. Two of these name their own cause: *could not confirm the message reached* (see [Only the end of my message arrived](#only-the-end-of-my-message-arrived) below) and *message too long for tmux*, which needs a file and a path instead.
 - **exit 1** with a `usage:` message — a missing argument. That is a caller bug.
+
+## Only the end of my message arrived
+
+You spawned a pane and sent it a briefing straight away. The agent answered as
+if it had been given only the last part of it, and `roost send` exited 0.
+
+`roost spawn` prints the pane id when the **pane** exists, not when the agent
+inside it is ready. A TUI that is starting up discards whatever was typed
+before it took the terminal over, so the front of your message is destroyed and
+the remainder reads like a complete one. It is a startup race, not a length
+limit — it was first measured on a 3466-byte message.
+
+Current roost confirms the beginning of the message is on the pane before
+pressing Enter, retypes if it is not, and refuses to submit anything it cannot
+confirm. If you are seeing this, run `roost doctor` — the machine is on an
+older roost.
+
+Until it is updated, the reliable workaround is the one people arrived at
+anyway: write the briefing to a file and send the path.
 
 ## A pane refuses every send but has no dialog
 
