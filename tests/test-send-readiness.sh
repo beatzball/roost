@@ -37,16 +37,16 @@ export ROOST_SOCKET="$s"
 FIXTURE="$HERE/tests/fixtures/cold-start-tui.py"
 
 n=0
-pane_for() {  # pane_for DELAY -> prints "PANE_ID SUBMITTED_FILE"
+pane_for() {  # pane_for DELAY [HEADCUT] -> prints "PANE_ID SUBMITTED_FILE"
   n=$((n+1))
   local f="$sdir/submitted.$n" p
   : > "$f"
   if [ "$n" = 1 ]; then
     tmux -S "$s" -f /dev/null new-session -d -x 200 -y 50 \
-      "exec python3 -u $FIXTURE $1 $f"
+      "exec python3 -u $FIXTURE $1 $f ${2:-0}"
     p="$(tmux -S "$s" display -p '#{pane_id}')"
   else
-    p="$(tmux -S "$s" new-window -P -F '#{pane_id}' -d "exec python3 -u $FIXTURE $1 $f")"
+    p="$(tmux -S "$s" new-window -P -F '#{pane_id}' -d "exec python3 -u $FIXTURE $1 $f ${2:-0}")"
   fi
   printf '%s %s' "$p" "$f"
 }
@@ -104,6 +104,57 @@ assert_eq "$rc" "0" "send into a STARTING pane exits 0 once it has delivered"
 # twice: a peer briefed twice is a different bug, not a fix.
 assert_eq "$(printf '%s\n' "$got" | grep -c 'HEAD-MARKER-0001')" "1" \
   "send into a STARTING pane delivers the message exactly once"
+
+# --- 1b. a message cut ABOVE tmux and BELOW the agent -----------------------
+#
+# A second loss, reported from the field and NOT explained by the startup race.
+# Two briefs, 3466 and 3502 bytes, were cut at offsets 3067 and 3066: mid-word,
+# head discarded, tail kept, `roost send` exit 0 both times. The control that
+# matters: the same 3502 bytes were pushed through `send-keys -l` to a
+# throwaway socket with a plain reader, and again with that reader asleep for
+# five seconds. 3501 of 3502 arrived both times. tmux delivers it.
+#
+# A near-CONSTANT discarded prefix across two different message lengths is the
+# signature of a fixed boundary, not of a timing race, so this case is separate
+# from the startup one above and the fixture models it separately.
+#
+# What is asserted here is the CONTRACT, not the mechanism, because the
+# mechanism is not known: `roost send` must not report success over a message
+# whose front was destroyed. Whether it recovers depends on whether the real
+# ceiling repeats on a retyped message, which nobody has measured — so both
+# outcomes are accepted, and only a silent exit 0 over a cut message is not.
+read -r p f <<<"$(pane_for 0 3066)"
+sleep 1.0
+BIG_MSG="HEAD-MARKER-0001 $(LC_ALL=C awk 'BEGIN{s="";while(length(s)<3400)s=s "q";printf "%s", substr(s,1,3400)}') TAIL-MARKER-9999"
+# Detector proof: the pane really does destroy the front. Type it by hand first,
+# the way the unfixed send did, and confirm the head is gone and the tail is not
+# — otherwise the assertion below would be measuring a fixture that cuts nothing.
+tmux -S "$s" send-keys -t "$p" -l -- "$BIG_MSG"
+tmux -S "$s" send-keys -t "$p" Enter
+sleep 1.0
+raw_got="$(cat "$f" 2>/dev/null || true)"
+assert_contains "$raw_got" "TAIL-MARKER-9999" \
+  "detector proof: the head-cut fixture keeps the tail"
+case "$raw_got" in
+  *"HEAD-MARKER-0001"*) assert_eq "survived" "cut" \
+     "detector proof: the head-cut fixture really destroys the front" ;;
+  *) assert_eq ok ok "detector proof: the head-cut fixture really destroys the front" ;;
+esac
+
+read -r p f <<<"$(pane_for 0 3066)"
+sleep 1.0
+err="$("$ROOST" send "$p" "$BIG_MSG" 2>&1 >/dev/null)"; rc=$?
+sleep 0.8
+got="$(cat "$f" 2>/dev/null || true)"
+whole=no; case "$got" in *"HEAD-MARKER-0001"*"TAIL-MARKER-9999"*) whole=yes ;; esac
+if [ "$rc" -eq 0 ]; then
+  assert_eq "$whole" "yes" \
+    "a head-cut pane is never reported as a clean send unless the message really got through"
+else
+  assert_contains "$err" "roost send:" \
+    "a head-cut pane that cannot be recovered fails loudly"
+  assert_eq ok ok "a head-cut pane is never reported as a clean send"
+fi
 
 # --- 2. exit 0 must never mean a partial delivery ---------------------------
 #

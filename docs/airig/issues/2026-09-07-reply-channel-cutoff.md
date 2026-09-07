@@ -43,7 +43,88 @@ holding.
 
 ---
 
-## 1. PRIMARY — the cold-start race: the front of a message is destroyed, silently
+## 1. PRIMARY — a ~3066-byte ceiling that is above tmux and below the agent
+
+**Status: MEASURED by the coordinator (%54). Not fixed — but no longer silent;
+see "What roost does about it" below.**
+
+### The measurement, with its method
+
+Two briefs sent to this pane with `roost send`, both cut:
+
+| brief | bytes sent | cut at offset | what survived | `roost send` exit |
+| --- | --- | --- | --- | --- |
+| 1 | 3466 | 3067 | the last 399 bytes | **0** |
+| 2 | 3502 | 3066 | the last 436 bytes | **0** |
+
+Mid-word both times. **Head discarded, tail kept** — the opposite direction from
+every truncation roost performs itself, all of which keep the head and mark the
+cut.
+
+**The control, and it is the part that matters.** The same 3502 bytes were
+pushed through `send-keys -l` to a throwaway `-S` socket with a plain reader,
+and again with that reader asleep for five seconds. **3501 of 3502 bytes arrived
+both times.** So tmux delivers a message of this size, and delivers it to a
+reader that is not yet reading. tmux is not the ceiling.
+
+### What that rules in, and what it does not
+
+**Established:** the loss is above tmux and below the agent's own handling of
+the text. It is not the ~16344-byte `send-keys` command cap (finding 3), which
+is more than four times larger and refuses the whole command rather than cutting
+it.
+
+**Strongly indicated:** a fixed boundary rather than a timing race. The
+*discarded* prefix is near-constant across two different message lengths (3067
+and 3066 from messages of 3466 and 3502). A takeover flush — the mechanism in
+finding 2 — destroys whatever happens to have arrived by a moment in *time*, so
+it would not land within one byte of the same offset twice.
+
+**Not established, and not claimed:** that the ceiling is in the Claude Code TUI
+input path specifically. The control reader was a plain one; it never performed
+the raw-mode takeover flush that a TUI does, so it is a good control for tmux
+and not a control for "what a TUI does to a large paste". The mechanism is
+unmeasured. Per AGENTS.md §9, the shared location of the two losses is not
+evidence that they are the same kind of thing.
+
+**Unmeasured, and it decides the fix:** whether the ceiling repeats when the
+same message is typed again. If the discard is one-time, retyping recovers the
+message. If it is per-burst, retyping cannot.
+
+### What roost does about it
+
+Nothing delivers a 3502-byte message through a ceiling roost does not
+understand. What the fix in finding 2 does do is make this loss **impossible to
+miss**, because the check it added is on the message's HEAD — and the head is
+exactly what this ceiling destroys:
+
+- if retyping recovers the message, `roost send` delivers it whole and exits 0;
+- if it does not, `roost send` never presses Enter, submits nothing, and exits 1
+  saying it could not confirm the message arrived.
+
+The one outcome that has been removed is the one that happened twice: exit 0
+over a brief whose first 3066 bytes no longer exist.
+
+`tests/test-send-readiness.sh` asserts that contract against a fixture that
+destroys a fixed-size prefix (`tests/fixtures/cold-start-tui.py`, `HEADCUT_BYTES`),
+after proving the fixture really does destroy the head and keep the tail. It
+accepts either outcome above and rejects only a silent exit 0, because the
+mechanism is not known and a test must not assert more than was measured.
+
+### The follow-up this needs
+
+**Measure the ceiling directly, then chunk under it.** Drive a real agent pane
+with messages at 3000, 3100 and 3200 bytes and find the exact boundary; if it is
+fixed, `roost send` should split a long message into pieces below it rather than
+relying on retypes. Until then, the standing workaround stands and is now
+explained rather than superstitious: write the briefing to a file and send the
+path. That is why this reached the field as "cutoff messages when opening a
+spawned window" and grew into passing files around — and the real cost, as the
+user put it, is that agents stop having conversations.
+
+---
+
+## 2. The cold-start race: the front of a message is destroyed, silently
 
 **Status: FIXED.** `bin/roost`, `tests/test-send-readiness.sh`,
 `tests/fixtures/cold-start-tui.py`.
@@ -110,9 +191,9 @@ stuck in the input box can never be counted as a delivery.
 
 ---
 
-## 2. `roost send` blamed the pane for a message tmux refused
+## 3. `roost send` blamed the pane for a message tmux refused
 
-**Status: FIXED.** Same commit.
+**Status: FIXED.** Same commit as finding 2.
 
 `send-keys -l` is all-or-nothing — measured: 16340 bytes delivered whole, 16350
 rejected, nothing ever half-typed — so this was never a silent cut. But the
@@ -128,10 +209,10 @@ limit was exceeded.
 
 ---
 
-## 3. A finished turn that records no reply serves the PREVIOUS turn's answer
+## 4. A finished turn that records no reply serves the PREVIOUS turn's answer
 
 **Status: FIXED for the Claude Stop hook and for errored panes. One route
-remains open — see section 5.**
+remains open — see section 6.**
 
 `bin/roost`'s `read` keyed its staleness notice on `@agent_state` being
 `working|blocked`. `done` is not in that list, and `done` is exactly the state a
@@ -189,10 +270,10 @@ for no reason.
 
 ---
 
-## 4. Three adapters carry a comment that is false at the top of its range
+## 5. Three adapters carry a comment that is false at the top of its range
 
 **Status: REPORTED, not fixed.** Needs a single ~1MB reply, and it is a route
-into finding 3 rather than a bug of its own.
+into finding 4 rather than a bug of its own.
 
 `adapters/opencode/roost.js:154`, `adapters/copilot/extension.mjs:73` and
 `adapters/pi/roost.ts:67` each say:
@@ -210,18 +291,18 @@ cannot report failure.
 
 ---
 
-## 5. What is still open
+## 6. What is still open
 
 - **An adapter turn that ends `done` having published nothing.** `bin/roost`'s
   `state` subcommand is `exec .../roost-agent-state "${2:-idle}"` — no
   `--stop-hook` — so opencode, copilot and pi never reach the clearing branch
-  added in finding 3. Reproduced: `state=done`, `stdout=[TURN ONE REPLY]`,
+  added in finding 4. Reproduced: `state=done`, `stdout=[TURN ONE REPLY]`,
   `stderr=[]`. The errored-pane half of this is now covered by the `error`
   notice; the `done` half is not. The fix wants a way for an adapter to say
   "this turn produced nothing" — `roost reply` with no text happens to store an
   empty value that `read` treats as absent, but nothing tests or documents that
   contract.
-- **The three adapter comments** in finding 4.
+- **The three adapter comments** in finding 5.
 - **`roost send ""`** — the bare-Enter form — skips the landing check, because
   there is no content to look for. A bare Enter into a pane that is not ready is
   still lost silently. Narrow, and it has no known caller that races a spawn.
@@ -235,7 +316,7 @@ cannot report failure.
 | `bash tests/run.sh` | **1309 passed, 0 failed, exit 0**, 34 files. Run twice; identical both times |
 | `python3 tests/test-contrast.py` | exit 0 |
 | `cd site && pnpm build` | exit 0; both edited pages prerendered |
-| Red-first, per fix | cold-start verification: 5 FAIL with the fix out, 5 detector proofs still green. Too-long message: 3 FAIL. Stale reply on `done`: 9 FAIL. Stale reply on `error`: 1 FAIL |
+| Red-first, per fix | cold-start verification: 6 FAIL with the fix out (the head-cut case among them), 7 detector proofs still green. Too-long message: 3 FAIL. Stale reply on `done`: 9 FAIL. Stale reply on `error`: 1 FAIL |
 
 The file count on `run.sh` is checked as well as the totals, because per
 AGENTS.md §8 a file that dies early lowers the PASS count without raising the
@@ -248,7 +329,7 @@ FAIL count.
 | `bin/roost` | landing verification and retype in `send`; accurate over-length message; `error` added to `read`'s staleness notice |
 | `scripts/roost-agent-state` | clear `@roost-reply` when a finished turn records nothing |
 | `tests/test-send-readiness.sh` | new — the cold-start race |
-| `tests/fixtures/cold-start-tui.py` | new — the TUI startup model |
+| `tests/fixtures/cold-start-tui.py` | new — the TUI startup model, plus a fixed-size head-cut mode for finding 1 |
 | `tests/test-reply-channel.sh` | stale-reply cases that seed a previous turn first |
 | `site/content/docs/driving-a-fleet.md` | cold starts, the send exit codes, reply staleness |
 | `site/content/docs/troubleshooting.md` | "Only the end of my message arrived" |
