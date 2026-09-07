@@ -361,40 +361,6 @@ directions, neither decided:
   vocabulary — glyphs, `wait-done`, notifications, the adapter contract — so it
   is by far the larger of the two.
 
-### A moved or re-cloned checkout stays un-wired, and doctor calls it healthy
-
-**The most serious of the six below, and it breaks a promise this repo makes
-in three places.** `README.md`, `site/content/docs/getting-started.md` and the
-`roost update` help line all say re-running the installer handles *"a moved or
-re-cloned checkout"*. It does not, for the two harnesses that matter most.
-
-**Input:** wire a machine from checkout A, then move or delete A and run
-`roost install` from checkout B.
-**Wrong output:** `opencode`, `pi` and `copilot` relink correctly — those are
-symlinks, and a broken one is recognised as `dangling` and replaced. `claude`
-and `codex` are refused instead, with *"a roost hook there points at a
-different checkout"*, on every re-run, forever. The refusal compares the path
-**string** only; it never asks whether that checkout still exists.
-
-Then `roost doctor` prints **`✓ Claude hooks wired in …`** for a hook whose
-command is a deleted directory, because `scripts/roost-doctor` tests it with
-`grep -q roost-agent-state "$settings"` — a substring match with no comparison
-against this checkout's own path. The codex branch of the same file does make
-that comparison; the claude branch does not.
-
-So the hook cannot run, the pane never badges, doctor reports it healthy, and
-the one command written to fix it refuses to.
-
-**Why it is still here:** the codex half of the refusal is correct and should
-stay — rewriting a codex handler re-hashes it and silently un-badges a machine
-that had already granted trust (see the entry above). Claude has no such
-mechanism, so refusing there buys nothing. The fix is to treat an
-`other-checkout` claude entry whose target **does not exist** as `dangling`
-(ours, broken, safe to replace), keep the codex refusal but state its real
-reason, give doctor's claude branch the path comparison codex already has, and
-correct the three docs. Left because it wants its own change with its own
-tests, not a hurried one folded into a merge.
-
 ### A space in the checkout path silently un-wires every claude hook
 
 **Input:** install roost into a path containing a space, e.g.
@@ -442,6 +408,30 @@ the callers, not of the code.
 
 
 ## Behaviour changes
+
+### A moved or re-cloned checkout still needs codex wired by hand
+
+**A note, not a defect — the claude half of this is fixed.** roost now asks
+whether the checkout a hook names still EXISTS, which separates two cases that
+used to look identical. A hook pointing at a checkout that is gone is roost's
+own and broken, so it is replaced — the same treatment a dangling symlink has
+always had. A hook pointing at a checkout that is still there belongs to
+somebody who meant it, and is left alone.
+
+`roost doctor` no longer reports the broken case as healthy. Its claude branch
+compares the wired command against this checkout's own path, which its codex
+branch had always done.
+
+**Codex is still refused, on purpose.** Codex stores a hash of each hook
+handler in `config.toml` and silently skips any handler whose hash no longer
+matches — nothing on stdout, on stderr, or in the TUI. Rewriting one to point
+at the new checkout would un-badge a machine that had already granted trust,
+which is worse than leaving it. What changed is only the words: roost says the
+checkout no longer exists rather than blaming "a different checkout", which
+sent people looking for a checkout that was not there.
+
+**What you do:** run `roost hooks codex` and copy the object into
+`$CODEX_HOME/hooks.json` yourself, then answer codex's trust prompt.
 
 ### Wiring is part of installing now, and two prompts are all that is left
 
