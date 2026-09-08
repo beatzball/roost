@@ -53,7 +53,7 @@ When nothing has been recorded, `read` falls back to scraping the screen and **s
 roost read: no recorded reply for 'api' — showing the pane's screen instead.
 ```
 
-The notice goes to stderr, so `roost read api | grep …` and loops over several agents stay clean. Two things cause it:
+The notice goes to stderr, so `roost read api | grep …` and loops over several agents stay clean. Three things cause it:
 
 - **The target is not an agent** — a shell, a log tail, a pager. Nothing is wrong; use `roost screen` for those.
 - **The target is an agent that cannot record.** Its harness has no roost adapter, or its Claude `Stop` hook predates this feature. Run `roost doctor` on that machine — it names the exact fix.
@@ -70,16 +70,27 @@ text is piped through [preen](https://github.com/beatzball/preen) instead:
 ```sh
 roost read --render api
 roost read -r %12
-roost read -r api 20        # the line count still applies to a screen fallback
+roost read -r api 20        # the line count still describes the screen
 ```
 
-The flag goes in front of the target. It is opt-in and changes nothing else:
-plain `roost read` still emits the reply byte for byte, so existing pipelines
-and `grep`s are unaffected.
+The flag goes in front of the target, and **only** in front of it. A flag in
+the line-count slot is refused with a usage line rather than quietly read as a
+number — `roost read api --render` used to print unrendered text at exit 0 and
+say nothing.
 
-If `preen` is not installed, `--render` prints the raw text and says so on
-stderr rather than failing. The reply is the payload; the rendering is a
-convenience.
+It is opt-in and changes nothing else: plain `roost read` still emits the reply
+byte for byte, so existing pipelines and `grep`s are unaffected.
+
+**A screen fallback is never rendered.** A recorded reply is markdown because
+an agent wrote it; a pane's screen is terminal output, and a markdown renderer
+deletes the characters in it that look like syntax — `<ttyUSB0>` disappears,
+`2*3*4` becomes `234`, `_low_` becomes `low`. Losing bytes out of the one
+output you read to work out what a pane is doing is worse than not colouring
+it, so the screen goes through untouched and `--render` says why on stderr.
+
+Neither a missing nor a failing `preen` costs you the text. In both cases the
+raw text is printed, the reason goes to stderr, and the exit status is still
+zero — the reply is the payload, the rendering is a convenience.
 ### A reply is never served as fresher than it is
 
 A recorded reply stays on the pane until the next turn replaces it, which is
@@ -170,7 +181,7 @@ buffers: a send should add nothing to it.
 
 ### Why a blocked target is refused
 
-`send` types your text, waits a beat, then presses Enter. If a permission
+`send` pastes your text, waits a beat, then presses Enter. If a permission
 dialog is open at that moment, the text goes **into the dialog** and the Enter
 activates whatever option is highlighted. One agent driving another could
 therefore answer a prompt that existed to ask *you* — silently, because the

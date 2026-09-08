@@ -17,7 +17,7 @@
 #   roost whoami             print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
-#                            type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
 #   roost read [-r|--render] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the text through preen to render its markdown
 #   roost screen TGT [N]     print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
@@ -157,17 +157,35 @@ screen_dump() {
 # for the same reason the screen-fallback notice below uses it: stdout is the
 # caller's pipe.
 #
-# `cat` rather than a re-read of the argument, because this reads stdin: it is
-# spliced onto the END of a pipeline, so the reply path and the screen-fallback
-# path share it without either having to buffer its text into a variable first.
+# The text is BUFFERED first rather than streamed straight into preen, and
+# that costs one variable to buy the property that matters: a renderer which
+# fails must cost the caller the colour, never the text. Streaming spends the
+# input before the exit status is known, leaving nothing to fall back to --
+# and under `set -euo pipefail` (line 37) a preen that exits 3 took the whole
+# command's status with it, so `roost read -r X || die` died on a read that
+# had printed the reply perfectly. Found by review, with a stub renderer.
+#
+# `|| true` on the capture and an explicit status check rather than letting
+# pipefail speak: the point here is to SWALLOW the renderer's failure after
+# reporting it, which is the one place in this file that is the right thing to
+# do. printf '%s\n', not echo, because a reply beginning with -n or -e is text.
 render_stdin() {
+  local text rendered rc
+  text="$(cat)"
   if command -v preen >/dev/null 2>&1; then
-    preen -
-    return
+    rendered="$(printf '%s\n' "$text" | preen - 2>/dev/null)" && rc=0 || rc=$?
+    if [ "${rc:-0}" -eq 0 ]; then
+      printf '%s\n' "$rendered"
+      return 0
+    fi
+    echo "roost read: preen exited $rc — printing the raw text instead." >&2
+    printf '%s\n' "$text"
+    return 0
   fi
   echo "roost read: --render needs 'preen' on PATH — printing the raw text instead." >&2
   echo "roost read: (install it from https://github.com/beatzball/preen)" >&2
-  cat
+  printf '%s\n' "$text"
+  return 0
 }
 
 case "${1:-up}" in
@@ -472,7 +490,7 @@ JSON
     # target is right and retrying later is the correct response, once the
     # human has answered. A caller can tell those three apart.
     if [ "$state" = "blocked" ] && [ "$force" -eq 0 ]; then
-      echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be typed into it" >&2
+      echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be pasted into it" >&2
       echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
       exit 3
     fi
@@ -786,7 +804,7 @@ JSON
     done
 
     if [ "$retries" -gt 0 ] && pending "$*"; then
-      echo "roost send: text typed into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
+      echo "roost send: text pasted into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
       exit 1
     fi
     ;;
@@ -808,6 +826,22 @@ JSON
         ;;
     esac
     raw="${2:?usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    # A flag AFTER the target is refused rather than swallowed. It used to land
+    # in $lines: with a recorded reply that printed the raw text at exit 0 with
+    # no warning (the flag looked like it worked and did nothing), and on the
+    # fallback path it reached `tail -n --render` and produced `tail: illegal
+    # offset` with no output at all. Both were found by review.
+    #
+    # Checked on the LINES slot only, and against a leading dash rather than
+    # the two spellings: no target and no line count can begin with `-`, so
+    # anything that does is a misplaced flag or a typo, and naming the shape is
+    # more use than guessing which one was meant.
+    case "${3:-}" in
+      -*)
+        echo "roost read: '$3' looks like a flag, and flags go BEFORE the target." >&2
+        echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+        exit 1 ;;
+    esac
     tgt="$(target "$raw")"
     # Prefer what the agent SAID over what its pane is DRAWING. An adapter
     # (the Claude Stop hook, adapters/opencode/roost.js) stamps @roost-reply
@@ -875,15 +909,29 @@ JSON
     # prepended to every single read.
     echo "roost read: no recorded reply for '$raw' — showing the pane's screen instead." >&2
     echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
-    # The fallback renders too. --render describes what the caller wants done
-    # to the text, not which of the two sources it came from, and a flag that
-    # silently stopped working on the path that says "showing the pane's
-    # screen instead" would look like the renderer had failed.
+    # THE FALLBACK IS NOT RENDERED, and this is a deliberate reversal of the
+    # obvious reading of the flag. A recorded reply is markdown because an
+    # agent wrote it. A pane's SCREEN is not: it is terminal output, and a
+    # markdown renderer DELETES the characters in it that look like syntax.
+    # Measured against the real preen:
+    #
+    #   CANARY <ttyUSB0> port  ->  CANARY  port    (an HTML-ish tag, gone)
+    #   2*3*4 = 24             ->  234 = 24        (*3* read as emphasis)
+    #   rate _low_ now         ->  rate low now    (underscores eaten)
+    #
+    # Silently dropping bytes out of the one output a human reads to work out
+    # what a pane is doing is a worse trade than leaving it uncoloured -- and
+    # it is the exact class of quiet loss this command exists to stop, since
+    # the caller cannot tell a deleted token from one the pane never printed.
+    #
+    # Said on stderr rather than done silently, for the reason the previous
+    # version of this comment gave: a flag that appears to stop working looks
+    # like a broken renderer. So it is stated, on the stream that is not the
+    # caller's pipe.
     if [ "$render" -eq 1 ]; then
-      screen_dump "$tgt" "$lines" | render_stdin
-    else
-      screen_dump "$tgt" "$lines"
+      echo "roost read: the screen is not markdown, so it is not rendered — a renderer would delete <tags>, *stars* and _underscores_ that are the pane's own output." >&2
     fi
+    screen_dump "$tgt" "$lines"
     ;;
   screen)
     # What `read` did before it learned to prefer a recorded reply, under a

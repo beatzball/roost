@@ -113,11 +113,30 @@ require_pane "$other" "the no-reply fallback pane"
 tmux -S "$s" send-keys -t "$other" "printf 'scr-1\nscr-2\nscr-3\n'" Enter
 sleep 0.5
 
+# The fallback is NOT rendered, and that is a deliberate reversal. A recorded
+# reply is markdown, because an agent wrote it. A PANE'S SCREEN IS NOT: it is
+# terminal output, and handing it to a markdown renderer DELETES characters
+# that happen to look like syntax. Measured against the real preen:
+#
+#   CANARY <ttyUSB0> port  ->  CANARY  port      (an HTML-ish tag, gone)
+#   2*3*4 = 24             ->  234 = 24          (*3* read as emphasis)
+#   rate _low_ now         ->  rate low now      (underscores eaten)
+#
+# Silently deleting bytes out of the one output a human reads to find out what
+# a pane is doing is worse than not colouring it, so the screen goes through
+# untouched and stderr says why. Found by review before this shipped.
 out="$(with_preen "$ROOST" read --render "$other" 2>/dev/null)"
-assert_prefix "$out" "PREEN-IN[-]" \
-  "--render also renders the screen fallback"
+case "$out" in
+  *"PREEN-IN[-]"*) assert_eq rendered raw \
+    "--render does NOT render the screen fallback (it is not markdown)" ;;
+  *) assert_eq ok ok "--render does NOT render the screen fallback (it is not markdown)" ;;
+esac
 assert_contains "$out" "scr-3" \
-  "the rendered screen fallback carries the pane's own lines"
+  "the unrendered screen fallback still carries the pane's own lines"
+err="$(with_preen "$ROOST" read --render "$other" 2>&1 >/dev/null)"
+assert_contains "$err" "not rendered" \
+  "--render says on stderr why the screen fallback was left alone"
+
 
 # LINES is still the third word. The flag is consumed in front of the target,
 # so a caller that has always written `roost read TGT N` keeps that shape with
@@ -131,6 +150,69 @@ assert_contains "$out" "scr-3" \
 case "$out" in
   *scr-1*) assert_eq kept dropped "LINES still applies with --render: earlier lines are dropped" ;;
   *)       assert_eq ok ok "LINES still applies with --render: earlier lines are dropped" ;;
+esac
+
+# The characters themselves, which is the assertion that would have caught the
+# bug. A screen carrying markdown-looking punctuation must come back whole.
+# Placed AFTER the LINES cases on purpose: it writes another line to the pane,
+# and those cases count back from the last one.
+tmux -S "$s" send-keys -t "$other" "printf 'CAN <tty0> 2*3*4 _low_\n'" Enter
+sleep 0.5
+out="$(with_preen "$ROOST" read --render "$other" 2>/dev/null)"
+assert_contains "$out" "<tty0>" \
+  "the screen fallback keeps an angle-bracketed token under --render"
+assert_contains "$out" "2*3*4" \
+  "the screen fallback keeps asterisks under --render"
+assert_contains "$out" "_low_" \
+  "the screen fallback keeps underscores under --render"
+
+# --- a preen that FAILS must not fail the read ------------------------------
+# bin/roost runs `set -euo pipefail`, so a renderer that exits non-zero used to
+# take the whole command's status with it: the reply printed fine and
+# `roost read -r X || die` died anyway. The renderer is a convenience; its
+# failure must cost the caller the COLOUR, never the text and never the exit
+# status. Same principle the missing-preen case above already encodes -- this
+# is the other half of it, and only review caught that the half was missing.
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+cat >/dev/null
+echo "preen: simulated failure" >&2
+exit 3
+SHIM
+chmod +x "$shimdir/preen"
+out="$(with_preen "$ROOST" read -r "$pane" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "a preen that exits 3 does not fail roost read"
+assert_eq "$out" "$reply" \
+  "a preen that exits 3 still delivers the reply, unrendered"
+err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
+assert_contains "$err" "preen" \
+  "a failing preen is named on stderr, not swallowed"
+# Put the transparent stub back for anything after this point.
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+printf 'PREEN-IN[%s]\n' "$1"
+cat
+SHIM
+chmod +x "$shimdir/preen"
+
+# --- the flag AFTER the target is refused, not silently eaten ---------------
+# `roost read TGT --render` used to be swallowed as the LINES argument: with a
+# recorded reply it printed raw text at exit 0 with no warning, and on the
+# fallback path it produced `tail: illegal offset -- --render` and no output at
+# all. A flag that looks like it worked and did nothing is the failure mode
+# this repo keeps paying for, so it is now a usage error that names the shape.
+out="$(with_preen "$ROOST" read "$pane" --render 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "the flag after the target exits non-zero instead of being ignored"
+assert_contains "$out" "usage" \
+  "the flag after the target says what the right shape is"
+out="$(with_preen "$ROOST" read "$other" -r 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "-r after the target is refused on the fallback path too"
+case "$out" in
+  *"illegal offset"*) assert_eq leaked clean \
+    "the refusal does not leak tail's error" ;;
+  *) assert_eq ok ok "the refusal does not leak tail's error" ;;
 esac
 
 # --- a missing target is still a usage error --------------------------------
