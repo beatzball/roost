@@ -77,6 +77,22 @@ tmux -S "$s" set-option -p -t "$pane" @agent_state done
 err="$("$ROOST" read "$pane" 2>&1 >/dev/null)"
 assert_eq "$err" "" "a reply read while the pane is done carries no notice"
 
+# An `error` pane is stale by construction, and needs the same notice. Every
+# adapter DROPS the half-built reply when a turn fails — adapters/opencode's
+# handler says so in as many words — and then badges `error`. So a reply found
+# on an `error` pane cannot be that turn's answer; there was no answer. Without
+# `error` in the case below, a provider outage makes `roost read` hand back the
+# PREVIOUS turn's reply with a clean stderr, which is the same disease as a
+# `done` pane holding an uncleared reply, reached by a more ordinary route.
+as_pane "$ROOST" reply "REPLY FROM THE TURN BEFORE THE OUTAGE"
+tmux -S "$s" set-option -p -t "$pane" @agent_state error
+err="$("$ROOST" read "$pane" 2>&1 >/dev/null)"
+assert_contains "$err" "previous turn" \
+  "a reply read while the pane is errored is flagged as stale"
+assert_eq "$("$ROOST" read "$pane" 2>/dev/null)" "REPLY FROM THE TURN BEFORE THE OUTAGE" \
+  "...and is still printed — a stale reply is reported, not withheld"
+tmux -S "$s" set-option -p -t "$pane" @agent_state done
+
 # --- pane scope only --------------------------------------------------------
 
 # A format lookup falls back pane -> window -> global. `roost read` uses
@@ -203,13 +219,100 @@ printf '%s' '{"last_assistant_message":"MUST NOT BE READ"}' \
 assert_eq "$(stored)" "SECOND TURN" \
   "roost-agent-state without --stop-hook does not read stdin"
 
-# An empty or malformed payload records nothing rather than an empty reply: an
-# empty @roost-reply would read as "no reply" and fall back, which is the right
-# outcome, but writing one would still be pointless work on the hot path out.
+# An empty or malformed payload leaves NOTHING stored. On a pane that had no
+# reply to begin with -- which is the case this line sets up -- that has always
+# been true. The cases below are the ones that matter, and they seed a reply
+# first: the hook now UNSETS @roost-reply on this path rather than merely
+# declining to write it, because declining is indistinguishable from success
+# when a previous turn's answer is already sitting there.
 tmux -S "$s" set-option -pu -t "$pane" @roost-reply
 printf '%s' 'not json at all' \
   | env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" done --stop-hook
 assert_eq "$(stored)" "" "a malformed Stop payload records no reply"
+
+# --- a turn that records NOTHING must not leave the previous one's reply -----
+
+# The hole this closes, and why nothing above catches it: `roost read`'s stale
+# notice is keyed on @agent_state being working/blocked (bin/roost:600), and a
+# Stop hook stamps `done`. So a turn that finishes without recording a reply
+# leaves the PREVIOUS turn's answer on a pane that reads finished, and `read`
+# serves it with an empty stderr. The caller has no signal of any kind — which
+# is the one outcome docs/airig/specs/2026-08-23-read-reply-channel-design.md
+# rules out.
+#
+# Every case above starts from an UNSET @roost-reply, including the
+# malformed-payload one directly overhead, so on every path they exercise
+# "recorded nothing" and "nothing is stored" arrive together and the bug is
+# unreachable. These cases seed turn 1 first. That seeding is the entire test;
+# without it they pass against the unfixed script.
+seed_turn_one() {
+  tmux -S "$s" set-option -p -t "$pane" @agent_state working
+  printf '%s' '{"last_assistant_message":"TURN ONE REPLY"}' \
+    | env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" done --stop-hook
+}
+
+# Detector honesty, checked before anything is asserted about the fix: the
+# seeding must actually put turn 1's reply on the pane. If this line ever goes
+# quiet, every "the stale reply is gone" PASS below becomes a test of an empty
+# pane option and proves nothing at all.
+seed_turn_one
+assert_eq "$(stored)" "TURN ONE REPLY" \
+  "the stale-reply cases start from a pane that really holds turn 1's answer"
+
+# Three payloads, one per real route to "this turn recorded nothing":
+#   - the field present but empty  — a turn that ended on a tool call
+#   - the field absent entirely    — an interrupted turn
+#   - a payload neither reader can parse
+# The fourth route, a machine with no working python3 and no jq, reaches the
+# identical branch and is covered by these.
+for payload in '{"last_assistant_message":""}' \
+               '{"session_id":"x","hook_event_name":"Stop"}' \
+               'not json at all'; do
+  seed_turn_one
+  tmux -S "$s" set-option -p -t "$pane" @agent_state working
+  printf '%s' "$payload" \
+    | env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" done --stop-hook
+  assert_eq "$(stored)" "" \
+    "a Stop recording no reply clears the previous turn's [$payload]"
+  # The state write must still happen: clearing the reply is not allowed to
+  # cost the badge, which is what the whole fleet view is built on.
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @agent_state)" "done" \
+    "...and the pane is still badged done [$payload]"
+  # And `read` must now take the fallback that ANNOUNCES itself, rather than
+  # printing turn 1's answer to stdout with a clean stderr.
+  err="$("$ROOST" read "$pane" 5 2>&1 >/dev/null)"
+  assert_contains "$err" "no recorded reply" \
+    "...and read announces the fallback instead of serving turn 1 [$payload]"
+  out="$("$ROOST" read "$pane" 5 2>/dev/null)"
+  case "$out" in
+    *"TURN ONE REPLY"*) assert_eq served cleared \
+      "...and turn 1's answer is not on stdout [$payload]" ;;
+    *) assert_eq ok ok "...and turn 1's answer is not on stdout [$payload]" ;;
+  esac
+done
+
+# The mirror risk, and the reason the clear is guarded rather than
+# unconditional: a turn that DID answer must still overwrite, not clear.
+seed_turn_one
+tmux -S "$s" set-option -p -t "$pane" @agent_state working
+printf '%s' '{"last_assistant_message":"TURN TWO REPLY"}' \
+  | env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" done --stop-hook
+assert_eq "$(stored)" "TURN TWO REPLY" \
+  "a Stop that does carry a reply still overwrites rather than clearing"
+
+# Without --stop-hook nothing is read from stdin, so nothing can be judged
+# empty — a human typing `roost state working` at a terminal must not wipe a
+# recorded reply on the way past.
+env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" working </dev/null
+assert_eq "$(stored)" "TURN TWO REPLY" \
+  "roost-agent-state without --stop-hook never clears a recorded reply"
+
+# Same for a non-done state carrying the flag: only the end of a turn can
+# decide that the turn produced nothing.
+printf '%s' '{"last_assistant_message":""}' \
+  | env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" working --stop-hook
+assert_eq "$(stored)" "TURN TWO REPLY" \
+  "a --stop-hook call for a non-done state never clears a recorded reply"
 
 # --- discoverability --------------------------------------------------------
 

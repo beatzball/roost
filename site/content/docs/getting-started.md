@@ -86,7 +86,9 @@ already have to whatever is installed on the machine *now*. Run either one
 when you:
 
 - install a harness roost had not seen when you first ran it
-- move, re-clone, or switch to a different roost checkout
+- move, re-clone, or switch to a different roost checkout (claude and the three
+  symlink adapters are repaired for you; codex is refused on purpose — see
+  below)
 - take a roost release that adds a new adapter
 
 It is safe to run again and again. Hooks you already have are kept and roost's
@@ -143,8 +145,22 @@ On a machine that already has roost it does three things instead of the first
 two: `git pull --ff-only` in the clone it made, skip the `PATH` line it added
 the first time rather than adding it twice, and wire your agents again. That
 last one matters more than it sounds — a release can add an adapter for a
-harness that had none, and codex records roost's hook by absolute path, so a
-checkout you have moved or re-cloned needs wiring again either way.
+harness that had none, and both claude and codex record roost's hook by
+absolute path, so a checkout you have moved or re-cloned needs wiring again
+either way.
+
+Roost tells a moved checkout from a second one by asking whether the path a
+hook names still exists. A hook pointing at a checkout that is gone is roost's
+own and broken, so claude's is replaced, exactly as a dangling symlink is
+relinked. A hook pointing at a checkout that is still there belongs to someone
+who meant it, and roost never touches it.
+
+**Codex is refused either way, and that is deliberate.** It keeps a hash of
+each hook handler and silently skips any whose hash has changed — nothing
+printed anywhere — so rewriting one would un-badge a machine that had already
+granted trust. roost says the checkout is gone instead of blaming a different
+one, and leaves the fix to you: `roost hooks codex`, then copy the object into
+`~/.codex/hooks.json`.
 
 Run it from a directory that is not itself a roost clone and there is nothing
 more to it: one copy of roost on the machine, pulled up to date, your shell

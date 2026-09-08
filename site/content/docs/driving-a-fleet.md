@@ -80,6 +80,22 @@ and `grep`s are unaffected.
 If `preen` is not installed, `--render` prints the raw text and says so on
 stderr rather than failing. The reply is the payload; the rendering is a
 convenience.
+### A reply is never served as fresher than it is
+
+A recorded reply stays on the pane until the next turn replaces it, which is
+deliberate — clearing it at the start of a turn would throw away an answer you
+were merely slow to collect. So `roost read` says on stderr when what it is
+handing you is not current:
+
+- the pane is **working** or **blocked** — the turn this reply would belong to
+  has not finished, so the reply is from an earlier one;
+- the pane is **errored** — that turn failed and published no answer at all, so
+  again the reply predates it.
+
+A turn that finishes having said nothing — it ended on a tool call, or was
+interrupted — clears the reply instead, so `roost read` gives you the
+self-announcing screen fallback rather than the previous turn's answer wearing
+this turn's badge.
 
 ### Agents with no adapter
 
@@ -102,8 +118,55 @@ A reply longer than 12 KB is stored truncated, keeping the beginning, with a mar
 |------|---------|------------|
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
-| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, or it was typed but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
+| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, or was delivered but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
 | `1` (`usage:` message) | a missing argument | caller bug, not a delivery failure |
+
+### Long messages, and why they used to arrive with the front missing
+
+`roost send` delivers your message as a **bracketed paste**, not as typing.
+
+That distinction is the whole reason long messages work. Typed at speed, an
+agent's input box could keep only the last chunk of a big message and throw the
+front away — measured against Claude Code 2.1.263, a 3502-byte briefing arrived
+as its last 436 bytes, with no error and exit 0. The receiving agent answered a
+message whose first three thousand bytes it had never seen.
+
+A bracketed paste tells the application "this is one block of pasted text",
+which is a different code path in the agent, and the same bytes then arrive
+whole. If you have been writing briefings to a file and sending the path
+instead, you no longer need to.
+
+Two consequences worth knowing:
+
+- **There is no practical length limit any more.** The old ceiling was about
+  16 KB, and it came from the message travelling on a tmux command line; it now
+  travels over standard input. A 20 KB message is delivered whole.
+- **The pane may show `[Pasted text #1]` instead of your text.** That is the
+  agent's rendering of a paste, not a truncation. The full message is submitted.
+
+`roost send` also confirms the message actually reached the pane before it
+presses Enter, and retries if it did not — a pane that is still booting can
+discard input, which is the other way a briefing used to vanish. If it cannot
+confirm delivery it **submits nothing** and exits 1, so a caller in a loop
+retries instead of moving on. It gives up after 15 seconds by default:
+
+```sh
+tmux -L roost set-option -g @roost-send-ready-timeout 30
+```
+
+### Privacy: what a send leaves behind
+
+The message passes through one tmux buffer on the way to the pane, and roost is
+deliberate about it:
+
+- **One buffer, reused** (`roost-send`), so sends never pile up.
+- **Deleted as it is pasted**, and deleted again on every failure path — a send
+  whose pane dies mid-flight leaves nothing in the buffer list.
+- **Never copied to your system clipboard.** The tmux flag that would do that
+  (`-w`) is never passed.
+
+You can check the first two yourself with `prefix + =`, which lists tmux's
+buffers: a send should add nothing to it.
 
 ### Why a blocked target is refused
 

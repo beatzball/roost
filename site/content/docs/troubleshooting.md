@@ -57,8 +57,29 @@ The exit code tells you which failure it is:
 
 - **exit 3** — the target's badge says 🛑 blocked, so `send` refused rather than typing into a permission dialog. Answer the dialog and retry the same target. If the pane has no dialog on it, see [A pane refuses every send but has no dialog](#a-pane-refuses-every-send-but-has-no-dialog) below.
 - **exit 2** — the target does not exist or its pane is dead. Re-resolve the target.
-- **exit 1** with a `roost send:` message — delivery to a valid target failed. Retry the same target or look at the pane; do not re-resolve.
+- **exit 1** with a `roost send:` message — delivery to a valid target failed. Retry the same target or look at the pane; do not re-resolve. Two of these name their own cause: *could not confirm the message reached* (see [Only the end of my message arrived](#only-the-end-of-my-message-arrived) below) and *message too long for tmux*, which needs a file and a path instead.
 - **exit 1** with a `usage:` message — a missing argument. That is a caller bug.
+
+## Only the end of my message arrived
+
+You sent an agent a long briefing and it answered as if it had been given only
+the last part of it, with `roost send` reporting success.
+
+Typed at speed, an agent's input box can keep only the last chunk of a large
+message and discard the front. Measured against Claude Code 2.1.263: a
+3502-byte message arrived as its last 436 bytes.
+
+Current roost sends a **bracketed paste** instead of typing, which the agent
+treats as one block, and the whole message arrives. If you are seeing this, the
+machine is on an older roost — run `roost doctor`.
+
+The workaround for an older machine is the one people arrived at anyway: write
+the briefing to a file and send the path.
+
+## My message shows as `[Pasted text #1]` instead of the text
+
+Nothing is wrong. That is how the agent renders a pasted block. The full message
+is submitted; only the on-screen rendering is a placeholder.
 
 ## A pane refuses every send but has no dialog
 

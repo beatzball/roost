@@ -154,9 +154,19 @@ curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | s
 
 Against a clone that is already there it does three things: `git pull
 --ff-only`, skip the `PATH` line it added last time, and re-wire your agents.
-That last part is not busywork — a release can add an adapter, and codex's
-`hooks.json` names roost by absolute path, so a checkout you moved or re-cloned
-has to be wired again.
+That last part is not busywork — a release can add an adapter, and both
+`settings.json` and `hooks.json` name roost by absolute path, so a checkout you
+moved or re-cloned has to be wired again.
+
+Claude and the three symlink adapters are repaired for you: roost checks
+whether the checkout a hook names still exists, and replaces the entry when it
+does not. **Codex is the exception, and it is deliberate.** Codex stores a hash
+of each hook handler and silently stops running any handler whose hash no
+longer matches — nothing is printed on stdout, on stderr, or in its TUI — so
+rewriting one would un-badge a machine that had already granted trust. roost
+refuses, says the checkout is gone rather than blaming a different one, and
+leaves it to you: run `roost hooks codex` and copy the object into
+`~/.codex/hooks.json` yourself.
 
 Run it from a directory that is not itself a roost clone and that is the whole
 story: one copy on the machine, pulled, no second `PATH` line, agents re-wired.

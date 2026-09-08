@@ -115,6 +115,34 @@ if [ "$stop_hook" = 1 ] && [ "$state" = "done" ]; then
       . "$SELF_DIR/lib/roost-reply.sh"
       tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
         "$(roost_reply_encode "$reply")" 2>/dev/null || true
+    else
+      # This turn ENDED and produced nothing to record. Clearing is not
+      # tidiness, it is the whole point: the staleness notice in bin/roost's
+      # `read` is keyed on @agent_state being working/blocked, and the state
+      # this script writes below is `done`. A reply left in place here is
+      # therefore served as THIS turn's answer, on a pane that reads finished,
+      # with an empty stderr and no signal of any kind to the caller. Measured
+      # before the fix: turn 1 answers "TURN ONE REPLY", turn 2 records
+      # nothing, `roost read` prints "TURN ONE REPLY" and exits 0 quietly.
+      #
+      # Unsetting hands `read` its screen fallback instead, and that fallback
+      # already announces itself on stderr. A caller then sees the pane's
+      # screen and a notice, which is worse content and a far better failure:
+      # wrong-and-loud beats wrong-and-silent, and this is the exact failure
+      # the reply channel was built to remove.
+      #
+      # Three real routes reach here, and the comment above only describes the
+      # third: `last_assistant_message` present but empty (a turn that ended on
+      # a tool call), the field absent (an interrupted turn), and a payload
+      # neither reader could parse — which includes the machine with no working
+      # python3 and no jq. That machine degrades to the announcing fallback
+      # only from this line; before it, the fallback was reachable on the very
+      # first turn and never again.
+      #
+      # Guarded by the same `--stop-hook`, `done` and `[ ! -t 0 ]` conditions
+      # as the write above, so a human typing `roost state done` by hand, or
+      # any PostToolUse call, can never wipe a recorded reply on the way past.
+      tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
     fi
   fi
 fi
