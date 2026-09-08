@@ -195,7 +195,31 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.lock      what is installed, pin
 }
 ```
 
-The lockfile, not the clone, is the source of truth for the command index. A
+Alongside it, a **plain-text command index**:
+
+```
+${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.index
+```
+
+one line per claimed command, written at install and removal time:
+
+```
+mark    mark    /absolute/path/to/ext/mark/bin/roost-mark
+marks   mark    /absolute/path/to/ext/mark/bin/roost-marks
+```
+
+This is not duplication for its own sake. The dispatcher runs on **every
+unrecognised `roost` subcommand**, including every typo, and `roost-json.sh`
+opens by recording that neither `python3` nor `jq` is a runtime dependency of
+roost. Parsing `ext.lock` to dispatch would quietly make one of them exactly
+that. A `while read` over a small text file needs neither, and is faster than
+starting an interpreter.
+
+`ext.lock` stays the human- and tool-readable record; `ext.index` is the
+dispatch path. Both are written in the same step, and `roost ext list` warns if
+they disagree.
+
+The lockfile, not the clone, is the source of truth for what is installed. A
 half-deleted clone therefore degrades to "command not found", not to executing
 something unexpected.
 
@@ -297,6 +321,9 @@ already builds a throwaway tmux server per run.
 - contract mismatch refuses; an out-of-range `roost` range warns and continues
 - an unparsable `roost` range warns and continues, never refuses
 - the environment handed to an extension contains every variable listed above
+- **dispatch needs no JSON tool**: with `python3` and `jq` both absent from
+  `PATH`, an installed command still runs. This guards the standing decision in
+  `scripts/lib/roost-json.sh` that neither is a roost runtime dependency
 - `ROOST_NO_EXT=1` makes an installed command fall back to the usage error
 - `remove` keeps state; `remove --purge` deletes it
 - `update` on an unchanged ref reports no change and rewrites nothing
