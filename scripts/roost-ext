@@ -4,16 +4,16 @@
 # (scripts/roost-install) and `validate` (scripts/roost-validate) already
 # use, so this file's own `case` is where the VERB lives.
 #
-# `install`, `list` and `info` exist so far. `verify`, `update` and `remove`
-# are tasks 7-8 of the same plan; the usage error below already names all six
+# `install`, `list`, `info` and `verify` exist so far. `update` and `remove`
+# are task 8 of the same plan; the usage error below already names all six
 # so a user typing one of the not-yet-built ones is told it is coming rather
 # than told it is a typo. See
 # docs/airig/specs/2026-09-08-extension-seam.md, "Commands".
 #
-# `list` and `info` are read-only and touch no network. `install` is the one
-# verb here that fetches, that writes ext.lock and ext.index, and that asks
-# the user a question -- it is the security-critical command of this feature,
-# and its own comments carry the reasons. Nothing here touches tmux. `set -euo pipefail`, the same as bin/roost, because
+# `list`, `info` and `verify` are read-only and touch no network. `install`
+# is the one verb here that fetches, that writes ext.lock and ext.index, and
+# that asks the user a question -- it is the security-critical command of
+# this feature, and its own comments carry the reasons. Nothing here touches tmux. `set -euo pipefail`, the same as bin/roost, because
 # this file has the same shape (a `case` dispatching short, mostly-linear
 # branches) and the same hazard -- a command substitution whose failure
 # should be CAUGHT, not left to fall through -- so every fallible
@@ -372,6 +372,13 @@ _ext_index_disagree_warning() {
   printf 'roost ext list: every command that writes ext.lock (install, update, remove)\n'
   printf 'roost ext list: regenerates ext.index in the same step. Re-run whichever of those\n'
   printf 'roost ext list: last touched the extension(s) named above to fix this.\n'
+  # A DIFFERENT question, cheap enough to suggest while the user is already
+  # looking: this warning is about which AUTHORITY is granted, and says
+  # nothing about whether the files an extension actually runs still match
+  # what ext.lock pinned. `roost ext verify` answers that second question --
+  # see docs/airig/specs/2026-09-08-extension-seam.md, "roost ext verify".
+  printf 'roost ext list: while you are here: `roost ext verify` checks something different --\n'
+  printf 'roost ext list: whether the files on disk still match the commit ext.lock pinned.\n'
 }
 
 # --- install: merging one entry into ext.lock -------------------------------
@@ -698,6 +705,74 @@ _ext_json_words() {
     if [ -n "$out" ]; then out="$out,$q"; else out="$q"; fi
   done
   printf '[%s]' "$out"
+}
+
+# --- verify: naming what changed on disk ------------------------------------
+#
+# _ext_verify_diff DIR RECORDED_TREE -> lines "STATUS<TAB>path" on stdout, one
+# per path that differs between RECORDED_TREE and DIR's contents right now.
+# Returns 1 (nothing printed) when the comparison cannot be made at all --
+# most often because DIR is not a git checkout, which is what a directory a
+# TEST built by hand looks like; a real `roost ext install` always leaves the
+# clone's own .git behind.
+#
+# This function is NOT what decides whether `roost ext verify` passes or
+# fails. That decision, in the `verify)` case arm below, compares
+# roost_ext_tree_hash(DIR) against the `tree` ext.lock already recorded --
+# the exact same function `install` called, unmodified, for the reason that
+# function's own header gives: it and `git rev-parse HEAD^{tree}` agree on a
+# pristine clone and stop agreeing the moment the directory carries anything
+# the commit does not. This function only runs AFTER that comparison has
+# already found a difference, to explain WHICH files -- and if it cannot
+# answer, verify still reports the failure. A missing explanation is not a
+# missing detection.
+#
+# Built the way roost_ext_tree_hash builds its own answer: a throwaway
+# object database and a throwaway index, neither of them the clone's own, so
+# a read-only check cannot mutate the very thing it is checking. The one
+# addition is a git ALTERNATE pointing at the clone's own .git/objects,
+# READ-ONLY -- alternates are only ever consulted to find an object this
+# throwaway odb does not have, never written to -- so this throwaway odb can
+# also see the tree the clone's OWN commit recorded at install time. A full
+# clone (no --depth, which the hardened-clone step already requires) keeps
+# that object reachable for as long as the clone exists, so it is there to
+# find.
+#
+# With both trees visible from one object store, `git diff-tree` does the
+# actual comparison -- the same plumbing that decided the tree hash in the
+# first place, not a hand-rolled walk over two file lists that could
+# disagree with git about what "changed" means (a mode-bit flip, a file
+# becoming a symlink) in some case this function's author did not think of.
+_ext_verify_diff() {
+  local dir="$1" recorded="$2" tmp new_tree diffout
+  [ -d "$dir/.git" ] || return 1
+  # Absolute before anything below chdirs via `-C`, the same reason
+  # roost_ext_tree_hash makes DIR absolute first.
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+  tmp="$(mktemp -d)" || return 1
+  if ! _ext_git init -q --bare "$tmp/odb" >/dev/null 2>&1; then
+    rm -rf "$tmp"; return 1
+  fi
+  printf '%s\n' "$dir/.git/objects" > "$tmp/odb/objects/info/alternates"
+  # Same add/write-tree shape as roost_ext_tree_hash: `:(exclude).git` because
+  # the clone's own .git holds ref state that changes on every fetch and is
+  # not part of what was consented to, `--force` because a file dropped into
+  # the clone after install is exactly what this command exists to notice
+  # regardless of what the extension's own .gitignore says, and a SEPARATE
+  # index file so the clone's own index is never touched.
+  if ! GIT_DIR="$tmp/odb" GIT_WORK_TREE="$dir" GIT_INDEX_FILE="$tmp/index" \
+       _ext_git -C "$dir" add -A --force -- . ':(exclude).git' >/dev/null 2>&1; then
+    rm -rf "$tmp"; return 1
+  fi
+  new_tree="$(GIT_DIR="$tmp/odb" GIT_WORK_TREE="$dir" GIT_INDEX_FILE="$tmp/index" \
+              _ext_git write-tree 2>/dev/null)"
+  if [ -z "$new_tree" ]; then rm -rf "$tmp"; return 1; fi
+  if ! diffout="$(GIT_DIR="$tmp/odb" _ext_git diff-tree -r --name-status --no-renames \
+                  "$recorded" "$new_tree" 2>/dev/null)"; then
+    rm -rf "$tmp"; return 1
+  fi
+  rm -rf "$tmp"
+  printf '%s\n' "$diffout"
 }
 
 case "${1:-}" in
@@ -1562,6 +1637,162 @@ EOF2
     echo "paths:"
     printf '  clone  %s\n' "$clone_dir"
     printf '  state  %s\n' "$ext_state_dir"
+    ;;
+
+  verify)
+    # `roost ext verify [NAME]` -- docs/airig/specs/2026-09-08-extension-seam.md,
+    # "roost ext verify". Pinning to a commit describes what was DOWNLOADED
+    # once; it says nothing about what will RUN tonight. This is the only
+    # thing that makes the pin mean something ON DISK: it recomputes
+    # roost_ext_tree_hash for the installed directory and compares it with
+    # the `tree` ext.lock already recorded -- the SAME function `install`
+    # called after moving the clone into place (see that function's own
+    # header), so the two can never quietly drift into two different
+    # definitions of "the contents of that directory".
+    #
+    # THIS IS DETECTION, NOT PREVENTION, AND SAYS SO IN ITS OWN OUTPUT. `ok`
+    # means "the bytes on disk match what ext.lock recorded", full stop --
+    # never "safe", "clean", "verified as trustworthy" or "scanned". Roost
+    # has no scanner and makes no claim about whether the pinned code is
+    # honest; see the design's "What this design does not attempt". The one
+    # thing this command can say is whether what is ABOUT to run is what was
+    # AGREED to.
+    shift
+    if [ "$#" -gt 1 ]; then
+      echo "usage: roost ext verify [NAME]" >&2
+      exit 2
+    fi
+    name="${1:-}"
+    # Refused here, before it is used to build any path, on the same grammar
+    # `roost ext install` enforces on the directory name -- the same reason
+    # `info` refuses a name that fails this check before it ever reaches
+    # $data_dir/$name. A name that fails it could not have come from this
+    # feature's own writer, only from a lockfile edited by hand, and there is
+    # nothing on disk under such a name for this feature to have put there.
+    if [ -n "$name" ] && ! roost_ext_name_valid "$name"; then
+      echo "roost ext verify: no such extension: $name" >&2
+      exit 1
+    fi
+
+    lock="$(roost_ext_lock)"
+    data_dir="$(roost_ext_data_dir)"
+
+    rows=""
+    if [ -f "$lock" ]; then
+      if rows="$(_ext_lock_rows "$lock")"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      case "$rc" in
+        0) : ;;
+        3)
+          echo "roost ext verify: neither python3 nor jq found on PATH — cannot read $lock" >&2
+          exit 1
+          ;;
+        *)
+          # _ext_lock_rows already printed roost_ext__json_read's own message
+          # naming what was wrong with the file.
+          exit 1
+          ;;
+      esac
+    fi
+
+    if [ -z "$rows" ]; then
+      if [ -n "$name" ]; then
+        echo "roost ext verify: no such extension: $name" >&2
+        exit 1
+      fi
+      echo "no extensions installed — nothing to verify"
+      exit 0
+    fi
+
+    # fail is exit non-zero-if-any-extension-differs, tracked across every
+    # row rather than returned per row, so `verify` with no NAME checks
+    # every installed extension in one pass and still ends with a single
+    # exit status covering all of them. matched is how a NAME that is not a
+    # key in ext.lock is told apart from a NAME that matched nothing because
+    # the loop below never got there -- see the check just after the loop.
+    fail=0
+    matched=0
+    while IFS=$'\t' read -r rname rrepo rref rcommit rtree rcontract rneeds rcommands rinstalled \
+        || [ -n "$rname" ]; do
+      [ -n "$rname" ] || continue
+      if [ -n "$name" ] && [ "$rname" != "$name" ]; then continue; fi
+      matched=1
+      dir="$data_dir/$rname"
+      # The lockfile, not the clone, is the record of what is installed --
+      # roost_ext_index_lookup's own header makes the same call for the
+      # dispatcher. A clone that has gone missing entirely is not "in
+      # agreement" with anything; it is the sharpest possible disagreement,
+      # so it is reported rather than silently skipped.
+      if [ ! -d "$dir" ]; then
+        printf '%s: MISSING — %s is not there; nothing to verify against\n' "$rname" "$dir"
+        fail=1
+        continue
+      fi
+      # `tree` is optional in the lockfile schema (an entry a much older
+      # roost wrote, before this field existed, before a hand edit removed
+      # it). There is no pin to compare against, which is itself something
+      # this command cannot vouch for -- reported as a failure, not skipped
+      # as if there were nothing to check.
+      if [ "$rtree" = "-" ]; then
+        printf '%s: ext.lock records no tree hash for this entry — cannot verify\n' "$rname"
+        fail=1
+        continue
+      fi
+      # THE COMPARISON THAT DECIDES OK OR NOT. roost_ext_tree_hash, and
+      # nothing else -- see that function's own header and this arm's
+      # opening comment for why a different definition of "the contents of
+      # that directory" (most temptingly, `git rev-parse HEAD^{tree}`) would
+      # make this command worthless the moment a file is dropped in
+      # untracked.
+      if cur_tree="$(roost_ext_tree_hash "$dir")"; then
+        :
+      else
+        printf '%s: could not hash %s\n' "$rname" "$dir"
+        fail=1
+        continue
+      fi
+      if [ "$cur_tree" = "$rtree" ]; then
+        printf '%s: ok\n' "$rname"
+      else
+        printf '%s: does not match the tree recorded in ext.lock\n' "$rname"
+        # Best-effort ONLY. _ext_verify_diff's own header explains why this
+        # cannot be what decides pass or fail, and why answering nothing here
+        # is not the same defect as failing to detect the difference above.
+        if diffout="$(_ext_verify_diff "$dir" "$rtree")" && [ -n "$diffout" ]; then
+          while IFS=$'\t' read -r status path || [ -n "$status" ]; do
+            [ -n "$status" ] || continue
+            case "$status" in
+              A) label="added" ;;
+              D) label="removed" ;;
+              M) label="modified" ;;
+              # T (type changed, e.g. a file became a symlink) and anything
+              # else `git diff-tree --no-renames` might emit: named as
+              # "changed" rather than guessed at, since none of the fixtures
+              # this command was built against produce it.
+              *) label="changed" ;;
+            esac
+            printf '  %-8s %s\n' "$label" "$path"
+          done <<EOF2
+$diffout
+EOF2
+        else
+          printf '  (could not list the individual files that differ)\n'
+        fi
+        fail=1
+      fi
+    done <<EOF
+$rows
+EOF
+
+    if [ -n "$name" ] && [ "$matched" -ne 1 ]; then
+      echo "roost ext verify: no such extension: $name" >&2
+      exit 1
+    fi
+
+    [ "$fail" -eq 0 ]
     ;;
 
   *)

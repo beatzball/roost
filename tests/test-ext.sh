@@ -2700,6 +2700,122 @@ if command -v jq >/dev/null 2>&1; then
   rm -rf "$TMP/parity-py" "$TMP/parity-jq"
 fi
 
+# --- roost ext verify ---------------------------------------------------------
+# Pinning to a commit describes what was DOWNLOADED once; it says nothing
+# about what will RUN tonight. `verify` recomputes roost_ext_tree_hash for an
+# installed extension and compares it with the `tree` ext.lock already
+# recorded -- the SAME function `install` recorded with (asserted directly by
+# name a few lines up in this file, "ext.lock records the tree hash
+# roost_ext_tree_hash computes"). This section starts from its own clean
+# state rather than reusing "demo" or "withsub" from earlier in this file: an
+# assertion that depended on exactly which fixture survived every refusal
+# above it would be reading the wrong thing the moment one of those refusals
+# changed shape.
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/pin" "$EXT_DATA/pin2"
+
+ext_verify() { ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" verify "$@"; }
+
+ext_src "$EXT_SRCS/pin" '{ "name": "pin", "contract": 1, "commands": ["pin"] }' pin
+ext_publish fix/pin "$EXT_SRCS/pin"
+ext_install fix/pin --yes >/dev/null 2>"$TMP/err"
+assert_eq "$(cat "$TMP/err")" "" "the verify fixture installs cleanly"
+
+# --- a fresh install verifies ok, and exits 0 --------------------------------
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "verify exits 0 on a fresh install"
+assert_eq "$out_v" "pin: ok" "verify prints ok for a fresh install"
+assert_eq "$(cat "$TMP/err")" "" "a clean verify writes nothing to stderr"
+
+# --- one byte changed in an installed file -----------------------------------
+printf '#!/bin/sh\nprintf "TAMPERED\\n"\n' > "$EXT_DATA/pin/bin/roost-pin"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify exits non-zero once an installed file is changed"
+assert_contains "$out_v" "bin/roost-pin" "...and names the file that changed"
+assert_contains "$out_v" "modified" "...saying it was modified"
+case "$out_v" in *": ok"*) v_said_ok=1 ;; *) v_said_ok=0 ;; esac
+assert_eq "$v_said_ok" "0" "...without also claiming ok anywhere in the same output"
+
+# --- restore the byte: verify is ok again, THEN an untracked file is added --
+# This pair is the property task 2 measured and task 7's brief calls out by
+# name: roost_ext_tree_hash and `git rev-parse HEAD^{tree}` agree on a
+# pristine clone and diverge the moment an untracked file exists. Recomputing
+# with the wrong function would still say "ok" here -- HEAD^{tree} does not
+# know extra.txt exists at all -- so this is the case that actually pins
+# which function `verify` calls, not merely that it calls SOME hash function.
+printf '#!/bin/sh\nprintf "pin ran [%%s]\\n" "$*"\n' > "$EXT_DATA/pin/bin/roost-pin"
+chmod +x "$EXT_DATA/pin/bin/roost-pin"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "verify is ok again once the byte is put back"
+assert_eq "$out_v" "pin: ok" "...back to printing ok, byte for byte"
+
+printf 'unexpected\n' > "$EXT_DATA/pin/extra.txt"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify fails once a file is ADDED to the extension directory"
+assert_contains "$out_v" "extra.txt" "...and names the added file"
+assert_contains "$out_v" "added" "...saying it was added, not merely different"
+
+# --- a file removed from the clone -------------------------------------------
+rm -f "$EXT_DATA/pin/extra.txt"
+rm -f "$EXT_DATA/pin/roost-ext.json"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify fails once a file is REMOVED from the extension directory"
+assert_contains "$out_v" "roost-ext.json" "...and names the removed file"
+assert_contains "$out_v" "removed" "...saying it was removed, not merely different"
+cp "$EXT_SRCS/pin/roost-ext.json" "$EXT_DATA/pin/roost-ext.json"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "verify is ok again once the removed file is restored"
+assert_eq "$out_v" "pin: ok" "...back to ok, byte for byte"
+
+# --- no output reads as a verdict on the CODE, only on the BYTES -------------
+# Roost has no scanner and makes no claim about whether the pinned code is
+# honest -- see the design's "What this design does not attempt". `ok` means
+# only "matches the pin".
+for bad_word in clean safe trustworthy scanned honest; do
+  case "$out_v" in
+    *"$bad_word"*) said=1 ;;
+    *) said=0 ;;
+  esac
+  assert_eq "$said" "0" "verify's output never says '$bad_word'"
+done
+
+# --- an unknown name exits 1 --------------------------------------------------
+out_v="$(ext_verify nosuchextension 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "verify NAME on an unknown name exits 1"
+assert_eq "$out_v" "" "...and prints nothing on stdout"
+assert_contains "$(cat "$TMP/err")" "no such extension" "...saying so on stderr"
+
+# --- a clone that has gone missing entirely -----------------------------------
+rm -rf "$EXT_DATA/pin"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify fails when the clone is missing entirely"
+assert_contains "$out_v" "pin" "...naming the extension"
+
+# --- verify with no name checks every installed extension --------------------
+ext_src "$EXT_SRCS/pin2" '{ "name": "pin2", "contract": 1, "commands": ["pin2"] }' pin2
+ext_publish fix/pin2 "$EXT_SRCS/pin2"
+rm -f "$(roost_ext_lock)"; roost_ext_index_write
+ext_install fix/pin2 --yes >/dev/null 2>&1
+out_v="$(ext_verify 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "verify with no name checks everything, and exits 0 when it all matches"
+assert_eq "$out_v" "pin2: ok" "...naming the one extension that is actually installed"
+
+printf 'oops\n' > "$EXT_DATA/pin2/oops.txt"
+out_v="$(ext_verify 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify with no name exits non-zero if ANY installed extension differs"
+assert_contains "$out_v" "oops.txt" "...and still names the file"
+
+unset -f ext_verify
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/pin" "$EXT_DATA/pin2"
+
 # Leave the state this section built behind, so the conformance block below
 # starts from nothing. The clones go too: the block underneath copies its own
 # fixtures into this same directory.
