@@ -1151,6 +1151,261 @@ out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$TMP/no-json" "$ROOST" probe 2>"$TM
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
   "...and so is the refusal to grant it"
 
+# --- conformance: could a command roost already ships be rebuilt on this? ---
+# Every assertion above this line asks whether the seam behaves as specified.
+# None of them asks the question that actually decides whether contract 1 was
+# designed well: is what the contract HANDS OVER enough to build something
+# real with? If a command roost already ships cannot be expressed as an
+# extension, the contract is missing something, and the cheap moment to find
+# that out is now -- before an extension exists whose shape depends on it.
+#
+# `roost status` is the subject for three reasons. It needs ROOST_SOCKET, so
+# it exercises `needs: ["fleet"]`, the newest and riskiest mechanism here. It
+# is about ten lines of list-sessions and list-panes, so writing it twice
+# costs almost nothing. And its output is plain text, which against a FIXED
+# set of panes makes "byte for byte" a real automated oracle rather than a
+# person squinting at two terminals.
+#
+# The reimplementation in tests/fixtures/ext-status/ is INDEPENDENT, and that
+# is the whole value of it: it sources nothing from $ROOST_HOME and never runs
+# `roost`. A wrapper that exec'd the original would have proved only that
+# `exec` works -- which the assertions above already prove four times over --
+# while hiding whatever the contract fails to hand over.
+#
+# These are FIXTURES AND ONLY FIXTURES. A published roost-status extension
+# would be a permanent duplicate of a core command, maintained forever, which
+# is the exact bloat this design exists to prevent. They live under
+# tests/fixtures/ and go away with the branch.
+CONF_FIX="$HERE/tests/fixtures"
+
+# Installed by hand, because `roost ext install` is a later task and this one
+# must not wait for it. "By hand" means ext.lock is written here rather than
+# by an installer -- ext.index is still DERIVED from it by
+# roost_ext_index_write, with a real JSON parser, exactly as an install would
+# derive it. Hand-writing the index directly would test a dispatch table no
+# installer could ever produce.
+#
+# The clone directory is named by the manifest's `name` and the binary by
+# `bin/roost-<command>`, because that is the layout roost_ext_index_write
+# writes paths for and the layout ROOST_EXT_DIR is computed from. Getting
+# either wrong here would show up as "unknown subcommand" with nothing to say
+# why.
+cp -R "$CONF_FIX/ext-status"        "$EXT_DATA/status-ext"
+cp -R "$CONF_FIX/ext-status-noneed" "$EXT_DATA/status-noneed-ext"
+cp -R "$CONF_FIX/ext-argv"          "$EXT_DATA/argv-ext"
+
+# The two status fixtures are the SAME PROGRAM. Only the declaration differs,
+# and asserting that here is what stops the negative case below from quietly
+# decaying into "some other program also failed": if these two ever drift
+# apart, ext-status-noneed stops being evidence about `needs` at all.
+#
+# Their manifests differ in `name` and `commands` as well as in `needs`, and
+# they have to: `name` is the install directory and a command may be claimed
+# by exactly one extension, so two fixtures both called status-ext and both
+# claiming status-ext could not be installed side by side -- roost refuses
+# that collision by design, and it is asserted higher up this file. The twins
+# are therefore identical where it matters, which is the executable, and that
+# is what cmp is checking.
+cmp -s "$EXT_DATA/status-ext/bin/roost-status-ext" \
+       "$EXT_DATA/status-noneed-ext/bin/roost-status-noneed-ext"
+assert_true "$?" "the fleet and no-fleet status fixtures are byte-identical programs"
+
+# The manifests are read back with roost's OWN reader, not eyeballed. They are
+# hand-written today and `roost ext install` will read them for real in a
+# later task; a fixture that install would refuse is a fixture that stops
+# meaning anything the day the installer lands.
+man="$(roost_ext_manifest_read "$EXT_DATA/status-ext/roost-ext.json" 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "the ext-status manifest parses with roost's own manifest reader"
+assert_eq "$(ext_field "$man" name)"     "status-ext" "the ext-status manifest names status-ext"
+assert_eq "$(ext_field "$man" contract)" "1"          "the ext-status manifest speaks contract 1"
+assert_eq "$(ext_field "$man" commands)" "status-ext" "the ext-status manifest claims the status-ext command"
+assert_eq "$(ext_field "$man" needs)"    "fleet"      "the ext-status manifest declares the fleet authority"
+
+man="$(roost_ext_manifest_read "$EXT_DATA/status-noneed-ext/roost-ext.json" 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "the ext-status-noneed manifest parses too"
+assert_eq "$(ext_field "$man" needs)" "" \
+  "the ext-status-noneed manifest declares NO authority -- the one difference between the twins"
+
+man="$(roost_ext_manifest_read "$EXT_DATA/argv-ext/roost-ext.json" 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "the ext-argv manifest parses"
+assert_eq "$(ext_field "$man" needs)" "" "the ext-argv manifest declares no authority either"
+
+lock_install <<'JSON'
+{
+  "argv-ext":          { "repo": "o/argv-ext",          "commands": ["argv-ext"] },
+  "status-ext":        { "repo": "o/status-ext",        "commands": ["status-ext"],        "needs": ["fleet"] },
+  "status-noneed-ext": { "repo": "o/status-noneed-ext", "commands": ["status-noneed-ext"] }
+}
+JSON
+
+# The fourth column, checked before anything is concluded from a run. It is
+# the authority the dispatcher will act on -- it reads the grant off this line
+# and never from ext.lock or from the extension's own manifest -- so a wrong
+# column here would make every grant assertion below pass or fail for a reason
+# that has nothing to do with the seam.
+conf_index="$EXT_STATE_ROOT/ext.index"
+conf_needs() { awk -F'\t' -v c="$1" '$1==c{print $4}' "$conf_index"; }
+assert_eq "$(conf_needs status-ext)"        "fleet" "the index grants status-ext the fleet"
+assert_eq "$(conf_needs status-noneed-ext)" ""      "the index grants status-noneed-ext nothing"
+assert_eq "$(conf_needs argv-ext)"          ""      "the index grants argv-ext nothing"
+
+# --- a fleet that does not move between two runs ----------------------------
+# The comparison is only an oracle if both sides see the SAME fleet, so the
+# panes are pinned here rather than taken as they come. Every pane gets an
+# @roost-name, which keeps #{pane_current_command} out of the output
+# entirely -- tests/lib.sh's header records that the test shell's reported
+# command is bash on macOS and sh or dash on Linux, so a run that fell back to
+# it would compare two platform-dependent strings and could differ between the
+# two invocations while a pane was still settling.
+#
+# The layout exercises both arms of the "/LABEL" conditional in the pane
+# format: two panes whose label EQUALS the window name, where the suffix must
+# be suppressed, and two where it differs and must be shown. A fixture that
+# only ever hit one arm would let a reimplementation that dropped the
+# conditional altogether pass.
+#
+# automatic-rename is tmux's DEFAULT and it is the trap here: a window created
+# with `-n api` keeps that name only until the shell inside it reports, and
+# then tmux renames the window to the running command. #{window_name} appears
+# twice in the pane format -- once shown, once inside the equality test that
+# suppresses the "/LABEL" suffix -- so a rename landing between the core run
+# and the extension run makes two correct programs print different bytes. This
+# was not theorised: a first draft of the overhead measurement, built the same
+# way but without this line, refused to time anything on one run in two
+# because its own before-and-after sanity check saw the name change. Turning
+# the option off globally before any window exists is what makes the fleet
+# below actually fixed. (rename-window disables it per window as a side
+# effect, which is why the two renamed windows would have been safe anyway and
+# the `-n api` one would not.)
+T set-option -g automatic-rename off
+conf_sess="$(T list-sessions -F '#{session_name}' | head -n 1)"
+T rename-session -t "=$conf_sess" conf
+T rename-window -t '=conf:0' shell
+conf_p_shell="$(T list-panes -t '=conf:0' -F '#{pane_id}')"
+require_pane "$conf_p_shell" "the conformance fleet's shell pane"
+T new-window -d -t '=conf:' -n api 'ENV= exec /bin/sh'
+conf_p_api="$(T list-panes -t '=conf:1' -F '#{pane_id}')"
+require_pane "$conf_p_api" "the conformance fleet's api pane"
+T rename-window -t '=conf:1' api
+conf_p_helper="$(T split-window -d -P -F '#{pane_id}' -t "$conf_p_api" 'ENV= exec /bin/sh')"
+require_pane "$conf_p_helper" "the conformance fleet's helper pane"
+T new-session -d -s side -x 200 -y 50 'ENV= exec /bin/sh'
+T rename-window -t '=side:0' solo
+conf_p_worker="$(T list-panes -t '=side:0' -F '#{pane_id}')"
+require_pane "$conf_p_worker" "the conformance fleet's worker pane"
+
+# Every option is set on a captured %N rather than on a `session:window.pane`
+# string. A name-based target that resolved to nothing sets the option on
+# NOTHING and still exits 0 -- and a fleet quietly missing its labels would
+# fall back to #{pane_current_command}, which is the one field tests/lib.sh
+# warns is not the same on macOS and Linux.
+#
+# `-p` for a PANE option, not `-w` or `-g`: @roost-name and @agent_state are
+# per-pane in roost, and a window-scoped copy would be invisible to the format
+# string while looking perfectly set to anyone reading this file.
+T set-option -p -t "$conf_p_shell"  @roost-name shell
+T set-option -p -t "$conf_p_api"    @roost-name api
+T set-option -p -t "$conf_p_api"    @agent_state working
+T set-option -p -t "$conf_p_helper" @roost-name helper
+T set-option -p -t "$conf_p_helper" @agent_state blocked
+T set-option -p -t "$conf_p_worker" @roost-name worker
+T set-option -p -t "$conf_p_worker" @agent_state done
+
+# Checked before it is trusted: a fleet that failed to build would make both
+# sides of the comparison equally empty, and "" = "" is the shape of a test
+# that passes while asserting nothing.
+assert_eq "$(T list-panes -a -F x | wc -l | tr -d ' ')" "4" \
+  "the conformance fleet really is four panes across two sessions"
+
+# --- the byte comparison ----------------------------------------------------
+conf_core="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
+assert_eq "$rc" "0" "core roost status exits 0 against the conformance fleet"
+conf_ext="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
+assert_eq "$rc" "0" "the rebuilt status extension exits 0 against the same fleet"
+
+# Checked before the comparison, for the same reason the pane count is: two
+# empty strings compare equal, so an assertion that only says "these match"
+# would pass loudest exactly when both sides had broken.
+assert_contains "$conf_core" "roost: running (socket=$ROOST_TEST_SOCK)" \
+  "core roost status really printed a fleet, so the comparison has something to compare"
+assert_eq "$(printf '%s\n' "$conf_core" | wc -l | tr -d ' ')" "7" \
+  "core roost status printed one header, two session lines and four pane lines"
+
+assert_eq "$conf_ext" "$conf_core" \
+  "an extension rebuilt on contract 1 reproduces roost status BYTE FOR BYTE"
+assert_eq "$(cat "$TMP/ext-err")" "$(cat "$TMP/core-err")" \
+  "...and writes the same thing to stderr, which for both of them is nothing"
+
+# The other branch of the same command. A reimplementation that only ever
+# handled a live server would pass everything above and then print a tmux
+# error where roost prints one plain line, and "not running" is the state a
+# user sees most often on a machine where they have not started roost yet.
+conf_dead="$TMP/no-such-server/s"
+conf_core="$(ROOST_SOCKET="$conf_dead" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
+conf_core_rc=$rc
+conf_ext="$(ROOST_SOCKET="$conf_dead" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
+assert_eq "$conf_core" "roost: not running" "core roost status says so when no server is listening"
+assert_eq "$conf_ext" "$conf_core" \
+  "the extension reproduces the not-running branch byte for byte as well"
+assert_eq "$rc" "$conf_core_rc" "...and exits with the same status core does"
+assert_eq "$(cat "$TMP/ext-err")" "" \
+  "...without leaking tmux's own 'no server running' complaint to stderr"
+
+# --- the negative case: the same program, without the declaration -----------
+# The more valuable half. An authority you have never watched being REFUSED is
+# an authority you have not tested, and the failure has to be the loud one:
+# ROOST_SOCKET is UNSET rather than empty precisely so that a read of it dies
+# here instead of quietly addressing the default tmux server -- the user's own
+# everyday tmux, which is the one thing roost exists to leave alone. That
+# wrong-server run would print a perfectly plausible fleet and exit 0.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status-noneed-ext 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "without a declared fleet, the identical program FAILS instead of running"
+assert_eq "$out" "" "...printing nothing at all on stdout"
+# Not merely "nothing": nothing *of this shape*. Either line would mean it had
+# reached a tmux server and answered about it.
+case "$out" in *"roost: running"*|*"roost: not running"*) conf_leak=1 ;; *) conf_leak=0 ;; esac
+assert_eq "$conf_leak" "0" \
+  "...and in particular no status output from whatever server it would otherwise have found"
+assert_contains "$(cat "$TMP/err")" "ROOST_SOCKET" \
+  "the failure names ROOST_SOCKET"
+assert_contains "$(cat "$TMP/err")" "unbound variable" \
+  "the failure is an UNSET-variable error, not a tmux error and not silence"
+
+# --- argument fidelity ------------------------------------------------------
+# `roost status` takes no arguments, so nothing else in this feature tests
+# what the seam does to argv -- and a seam that hands one process's arguments
+# to another breaks on quoting far more often than on logic. Each of these
+# four is aimed at a different way that goes wrong: `%200` at globbing or
+# expansion, `sess:win` at anything that splits on a colon, `--force` at
+# option parsing upstream of the extension, and the last at the failure that
+# actually happens -- a `$*` or an unquoted `$@` somewhere on the path
+# delivering one argument as four.
+read -r -d '' conf_argv_want <<'WANT' || true
+%200
+sess:win
+--force
+an argument with spaces
+WANT
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" argv-ext \
+  '%200' 'sess:win' '--force' 'an argument with spaces' 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "the argv extension runs"
+assert_eq "$out" "$conf_argv_want" \
+  "every argument reaches the extension intact and in order, spaces included"
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "4" \
+  "...as four arguments, not as words -- an unquoted \$@ anywhere would make seven"
+assert_eq "$(cat "$TMP/err")" "" "the argv extension writes nothing to stderr"
+
+# And with no arguments at all, because `roost <cmd>` with nothing after it is
+# the ordinary case and a dispatcher that passed the subcommand along would
+# show up here as a single line reading "argv-ext".
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" argv-ext 2>"$TMP/err")"; rc=$?
+# The exit status is asserted beside the empty stdout because empty stdout on
+# its own is also what an extension that never ran prints. One of these two
+# lines has to be able to tell "received nothing" from "was never dispatched".
+assert_eq "$rc" "0" "the argv extension runs with no arguments at all"
+assert_eq "$out" "" "with no arguments the extension receives none -- not its own name"
+
 rm -f "$EXT_STATE_ROOT/ext.lock" "$EXT_STATE_ROOT/ext.index"
 ext_sandbox_off
 
