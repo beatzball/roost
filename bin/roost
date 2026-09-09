@@ -1439,71 +1439,50 @@ JSON
           roost_ext__roots
           ext_dir="$ROOST_EXT_DATA_ROOT/ext/$ext_name"
           ext_state="$ROOST_EXT_STATE_ROOT/ext/$ext_name"
-          ext_lock="$ROOST_EXT_STATE_ROOT/ext.lock"
 
-          # What authority the user consented to, read from ext.lock and NEVER
-          # from roost-ext.json inside the clone. That manifest is precisely
-          # the file someone who reached the disk would edit, and an extension
-          # able to rewrite its own could hand itself the run of every agent.
-          # `roost ext install` copies `needs` into the lockfile for this one
-          # reason: the lockfile is roost's record of what was agreed to.
+          # What authority the user consented to. It arrives in the fourth
+          # column of the line the lookup has already read, and NOTHING here
+          # reads ext.lock. roost_ext_index_write resolved it out of the
+          # lockfile with a real JSON parser, once, at install and removal
+          # time, and wrote the answer down.
           #
-          # Read with shell builtins and nothing else. scripts/lib/roost-json.sh
-          # opens by recording that neither python3 nor jq is a runtime
-          # dependency of roost, and forking one of them here -- on the path a
-          # user hits every single time they run an extension -- would have
-          # made one of them exactly that, quietly, and only on the machines
-          # that happen to have one.
+          # That indirection is the fix for a real bypass, not a convenience.
+          # This branch used to parse ext.lock itself with shell string
+          # operations, because neither python3 nor jq may be a runtime
+          # dependency of roost (scripts/lib/roost-json.sh opens by saying
+          # so). It matched the bytes `"needs"` anywhere in an entry and took
+          # the next `[`, so an entry declaring `"needs": []` was handed the
+          # fleet by two ordinary strings a manifest author controls --
+          # `"description": "needs"` beside `"commands": ["fleet"]`. The user
+          # read "asks for no access to your agents" at the consent prompt and
+          # the extension got the run of the fleet.
           #
-          # The parse assumes contract 1's lockfile shape: a flat object of
-          # entries, each holding scalars and arrays of strings, nothing
-          # nested. Braces therefore alternate -- document, entry, entry,
-          # document -- and splitting on them finds one entry's body without
-          # tracking depth. Where the writer chose to wrap is free. Anything
-          # this cannot follow leaves ext_needs EMPTY, and empty grants
-          # NOTHING: every way it can fail falls towards least authority.
-          ext_needs=""
-          if [ -f "$ext_lock" ]; then
-            # Joined into one string, a space per line, so the reader does not
-            # care about layout. JSON has no literal newline inside a string,
-            # so flattening loses nothing.
-            lock_text=""; lock_line=""
-            while IFS= read -r lock_line || [ -n "$lock_line" ]; do
-              lock_text="$lock_text $lock_line"
-            done < "$ext_lock"
-            # Past the document's own opening brace. What is left is a run of
-            # `"<name>": { ... }` entries.
-            lock_rest="${lock_text#*\{}"
-            while :; do
-              # Both braces, or there is no whole entry left. Without this
-              # test a truncated lockfile spins here forever, because
-              # `${x#*\}}` on a string with no `}` in it returns x unchanged.
-              case "$lock_rest" in *'{'*'}'*) ;; *) break ;; esac
-              lock_key="${lock_rest%%\{*}"
-              lock_rest="${lock_rest#*\{}"
-              lock_body="${lock_rest%%\}*}"
-              lock_rest="${lock_rest#*\}}"
-              # `, "probe": ` -> `probe`
-              lock_key="${lock_key#*\"}"
-              lock_key="${lock_key%%\"*}"
-              [ "$lock_key" = "$ext_name" ] || continue
-              case "$lock_body" in
-                *'"needs"'*'['*)
-                  # From the `[` that FOLLOWS "needs", not the first `[` in
-                  # the body -- that one belongs to "commands" whenever the
-                  # writer put that field first.
-                  lock_body="${lock_body#*\"needs\"}"
-                  lock_body="${lock_body#*[}"
-                  ext_needs="${lock_body%%]*}"
-                  ;;
-              esac
-              break
-            done
-            # `"fleet", "sudo"` -> `fleet, sudo`. The commas, the spaces and
-            # any newlines that survived the join are all separators
-            # roost_ext_needs_valid splits on -- this is the caller its
-            # comment about handling all three was written for.
-            ext_needs="${ext_needs//\"/}"
+          # The rule that came out of it, and it is in the design now: decide
+          # a grant where a real parser is available, carry the decision
+          # forward, and never re-derive it somewhere cheaper. So no JSON is
+          # parsed on this path, there is no assumption about the lockfile's
+          # layout, and a typo costs one `while read` over a small text file.
+          # Both files sit in the same 0600 state directory, so nothing about
+          # the trust boundary moved when the decision did.
+          ext_needs="$ROOST_EXT_LOOKUP_NEEDS"
+
+          # roost_ext_needs_valid REFUSES an authority it does not recognise
+          # rather than ignoring it, and that refusal has to be honoured here
+          # too: a roost that silently granted nothing would leave the
+          # extension believing it had everything, and that surfaces as
+          # corrupted behaviour instead of a clean stop. `roost ext install`
+          # refuses such a manifest and roost_ext_index_write will not write
+          # an authority with whitespace in it, so a column that says this was
+          # hand-edited or written by a newer roost than this one.
+          if ! roost_ext_needs_valid "$ext_needs"; then
+            echo "roost $1: extension '$ext_name' asks for an authority this roost does not know: $ROOST_EXT_NEEDS_UNKNOWN" >&2
+            echo "roost $1: refusing, rather than running it with less than it expects" >&2
+            # The way out, because a refusal a user cannot act on is a dead
+            # end. Both of these are things they can type right now: one
+            # takes the extension off the machine, the other turns the whole
+            # seam off and gets every other roost command working again.
+            echo "roost $1: remove it with 'roost ext remove $ext_name', or turn the seam off with ROOST_NO_EXT=1" >&2
+            exit 1
           fi
 
           # roost_ext_needs_valid REFUSES an authority it does not recognise
@@ -1573,13 +1552,24 @@ JSON
             # nothing here to pass and then bypass: the variable is simply not
             # in its environment.
             #
-            # What this does NOT do is scrub an environment roost did not
-            # build. An extension started from inside a roost pane inherits
-            # that pane's $TMUX and its PATH and can reach the fleet through
-            # them whatever this branch decides -- `needs` governs what roost
-            # HANDS OUT, not what the surrounding session already exposes.
-            # Written down because the opposite is the natural thing to
-            # assume, and it is not true.
+            # What this does NOT do is make the fleet unreachable, and
+            # reading it that way is the mistake. `needs` governs what roost
+            # HANDS OUT. It is not confinement, and the design says so in
+            # "Non-goals" and in "Declared authority" -- read those before
+            # relying on this line for anything.
+            #
+            # Two ways past it, neither of them exotic. An extension started
+            # from inside a roost pane inherits that pane's $TMUX and its
+            # PATH, and reaches the fleet through those. And outside a pane,
+            # `tmux` is an ordinary binary that an extension may run itself:
+            # the production server's socket is `-L roost`, a guessable
+            # string, so withholding ROOST_SOCKET withholds a convenience and
+            # a signal of intent, not access.
+            #
+            # What it does buy is still worth having: the accident above
+            # cannot happen, and an extension that reaches the fleet anyway
+            # has to contain the code that does it, in a repository the user
+            # can read at the commit they pinned.
             unset ROOST_SOCKET
           fi
 

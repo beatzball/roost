@@ -642,17 +642,34 @@ roost_ext_tree_hash() {
 # holds the same facts. A `$(roost_ext_index)` for the path would be a fork
 # per typo, so the path is built from what roost_ext__roots SETS.
 #
-# The name and path also come back in ROOST_EXT_LOOKUP_NAME and
-# ROOST_EXT_LOOKUP_PATH, for the dispatcher: it needs the extension's NAME to
-# find its lockfile entry and its directories, and it must call this WITHOUT a
-# `$(...)` — a command substitution there would reintroduce the very fork this
-# function exists to avoid — so it redirects stdout away and reads the
-# variables instead. Both are cleared on entry, so a caller under `set -u` can
-# always read them.
+# The name, the path and the AUTHORITY come back in ROOST_EXT_LOOKUP_NAME,
+# ROOST_EXT_LOOKUP_PATH and ROOST_EXT_LOOKUP_NEEDS, for the dispatcher: it
+# needs the extension's NAME for its directories, and it must call this WITHOUT
+# a `$(...)` — a command substitution there would reintroduce the very fork
+# this function exists to avoid — so it redirects stdout away and reads the
+# variables instead. All three are cleared on entry, so a caller under `set -u`
+# can always read them.
+#
+# The fourth column is why this function answers about authority at all.
+# roost_ext_index_write resolves `needs` out of ext.lock with a real JSON
+# parser, once, at install and removal time, and writes it here; the
+# dispatcher reads it off the line it was already reading. It must NEVER be
+# re-derived from ext.lock on this path. The first attempt did that with a
+# shell reader and it granted `fleet` to an extension whose lockfile entry
+# declared none — two ordinary strings in the entry, `"description": "needs"`
+# and `"commands": ["fleet"]`, were enough to steer it. Both files live in the
+# same 0600 state directory, so carrying the decision forward moves no trust
+# boundary; re-deriving it cheaply moved a security decision onto a parser
+# that was never one.
+#
+# A MISSING fourth column is no authority, which is what a hand-edited line
+# and every line an older roost wrote both look like. Fail closed, silently,
+# because "no authority" is the safe reading of a line that does not say.
 roost_ext_index_lookup() {
   ROOST_EXT_LOOKUP_NAME=""
   ROOST_EXT_LOOKUP_PATH=""
-  local want="$1" cmd name path index
+  ROOST_EXT_LOOKUP_NEEDS=""
+  local want="$1" cmd name path needs index
   roost_ext__roots
   index="$ROOST_EXT_STATE_ROOT/ext.index"
   [ -f "$index" ] || return 1
@@ -662,14 +679,29 @@ roost_ext_index_lookup() {
   local IFS=$'\t'
   # `|| [ -n "$cmd" ]` so a final line with no trailing newline is still read.
   # A hand-edited ext.index is exactly the case this has to survive.
-  while read -r cmd name path || [ -n "$cmd" ]; do
+  while read -r cmd name path needs || [ -n "$cmd" ]; do
+    # Surrounding whitespace off every field, because "a hand-edited ext.index
+    # has to survive" has to mean it. A trailing space after a path — an
+    # editor stripping or adding one, a line pasted out of a terminal — used
+    # to make `[ -x "$path" ]` false and turn an installed command back into
+    # "unknown subcommand" with nothing printed to say why. It also catches
+    # the `\r` of a file that has been through a CRLF editor.
+    #
+    # Parameter expansion, not `sed` or `tr`: this is the no-fork path. Only
+    # the command is trimmed for every line; the rest is trimmed once, on the
+    # line that matched.
+    cmd="${cmd#"${cmd%%[![:space:]]*}"}"; cmd="${cmd%"${cmd##*[![:space:]]}"}"
     [ "$cmd" = "$want" ] || continue
+    name="${name#"${name%%[![:space:]]*}"}";  name="${name%"${name##*[![:space:]]}"}"
+    path="${path#"${path%%[![:space:]]*}"}";  path="${path%"${path##*[![:space:]]}"}"
+    needs="${needs#"${needs%%[![:space:]]*}"}"; needs="${needs%"${needs##*[![:space:]]}"}"
     # The LOCKFILE, not the clone, is the record of what is installed. So a
     # clone whose files have gone away degrades to "unknown subcommand" rather
     # than to exec'ing whatever now sits at that path.
     [ -x "$path" ] || return 1
     ROOST_EXT_LOOKUP_NAME="$name"
     ROOST_EXT_LOOKUP_PATH="$path"
+    ROOST_EXT_LOOKUP_NEEDS="$needs"
     printf '%s\n' "$path"
     return 0
   done < "$index"
@@ -719,6 +751,39 @@ for name in sorted(lock):
     # parser back on the hot path.
     if name.split() != [name] or "/" in name:
         die("entry name '%s' is not a plain word" % name)
+    # The authority column. Resolved HERE, where a real JSON parser is
+    # reading the lockfile anyway, and carried forward to the dispatcher --
+    # which must never re-derive it from ext.lock with something cheaper.
+    # The first attempt at this feature did exactly that, with a shell reader
+    # that matched the bytes `"needs"` anywhere in an entry, and two ordinary
+    # string values out of the extension's own manifest steered it: a
+    # `"description": "needs"` beside a `"commands": ["fleet"]` handed the
+    # fleet to an entry whose needs was `[]`. The general rule, and it is in
+    # the design now: decide a grant where a real parser is available, carry
+    # the decision, never re-derive it somewhere cheaper.
+    #
+    # An ABSENT needs is no authority. A needs that is not an array -- null
+    # included -- is refused rather than read as none, because a lockfile
+    # saying something this cannot understand about authority is not a
+    # lockfile to guess at.
+    if "needs" in entry:
+        needs = entry["needs"]
+        if not isinstance(needs, list):
+            die("entry '%s' declares a needs that is not an array" % name)
+    else:
+        needs = []
+    for need in needs:
+        # Whitespace would split one authority into two inside a field that
+        # is itself space-separated, and the second half would be dropped by
+        # whoever read it back. Refused, for the same reason a command with a
+        # space in it is.
+        if not isinstance(need, str) or not need or need.split() != [need]:
+            die("entry '%s' declares an authority that is not a plain word" % name)
+    # NOT validated against the authorities roost knows -- that is
+    # roost_ext_needs_valid's job, and it happens in the dispatcher, on the
+    # value it is actually about to act on. Writing the index is not the
+    # place to decide what `fleet` means.
+    needs_field = " ".join(needs)
     for command in commands:
         if (not isinstance(command, str) or not command
                 or command.split() != [command] or "/" in command):
@@ -731,10 +796,15 @@ for name in sorted(lock):
             die("command '%s' is claimed by both '%s' and '%s'"
                 % (command, claimed[command], name))
         claimed[command] = name
-        rows.append((command, name))
+        rows.append((command, name, needs_field))
 
 rows.sort()
-w("".join("%s\t%s\t%s/%s/bin/roost-%s\n" % (c, n, data_dir, n, c) for c, n in rows))
+# The authority column is written even when it is EMPTY, so every line has the
+# same four fields and `awk -F'\t'` on this file means the same thing on every
+# row. A hand edit that drops the trailing tab still reads back as no
+# authority, which is the direction every failure here has to fall.
+w("".join("%s\t%s\t%s/%s/bin/roost-%s\t%s\n" % (c, n, data_dir, n, c, s)
+          for c, n, s in rows))
 PY
 }
 
@@ -749,6 +819,11 @@ if type != "object" then ["roost-ext-error=top-level JSON value must be an objec
 else
   [ to_entries | sort_by(.key)[]
     | .key as $n | .value as $e
+    # The authority column, resolved by the same real parser that resolves
+    # the rest of the row. `has("needs")` and not `// []`: a needs of null is
+    # a lockfile saying something this cannot understand about authority, and
+    # `//` would quietly read it as none. python3's engine refuses it too.
+    | (if ($e | type) == "object" and ($e | has("needs")) then $e.needs else [] end) as $needs
     | if ($e | type) != "object" then {err: ("entry '" + $n + "' is not an object")}
       elif (($e.commands | type) != "array") or (($e.commands | length) == 0)
         then {err: ("entry '" + $n + "' lists no commands")}
@@ -756,7 +831,11 @@ else
         then {err: ("entry name '" + $n + "' is not a plain word")}
       elif any($e.commands[]; (type != "string") or (. == "") or test("\\s") or contains("/"))
         then {err: ("entry '" + $n + "' claims a command that is not a plain word")}
-      else ($e.commands[] | [., $n]) end ] as $rows
+      elif ($needs | type) != "array"
+        then {err: ("entry '" + $n + "' declares a needs that is not an array")}
+      elif any($needs[]; (type != "string") or (. == "") or test("\\s"))
+        then {err: ("entry '" + $n + "' declares an authority that is not a plain word")}
+      else ($e.commands[] | [., $n, ($needs | join(" "))]) end ] as $rows
   | ([$rows[] | select(type == "object")] | first) as $bad
   | if $bad != null then ["roost-ext-error=" + $bad.err]
     else ($rows | sort_by(.[0])) as $sorted
@@ -765,7 +844,7 @@ else
           ([$sorted[] | select(.[0] == $dup[0])]) as $both
           | ["roost-ext-error=command '" + $dup[0] + "' is claimed by both '"
              + $both[0][1] + "' and '" + $both[1][1] + "'"]
-        else [$sorted[] | .[0] + "\t" + .[1] + "\t" + $arg + "/" + .[1] + "/bin/roost-" + .[0]]
+        else [$sorted[] | .[0] + "\t" + .[1] + "\t" + $arg + "/" + .[1] + "/bin/roost-" + .[0] + "\t" + .[2]]
         end
     end
 end

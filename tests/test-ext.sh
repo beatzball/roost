@@ -364,8 +364,12 @@ if command -v jq >/dev/null 2>&1; then
   # scripts/lib/roost-json.sh's are. The standing decision this file protects
   # is about python3 and jq, and only roost_ext_index_lookup promises to run
   # with nothing at all -- which it is asked to do separately below.
+  #
+  # `mktemp`, `mv` and `mkdir` join it for roost_ext_index_write, which is run
+  # under this PATH further down: it writes its output through a temp file and
+  # a rename so a reader never sees a half-written dispatch table.
   mkdir -p "$TMP/jq-only"
-  for c in jq cat; do
+  for c in jq cat mktemp mv mkdir; do
     printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v "$c")" > "$TMP/jq-only/$c"
     chmod +x "$TMP/jq-only/$c"
   done
@@ -475,21 +479,53 @@ out="$(roost_ext_index_lookup nope)"; rc=$?
 assert_eq "$rc" "1" "index_lookup misses an unknown command"
 assert_eq "$out" "" "index_lookup prints nothing on a miss"
 
-# The two variables task 3's dispatcher reads. Called WITHOUT a `$(...)` here
+# The three variables the dispatcher reads. Called WITHOUT a `$(...)` here
 # on purpose: that is the only way the dispatcher can call it -- a command
 # substitution would put back the fork this function exists to avoid, and
 # would also throw the variables away with the subshell -- so this is the
 # call shape under test, not just the values.
 roost_ext_index_lookup demo >/dev/null
 assert_eq "$ROOST_EXT_LOOKUP_NAME" "demo" \
-  "index_lookup reports the extension NAME, which the dispatcher needs for ext.lock"
+  "index_lookup reports the extension NAME, which the dispatcher needs for its directories"
 assert_eq "$ROOST_EXT_LOOKUP_PATH" "$demo_bin" \
   "index_lookup reports the path in a variable as well as on stdout"
+# A line with only three columns is what an older roost wrote and what a hand
+# edit leaves behind. It has to read back as NO authority -- fail closed --
+# rather than as an unset variable the dispatcher would trip over under
+# `set -u`.
+assert_eq "$ROOST_EXT_LOOKUP_NEEDS" "" \
+  "a line with no fourth column reports no authority at all"
+printf 'demo\tdemo\t%s\tfleet\n' "$demo_bin" > "$(roost_ext_index)"
+roost_ext_index_lookup demo >/dev/null
+assert_eq "$ROOST_EXT_LOOKUP_NEEDS" "fleet" \
+  "index_lookup reports the authority column, which is what the dispatcher grants from"
+# Surrounding whitespace on any field. This function's own comment promises a
+# hand-edited ext.index "has to survive", and it did not: one trailing space
+# after the path made `[ -x "$path" ]` false and turned an installed command
+# back into "unknown subcommand" with nothing printed to say why.
+printf '  demo \t demo \t %s \t fleet \n' "$demo_bin" > "$(roost_ext_index)"
+out="$(roost_ext_index_lookup demo)"; rc=$?
+assert_eq "$rc" "0" "index_lookup still finds a line whose fields carry surrounding whitespace"
+assert_eq "$out" "$demo_bin" "...and hands back the path without it"
+roost_ext_index_lookup demo >/dev/null
+assert_eq "$ROOST_EXT_LOOKUP_NAME" "demo" "...and the name without it"
+assert_eq "$ROOST_EXT_LOOKUP_NEEDS" "fleet" "...and the authority without it"
+# A path that legitimately contains a space is not the same thing and must
+# survive intact -- an XDG_DATA_HOME under "Application Support" is enough.
+mkdir -p "$TMP/xdg/data/roost/ext/with space/bin"
+space_bin="$TMP/xdg/data/roost/ext/with space/bin/roost-spaced"
+printf '#!/bin/sh\n' > "$space_bin"; chmod +x "$space_bin"
+printf 'spaced\tspaced\t%s\t\n' "$space_bin" > "$(roost_ext_index)"
+assert_eq "$(roost_ext_index_lookup spaced)" "$space_bin" \
+  "trimming the ends does not disturb a path with a space inside it"
+printf 'demo\tdemo\t%s\n' "$demo_bin" > "$(roost_ext_index)"
 roost_ext_index_lookup nope >/dev/null
 assert_eq "$ROOST_EXT_LOOKUP_NAME" "" \
   "index_lookup clears the reported name on a miss"
 assert_eq "$ROOST_EXT_LOOKUP_PATH" "" \
   "index_lookup clears the reported path on a miss, so a stale hit cannot be exec'd"
+assert_eq "$ROOST_EXT_LOOKUP_NEEDS" "" \
+  "index_lookup clears the reported authority on a miss, so no grant outlives its line"
 # A prefix is not a match. `dem` sharing three letters with `demo` must not
 # dispatch, or a typo runs somebody's extension.
 roost_ext_index_lookup dem >/dev/null; assert_eq "$?" "1" "index_lookup does not match a prefix of a command"
@@ -532,10 +568,21 @@ JSON
 roost_ext_index_write; rc=$?
 assert_eq "$rc" "0" "index_write regenerates the index from the lockfile"
 ext_data="$(roost_ext_data_dir)"
-want_index="$(printf 'demo\tdemo\t%s\nmark\tmark\t%s\nmarks\tmark\t%s\n' \
+want_index="$(printf 'demo\tdemo\t%s\t\nmark\tmark\t%s\tfleet\nmarks\tmark\t%s\tfleet\n' \
   "$ext_data/demo/bin/roost-demo" "$ext_data/mark/bin/roost-mark" "$ext_data/mark/bin/roost-marks")"
 assert_eq "$(cat "$(roost_ext_index)")" "$want_index" \
   "index_write writes one tab-separated line per claimed command, sorted by command"
+# The FOURTH column is the grant, resolved here -- where a real JSON parser is
+# reading ext.lock anyway -- and carried to the dispatcher rather than
+# re-derived there. The dispatcher's first version re-derived it with shell
+# string operations and granted fleet to an entry that declared none; the
+# regression assertions for that live in the dispatcher section below. Written
+# even when EMPTY, so every row has four fields and a hand edit that drops the
+# trailing tab still reads back as no authority.
+assert_contains "$(cat "$(roost_ext_index)")" "$(printf 'mark\t%s\tfleet' "$ext_data/mark/bin/roost-mark")" \
+  "index_write carries the extension's declared authority in a fourth column"
+assert_contains "$(cat "$(roost_ext_index)")" "$(printf 'demo\t%s\t' "$ext_data/demo/bin/roost-demo")" \
+  "index_write writes an empty authority column for an extension that declared none"
 # Written for the reader that actually consumes it, not for a diff: the two
 # have to agree or the dispatch path is testing something the installer never
 # produced. The clones the index points at are built first, because a lookup
@@ -582,6 +629,64 @@ assert_contains "$(cat "$TMP/err")" "clash" "index_write names the command that 
 printf '{ "mark": ' > "$(roost_ext_lock)"
 roost_ext_index_write 2>/dev/null; rc=$?
 assert_eq "$rc" "1" "index_write refuses a malformed lockfile"
+
+# A `needs` this cannot understand is refused, not read as "no authority".
+# Guessing at a lockfile that says something unreadable ABOUT AUTHORITY is
+# exactly the class of decision that produced the bypass the dispatcher
+# section below regresses against.
+cat > "$(roost_ext_lock)" <<'JSON'
+{ "mark": { "commands": ["mark"], "needs": "fleet" } }
+JSON
+roost_ext_index_write 2>"$TMP/err"; rc=$?
+assert_eq "$rc" "1" "index_write refuses a needs that is not an array"
+assert_contains "$(cat "$TMP/err")" "needs" "...and says which field it was"
+cat > "$(roost_ext_lock)" <<'JSON'
+{ "mark": { "commands": ["mark"], "needs": ["fleet two"] } }
+JSON
+roost_ext_index_write 2>"$TMP/err"; rc=$?
+assert_eq "$rc" "1" "index_write refuses an authority with whitespace in it"
+assert_contains "$(cat "$TMP/err")" "authority" "...and says that is what it was"
+
+# The two engines have to agree about the authority column too. A machine with
+# only jq would otherwise write a different dispatch table than one with
+# python3 -- and this column is a grant, so "different" means one of the two
+# users is handed authority the other is not.
+if command -v jq >/dev/null 2>&1; then
+  index_parity_case() {
+    # index_parity_case <label> <lockfile-json>
+    local label="$1" json="$2" p_rc j_rc p_out j_out
+    printf '%s\n' "$json" > "$(roost_ext_lock)"
+    roost_ext_index_write 2>"$TMP/err-py"; p_rc=$?
+    p_out="$(cat "$(roost_ext_index)" 2>/dev/null)"
+    PATH="$TMP/jq-only"
+    roost_ext_index_write 2>"$TMP/err-jq"; j_rc=$?
+    j_out="$(cat "$(roost_ext_index)" 2>/dev/null)"
+    PATH="$saved_path"
+    assert_eq "$j_rc" "$p_rc" "both engines agree on the status for $label"
+    assert_eq "$j_out" "$p_out" "both engines agree on the index written for $label"
+    assert_eq "$(cat "$TMP/err-jq")" "$(cat "$TMP/err-py")" \
+      "both engines agree on the message for $label"
+  }
+  index_parity_case "an entry that declares fleet" \
+    '{ "mark": { "commands": ["mark"], "needs": ["fleet"] } }'
+  index_parity_case "an entry with an empty needs" \
+    '{ "mark": { "commands": ["mark"], "needs": [] } }'
+  index_parity_case "an entry with no needs field at all" \
+    '{ "mark": { "commands": ["mark"] } }'
+  index_parity_case "a needs of null" \
+    '{ "mark": { "commands": ["mark"], "needs": null } }'
+  index_parity_case "a needs that is a string" \
+    '{ "mark": { "commands": ["mark"], "needs": "fleet" } }'
+  index_parity_case "a needs entry that is not a string" \
+    '{ "mark": { "commands": ["mark"], "needs": [1] } }'
+  index_parity_case "a needs entry with whitespace in it" \
+    '{ "mark": { "commands": ["mark"], "needs": ["fleet two"] } }'
+  index_parity_case "an authority roost does not know" \
+    '{ "mark": { "commands": ["mark"], "needs": ["sudo"] } }'
+  index_parity_case "the entry that steered the shell reader" \
+    '{ "mark": { "description": "needs", "commands": ["fleet"], "needs": [] } }'
+fi
+
 rm -f "$(roost_ext_lock)"
 ext_sandbox_off
 
@@ -642,17 +747,25 @@ cat > "$EXT_DATA/probe/roost-ext.json" <<'JSON'
 { "name": "probe", "contract": 1, "commands": ["probe"], "needs": ["fleet"] }
 JSON
 
-printf 'probe\tprobe\t%s\n' "$EXT_DATA/probe/bin/roost-probe" > "$EXT_STATE_ROOT/ext.index"
-
+# The fixtures go in through the SAME path an install would take: write
+# ext.lock, then let roost_ext_index_write derive ext.index from it with a
+# real JSON parser. Hand-writing the index instead would test a dispatch table
+# no installer could produce, and the two places this file does hand-write one
+# say why they are doing it.
+lock_install() {
+  # lock_install <<'JSON' ... JSON  -- reads the lockfile on stdin.
+  cat > "$EXT_STATE_ROOT/ext.lock"
+  roost_ext_index_write
+}
 lock_no_needs() {
-  cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+  lock_install <<'JSON'
 {
   "probe": { "repo": "o/probe", "commands": ["probe"] }
 }
 JSON
 }
 lock_fleet() {
-  cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+  lock_install <<'JSON'
 {
   "probe": { "repo": "o/probe", "commands": ["probe"], "needs": ["fleet"] }
 }
@@ -675,15 +788,24 @@ ext_field() { printf '%s\n' "$1" | sed -n "s|^$2=||p"; }
 ext_has_scripts() { case "$1" in *"$HERE/scripts"*) return 0 ;; esac; return 1; }
 
 # --- an unknown subcommand is untouched by all of this ----------------------
-# Captured FIRST and reused as the expected text everywhere the seam declines
-# to dispatch, so "the usage error is unchanged" is one fact asserted against
-# one string rather than three copies of a long line that can drift apart.
+# With an extension really installed, so the miss below is a miss against a
+# populated dispatch table rather than against no table at all.
+lock_no_needs
+
+# The literal bytes, written out once here. `usage_ref` is captured from a
+# live run and reused everywhere the seam declines to dispatch, which pins
+# those paths to EACH OTHER but not to anything -- a mid-string edit would
+# move all four together and every comparison would still hold. This is the
+# one assertion that would notice, and the whole point of this branch is that
+# an unknown subcommand behaves exactly as it did before the seam existed.
+usage_want='usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|--version|help]'
+
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" definitely-not-a-subcommand 2>"$TMP/err")"; rc=$?
 usage_ref="$(cat "$TMP/err")"
 assert_eq "$rc" "2" "an unknown subcommand still exits 2"
 assert_eq "$out" "" "an unknown subcommand still prints nothing on stdout"
-assert_prefix "$usage_ref" "usage: roost [up|session NAME|" \
-  "an unknown subcommand still prints the usage error on stderr"
+assert_eq "$usage_ref" "$usage_want" \
+  "an unknown subcommand prints the usage error byte for byte as it did before the seam"
 # A lookup MISS is the ordinary case -- every typo lands in the same branch --
 # and bin/roost runs under `set -e`, so a lookup called as a bare statement
 # would exit the shell on the miss and print nothing at all. That failure
@@ -738,8 +860,8 @@ assert_prefix "$(ext_field "$out" PATH)" "$HERE/scripts:" \
 
 # A needs array split over several lines is the same grant. The design prints
 # the lockfile pretty-printed and a hand-edit or a different writer will wrap
-# it, so the reader cannot be one that only ever sees `["fleet"]` on one line.
-cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+# it, so nothing on this path may depend on where the lines fell.
+lock_install <<'JSON'
 {
   "probe": {
     "repo": "o/probe",
@@ -758,7 +880,7 @@ assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
 # that stopped scoping at the entry boundary would pass whichever order it was
 # tested in and fail the other -- roost_ext_needs_valid's own newline case was
 # exactly that bug.
-cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+lock_install <<'JSON'
 {
   "other": { "repo": "o/other", "commands": ["other"], "needs": ["fleet"] },
   "probe": { "repo": "o/probe", "commands": ["probe"] }
@@ -767,7 +889,7 @@ JSON
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
   "fleet declared by an EARLIER entry does not leak to this one"
-cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+lock_install <<'JSON'
 {
   "probe": { "repo": "o/probe", "commands": ["probe"] },
   "other": { "repo": "o/other", "commands": ["other"], "needs": ["fleet"] }
@@ -777,29 +899,127 @@ out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/e
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
   "fleet declared by a LATER entry does not leak to this one either"
 
-# No lockfile at all is no record of consent, so it is no authority -- not a
-# crash, and not a grant.
-rm -f "$EXT_STATE_ROOT/ext.lock"
-out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
-assert_eq "$rc" "7" "an extension whose lockfile entry has gone still runs"
+# --- the grant bypass this whole column exists to close ---------------------
+# The dispatcher's first version read `needs` out of ext.lock itself, with
+# shell string operations, because neither python3 nor jq may be a runtime
+# dependency of roost. It matched the bytes `"needs"` ANYWHERE in an entry and
+# took the next `[` after that, so two ordinary string values -- both of them
+# copied into the lockfile from the extension's OWN manifest, which is the
+# file the design names as the one an attacker would edit -- steered it into
+# granting the fleet to an entry whose needs was `[]`.
+#
+# Every lockfile below is flat: scalars and arrays of strings, the shape the
+# contract documents. Nothing here is malformed, which is exactly why it was a
+# bypass and not a limitation. The grant now comes from a column a real JSON
+# parser wrote, so what these assert is that the shell never gets to guess
+# again.
+cp "$EXT_DATA/probe/bin/roost-probe" "$EXT_DATA/probe/bin/roost-fleet"
+cp "$EXT_DATA/probe/bin/roost-probe" "$EXT_DATA/probe/bin/roost-needs"
+lock_install <<'JSON'
+{
+  "probe": {
+    "repo": "o/probe",
+    "description": "needs",
+    "commands": ["fleet"],
+    "needs": []
+  }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" fleet 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "7" "the demonstration extension runs, so the assertion below is about the grant"
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
-  "a missing lockfile grants nothing rather than everything"
+  "a description of 'needs' beside a command called 'fleet' grants nothing"
+ext_has_scripts "$(ext_field "$out" PATH)"
+assert_eq "$?" "1" "...and puts no roost scripts on its PATH either"
+lock_install <<'JSON'
+{
+  "probe": {
+    "repo": "o/probe",
+    "commands": ["needs"],
+    "description": "see [fleet] for details",
+    "needs": []
+  }
+}
+JSON
+# Field ORDER matters in this one and it is not decoration: the old reader
+# took the first `[` after the first literal `"needs"` bytes, so the
+# description has to come after the command that supplies those bytes. Two
+# demonstrations rather than one because a single unlucky field order would
+# read as a fluke, and this is not one.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" needs 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "7" "the second demonstration extension runs too"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
+  "a command called 'needs' beside a description containing [fleet] grants nothing"
+rm -f "$EXT_DATA/probe/bin/roost-fleet" "$EXT_DATA/probe/bin/roost-needs"
+
+# The same reader failed OPEN on a `]` inside an authority: `fleet]x` was cut
+# at the bracket, `fleet` was granted, and the rest never reached
+# roost_ext_needs_valid at all. Worse, `["fleet]", "sudo"]` granted fleet and
+# DROPPED sudo -- silently ignoring an authority roost does not know, which is
+# the one thing roost_ext_needs_valid exists to refuse.
+lock_install <<'JSON'
+{
+  "probe": { "repo": "o/probe", "commands": ["probe"], "needs": ["fleet]x"] }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "an authority with a bracket in it is refused, not cut down to one roost knows"
+assert_contains "$(cat "$TMP/err")" "fleet]x" "...and the refusal names the whole thing"
+lock_install <<'JSON'
+{
+  "probe": { "repo": "o/probe", "commands": ["probe"], "needs": ["fleet]", "sudo"] }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "an unknown authority after a bracketed one is refused, not dropped"
+assert_eq "$out" "" "...and nothing is exec'd"
+
+# No lockfile is no dispatch table. `roost ext remove` writes both files in the
+# same step, so the index does not outlive the record it came from -- and the
+# index going empty is what turns the command back into an unknown one.
+rm -f "$EXT_STATE_ROOT/ext.lock"
+roost_ext_index_write
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "2" "with the lockfile gone and the index regenerated, the command is unknown again"
+assert_eq "$(cat "$TMP/err")" "$usage_ref" "...and it is the usage error, unchanged"
+
+# A hand-edited index line with only three columns -- what an older roost
+# wrote, and what an editor that strips trailing whitespace leaves -- is no
+# authority. Hand-written on purpose: no installer produces this, and the
+# point is what happens when something outside roost has touched the file.
+printf 'probe\tprobe\t%s\n' "$EXT_DATA/probe/bin/roost-probe" > "$EXT_STATE_ROOT/ext.index"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "7" "an index line with no authority column still dispatches"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
+  "...and grants nothing, rather than tripping over a column that is not there"
 
 # An authority this roost does not know is REFUSED, not ignored. Ignoring it
 # would leave the extension believing it had everything while it had nothing,
-# and that surfaces as corrupted behaviour instead of a clean stop --
-# roost_ext_needs_valid exists to make exactly that refusal, and the
-# dispatcher has to honour it. `roost ext install` refuses such a manifest, so
-# a lockfile that says this was hand-edited or written by a newer roost.
-cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+# and that surfaces as corrupted behaviour instead of a clean stop.
+# roost_ext_index_write deliberately does NOT judge the authority -- deciding
+# what `fleet` means is not the index writer's job -- so an unknown one
+# reaches the dispatcher, and it is the dispatcher that stops.
+lock_install <<'JSON'
 {
   "probe": { "repo": "o/probe", "commands": ["probe"], "needs": ["fleet", "sudo"] }
 }
 JSON
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
-assert_eq "$rc" "1" "an unknown authority in the lockfile stops the command"
+assert_eq "$rc" "1" "an unknown authority stops the command"
 assert_eq "$out" "" "an unknown authority means the extension is never exec'd at all"
 assert_contains "$(cat "$TMP/err")" "sudo" "the refusal names the authority it did not know"
+# A refusal a user cannot act on is a dead end. Both ways out are things they
+# can type: take the extension off the machine, or turn the seam off.
+assert_contains "$(cat "$TMP/err")" "roost ext remove probe" \
+  "the refusal says how to get rid of the extension"
+assert_contains "$(cat "$TMP/err")" "ROOST_NO_EXT=1" \
+  "the refusal says how to turn the seam off instead"
+# The same refusal from a hand-edited index, because that is the other way an
+# unknown authority arrives and it must not be the way in.
+printf 'probe\tprobe\t%s\tsudo\n' "$EXT_DATA/probe/bin/roost-probe" > "$EXT_STATE_ROOT/ext.index"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "an unknown authority hand-written into the index is refused too"
+assert_contains "$(cat "$TMP/err")" "sudo" "...and named"
 
 # --- the two kill switches --------------------------------------------------
 lock_fleet
