@@ -1522,10 +1522,32 @@ JSON
           mkdir -p -- "$ext_state"
 
           if [ "$ext_fleet" -eq 1 ]; then
-            # The grant, in the two pieces a pane already gets: WHICH server
-            # to talk to, and roost's own scripts ahead of PATH so that
-            # `roost read %N` and `roost send %N` resolve at all.
+            # The grant, in the pieces a pane already gets: WHICH server to
+            # talk to, HOW to address it, and roost's own scripts ahead of
+            # PATH so that `roost read %N` and `roost send %N` resolve at all.
             export ROOST_SOCKET="$SOCKET"
+            # The flag is handed over, not left for the extension to work out,
+            # and that is a correction rather than a convenience. tmux needs
+            # -L for a socket NAME and -S for a socket PATH; the line at the
+            # top of this file that computes _SOCKET_FLAG makes exactly that
+            # distinction, and scripts/roost-status, roost-switch and
+            # roost-notify each make it again. An extension handed only the
+            # value writes the obvious `tmux -L "$ROOST_SOCKET"`, which works
+            # against the production server -- whose socket is the NAME
+            # `roost` -- and silently addresses a different server everywhere
+            # else, because every other one is a path: a `roost ssh` server,
+            # a second server, every server the test suite builds.
+            #
+            # Silently talking to the wrong tmux is the failure this project
+            # has already had once, and scripts/lib/roost-socket.sh's header
+            # records it: roost-agent-state took the socket from $TMUX while
+            # this file fell through to `-L roost`, and the result was that
+            # "badges landed and replies vanished, exit 0, nothing printed."
+            # Handing over the bare value would be asking every extension
+            # author to rediscover that outage on their own users. It is
+            # reused from _SOCKET_FLAG rather than re-derived here, so there
+            # is one rule in this file and not two that can drift.
+            export ROOST_SOCKET_FLAG="$_SOCKET_FLAG"
             export PATH="$ROOST_HOME/scripts:$PATH"
           else
             # UNSET, not empty, and doing it HERE is the whole point. An
@@ -1538,6 +1560,12 @@ JSON
             # extension runs is a check the extension can skip. There is
             # nothing here to pass and then bypass: the variable is simply not
             # in its environment.
+            #
+            # BOTH are withheld, together. Leaving ROOST_SOCKET_FLAG in
+            # the environment would be handing out half a capability and a
+            # misleading signal with it: an extension that found a flag and no
+            # socket would be reading the leftovers of a grant it was refused.
+            # They are one grant and they leave together.
             #
             # What this does NOT do is make the fleet unreachable, and
             # reading it that way is the mistake. `needs` governs what roost
@@ -1557,7 +1585,7 @@ JSON
             # cannot happen, and an extension that reaches the fleet anyway
             # has to contain the code that does it, in a repository the user
             # can read at the commit they pinned.
-            unset ROOST_SOCKET
+            unset ROOST_SOCKET ROOST_SOCKET_FLAG
           fi
 
           # The subcommand itself is dropped, so `roost mark %200` reaches

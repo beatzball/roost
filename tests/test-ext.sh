@@ -731,6 +731,7 @@ printf 'ROOST_CONTRACT=%s\n'  "${ROOST_CONTRACT-<unset>}"
 printf 'ROOST_EXT_DIR=%s\n'   "${ROOST_EXT_DIR-<unset>}"
 printf 'ROOST_EXT_STATE=%s\n' "${ROOST_EXT_STATE-<unset>}"
 printf 'ROOST_SOCKET=%s\n'    "${ROOST_SOCKET-<unset>}"
+printf 'ROOST_SOCKET_FLAG=%s\n' "${ROOST_SOCKET_FLAG-<unset>}"
 printf 'PATH=%s\n'            "${PATH-<unset>}"
 printf 'ARGS=%s\n'            "$*"
 exit 7
@@ -840,6 +841,14 @@ assert_eq "$(ext_field "$out" ARGS)" "%200 a note" \
 # test that ran with it already absent would pass without exercising that.
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
   "without fleet, ROOST_SOCKET is ABSENT from the environment, not present-and-empty"
+# The socket and the flag are ONE grant and they leave together. Leaving the
+# flag behind would hand out half a capability and a misleading signal with it:
+# an extension finding a flag and no socket would be reading the leftovers of a
+# grant it was refused. Absent, again, rather than empty -- an empty flag makes
+# `tmux "" "$sock"` and tmux reads the empty string as a command, which fails
+# in a way that says nothing about authority.
+assert_eq "$(ext_field "$out" ROOST_SOCKET_FLAG)" "<unset>" \
+  "without fleet, ROOST_SOCKET_FLAG is ABSENT too -- the pair is withheld together"
 ext_has_scripts "$(ext_field "$out" PATH)"
 assert_eq "$?" "1" "without fleet, roost's own scripts are not on the extension's PATH"
 # The clone's roost-ext.json says "needs": ["fleet"] and has said so all
@@ -853,10 +862,63 @@ out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/e
 assert_eq "$rc" "7" "an extension the lockfile grants fleet still runs"
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
   "with fleet, ROOST_SOCKET names the server roost itself is addressing"
+# tmux needs -S for a socket PATH and -L for a socket NAME, and an extension
+# handed only the value writes the obvious `tmux -L "$ROOST_SOCKET"` -- which
+# works against the production server, whose socket is the NAME `roost`, and
+# silently addresses a DIFFERENT server everywhere else. This suite's own
+# server is a path under mktemp -d, so -S is the right answer here and -L
+# would be the wrong one.
+assert_eq "$(ext_field "$out" ROOST_SOCKET_FLAG)" "-S" \
+  "with fleet, a socket PATH is handed over as -S"
 ext_has_scripts "$(ext_field "$out" PATH)"
 assert_true "$?" "with fleet, roost's own scripts are prepended to the extension's PATH"
 assert_prefix "$(ext_field "$out" PATH)" "$HERE/scripts:" \
   "with fleet, roost's scripts come FIRST on PATH, as a pane's do"
+
+# The OTHER shape, and it is the one the production server has: a socket NAME
+# rather than a path, which tmux takes with -L. Everything else in this file
+# addresses a path under mktemp -d, so without this assertion the flag could be
+# hardcoded to "-S" and the whole suite would still be green while every real
+# user's roost -- socket name `roost` -- got the wrong flag.
+#
+# The name is one no server exists on, and that is deliberate rather than
+# incidental. The dispatcher's only tmux call before exec is
+# `show-options -gqv @roost-ext-enabled`, which on an absent socket ERRORS and
+# creates nothing -- checked, not assumed -- so this run starts no server, and
+# in particular never goes near `-L roost`, which on this machine is the
+# author's live fleet (AGENTS.md §2). The probe stub prints its environment
+# and runs no tmux of its own.
+# TMUX_TMPDIR moves where a `-L` NAME resolves to, so every named socket in
+# this file lands inside $TMP and the real /tmp/tmux-<uid> is never touched at
+# all -- not by a connect, not by a mistake, and not by a future edit to this
+# block. That is belt and braces on top of the paragraph above: with it set,
+# even the literal name `roost` here could not reach the author's live fleet.
+#
+# It is its OWN mktemp -d under /tmp, not a directory inside $TMP, and that is
+# not tidiness. A unix socket path is capped at ~104 characters and silently
+# fails past it -- tests/lib.sh's header says so, and it is why that file
+# builds its socket under /tmp/amx.XXXX rather than in $TMPDIR. On macOS
+# $TMPDIR is a ~50-character path under /var/folders, and `-L <name>` appends
+# tmux-<uid>/<name> to TMUX_TMPDIR on top of it: the first version of this
+# line put the directory inside $TMP and `new-session` exited 1 with the
+# server never starting. Cleaned up by the EXIT trap re-armed just below.
+CONF_TMUXTMP="$(mktemp -d /tmp/amx.XXXX)"
+# A hook the conformance block replaces once it has a named server to kill.
+# One trap, one place, rather than a second trap that a later edit could leave
+# holding a stale command.
+conf_teardown() { :; }
+trap 'conf_teardown; roost_test_teardown; rm -rf "$TMP" "$CONF_TMUXTMP"' EXIT
+conf_named_sock="roost-conformance-no-such-socket"
+out="$(TMUX_TMPDIR="$CONF_TMUXTMP" ROOST_SOCKET="$conf_named_sock" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "7" "an extension runs when the socket is a NAME rather than a path"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$conf_named_sock" \
+  "a socket name is handed over verbatim"
+assert_eq "$(ext_field "$out" ROOST_SOCKET_FLAG)" "-L" \
+  "...and a socket NAME is handed over as -L, where a path is handed over as -S"
+# Proof that the paragraph above is true rather than merely believed: if that
+# show-options call had started a server, this is where the socket would be.
+assert_file_absent "$CONF_TMUXTMP/tmux-$(id -u)/$conf_named_sock" \
+  "probing a named socket started no tmux server anywhere"
 
 # A needs array split over several lines is the same grant. The design prints
 # the lockfile pretty-printed and a hand-edit or a different writer will wrap
@@ -1318,6 +1380,28 @@ assert_eq "$(T list-panes -a -F x | wc -l | tr -d ' ')" "4" \
   "the conformance fleet really is four panes across two sessions"
 
 # --- the byte comparison ----------------------------------------------------
+# WHY THIS PROVES THE FIXTURE USES $ROOST_SOCKET_FLAG, rather than passing by
+# luck. Read this before changing either side of it.
+#
+# The contract hands an extension both the socket and the flag to address it
+# with, because tmux needs -L for a socket NAME and -S for a socket PATH. That
+# was not in contract 1's first draft; this fixture is what found it missing,
+# and a fixture that then hardcoded a flag would have hidden the very defect it
+# exists to surface.
+#
+# This server is addressed by PATH -- tests/lib.sh builds it under mktemp -d --
+# so -S is the only flag that reaches it. A fixture that hardcoded `-L` would
+# address a socket NAME that does not exist, print "roost: not running" where
+# core prints a fleet, and fail loudly right here. That is the direction that
+# matters most, because `-L` is the flag an author writes by hand: the
+# production server's socket is the NAME `roost`, so a hardcoded `-L` is the
+# mistake that WORKS on the machine the author tested on.
+#
+# The opposite mistake -- a hardcoded `-S` -- would pass against this server
+# and break for every real user. So it is closed underneath, against a second
+# server addressed by NAME. Both directions are behaviour, not a grep over the
+# fixture's source; a grep hit would not be proof the line was live
+# (AGENTS.md §9).
 conf_core="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
 assert_eq "$rc" "0" "core roost status exits 0 against the conformance fleet"
 conf_ext="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
@@ -1350,6 +1434,54 @@ assert_eq "$conf_ext" "$conf_core" \
 assert_eq "$rc" "$conf_core_rc" "...and exits with the same status core does"
 assert_eq "$(cat "$TMP/ext-err")" "" \
   "...without leaking tmux's own 'no server running' complaint to stderr"
+
+# --- the same comparison, against a server addressed by NAME ----------------
+# The other half of the flag, and the half a suite built entirely on mktemp -d
+# sockets cannot otherwise see. Every other server in this file is a PATH, so a
+# fixture that hardcoded `-S` would be green everywhere above and wrong for
+# every real user -- the production socket is the NAME `roost`.
+#
+# It is a throwaway server, and TMUX_TMPDIR is what makes addressing one BY
+# NAME safe here: with it pointed inside $TMP, `-L <name>` resolves under the
+# test directory instead of /tmp/tmux-<uid>, so this cannot collide with, read
+# or disturb the author's live `-L roost` fleet (AGENTS.md §2) even by
+# accident. The kill below names this socket explicitly, and the EXIT trap is
+# re-armed to name it too so a mid-file failure cannot leave a server running.
+conf_named="roost-conformance-named"
+NT() { TMUX_TMPDIR="$CONF_TMUXTMP" tmux -L "$conf_named" "$@"; }
+# Filled in HERE rather than at the top of the file: this is the line that
+# creates the thing needing cleanup, and a teardown written next to what it
+# tears down is one a later edit cannot leave behind. It names this socket
+# explicitly -- AGENTS.md §2 -- and TMUX_TMPDIR keeps it inside a temp
+# directory besides, so there is no arrangement of this line that could reach
+# the author's live server.
+conf_teardown() { NT kill-server 2>/dev/null; return 0; }
+NT -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
+NT set-option -g automatic-rename off
+NT rename-session -t '=0' named
+NT rename-window -t '=named:0' solo
+conf_np_a="$(NT list-panes -t '=named:0' -F '#{pane_id}')"
+require_pane "$conf_np_a" "the named server's first pane"
+conf_np_b="$(NT split-window -d -P -F '#{pane_id}' -t "$conf_np_a" 'ENV= exec /bin/sh')"
+require_pane "$conf_np_b" "the named server's second pane"
+NT set-option -p -t "$conf_np_a" @roost-name solo
+NT set-option -p -t "$conf_np_b" @roost-name sidekick
+NT set-option -p -t "$conf_np_b" @agent_state working
+
+conf_core="$(TMUX_TMPDIR="$CONF_TMUXTMP" ROOST_SOCKET="$conf_named" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
+assert_eq "$rc" "0" "core roost status runs against a server addressed by NAME"
+assert_contains "$conf_core" "roost: running (socket=$conf_named)" \
+  "core really reached the named server, so this comparison has something to compare"
+conf_ext="$(TMUX_TMPDIR="$CONF_TMUXTMP" ROOST_SOCKET="$conf_named" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
+assert_eq "$rc" "0" "the rebuilt status extension runs against it too"
+# The assertion that closes the hardcoded-`-S` direction: an extension using
+# `-S` here would address a relative PATH called "roost-conformance-named",
+# find no server, and print "roost: not running" while core printed a fleet.
+assert_eq "$conf_ext" "$conf_core" \
+  "the extension reproduces roost status BYTE FOR BYTE on a NAME-addressed server too"
+assert_eq "$(cat "$TMP/ext-err")" "" "...with nothing on stderr"
+NT kill-server 2>/dev/null
+conf_teardown() { :; }
 
 # --- the negative case: the same program, without the declaration -----------
 # The more valuable half. An authority you have never watched being REFUSED is

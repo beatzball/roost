@@ -17,33 +17,44 @@
 # for: whether the contract hands over enough to do the job.
 set -euo pipefail
 
-# ROOST_SOCKET, read unguarded and under `set -u`, and that is the point.
+# ROOST_SOCKET and ROOST_SOCKET_FLAG, read unguarded and under `set -u`, and
+# that is the point.
 #
-# The contract hands this variable over only when the manifest declares
-# `"needs": ["fleet"]`; without it the dispatcher UNSETS the variable before
-# exec rather than passing an empty one, precisely so a read like this fails
-# loudly. tests/fixtures/ext-status-noneed/ is this same program with the
-# declaration removed, and the suite asserts it dies HERE with an unbound
-# variable rather than quietly listing the panes of whatever tmux server
-# `tmux list-sessions` would have found on its own — which on a developer's
-# machine is their own everyday tmux, the one thing roost exists to leave
-# alone.
+# The contract hands these over only when the manifest declares
+# `"needs": ["fleet"]`; without it the dispatcher UNSETS both before exec
+# rather than passing empty ones, precisely so a read like this fails loudly.
+# tests/fixtures/ext-status-noneed/ is this same program with the declaration
+# removed, and the suite asserts it dies HERE with an unbound variable rather
+# than quietly listing the panes of whatever tmux server `tmux list-sessions`
+# would have found on its own — which on a developer's machine is their own
+# everyday tmux, the one thing roost exists to leave alone.
 #
 # So: no `${ROOST_SOCKET:-}`, no default, no `if [ -n ... ]`. Any of those
 # would turn the negative half of this conformance test into silence.
+# ROOST_SOCKET is read FIRST so that it is the name in the error message, which
+# is what the suite asserts on: the two arrive and leave together, so either
+# would do, and pinning which one is reported keeps that assertion exact.
 sock="$ROOST_SOCKET"
 
-# tmux takes a socket NAME with -L and a socket PATH with -S, and the
-# contract hands over a bare value with no flag attached. Everything roost
-# ships resolves this the same way — bin/roost, scripts/roost-status,
-# scripts/roost-switch, scripts/roost-notify — but an extension author gets
-# the value and has to know the rule, which is the one thing this
-# reimplementation needed that contract 1 does not itself supply. Recorded in
-# the task report rather than worked around here.
-case "$sock" in
-  */*) flag="-S" ;;
-  *)   flag="-L" ;;
-esac
+# tmux takes a socket NAME with -L and a socket PATH with -S, and the contract
+# hands over the flag rather than the bare value alone.
+#
+# This is the whole reason the fixture exists, so it is worth writing down
+# here. The first draft of this file did NOT get a flag: contract 1 handed
+# over `ROOST_SOCKET` on its own, and this program had to re-derive the rule
+# with `case "$sock" in */*)`. That was the one thing the rebuild needed and
+# the contract did not supply, it is what this conformance exercise was for,
+# and it was a real defect rather than a documentation gap — the obvious
+# `tmux -L "$ROOST_SOCKET"` an author writes works against the production
+# server, whose socket is the NAME `roost`, and silently addresses a DIFFERENT
+# server everywhere else, because every other one is a path. roost has had
+# that outage once already; scripts/lib/roost-socket.sh's header records
+# badges landing and replies vanishing, exit 0, nothing printed.
+#
+# So an extension addresses the fleet with both, and this fixture is the first
+# consumer of the corrected contract — demonstrating the idiom rather than
+# working around its absence.
+flag="$ROOST_SOCKET_FLAG"
 
 # Every tmux call goes through here, so the socket cannot be forgotten on one
 # of them. AGENTS.md §2: a bare `tmux` in a test would address the developer's
