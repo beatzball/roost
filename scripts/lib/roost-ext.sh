@@ -1,0 +1,785 @@
+# roost-ext.sh — the shared helpers behind the extension seam.
+#
+# Sourced, not executed, alongside roost-socket.sh, roost-config.sh,
+# roost-adapters.sh and roost-json.sh: `roost_ext_*` prefix, and the only work
+# done at source time is the one path resolution below — nothing else here
+# happens until a caller asks for it.
+#
+# Three of the functions here are SECURITY CONTROLS rather than conveniences,
+# and each says so where it is defined:
+#
+#   roost_ext_repo_valid    runs before <org>/<repo> reaches a git command line
+#   roost_ext_needs_valid   REFUSES an unknown authority rather than ignoring it
+#   roost_ext_index_lookup  forks nothing, on the path every typo takes
+#
+# roost-json.sh is sourced LAZILY, inside the two functions that parse JSON,
+# rather than at file scope. bin/roost sources THIS file on every invocation —
+# including `roost state`, which fires on every tool call of every live agent
+# (AGENTS.md §2) — and a file-scope source would read roost-json.sh, and
+# through it roost-hooks.sh, on every one of those, to serve two functions
+# that only ever run during `roost ext install`.
+
+# Where this file's siblings live, resolved relative to THIS file rather than
+# through an inherited $ROOST_HOME, for the reason roost-json.sh's own header
+# gives at length: bin/roost exports ROOST_HOME into every pane of the session
+# it starts, so a caller running inside a roost session would otherwise load a
+# DIFFERENT checkout's copy of a library than the one it is executing.
+#
+# Resolved at SOURCE time and made absolute, because the one use of it below
+# is LAZY: by the time roost_ext__json_lib runs, bin/roost has picked a
+# subcommand and something may have changed the working directory, and a
+# relative path captured here would resolve against the wrong place then.
+#
+# Parameter expansion and $PWD rather than `$(cd -P "$(dirname ...)" && pwd)`:
+# this line runs on every single `roost` invocation, `roost state` included,
+# and that idiom is two forks — one of them for a `dirname` that a `%/*`
+# already does. It also keeps this file working with nothing at all on PATH,
+# which is what tests/test-ext.sh pins.
+case "${BASH_SOURCE[0]}" in
+  /*)  ROOST_EXT__LIB_DIR="${BASH_SOURCE[0]%/*}" ;;
+  */*) ROOST_EXT__LIB_DIR="$PWD/${BASH_SOURCE[0]%/*}" ;;
+  *)   ROOST_EXT__LIB_DIR="$PWD" ;;
+esac
+
+# roost_ext__json_lib — make roost-json.sh's functions available. Guarded,
+# because bin/roost and scripts/roost-install may have sourced roost-json.sh
+# already and re-sourcing is wasted work rather than a bug.
+roost_ext__json_lib() {
+  declare -f roost_json_tool >/dev/null 2>&1 && return 0
+  . "$ROOST_EXT__LIB_DIR/roost-json.sh"
+}
+
+# --- where things live on disk ----------------------------------------------
+
+# roost_ext__roots — set ROOST_EXT_DATA_ROOT and ROOST_EXT_STATE_ROOT.
+#
+# SETS rather than prints, and the four resolvers below print what it set.
+# That is roost_self_socket's shape, and it is here for the same reason:
+# roost_ext_index_lookup runs on every mistyped roost subcommand, and a
+# `$(roost_ext_index)` there would be a fork per typo on the one path this
+# whole design promises not to fork on.
+#
+# `${X:-...}`, not `${X-...}`. An XDG variable exported with an EMPTY value is
+# a real thing — a stray `export XDG_STATE_HOME=` in a profile, a launcher
+# that exports every name it knows whether or not it has a value — and the
+# documented default has to win there too, or ext.lock lands at the filesystem
+# root as /roost/ext.lock.
+roost_ext__roots() {
+  ROOST_EXT_DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/roost"
+  ROOST_EXT_STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/roost"
+}
+
+# The clone of each installed extension: <data>/roost/ext/<name>/.
+roost_ext_data_dir()  { roost_ext__roots; printf '%s\n' "$ROOST_EXT_DATA_ROOT/ext"; }
+
+# Each extension's own private data: <state>/roost/ext/<name>/. This is what
+# an extension is handed as ROOST_EXT_STATE, and the only place
+# `roost ext remove --purge` knows to delete.
+roost_ext_state_dir() { roost_ext__roots; printf '%s\n' "$ROOST_EXT_STATE_ROOT/ext"; }
+
+# The record of what is installed, pinned. Beside the ext/ directory rather
+# than inside it: a file named ext.lock within a directory of per-extension
+# subdirectories would collide with an extension called "lock".
+roost_ext_lock()      { roost_ext__roots; printf '%s\n' "$ROOST_EXT_STATE_ROOT/ext.lock"; }
+
+# The dispatch table — plain text, one line per claimed command. See
+# roost_ext_index_lookup for why this file exists at all when ext.lock already
+# holds the same facts.
+roost_ext_index()     { roost_ext__roots; printf '%s\n' "$ROOST_EXT_STATE_ROOT/ext.index"; }
+
+# --- validation -------------------------------------------------------------
+
+# roost_ext_name_valid NAME -> 0 when NAME is `[a-z][a-z0-9-]*`, at most 32
+# characters. This is the install DIRECTORY name, so it is kept to something
+# that cannot be mistaken for a flag, a path, or a shell metacharacter.
+roost_ext_name_valid() {
+  # LC_ALL pinned to C for the two patterns below, and `local` puts the
+  # caller's locale back on return. A bracket RANGE in a shell pattern is
+  # collated by the current locale: under some locales [a-z] also matches
+  # uppercase, and the check would then accept exactly the names it exists to
+  # refuse.
+  local name="$1" LC_ALL=C
+  [ "${#name}" -le 32 ] || return 1
+  case "$name" in
+    ''|*[!a-z0-9-]*) return 1 ;;
+  esac
+  case "$name" in
+    [a-z]*) return 0 ;;
+  esac
+  return 1
+}
+
+# roost_ext__repo_part PART -> 0 when one side of <org>/<repo> is safe to put
+# on a git command line. See roost_ext_repo_valid.
+roost_ext__repo_part() {
+  local part="$1" LC_ALL=C
+  case "$part" in
+    # The design's character class, exactly.
+    ''|*[!A-Za-z0-9._-]*) return 1 ;;
+    # A leading dash arrives at git as a FLAG rather than as an argument.
+    -*) return 1 ;;
+    # The design's regex admits these, because `.` is in the class above — and
+    # `../..` is the one traversal that regex is quoted alongside, so the
+    # dot-only forms are refused here as well. A part that merely CONTAINS a
+    # dot (`roost.dev`, `x.y`) is an ordinary repository name and stays legal.
+    .|..) return 1 ;;
+  esac
+  return 0
+}
+
+# roost_ext_repo_valid SPEC -> 0 when SPEC is `<org>/<repo>` and safe.
+#
+# A SECURITY CONTROL, not a tidiness check. SPEC is about to be pasted into a
+# git URL and handed to `git ls-remote` and `git clone`, where:
+#
+#   ../..                    escapes the clone base entirely
+#   https://user:pass@host/  smuggles credentials into somebody else's fetch
+#   -x/y                     arrives at git as a flag, not as an argument
+#
+# Nothing in this feature may build a git URL without calling this first.
+roost_ext_repo_valid() {
+  local spec="$1" org repo
+  case "$spec" in
+    # Exactly one slash. Three-part forms are how a URL and a traversal both
+    # arrive, so they are refused before either part is even looked at.
+    */*/*) return 1 ;;
+    */*) ;;
+    *) return 1 ;;
+  esac
+  org="${spec%%/*}"
+  repo="${spec#*/}"
+  roost_ext__repo_part "$org" || return 1
+  roost_ext__repo_part "$repo" || return 1
+  return 0
+}
+
+# roost_ext_needs_valid CSV -> 0 when every authority in CSV is one roost
+# knows. Contract 1 knows exactly one: fleet.
+#
+# A SECURITY CONTROL in the sense that matters most here: it REFUSES what it
+# does not recognise. An older roost that quietly ignored a future authority
+# would grant nothing while the extension believed it had everything, and that
+# surfaces as corrupted behaviour rather than as a clean refusal at install
+# time. This is the one place the contract is deliberately strict rather than
+# forgiving.
+#
+# The offending value comes back in ROOST_EXT_NEEDS_UNKNOWN rather than on
+# stdout, so the caller can name it in its own refusal message: this is called
+# from inside an `if`, where anything printed would go straight to the user's
+# terminal. Cleared on success, so a caller under `set -u` can always read it.
+roost_ext_needs_valid() {
+  ROOST_EXT_NEEDS_UNKNOWN=""
+  local csv="$1" need
+  local -a wanted=()
+  # Commas AND whitespace. The plan names this parameter CSV;
+  # roost_ext_manifest_read emits the same field space-separated, and a
+  # translation step between the two in some caller is exactly where an
+  # unknown value gets dropped on the floor.
+  #
+  # `read -a` rather than an unquoted `for need in $csv`: word splitting on an
+  # unquoted expansion also GLOBS, so a needs value of `*` would expand to the
+  # filenames in the caller's working directory and the refusal below would
+  # name a file instead of the authority that was actually asked for.
+  local IFS=$', \t\n'
+  read -r -a wanted <<<"$csv"
+  for need in ${wanted[@]+"${wanted[@]}"}; do
+    case "$need" in
+      fleet) ;;
+      *) ROOST_EXT_NEEDS_UNKNOWN="$need"; return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# --- the advisory roost-version range ---------------------------------------
+
+# roost_ext__semver_ok VERSION -> 0 when VERSION is exactly A.B.C, all digits.
+roost_ext__semver_ok() {
+  local v="$1" LC_ALL=C
+  case "$v" in
+    ''|*[!0-9.]*|.*|*.|*..*) return 1 ;;
+  esac
+  case "$v" in
+    *.*.*.*) return 1 ;;
+    *.*.*) return 0 ;;
+  esac
+  return 1
+}
+
+# roost_ext__semver_lt A B -> 0 when A sorts strictly below B. Both are known
+# to be A.B.C by the time this is called.
+roost_ext__semver_lt() {
+  local a="$1" b="$2" i ai bi
+  local -a ap=() bp=()
+  local IFS=.
+  read -r -a ap <<<"$a"
+  read -r -a bp <<<"$b"
+  for i in 0 1 2; do
+    # `10#` so a zero-padded component is read as decimal: without it, bash
+    # arithmetic reads 08 and 09 as invalid octal and the comparison dies
+    # rather than answering.
+    ai=$((10#${ap[$i]}))
+    bi=$((10#${bp[$i]}))
+    [ "$ai" -lt "$bi" ] && return 0
+    [ "$ai" -gt "$bi" ] && return 1
+  done
+  return 1
+}
+
+# roost_ext_semver_in_range VERSION RANGE -> 0 in range, 1 out of range, 2
+# unparsable.
+#
+# Callers WARN on 1 and on 2 and carry on. Nothing here may cause a refusal:
+# the manifest's `roost` field is advisory on purpose, because a hard
+# product-version gate would make every roost release a compatibility event,
+# which is the cost the contract integer exists to avoid.
+#
+# Exactly three forms, and the smallness is the point — a richer grammar could
+# only ever harden into the refusal roost has promised not to make.
+roost_ext_semver_in_range() {
+  local ver="$1" range="${2-}" lo hi
+  case "$range" in
+    # Absent or `*`: no opinion, so no need to parse VERSION either.
+    ''|'*') return 0 ;;
+  esac
+  case "$range" in
+    '>='*' <'*) ;;
+    *) return 2 ;;
+  esac
+  lo="${range#>=}"; lo="${lo%% *}"
+  hi="${range##* <}"
+  # Rebuilt and compared, which is how the canonical spacing is enforced and
+  # how anything hiding between the two bounds is caught: `>=1.0.0 x <2.0.0`
+  # splits into two believable-looking bounds and must still be a 2.
+  case "$range" in
+    ">=$lo <$hi") ;;
+    *) return 2 ;;
+  esac
+  # A prerelease or a two-component version is unparsable rather than guessed
+  # at. Ordering prereleases is a real semver rule with real edge cases, and
+  # getting it silently wrong here would produce a confident WRONG warning,
+  # which is worse than the honest "cannot read this range" one.
+  roost_ext__semver_ok "$ver" || return 2
+  roost_ext__semver_ok "$lo" || return 2
+  roost_ext__semver_ok "$hi" || return 2
+  roost_ext__semver_lt "$ver" "$lo" && return 1   # below an INCLUSIVE lower bound
+  roost_ext__semver_lt "$ver" "$hi" || return 1   # at or above an EXCLUSIVE upper bound
+  return 0
+}
+
+# --- what core already owns -------------------------------------------------
+
+# roost_ext_core_commands -> every subcommand bin/roost handles itself, one
+# per line.
+#
+# `roost ext install` refuses a manifest that claims one of these, naming the
+# collision, so an extension author is told why rather than left wondering.
+# (The dispatcher makes shadowing structurally impossible as well — the lookup
+# lives only in bin/roost's `*)` fallback — but a refusal at install time is
+# what makes that comprehensible.)
+#
+# tests/test-ext.sh extracts bin/roost's own case labels and asserts the two
+# lists agree. Without that test this list rots the first time somebody adds a
+# subcommand, and a STALE entry here is exactly what would let an extension
+# shadow `roost send` — the command that can inject a prompt into any agent.
+#
+# The flag spellings (--help, -V) are labels of that same case and are kept
+# for that reason: the drift test compares the two lists whole, and dropping
+# some labels would mean matching exclusion logic in the test, which is itself
+# the drift the test exists to catch. They cost nothing, since
+# roost_ext_name_valid already refuses any name that starts with a dash.
+#
+# printf, not a `cat <<EOF` heredoc: a heredoc through cat is a fork, and
+# there is no reason to make this the one place a builtin would not do.
+roost_ext_core_commands() {
+  printf '%s\n' \
+    up start \
+    session s \
+    new \
+    state \
+    help --help -h \
+    doctor \
+    validate \
+    install update \
+    init \
+    settings \
+    whoami \
+    spawn \
+    split \
+    hooks \
+    ssh \
+    send \
+    read \
+    screen \
+    reply \
+    wait-done wait \
+    status \
+    kill down stop \
+    --version -V version
+}
+
+# --- reading JSON, honestly -------------------------------------------------
+
+# roost_ext__json_read FILE PY_FN JQ_FN [ARG] -> run whichever JSON tool is
+# present over FILE and print what it produced.
+#
+# Both engines answer with the SAME line protocol: either the intended output,
+# or exactly one line `roost-ext-error=<message>`. That is what makes the two
+# engines' refusals identical text rather than "whatever this engine happened
+# to say" — and a refusal message is the thing a user actually reads.
+#
+# Exit status, matching roost_json_merge's degraded contract:
+#   0  output on stdout
+#   1  refused: FILE is missing, unparsable, or says something this cannot use
+#      (message on stderr, naming what)
+#   3  neither python3 nor jq is on PATH. Nothing is printed. Not an error —
+#      the caller degrades rather than crashing.
+#
+# The engine scripts are asked for AFTER the tool check, not before: with an
+# empty PATH there is no `cat` either, and an emitter run first would print
+# its own noise on the way to a perfectly correct 3.
+roost_ext__json_read() {
+  local file="$1" py_fn="$2" jq_fn="$3" arg="${4:-}"
+  local tool out rc
+  roost_ext__json_lib
+  tool="$(roost_json_tool)"
+  [ -n "$tool" ] || return 3
+  # A missing file is a 1, never a 3. Conflating the two would have the caller
+  # print "install a JSON tool" advice about a repository that simply has no
+  # manifest in it.
+  if [ ! -f "$file" ]; then
+    printf 'roost-ext: %s: no such file\n' "$file" >&2
+    return 1
+  fi
+  # The engine's stderr is left flowing to the caller's, not captured into a
+  # temp file and printed again. Its own parse message is the most useful
+  # thing a user gets out of a broken manifest, and a `mktemp` here would put
+  # one more external command on a path that has to keep working when there is
+  # very little on PATH at all.
+  case "$tool" in
+    python3) out="$(python3 -c "$("$py_fn")" "$arg" < "$file")"; rc=$? ;;
+    jq)      out="$(jq -r --arg arg "$arg" "$("$jq_fn")" -- "$file")"; rc=$? ;;
+  esac
+  if [ "$rc" -ne 0 ]; then
+    # A genuine parse failure. The two engines word it differently — as
+    # roost-json.sh's header says of the same split, a contract that states
+    # what each engine really does beats one that pretends they agree — so the
+    # engine's own words stand, with one line of context after them, and both
+    # engines come back as a 1 rather than as jq's own 5.
+    printf 'roost-ext: %s: could not be read as JSON\n' "$file" >&2
+    return 1
+  fi
+  case "$out" in
+    'roost-ext-error='*)
+      printf 'roost-ext: %s: %s\n' "$file" "${out#roost-ext-error=}" >&2
+      return 1
+      ;;
+  esac
+  # Guarded, because `printf '%s\n' ""` would turn "no rows at all" into one
+  # empty line, and roost_ext_index_write writes what this prints straight to
+  # the dispatch table.
+  [ -n "$out" ] && printf '%s\n' "$out"
+  return 0
+}
+
+# roost_ext__manifest_py -> the python3 engine for roost_ext_manifest_read.
+#
+# Every value is collected BEFORE anything is printed. A field error found
+# half way through would otherwise leave `name=mark` already on stdout with
+# the error line after it, and roost_ext__json_read's `roost-ext-error=` test
+# would then read the pair as a successful parse.
+roost_ext__manifest_py() {
+  cat <<'PY'
+import json
+import sys
+
+
+def w(text):
+    # Bytes, not str, and always UTF-8: a description with an accent or an
+    # emoji in it must come back as the same bytes it went in as. Writing to
+    # sys.stdout picks up whatever encoding the environment's locale gives it,
+    # which is not guaranteed to be UTF-8 — and a mismatch there raises rather
+    # than silently mangling, which would take a whole install down over one
+    # character in a description. roost-json.sh's emitter does the same.
+    sys.stdout.buffer.write(text.encode("utf-8"))
+
+
+def die(msg):
+    w("roost-ext-error=" + msg + "\n")
+    raise SystemExit(0)
+
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(str(exc) + "\n")
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    die("top-level JSON value must be an object")
+
+
+def scalar(key, required):
+    if key not in data:
+        if required:
+            die("missing required field '%s'" % key)
+        return ""
+    value = data[key]
+    # bool is an int subclass in python, and `"contract": true` is not a
+    # contract number — it is a manifest to refuse, not one to read as 1.
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        die("field '%s' must be a string or an integer" % key)
+    return value if isinstance(value, str) else "%d" % value
+
+
+def strlist(key, required):
+    if key not in data:
+        if required:
+            die("missing required field '%s'" % key)
+        return ""
+    value = data[key]
+    if not isinstance(value, list):
+        die("field '%s' must be an array" % key)
+    if required and not value:
+        die("field '%s' must list at least one entry" % key)
+    for item in value:
+        if not isinstance(item, str) or not item:
+            die("field '%s' must contain only non-empty strings" % key)
+        # The line this becomes is space-separated, so an entry with a space
+        # in it would come back out as two entries. `item.split() != [item]`
+        # is true for any whitespace at all, not only for a plain space.
+        if item.split() != [item]:
+            die("field '%s' has an entry with whitespace in it" % key)
+    return " ".join(value)
+
+
+fields = [
+    ("name", scalar("name", True)),
+    ("contract", scalar("contract", True)),
+    ("roost", scalar("roost", False)),
+    ("needs", strlist("needs", False)),
+    ("commands", strlist("commands", True)),
+    ("description", scalar("description", False)),
+]
+
+out = []
+for key, value in fields:
+    # A value carrying a newline would turn one KEY=VALUE line into two, and
+    # the caller's `while IFS== read` would take the tail of a description as
+    # a key of its own.
+    if "\n" in value or "\r" in value:
+        die("field '%s' contains a newline" % key)
+    out.append("%s=%s" % (key, value))
+w("\n".join(out) + "\n")
+PY
+}
+
+# roost_ext__manifest_jq -> the jq engine for roost_ext_manifest_read. It has
+# to agree with roost_ext__manifest_py line for line and message for message:
+# a machine with only jq installs extensions by these rules and a machine with
+# python3 installs them by the other set, and a user comparing notes with
+# another user is entitled to the same answer.
+#
+# A field that fails a check yields an OBJECT rather than a string, so the
+# checks can be written one per field and the FIRST failure picked out
+# afterwards — which is the order python3's engine reports them in, since it
+# dies at the first. Distinguishing by TYPE rather than by a marker prefix
+# means no legitimate value can ever be mistaken for an error.
+roost_ext__manifest_jq() {
+  cat <<'JQ'
+def clean($k; $v):
+  if ($v | test("[\n\r]")) then {err: ("field '" + $k + "' contains a newline")} else $v end;
+def scalar($k; $req):
+  if has($k) then
+    (.[$k] as $v
+     | if ($v | type) == "string" then clean($k; $v)
+       elif ($v | type) == "number" then ($v | tostring)
+       else {err: ("field '" + $k + "' must be a string or an integer")} end)
+  elif $req then {err: ("missing required field '" + $k + "'")}
+  else "" end;
+def strlist($k; $req):
+  if has($k) then
+    (.[$k] as $v
+     | if ($v | type) != "array" then {err: ("field '" + $k + "' must be an array")}
+       elif ($req and ($v | length) == 0)
+         then {err: ("field '" + $k + "' must list at least one entry")}
+       elif any($v[]; (type != "string") or (. == ""))
+         then {err: ("field '" + $k + "' must contain only non-empty strings")}
+       elif any($v[]; test("\\s"))
+         then {err: ("field '" + $k + "' has an entry with whitespace in it")}
+       else ($v | join(" ")) end)
+  elif $req then {err: ("missing required field '" + $k + "'")}
+  else "" end;
+if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
+else
+  [ ["name",        scalar("name"; true)],
+    ["contract",    scalar("contract"; true)],
+    ["roost",       scalar("roost"; false)],
+    ["needs",       strlist("needs"; false)],
+    ["commands",    strlist("commands"; true)],
+    ["description", scalar("description"; false)] ] as $f
+  | ([$f[] | select((.[1] | type) == "object")] | first) as $bad
+  | if $bad != null then ["roost-ext-error=" + $bad[1].err]
+    else [$f[] | .[0] + "=" + .[1]] end
+end
+| .[]
+JQ
+}
+
+# roost_ext_manifest_read FILE -> print one KEY=VALUE line for each of name,
+# contract, roost, needs, commands and description, in that order.
+#
+# `needs` and `commands` are space-separated. An absent OPTIONAL field is
+# printed empty rather than omitted, so a caller always sees the same six keys
+# and cannot mistake a missing line for a missing file.
+#
+# What it does NOT do is judge the values: a bad `name` is read out and handed
+# to roost_ext_name_valid, a `needs` to roost_ext_needs_valid, a `contract` to
+# whatever gate the caller applies. Keeping every refusal in one place is what
+# lets `roost ext install` print one message per problem at consent time
+# instead of a different one per layer.
+#
+# Exit status is roost_ext__json_read's: 0, 1 (naming what), or 3 when neither
+# python3 nor jq is present — the same degraded contract as roost_json_merge.
+roost_ext_manifest_read() {
+  roost_ext__json_read "$1" roost_ext__manifest_py roost_ext__manifest_jq
+}
+
+# --- integrity --------------------------------------------------------------
+
+# roost_ext_tree_hash DIR -> the git tree hash of DIR's contents.
+#
+# The integrity control's arithmetic: `roost ext install` records what this
+# prints, `roost ext verify` recomputes it, and both call THIS function, so
+# the two can never drift into two slightly different definitions of "the
+# contents of that directory" — which is where a hand-rolled walk over sorted
+# filenames eventually ends up.
+#
+# Git's own plumbing does the hashing: same bytes, same names, same executable
+# bits, same 40-character id. For a freshly cloned working tree the answer IS
+# the commit's own tree hash, which is what makes the recorded value auditable
+# against the repository it came from.
+#
+# For whoever writes `roost ext install`: record THIS, not
+# `git rev-parse HEAD^{tree}`. The two agree on a clean clone and stop
+# agreeing the moment the directory carries anything the commit does not.
+roost_ext_tree_hash() {
+  local dir="$1" tmp tree=""
+  [ -d "$dir" ] || return 1
+  tmp="$(mktemp -d)" || return 1
+  # A throwaway object database. The tree objects have to be written
+  # somewhere, and writing them into the extension's own clone would make a
+  # read-only integrity check mutate the very thing it is checking.
+  if git init -q --bare "$tmp/odb" >/dev/null 2>&1; then
+    # `:(exclude).git` is not tidiness. The clone's .git holds ref state and
+    # changes on every fetch, so including it would have `roost ext verify`
+    # cry tamper at a no-op — and, since .git is itself a repository, git
+    # would record it as a gitlink to whatever HEAD happened to be.
+    #
+    # --force so the extension's own .gitignore cannot hide a file from the
+    # hash. What is hashed is what is ON DISK, not what the repository chose
+    # to track: a file dropped into the clone after install is exactly what
+    # verify exists to notice.
+    #
+    # A separate GIT_INDEX_FILE for the same reason as the separate object
+    # database — the clone's own index is never touched.
+    if GIT_DIR="$tmp/odb" GIT_WORK_TREE="$dir" GIT_INDEX_FILE="$tmp/index" \
+       git -C "$dir" add -A --force -- . ':(exclude).git' >/dev/null 2>&1; then
+      tree="$(GIT_DIR="$tmp/odb" GIT_WORK_TREE="$dir" GIT_INDEX_FILE="$tmp/index" \
+              git write-tree 2>/dev/null)"
+    fi
+  fi
+  rm -rf "$tmp"
+  [ -n "$tree" ] || return 1
+  printf '%s\n' "$tree"
+}
+
+# --- the dispatch table -----------------------------------------------------
+
+# roost_ext_index_lookup CMD -> print the executable that claims CMD.
+#
+# THE HOT PATH. This runs on every mistyped `roost` subcommand, because the
+# dispatcher lives in bin/roost's `*)` fallback — which is precisely what
+# makes shadowing a core command structurally impossible rather than merely
+# refused at install time.
+#
+# So: no JSON tool, no external command, and no command substitution. Not
+# style. scripts/lib/roost-json.sh opens by recording the standing decision
+# that neither python3 nor jq is a runtime dependency of roost; parsing
+# ext.lock here would have made one of them exactly that, quietly, and that is
+# the whole reason ext.index exists as a plain text file when ext.lock already
+# holds the same facts. A `$(roost_ext_index)` for the path would be a fork
+# per typo, so the path is built from what roost_ext__roots SETS.
+#
+# The name and path also come back in ROOST_EXT_LOOKUP_NAME and
+# ROOST_EXT_LOOKUP_PATH, for the dispatcher: it needs the extension's NAME to
+# find its lockfile entry and its directories, and it must call this WITHOUT a
+# `$(...)` — a command substitution there would reintroduce the very fork this
+# function exists to avoid — so it redirects stdout away and reads the
+# variables instead. Both are cleared on entry, so a caller under `set -u` can
+# always read them.
+roost_ext_index_lookup() {
+  ROOST_EXT_LOOKUP_NAME=""
+  ROOST_EXT_LOOKUP_PATH=""
+  local want="$1" cmd name path index
+  roost_ext__roots
+  index="$ROOST_EXT_STATE_ROOT/ext.index"
+  [ -f "$index" ] || return 1
+  # IFS pinned to TAB alone: an extension's install path can contain spaces
+  # (an XDG_DATA_HOME under "Application Support" is enough), and the default
+  # IFS would split one path into several fields.
+  local IFS=$'\t'
+  # `|| [ -n "$cmd" ]` so a final line with no trailing newline is still read.
+  # A hand-edited ext.index is exactly the case this has to survive.
+  while read -r cmd name path || [ -n "$cmd" ]; do
+    [ "$cmd" = "$want" ] || continue
+    # The LOCKFILE, not the clone, is the record of what is installed. So a
+    # clone whose files have gone away degrades to "unknown subcommand" rather
+    # than to exec'ing whatever now sits at that path.
+    [ -x "$path" ] || return 1
+    ROOST_EXT_LOOKUP_NAME="$name"
+    ROOST_EXT_LOOKUP_PATH="$path"
+    printf '%s\n' "$path"
+    return 0
+  done < "$index"
+  return 1
+}
+
+# roost_ext__index_py -> the python3 engine for roost_ext_index_write.
+roost_ext__index_py() {
+  cat <<'PY'
+import json
+import sys
+
+data_dir = sys.argv[1]
+
+
+def w(text):
+    sys.stdout.buffer.write(text.encode("utf-8"))
+
+
+def die(msg):
+    w("roost-ext-error=" + msg + "\n")
+    raise SystemExit(0)
+
+
+try:
+    lock = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(str(exc) + "\n")
+    raise SystemExit(1)
+if not isinstance(lock, dict):
+    die("top-level JSON value must be an object")
+
+rows = []
+claimed = {}
+# sorted(), so the collision message below names the same pair whichever order
+# the lockfile happened to be written in.
+for name in sorted(lock):
+    entry = lock[name]
+    if not isinstance(entry, dict):
+        die("entry '%s' is not an object" % name)
+    commands = entry.get("commands")
+    if not isinstance(commands, list) or not commands:
+        die("entry '%s' lists no commands" % name)
+    # Whitespace in a name or a command would write a line this file's own
+    # reader could not read back. Refused rather than escaped: that reader is
+    # a `while read` with no unescaping in it, and adding one would put a
+    # parser back on the hot path.
+    if name.split() != [name] or "/" in name:
+        die("entry name '%s' is not a plain word" % name)
+    for command in commands:
+        if (not isinstance(command, str) or not command
+                or command.split() != [command] or "/" in command):
+            die("entry '%s' claims a command that is not a plain word" % name)
+        # An ambiguous dispatch table is worse than no dispatch table: which
+        # extension ran would depend on the order the lockfile was written in.
+        # Refused and named. `roost ext install` refuses the collision long
+        # before this, so reaching it means the lockfile was edited by hand.
+        if command in claimed:
+            die("command '%s' is claimed by both '%s' and '%s'"
+                % (command, claimed[command], name))
+        claimed[command] = name
+        rows.append((command, name))
+
+rows.sort()
+w("".join("%s\t%s\t%s/%s/bin/roost-%s\n" % (c, n, data_dir, n, c) for c, n in rows))
+PY
+}
+
+# roost_ext__index_jq -> the jq engine for roost_ext_index_write, agreeing
+# with roost_ext__index_py line for line. $arg is the extension data
+# directory. As in the manifest engine, a failed check yields an OBJECT where
+# a good row yields an array, so no legitimate row can be mistaken for an
+# error.
+roost_ext__index_jq() {
+  cat <<'JQ'
+if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
+else
+  [ to_entries | sort_by(.key)[]
+    | .key as $n | .value as $e
+    | if ($e | type) != "object" then {err: ("entry '" + $n + "' is not an object")}
+      elif (($e.commands | type) != "array") or (($e.commands | length) == 0)
+        then {err: ("entry '" + $n + "' lists no commands")}
+      elif ($n | test("\\s")) or ($n | contains("/"))
+        then {err: ("entry name '" + $n + "' is not a plain word")}
+      elif any($e.commands[]; (type != "string") or (. == "") or test("\\s") or contains("/"))
+        then {err: ("entry '" + $n + "' claims a command that is not a plain word")}
+      else ($e.commands[] | [., $n]) end ] as $rows
+  | ([$rows[] | select(type == "object")] | first) as $bad
+  | if $bad != null then ["roost-ext-error=" + $bad.err]
+    else ($rows | sort_by(.[0])) as $sorted
+      | ([$sorted[] | .[0]] | group_by(.) | map(select(length > 1)) | first) as $dup
+      | if $dup != null then
+          ([$sorted[] | select(.[0] == $dup[0])]) as $both
+          | ["roost-ext-error=command '" + $dup[0] + "' is claimed by both '"
+             + $both[0][1] + "' and '" + $both[1][1] + "'"]
+        else [$sorted[] | .[0] + "\t" + .[1] + "\t" + $arg + "/" + .[1] + "/bin/roost-" + .[0]]
+        end
+    end
+end
+| .[]
+JQ
+}
+
+# roost_ext_index_write -> regenerate ext.index from ext.lock, atomically.
+#
+# ext.lock is the record; ext.index is the dispatch table derived from it.
+# Both are written in the same step at install and at removal time so they
+# cannot disagree about what is installed.
+#
+# A MISSING lockfile is not an error. It is what a machine with nothing
+# installed looks like, and it is also what `roost ext remove` leaves behind
+# when it takes the last extension out — the index has to become empty there
+# rather than stay stale, because a stale index is a dispatch table pointing
+# at a clone that is gone.
+#
+# Exit status: 0 written, 1 the lockfile says something this cannot use
+# (message on stderr, naming what), 3 neither python3 nor jq is present and
+# there is a lockfile that needs reading.
+roost_ext_index_write() {
+  local lock index out="" rc tmp
+  roost_ext__roots
+  lock="$ROOST_EXT_STATE_ROOT/ext.lock"
+  index="$ROOST_EXT_STATE_ROOT/ext.index"
+  if [ -f "$lock" ]; then
+    out="$(roost_ext__json_read "$lock" roost_ext__index_py roost_ext__index_jq \
+           "$ROOST_EXT_DATA_ROOT/ext")"
+    rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+  fi
+  mkdir -p -- "$ROOST_EXT_STATE_ROOT" || return 1
+  # A temp file in the SAME directory, then a rename: a `roost` invocation
+  # that reads the index while an install is rewriting it sees the old file or
+  # the new one, never a half-written dispatch table. Across filesystems the
+  # rename would stop being atomic, which is why the temp file is not in /tmp.
+  #
+  # mktemp's 0600 is kept rather than widened. This is one user's own state
+  # directory, every reader of it runs as that user, and the file names every
+  # executable roost is willing to hand control to — nothing about it wants a
+  # wider mode than the lockfile beside it.
+  tmp="$(mktemp "$ROOST_EXT_STATE_ROOT/.roost-ext-index.XXXXXX")" || return 1
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out" > "$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  mv "$tmp" "$index"
+}
