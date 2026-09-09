@@ -523,6 +523,34 @@ shape. So `update` must pass the remote URL **on the command line**, rebuilt
 from the lockfile's `repo` field, and must never trust the clone's stored
 config for anything.
 
+**That is necessary and not sufficient. Both shortfalls were found by attacking
+the code, not by reasoning about it:**
+
+- `url.<ext::sh -c ...>.insteadOf = file://` **rewrites a URL given on the
+  command line.** So "pass our own URL" is defeated by the very config it was
+  meant to route around. The real close is never to use the installed clone as
+  a git repository at all: fetch into a fresh hardened clone, or a throwaway
+  object database, and reach the installed clone only as a read-only object
+  alternate.
+- Even then, **git reads a repository's config whenever it DISCOVERS one by
+  walking up from the current directory** — no `-C`, no `GIT_DIR` required. A
+  user who has `cd`'d into an extension's directory and runs `roost ext update`
+  there hands git that clone's config anyway, and the `insteadOf` payload fires
+  on `ls-remote`, before any diff or consent prompt. Measured, deterministically,
+  three runs. The precondition is not exotic: a cautious user inspecting a
+  suspicious extension is exactly the person who has `cd`'d into it.
+
+So every git invocation in this feature must **suppress ambient discovery** —
+an explicit `GIT_DIR`, a guaranteed-non-repository working directory, or
+`GIT_CEILING_DIRECTORIES`. `roost_ext_tree_hash` already does this correctly
+with an explicit `GIT_DIR`; the pattern to copy is already in the tree.
+
+A note on how this was missed, because it generalises past git: the code
+carried a comment claiming the no-`-C`/no-`GIT_DIR` design "closes every config
+key at once, including the ones nobody has thought of yet." A comment that
+claims completeness invites nobody to look again. **Claim the mechanism, never
+the closure.**
+
 This is what makes the pin mean something **on disk** rather than only at fetch
 time. Without it, "pinned to a commit" describes what was downloaded once, not
 what will run tonight. Cheap enough to suggest in the `list` output whenever
