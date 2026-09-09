@@ -131,46 +131,70 @@ PY
 # _ext_lock_rows_jq -- agrees with _ext_lock_rows_py line for line and message
 # for message, the same discipline roost_ext__manifest_jq and
 # roost_ext__index_jq hold themselves to: a machine with only jq must show a
-# user exactly what a machine with only python3 would.
+# user exactly what a machine with only python3 would. tests/test-ext.sh has
+# a `_ext_lock_rows_parity_case` harness (next to `parity_case` and
+# `index_parity_case`, the same idea applied to this third engine pair) that
+# runs both engines against the same lockfile and diffs their answers --
+# every fix below came out of a case that harness caught.
 #
-# Every field is looked up as `$e.<key>` -- explicit, not through a generic
-# helper that reads the implicit `.` -- because by the time a field is
-# wanted here `.` is the {key, value} pair `to_entries` produced, not the
-# entry itself. roost_ext__index_jq's own header is the place that mistake
-# was already made and unmade; this reader is written to not repeat it.
+# scalarv/strlistv take `$e` and `$k`, not a pre-extracted `$v` -- jq's `.foo`
+# on an object cannot tell "key absent" from "key present with value null"
+# apart, both come back as the jq value `null`, and those two have to answer
+# DIFFERENTLY: python's `scalar`/`strlist` return the placeholder for a
+# MISSING key but `die()` on a key that is explicitly `null` (`isinstance(None,
+# ...)` is false, same as any other wrong type). A first version of this
+# function read `$e.repo` at the call site and folded both cases into `"-"`,
+# so `{"ref": null}` printed a placeholder row where python3 refused the
+# lockfile outright -- caught by the parity harness, not by inspection.
 _ext_lock_rows_jq() {
   cat <<'JQ'
-def scalarv($n; $k; $v):
-  if $v == null then "-"
-  elif ($v | type) == "string" then
-    (if ($v | test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
-     elif $v == "" then "-"
-     else $v end)
-  elif ($v | type) == "number" then
-    (if ($v | tostring | test("^-?[0-9]+$")) then ($v | tostring)
-     else {err: ("entry '" + $n + "' field '" + $k + "' must be a string or an integer")} end)
-  else {err: ("entry '" + $n + "' field '" + $k + "' must be a string or an integer")} end;
-def strlistv($n; $k; $v):
-  if $v == null then "-"
-  elif ($v | type) != "array" then {err: ("entry '" + $n + "' field '" + $k + "' must be an array")}
-  elif any($v[]; (type != "string") or (. == "")) then {err: ("entry '" + $n + "' field '" + $k + "' must contain only non-empty strings")}
-  elif any($v[]; test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
-  else (($v | join(",")) as $s | if $s == "" then "-" else $s end) end;
+def scalarv($n; $e; $k):
+  if ($e | has($k)) then
+    ($e[$k] as $v
+     | if ($v | type) == "string" then
+         (if ($v | test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
+          elif $v == "" then "-"
+          else $v end)
+       elif ($v | type) == "number" then
+         (if ($v | tostring | test("^-?[0-9]+$")) then ($v | tostring)
+          else {err: ("entry '" + $n + "' field '" + $k + "' must be a string or an integer")} end)
+       else {err: ("entry '" + $n + "' field '" + $k + "' must be a string or an integer")} end)
+  else "-" end;
+def strlistv($n; $e; $k):
+  if ($e | has($k)) then
+    ($e[$k] as $v
+     | if ($v | type) != "array" then {err: ("entry '" + $n + "' field '" + $k + "' must be an array")}
+       elif any($v[]; (type != "string") or (. == "")) then {err: ("entry '" + $n + "' field '" + $k + "' must contain only non-empty strings")}
+       elif any($v[]; test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
+       else (($v | join(",")) as $s | if $s == "" then "-" else $s end) end)
+  else "-" end;
 if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
 else
   ( [ to_entries | sort_by(.key)[]
       | .key as $n | .value as $e
       | if ($e | type) != "object" then [{err: ("entry '" + $n + "' is not an object")}]
+        # The NAME is a field too, and python3's tab/newline loop at
+        # _ext_lock_rows_py:121-123 checks all nine fields it builds,
+        # `name` (field 0) included -- a key of "a\tb" is exactly what the
+        # parity harness's tab-in-the-key case sends through both engines.
+        # Checked here, before any of the nine fields are built, rather than
+        # folded into the same `any(.[]; ...)` sweep the OTHER eight already
+        # get below: name is not inside that array (it is the array's first
+        # ELEMENT, already a plain string by the time it is built), so a scan
+        # over the finished row would need its own special case for element
+        # zero -- checking $n on its own line here is the same rule with no
+        # extra case to keep in sync.
+        elif ($n | test("[\n\r\t]")) then [{err: ("entry '" + $n + "' has a field containing a tab or newline")}]
         else
           [ $n,
-            scalarv($n; "repo"; $e.repo),
-            scalarv($n; "ref"; $e.ref),
-            scalarv($n; "commit"; $e.commit),
-            scalarv($n; "tree"; $e.tree),
-            scalarv($n; "contract"; $e.contract),
-            strlistv($n; "needs"; $e.needs),
-            strlistv($n; "commands"; $e.commands),
-            scalarv($n; "installed"; $e.installed) ]
+            scalarv($n; $e; "repo"),
+            scalarv($n; $e; "ref"),
+            scalarv($n; $e; "commit"),
+            scalarv($n; $e; "tree"),
+            scalarv($n; $e; "contract"),
+            strlistv($n; $e; "needs"),
+            strlistv($n; $e; "commands"),
+            scalarv($n; $e; "installed") ]
         end
     ] ) as $rows
   | ([$rows[] | select(any(.[]; type == "object"))] | first) as $bad
@@ -187,6 +211,23 @@ JQ
 # what), 3 neither python3 nor jq is on PATH.
 _ext_lock_rows() {
   roost_ext__json_read "$1" _ext_lock_rows_py _ext_lock_rows_jq
+}
+
+# _ext_join_comma -> read lines on stdin (blank ones skipped), print them
+# comma-and-space joined on one line, no trailing newline. Only ever called
+# once `list` has already found -- or is about to report -- a disagreement,
+# so this is never a fork on an ordinary, agreeing run.
+_ext_join_comma() {
+  local line result=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    if [ -n "$result" ]; then
+      result="$result, $line"
+    else
+      result="$line"
+    fi
+  done
+  printf '%s' "$result"
 }
 
 # --- the disagreement check --------------------------------------------------
@@ -210,19 +251,38 @@ _ext_lock_rows() {
 # question roost_ext_index_write itself answers before it writes -- this
 # function only stops short of the write.
 _ext_index_disagrees() {
-  local lock="$1" index="$2" data_dir="$3" expected="" actual=""
+  # Sets _EXT_DISAGREE_NAMES: a comma-and-space-joined list of every
+  # extension the disagreement is about. Cleared on entry, the same
+  # discipline roost_ext_index_lookup's own output variables use, so a
+  # caller under `set -u` can always read it whichever way this returns.
+  _EXT_DISAGREE_NAMES=""
+  local lock="$1" index="$2" data_dir="$3" all_rows="$4"
+  local expected="" actual="" rc=0
   if [ -f "$lock" ]; then
-    # A failure here means ext.lock is malformed enough that even the writer's
-    # own engine refuses it -- `roost ext list` will already have exited on
-    # that same failure via _ext_lock_rows before this is ever reached, since
-    # both readers parse the same file. Falling back to "expected nothing" in
-    # that otherwise-unreachable case fails toward a WARNING rather than
-    # toward silence, which is the safe direction for a check whose whole job
-    # is noticing when something is wrong.
     if expected="$(roost_ext__json_read "$lock" roost_ext__index_py roost_ext__index_jq "$data_dir" 2>/dev/null)"; then
-      :
+      rc=0
     else
-      expected=""
+      rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+      # ext.lock parses well enough to DISPLAY -- the caller already read it
+      # successfully with _ext_lock_rows, or this branch is never reached --
+      # but not well enough to regenerate ext.index from: an empty
+      # `commands` array, a name with a space, two entries claiming one
+      # command by hand-edit, and so on. That is UNCONDITIONALLY a
+      # disagreement, and every name ext.lock claims is named, not only the
+      # ones a byte comparison happens to catch -- there is no well-formed
+      # `expected` index left to compare any single one of them against.
+      #
+      # A first version of this function treated this branch as "expected
+      # nothing" and compared THAT against `actual`, which reads as
+      # agreement whenever the on-disk index also happens to be empty --
+      # exactly the shape `{"a": {"repo":"o/a","commands":[]}}` with an
+      # empty ext.index leaves. That lockfile names an extension ext.index
+      # names none of, which is precisely the disagreement this function
+      # exists to catch, and the old code printed nothing at all for it.
+      _EXT_DISAGREE_NAMES="$(printf '%s\n' "$all_rows" | awk -F'\t' 'NF{print $1}' | sort -u | _ext_join_comma)"
+      return 0
     fi
   fi
   if [ -f "$index" ]; then
@@ -235,6 +295,43 @@ _ext_index_disagrees() {
   if [ "$expected" = "$actual" ]; then
     return 1
   fi
+  # Which NAMES the disagreement is about, and how. Column 2 of either side
+  # is the extension name (column 1 is the COMMAND, and one extension can
+  # claim several, hence grouping by name rather than diffing lines
+  # one-for-one); a name present on only one side, or whose full set of rows
+  # differs between the two, is named, and its authority column is compared
+  # explicitly -- "which authority" is the actionable half of a security
+  # warning, and "the two files differ somewhere" is not.
+  local n="" names="" exp_n="" act_n="" exp_needs="" act_needs="" detail="" disagreeing=""
+  names="$(printf '%s\n%s\n' "$expected" "$actual" | awk -F'\t' 'NF{print $2}' | sort -u)"
+  while IFS= read -r n || [ -n "$n" ]; do
+    [ -n "$n" ] || continue
+    exp_n="$(printf '%s\n' "$expected" | awk -F'\t' -v want="$n" '$2==want')"
+    act_n="$(printf '%s\n' "$actual"   | awk -F'\t' -v want="$n" '$2==want')"
+    if [ "$exp_n" = "$act_n" ]; then
+      continue
+    fi
+    if [ -z "$exp_n" ]; then
+      detail="$n (in ext.index only)"
+    elif [ -z "$act_n" ]; then
+      detail="$n (in ext.lock only)"
+    else
+      exp_needs="$(printf '%s\n' "$exp_n" | head -1 | awk -F'\t' '{print $4}')"
+      act_needs="$(printf '%s\n' "$act_n" | head -1 | awk -F'\t' '{print $4}')"
+      [ -n "$exp_needs" ] || exp_needs="none"
+      [ -n "$act_needs" ] || act_needs="none"
+      if [ "$exp_needs" != "$act_needs" ]; then
+        detail="$n (authority: ext.lock now says '$exp_needs', ext.index still grants '$act_needs')"
+      else
+        detail="$n (claimed commands differ)"
+      fi
+    fi
+    disagreeing="$disagreeing
+$detail"
+  done <<EOF
+$names
+EOF
+  _EXT_DISAGREE_NAMES="$(printf '%s' "$disagreeing" | _ext_join_comma)"
   return 0
 }
 
@@ -243,14 +340,22 @@ _ext_index_disagrees() {
 # agree again (re-run whatever last wrote ext.lock, which regenerates
 # ext.index in the same step) -- an untidiness warning would say only that the
 # two differ, and that is the version of this message the design spec calls
-# out as the wrong one to ship.
+# out as the wrong one to ship. Names the affected extension(s) (from
+# _ext_index_disagrees's own _EXT_DISAGREE_NAMES) rather than speaking only
+# in the abstract, and stays under 150 characters a line -- no user-facing
+# line in roost-install or roost-validate runs longer than that.
 _ext_index_disagree_warning() {
-  cat <<'EOF'
-roost ext list: SECURITY WARNING — ext.lock and ext.index disagree.
-roost ext list: bin/roost's dispatcher grants authority from ext.index alone and never reads ext.lock at dispatch time, so an extension can be holding (or lacking) authority that ext.lock no longer agrees with, until something rewrites ext.index. See docs/airig/specs/2026-09-08-extension-seam.md, "ext.index is the authority of record".
-roost ext list: ext.index is the file being obeyed right now — NOT ext.lock.
-roost ext list: every command that writes ext.lock (install, update, remove) regenerates ext.index in the same step. Re-run whichever of those last touched the extension in question to bring the two files back into agreement.
-EOF
+  local names="$1"
+  printf 'roost ext list: SECURITY WARNING — ext.lock and ext.index disagree: %s\n' "$names"
+  printf "roost ext list: bin/roost's dispatcher grants authority from ext.index alone and\n"
+  printf 'roost ext list: never reads ext.lock again after install, so an extension can hold\n'
+  printf 'roost ext list: (or lack) authority ext.lock no longer agrees with, until something\n'
+  printf 'roost ext list: rewrites ext.index. See docs/airig/specs/2026-09-08-extension-seam.md,\n'
+  printf 'roost ext list: "ext.index is the authority of record".\n'
+  printf 'roost ext list: ext.index is the file being obeyed right now — NOT ext.lock.\n'
+  printf 'roost ext list: every command that writes ext.lock (install, update, remove)\n'
+  printf 'roost ext list: regenerates ext.index in the same step. Re-run whichever of those\n'
+  printf 'roost ext list: last touched the extension(s) named above to fix this.\n'
 }
 
 case "${1:-}" in
@@ -280,8 +385,8 @@ case "${1:-}" in
       esac
     fi
 
-    if _ext_index_disagrees "$lock" "$index" "$data_dir"; then
-      _ext_index_disagree_warning >&2
+    if _ext_index_disagrees "$lock" "$index" "$data_dir" "$rows"; then
+      _ext_index_disagree_warning "$_EXT_DISAGREE_NAMES" >&2
     fi
 
     if [ -z "$rows" ]; then
@@ -302,8 +407,22 @@ case "${1:-}" in
       short="${commit:0:7}"
       disp_commands="${commands//,/, }"
       line="$name  $short  $disp_commands"
-      if [ ! -d "$data_dir/$name" ]; then
-        line="$line (missing)"
+      # roost_ext_name_valid is the SAME grammar `roost ext install` enforces
+      # on the directory name before anything is written to disk -- a name
+      # that fails it could never have come from this feature's own writer,
+      # only from a lockfile edited by hand. A name like "../secret" is
+      # never used to touch the filesystem here: even the read-only
+      # existence check below would be answering a question about somewhere
+      # this feature has no business looking, which is the read-side version
+      # of the traversal the spec already requires `install` to refuse on
+      # the write side ("any path resolving outside the extension
+      # directory").
+      if roost_ext_name_valid "$name"; then
+        if [ ! -d "$data_dir/$name" ]; then
+          line="$line (missing)"
+        fi
+      else
+        line="$line (invalid name, not something roost ext install could have written)"
       fi
       printf '%s\n' "$line"
     done <<EOF
@@ -317,6 +436,21 @@ EOF
     if [ -z "$name" ]; then
       echo "usage: roost ext info NAME" >&2
       exit 2
+    fi
+    # A name is matched against ext.lock's own keys below by exact string
+    # comparison, but refused HERE, before that lookup and before it is used
+    # to build any path at all, if it fails roost_ext_name_valid -- the same
+    # grammar `roost ext install` enforces on the install DIRECTORY name.
+    # A name that fails it could never have been installed through this
+    # feature, only written into ext.lock by hand, and a hand-edited key of
+    # "../secret" is exactly what would otherwise make `info` read
+    # $data_dir/../secret/roost-ext.json: a real file outside the
+    # extensions directory entirely. The spec already requires `install` to
+    # refuse "any path resolving outside the extension directory" on the
+    # WRITE side; this is the same property, enforced on the READ side.
+    if ! roost_ext_name_valid "$name"; then
+      echo "roost ext info: no such extension: $name" >&2
+      exit 1
     fi
 
     lock="$(roost_ext_lock)"

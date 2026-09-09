@@ -1350,6 +1350,14 @@ assert_contains "$gamma_warn" "ext.index" "the warning names ext.index"
 assert_contains "$gamma_warn" "obeyed" "the warning says which file is being OBEYED, not merely that they differ"
 assert_contains "$gamma_warn" "SECURITY" "the warning reads as a security warning, not a tidiness one"
 assert_contains "$gamma_warn" "install, update, remove" "the warning says how to reconcile the two files"
+assert_contains "$gamma_warn" "gamma" "the warning names the extension it is ABOUT, not just the two filenames"
+assert_contains "$gamma_warn" "authority" "the warning says the disagreement is about an AUTHORITY, not just any difference"
+# Every printed line stays short enough to read -- roost-install and
+# roost-validate hold their own user-facing lines under 150 characters, and a
+# security warning nobody reads because it wrapped badly in a narrow terminal
+# defeats the point of writing one at all.
+long_line="$(printf '%s\n' "$gamma_warn" | awk '{ if (length > 150) print }')"
+assert_eq "$long_line" "" "no line of the disagreement warning exceeds 150 characters"
 
 roost_ext_index_write
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
@@ -1366,6 +1374,7 @@ gone_warn="$(cat "$TMP/err")"
 assert_eq "$rc" "0" "list with the lockfile gone entirely still exits 0"
 assert_contains "$out" "no extensions installed" "...and reports what the (now empty) lockfile says"
 assert_contains "$gone_warn" "ext.index" "...while still warning that a now-stale ext.index disagrees"
+assert_contains "$gone_warn" "gamma" "...and names gamma specifically -- it is the one still sitting in ext.index"
 
 # ...and the last row in the table: a lockfile with entries and NO index file
 # at all (rather than a stale one). Also a disagreement -- an index that
@@ -1376,9 +1385,38 @@ lock_install <<'JSON'
 JSON
 rm -f "$(roost_ext_index)"
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+delta_warn="$(cat "$TMP/err")"
 assert_eq "$rc" "0" "list with the index missing outright still exits 0"
 assert_contains "$out" "delta" "...and still reports what the lockfile says"
-assert_contains "$(cat "$TMP/err")" "ext.index" "...while warning that the missing index disagrees with the lockfile"
+assert_contains "$delta_warn" "ext.index" "...while warning that the missing index disagrees with the lockfile"
+assert_contains "$delta_warn" "delta" "...and names delta -- it is the one ext.lock claims that ext.index cannot"
+
+# --- list: an index-engine-only refusal is STILL a disagreement -------------
+# The sharper bug: a lockfile that _ext_lock_rows (the DISPLAY reader) can
+# read just fine, but that roost_ext_index_write's own engines refuse --
+# an empty `commands` array is exactly this, since the display reader treats
+# an absent-or-empty list as "-" while the index engine calls it "lists no
+# commands" and refuses to write a row for it at all. A version of this
+# check that read "the index engine failed" as "expected nothing" compared
+# that against an ALSO-empty on-disk index and called them equal -- silence,
+# on a lockfile that names an extension the index names none of, which is
+# the exact disagreement item 5 exists to warn about.
+mkdir -p "$EXT_DATA/echo-ext/bin"
+: > "$EXT_DATA/echo-ext/bin/roost-echo-ext"; chmod +x "$EXT_DATA/echo-ext/bin/roost-echo-ext"
+cat > "$(roost_ext_lock)" <<'JSON'
+{ "echo-ext": { "repo": "o/echo-ext", "commit": "abcdef0123456789", "commands": [] } }
+JSON
+: > "$(roost_ext_index)"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+empty_commands_warn="$(cat "$TMP/err")"
+assert_eq "$rc" "0" "a lockfile the index engine refuses still lets list run"
+assert_contains "$out" "echo-ext" "...and list still shows the extension the lockfile names"
+[ -n "$empty_commands_warn" ]
+assert_true "$?" "an index-engine refusal is not silently read as 'nothing to disagree about'"
+assert_contains "$empty_commands_warn" "ext.index" "the warning fires even though the index engine, not a byte mismatch, is what disagrees"
+assert_contains "$empty_commands_warn" "echo-ext" "...and names the extension the lockfile claims"
+rm -rf "$EXT_DATA/echo-ext"
+rm -f "$(roost_ext_lock)"
 roost_ext_index_write
 
 # --- info: a known name ------------------------------------------------------
@@ -1439,6 +1477,125 @@ out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info mark 2>"$TMP/err")"; rc
 assert_eq "$rc" "0" "info on a name whose clone is gone still succeeds"
 assert_contains "$out" "beatzball/roost-mark" "...and still shows the lockfile entry"
 assert_contains "$out" "missing" "...and says the manifest/clone is missing"
+
+# --- info / list: a hand-edited ext.lock cannot escape the extensions dir ---
+# `roost ext install` will refuse (per the design spec) any path resolving
+# outside the extension directory. `_ext_lock_rows` applies no name
+# validation of its own -- it is a display reader, not a security control --
+# so without a guard at the point a name is turned into a PATH, a lockfile
+# key of "../secret" would make `info` open
+# $data_dir/../secret/roost-ext.json: a real file outside ext/ entirely,
+# read and printed, exit 0. This is the read-side version of the exact
+# property the spec already requires on the write side.
+mkdir -p "$TMP/traversal-target"
+cat > "$TMP/traversal-target/roost-ext.json" <<'JSON'
+{ "name": "secret", "contract": 1, "commands": ["secret"], "description": "should never be read" }
+JSON
+# The lockfile key is "../traversal-target", which from $EXT_DATA/ (this
+# test's ext/ directory) resolves to $TMP/traversal-target -- the file
+# above, outside ext/ entirely. roost_ext_name_valid refuses it outright
+# (a `/` is not in [a-z0-9-]), which is exactly the property under test.
+lock_install <<'JSON'
+{ "../traversal-target": { "repo": "o/x", "commands": ["x"] } }
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info '../traversal-target' 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "info refuses a lockfile key that is not a valid install name, rather than reading through it"
+assert_eq "$out" "" "...and prints nothing on stdout -- not the traversed file's manifest fields"
+assert_contains "$(cat "$TMP/err")" "traversal-target" "...and names what was refused"
+case "$(cat "$TMP/err")" in
+  *"should never be read"*) assert_true 1 "the traversal target's own content never reaches stdout or stderr" ;;
+  *) assert_true 0 "the traversal target's own content never reaches stdout or stderr" ;;
+esac
+# `list` sees the same malformed entry (every entry in ext.lock is listed,
+# not just the one asked about) -- it must not touch the filesystem for it
+# either, and it says so rather than silently treating it like an ordinary
+# missing clone.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+assert_contains "$out" "invalid name" "list marks the bad entry as an invalid name rather than checking a path outside ext/"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# --- list / info: the `-` placeholder, asserted directly -------------------
+# Guarded only INDIRECTLY until now: reverting the placeholder fix breaks
+# "roost ext list shows every command an entry claims" (a shifted field, not
+# a literal absence) because that entry has OTHER optional fields recorded
+# too. This is the field-shift bug's minimal case -- ONE entry, nothing but
+# `commands` -- asserted as the exact rendered text rather than through a
+# side effect of a bigger fixture.
+mkdir -p "$EXT_DATA/bare/bin"
+: > "$EXT_DATA/bare/bin/roost-bare"; chmod +x "$EXT_DATA/bare/bin/roost-bare"
+lock_install <<'JSON'
+{ "bare": { "commands": ["bare"] } }
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+bare_line="$(printf '%s\n' "$out" | grep '^bare ')"
+assert_eq "$bare_line" "bare  -  bare" "list renders a genuinely absent commit as the literal placeholder '-', not an empty or shifted field"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info bare 2>"$TMP/err")"
+assert_contains "$out" "  repo       -" "info renders a genuinely absent repo as '-'"
+assert_contains "$out" "  ref        -" "...ref too"
+assert_contains "$out" "  commit     -" "...commit too"
+assert_contains "$out" "  needs      none" "...but needs gets the word 'none', not the bare placeholder"
+rm -rf "$EXT_DATA/bare"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# --- list / info: the jq engine must agree with python3 ---------------------
+# _ext_lock_rows_py and _ext_lock_rows_jq live in scripts/roost-ext, not in
+# the sourced library, so they cannot be called directly the way
+# roost_ext_manifest_read's parity_case (above, ~line 394) and
+# roost_ext_index_write's index_parity_case (above, ~line 655) call THEIR
+# engine pairs. This harness proves the same thing the way it has to be
+# proved here: run `roost ext list` twice against the identical lockfile,
+# once under the ambient PATH (python3 present) and once under a PATH with
+# nothing but jq and what scripts/roost-ext needs merely to START (bash, for
+# its own #!/usr/bin/env shebang; dirname, for the one line that finds its
+# sibling library; cat, for the heredoc-through-cat engine scripts) -- then
+# diff exit status, stdout and stderr.
+#
+# Skipped, not failed, where jq is absent: it is not a roost dependency.
+if command -v jq >/dev/null 2>&1; then
+  # awk, sort and head are NOT part of what distinguishes a jq machine from a
+  # python3 one -- _ext_index_disagrees uses them, unconditionally, to name
+  # WHICH extension a disagreement is about, regardless of which JSON engine
+  # answered "is there one". Omitting them here would test "does scripts/
+  # roost-ext run with awk missing", which is not the question this harness
+  # asks and not a machine that exists.
+  mkdir -p "$TMP/ext-jq-only"
+  for c in bash dirname cat jq awk sort head; do
+    printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v "$c")" > "$TMP/ext-jq-only/$c"
+    chmod +x "$TMP/ext-jq-only/$c"
+  done
+  _ext_lock_rows_parity_case() {
+    # _ext_lock_rows_parity_case <label> <lockfile-json>
+    local label="$1" json="$2" p_out p_rc j_out j_rc
+    printf '%s\n' "$json" > "$(roost_ext_lock)"
+    p_out="$("$HERE/scripts/roost-ext" list 2>"$TMP/err-py")"; p_rc=$?
+    j_out="$(PATH="$TMP/ext-jq-only" "$HERE/scripts/roost-ext" list 2>"$TMP/err-jq")"; j_rc=$?
+    assert_eq "$j_rc" "$p_rc" "both engines agree on the exit status for $label"
+    assert_eq "$j_out" "$p_out" "both engines agree on roost ext list's stdout for $label"
+    assert_eq "$(cat "$TMP/err-jq")" "$(cat "$TMP/err-py")" \
+      "both engines agree on the stderr message for $label"
+  }
+  # A lockfile key containing a TAB -- this is the exact reproduction that
+  # found the jq engine reading `.foo` at the call site and folding "key
+  # absent" and "key present but null" into the same placeholder: the tab
+  # check on the NAME was missing entirely, so jq built a 9-field row where
+  # python3 refused the file outright.
+  _ext_lock_rows_parity_case "a lockfile key containing a tab" \
+    '{ "a\tb": { "repo": "o/a", "commit": "abcdef0123456789", "commands": ["x", "y"] } }'
+  _ext_lock_rows_parity_case "an explicit null ref" \
+    '{ "a": { "repo": "o/a", "commands": ["x"], "ref": null } }'
+  _ext_lock_rows_parity_case "an explicit null needs" \
+    '{ "a": { "repo": "o/a", "commands": ["x"], "needs": null } }'
+  _ext_lock_rows_parity_case "an explicit null commands" \
+    '{ "a": { "repo": "o/a", "commands": null } }'
+  _ext_lock_rows_parity_case "a fully populated, well-formed entry" \
+    '{ "mark": { "repo": "o/mark", "ref": "v1.0.0", "commit": "abcdef0123456789", "commands": ["mark", "marks"], "needs": ["fleet"] } }'
+  _ext_lock_rows_parity_case "an entry with almost nothing recorded" \
+    '{ "a": { "commands": ["x"] } }'
+  rm -f "$(roost_ext_lock)"
+  roost_ext_index_write
+fi
 
 # Leave a clean slate for the conformance block below, which builds its own
 # lockfile from scratch and must not inherit any entry from this section.
