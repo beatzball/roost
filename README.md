@@ -385,13 +385,19 @@ roost-mark/
 }
 ```
 
+This table is the syntax. What each field *does* at install time — which are
+hard gates and which are advisory, which values are refused and which command
+names are already taken — is written once, for the person being asked to
+install your extension, on the
+[docs page](https://roosting.dev/docs/extensions).
+
 | Field | Required | Meaning |
 |---|---|---|
 | `name` | yes | Install directory name. `[a-z][a-z0-9-]*`, max 32 chars. |
-| `contract` | yes | Seam version. A mismatch refuses the install. |
-| `roost` | no | Advisory range. `>=A.B.C <D.E.F`, `*`, or absent; anything else warns and is skipped. |
-| `needs` | no | Authority requested. `["fleet"]` or nothing. An unknown value refuses the install. |
-| `commands` | yes | Each needs an executable `bin/roost-<cmd>`. Core names and commands another extension holds are refused. |
+| `contract` | yes | Seam version this extension speaks. |
+| `roost` | no | Version range: `>=A.B.C <D.E.F`, `*`, or absent; anything else warns and is skipped. |
+| `needs` | no | Authority requested. `["fleet"]` or nothing. |
+| `commands` | yes | Each needs an executable `bin/roost-<cmd>`. |
 | `description` | no | One line, shown by `roost ext info`. It is not printed by `roost ext list`, and not in the consent block. |
 
 Your command is `exec`'d with the remaining arguments, and its exit status and

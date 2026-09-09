@@ -81,8 +81,8 @@ An extension's manifest can declare `needs`. There is one value in this contract
 
 | the manifest declares | what roost hands the extension |
 |---|---|
-| `needs` absent, or `[]` | No `ROOST_SOCKET`, and roost's own scripts are not put on its `PATH`. The consent block says *does not ask for access to your agents*. |
-| `"needs": ["fleet"]` | `ROOST_SOCKET` and `ROOST_SOCKET_FLAG`, plus roost's scripts on its `PATH` — which is enough to read any pane's screen and send a prompt to any agent, the same as you can from your own shell. |
+| `needs` absent, or `[]` | Nothing to reach your agents with: no socket, and roost's own scripts are not put on its `PATH`. The consent block says *does not ask for access to your agents*. |
+| `"needs": ["fleet"]` | The socket to your agents, and roost's scripts on its `PATH` — which is enough to read any pane's screen and send a prompt to any agent, the same as you can from your own shell. The variables that carries are named in the [README](https://github.com/beatzball/roost#the-extension-seam). |
 
 That second row is the whole point of the field. Reading a pane's screen means whatever has scrolled past in it: keys, tokens, `.env` contents, source. Sending a prompt means an agent that writes files and runs commands does what the extension asked it to.
 
@@ -119,8 +119,11 @@ Nothing is installed into the roost checkout.
 | `${XDG_DATA_HOME:-$HOME/.local/share}/roost/ext/<name>/` | the clone |
 | `${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext/<name>/` | the extension's own data |
 | `${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.lock` | what is installed, and the commit each is pinned to |
+| `${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.index` | the dispatch table roost actually obeys: one line per command, with the authority it runs with |
 
 The lockfile is the record of what is installed, not the clone. If a clone goes missing, its command degrades to the ordinary usage error rather than to running something unexpected — the dispatcher checks that the executable is really there before it hands anything over.
+
+`ext.index` is derived from `ext.lock` and rewritten in the same step by every command that writes the lockfile, so the two cannot drift on their own. It exists because reading it needs no JSON tool: dispatching a command must not depend on `python3` or `jq` being installed. It is the file being obeyed — a hand edit to `ext.lock` alone changes nothing until something regenerates the index, and `roost ext list` warns when the two disagree.
 
 ## Turning extensions off
 
@@ -147,6 +150,4 @@ The seam itself can also be taken out of roost altogether. That is a contributor
 
 ## Writing one
 
-An extension is a repository with a `roost-ext.json` at its root and an executable `bin/roost-<cmd>` per command it claims. Roost hands it `ROOST_EXT_DIR`, a private `ROOST_EXT_STATE` directory for its data, and — only if it declared `fleet` — the socket to talk to your agents.
-
-The contract, the manifest fields, and the environment an extension is given are written up for extension authors in the [README](https://github.com/beatzball/roost#the-extension-seam).
+Writing one is an author's job rather than a user's, and all of it — the repository layout, every manifest field, and the environment your command is handed — is on one page: [The extension seam](https://github.com/beatzball/roost#the-extension-seam) in the README.

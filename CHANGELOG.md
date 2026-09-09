@@ -26,9 +26,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0] - 2026-09-08
 
-First tagged release. There is no earlier tagged history to summarise: this
-entry marks where versioning starts, not a reconstruction of everything that
-came before it.
+The first numbered version. There is no earlier versioned history to
+summarise: this entry marks where versioning starts, not a reconstruction of
+everything that came before it. No git tag has been cut for it yet.
 
 Roost, as of this release, is a tmux wrapper for running and coordinating AI
 coding agents:
