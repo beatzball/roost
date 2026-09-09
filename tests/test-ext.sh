@@ -2305,8 +2305,8 @@ assert_true "$?" "...while the code it describes is still there"
 
 grep -qF -- '_ext_git clone --quiet --no-checkout --no-recurse-submodules --' "$ext_code"
 assert_true "$?" "the clone INVOCATION passes --no-checkout and --no-recurse-submodules"
-grep -qF 'GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null "$@"' "$ext_code"
-assert_true "$?" "install's git wrapper carries GIT_LFS_SKIP_SMUDGE=1 and core.hooksPath=/dev/null"
+grep -qF 'GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -C / -c core.hooksPath=/dev/null "$@"' "$ext_code"
+assert_true "$?" "install's git wrapper carries GIT_LFS_SKIP_SMUDGE=1, core.hooksPath=/dev/null and the -C / that stops git DISCOVERING a repository from the cwd"
 # On ONE wrapper, so a git invocation added to this file later is hardened by
 # construction rather than by whoever adds it remembering.
 # Exactly ONE spelling of `git` in the whole of each file's code, and it is
@@ -2323,8 +2323,8 @@ assert_eq "$(grep -cE '(^|[^_a-zA-Z])git ' "$ext_lib_code")" "1" \
 # and with core.hooksPath and init.templateDir set in a user's global config
 # that meant hooks firing during an install that had just promised nothing
 # runs. Behaviour pins this one, below; these name the three call sites.
-grep -qF 'GIT_LFS_SKIP_SMUDGE=1 git -c core.hooksPath=/dev/null -c init.templateDir= "$@"' "$ext_lib_code"
-assert_true "$?" "the library's git wrapper is hardened the same way"
+grep -qF 'GIT_LFS_SKIP_SMUDGE=1 git -C / -c core.hooksPath=/dev/null -c init.templateDir= "$@"' "$ext_lib_code"
+assert_true "$?" "the library's git wrapper is hardened the same way, -C / included"
 grep -qF 'roost_ext__git init -q --bare' "$ext_lib_code"
 assert_true "$?" "tree_hash's git init goes through it"
 grep -qF 'roost_ext__git -C "$dir" add -A --force' "$ext_lib_code"
@@ -3117,16 +3117,21 @@ chmod +x "$TMP/fsmonitor-payload"
 # protocol.ext.allow=always is in the same file as the payload, because it is
 # the same attacker: git refuses the `ext` transport by default, and a fixture
 # without this line would prove only that git's default is on.
-ext_fixture_git -C "$EXT_DATA/poison" config protocol.ext.allow always
-ext_fixture_git -C "$EXT_DATA/poison" config remote.origin.url "ext::sh -c touch% $pwned_origin% #"
-ext_fixture_git -C "$EXT_DATA/poison" config "url.ext::sh -c touch% $pwned_instead% #.insteadOf" "file://"
-ext_fixture_git -C "$EXT_DATA/poison" config core.fsmonitor "$TMP/fsmonitor-payload"
-# core.pager is the same shape as the two above and is set here so the fixture
-# carries the whole of what the design names -- but it only fires when git is
-# writing to a TERMINAL, which this suite never has, so no assertion below
-# claims to have provoked it. Saying that plainly beats an assertion that
-# could not fail.
-ext_fixture_git -C "$EXT_DATA/poison" config core.pager "sh -c 'touch $pwned_pager'"
+# A function, not four inline lines: `update` REPLACES the clone, so every run
+# against a poisoned config has to put the config back first.
+ext_poison_config() {
+  ext_fixture_git -C "$1" config protocol.ext.allow always
+  ext_fixture_git -C "$1" config remote.origin.url "ext::sh -c touch% $pwned_origin% #"
+  ext_fixture_git -C "$1" config "url.ext::sh -c touch% $pwned_instead% #.insteadOf" "file://"
+  ext_fixture_git -C "$1" config core.fsmonitor "$TMP/fsmonitor-payload"
+  # core.pager is the same shape as the three above and is set here so the
+  # fixture carries the whole of what the design names -- but it only fires
+  # when git is writing to a TERMINAL, which this suite never has, so no
+  # assertion below claims to have provoked it. Saying that plainly beats an
+  # assertion that could not fail.
+  ext_fixture_git -C "$1" config core.pager "sh -c 'touch $pwned_pager'"
+}
+ext_poison_config "$EXT_DATA/poison"
 
 # THE POSITIVE CONTROLS. Each runs the naive thing an implementation of
 # `update` would do, against a COPY so the fixture itself is untouched, and
@@ -3174,6 +3179,92 @@ assert_eq "$(ext_field "$out" MARK)" "second" "...and the new commit's program i
 # there for the next command" are different states to leave a user in.
 grep -q 'ext::' "$EXT_DATA/poison/.git/config"
 assert_eq "$?" "1" "the clone update left behind carries none of the poisoned config"
+
+# --- THE SAME CONFIG, REACHED WITH NO -C AND NO GIT_DIR ---------------------
+# Everything above this line proves that roost never NAMES the installed clone
+# as a git repository. That is not the same property as git never READING it:
+# git resolves a repository by walking up from the current working directory,
+# so a user who has `cd`-ed into an extension and runs `roost ext update` there
+# hands git that clone's config with no argument of any kind. The insteadOf
+# payload then rewrites the URL rebuilt from ext.lock and fires on `ls-remote`
+# -- before the diff, before the prompt, so nothing downstream helps.
+#
+# Every poisoned-config assertion above runs `update` from the suite's own
+# working directory, which is a git repository with no insteadOf in it, so all
+# of them only ever exercised the neutral-cwd path. These are the ones that
+# would have caught it. The precondition is not exotic: a cautious user
+# inspecting a suspicious extension is exactly the person who has `cd`-ed into
+# it and then runs `update` to see whether there is a new version.
+ext_poison_config "$EXT_DATA/poison"
+rm -rf "$TMP/poison-copy"
+cp -R "$EXT_DATA/poison" "$TMP/poison-copy"
+rm -f "$pwned_origin" "$pwned_instead" "$pwned_fsmon"
+# The positive controls for THIS variant: a bare `ls-remote` -- no -C, no
+# GIT_DIR, the same call `update` makes -- run once from the clone's own
+# directory and once from a directory below it, because discovery walks up.
+( cd "$TMP/poison-copy" && ext_fixture_git ls-remote -- "file://$EXT_REMOTES/fix/poison" HEAD ) >/dev/null 2>&1 || true
+[ -e "$pwned_instead" ]
+assert_true "$?" "an ls-remote run from INSIDE the clone discovers its config and executes the payload"
+rm -f "$pwned_instead"
+( cd "$TMP/poison-copy/bin" && ext_fixture_git ls-remote -- "file://$EXT_REMOTES/fix/poison" HEAD ) >/dev/null 2>&1 || true
+[ -e "$pwned_instead" ]
+assert_true "$?" "...and so does one run from a directory BELOW it — discovery walks upwards"
+rm -f "$pwned_origin" "$pwned_instead" "$pwned_fsmon"
+rm -rf "$TMP/poison-copy"
+
+ext_bin "$EXT_SRCS/poison" poison third
+ext_publish fix/poison "$EXT_SRCS/poison"
+poison_3="$(ext_head fix/poison)"
+out_p="$(cd "$EXT_DATA/poison" && ext_update poison --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update run with cwd INSIDE the poisoned clone still succeeds"
+assert_file_absent "$pwned_instead" \
+  "...and no git of roost's discovered that config — the insteadOf never rewrote the URL"
+assert_file_absent "$pwned_origin" "...nor was its remote.origin.url ever dialled"
+assert_file_absent "$pwned_fsmon" "...nor its core.fsmonitor ever run"
+assert_eq "$(ext_lock_field poison commit)" "$poison_3" "...and the update still moved the pin"
+
+# ...and from BELOW the clone, which is the case that needs the upward walk
+# stopped rather than merely the cwd itself not being a repository.
+ext_poison_config "$EXT_DATA/poison"
+ext_bin "$EXT_SRCS/poison" poison fourth
+ext_publish fix/poison "$EXT_SRCS/poison"
+poison_4="$(ext_head fix/poison)"
+out_p="$(cd "$EXT_DATA/poison/bin" && ext_update poison --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update run from a directory BELOW the poisoned clone still succeeds"
+assert_file_absent "$pwned_instead" "...and still nothing of that config was discovered"
+assert_file_absent "$pwned_origin" "...still nothing dialled"
+assert_eq "$(ext_lock_field poison commit)" "$poison_4" "...with the pin moved again"
+
+# --- git's OWN words reach the user, through _ext_git_stderr ----------------
+# When a remote will not answer, git's message is the most useful thing a user
+# gets, so it is passed through -- prefixed, capped, and run through the same
+# control-character replacement the diff body gets, because it lands on a
+# terminal and a terminal is an interpreter.
+#
+# WHAT THIS ASSERTS IS THE PASSTHROUGH, NOT THE SANITISING, and the difference
+# is measured rather than assumed. An earlier version of this block put an ESC
+# into the URL through ROOST_EXT_GIT_BASE and asserted it came back as `?`.
+# That assertion passed with the sanitiser REMOVED: git 2.50.1 already escapes
+# control characters in the paths it quotes back, so no ESC was ever in git's
+# stderr to strip. It was a check against a thing that could not happen —
+# exactly the tautology this branch has shipped before — so it is gone rather
+# than left looking like proof.
+#
+# What is left can fail: delete the `_ext_git_stderr` call and there are no
+# prefixed lines; break its awk and the same. That is worth having, because no
+# other assertion in this file makes a git command fail at all, and an awk typo
+# in a rarely-taken error path is exactly what ships silently.
+#
+# The sanitising itself is defence in depth for the git versions and messages
+# that do NOT escape their own output, and is exercised for real on the diff
+# body a few assertions above, where content bytes are reproduced verbatim.
+out="$(ROOST_EXT_GIT_BASE="file://$TMP/there-is-no-such-remote/" "$HERE/scripts/roost-ext" install fix/good --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install fails when the remote cannot be read at all"
+git_said="$(grep '^roost ext install: git: ' "$TMP/err" || true)"
+[ -n "$git_said" ]
+assert_true "$?" "...and passes git's own message through, prefixed so it reads as git's words and not as roost's"
+assert_contains "$git_said" "fatal:" "...carrying what git actually said"
 
 # --- update with no NAME visits every installed extension -------------------
 out_all="$(ext_update --yes 2>"$TMP/err")"; rc=$?

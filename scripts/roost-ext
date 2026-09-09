@@ -640,10 +640,62 @@ _ext_install_undo() {
 # the user: a URL that wants credentials must fail rather than block forever
 # waiting on a terminal nobody is watching.
 #
+# `-C /` IS THE FIFTH, AND IT IS ABOUT A CONFIG FILE NOBODY PASSED TO GIT.
+#
+# git reads a repository's config whenever it DISCOVERS one, by walking up from
+# the current directory. No `-C`, no `GIT_DIR`, no argument of any kind is
+# needed. So a user who has `cd`-ed into an installed extension and runs
+# `roost ext update` from there hands git that extension's own
+# `.git/config` -- and a `url.<ext::sh -c ...>.insteadOf = file://` in it
+# rewrites the URL this feature rebuilt out of ext.lock straight back into the
+# payload. MEASURED: with cwd inside the clone, and again from a directory two
+# levels below it, a bare `git ls-remote -- <file:// url>` executed the
+# attacker's command; with `-C /` in front of it, the same call returned the
+# right commit id and executed nothing. That precondition is not exotic -- a
+# cautious user inspecting a suspicious extension is exactly the person who has
+# `cd`-ed into it.
+#
+# `/` because it needs no creation, no cleanup and no temp directory, and
+# because it has no parent to walk up into: whatever git might discover from
+# there is the machine owner's, never an extension's. It goes FIRST, so a
+# caller's own `-C <dir>` still wins -- git applies them left to right, and
+# every `-C` in this feature is an ABSOLUTE path, which is what makes that
+# composition safe. Anyone adding a relative one has to read this line.
+#
+# What this does NOT do is close every config key: the user's own
+# ~/.gitconfig and /etc/gitconfig are still read, exactly as they are for
+# every other git this machine runs. The claim here is the mechanism -- an
+# extension's own config is never the repository git resolves -- and not that
+# nothing else can influence a git invocation.
+#
 # Written as one wrapper rather than repeated per call so that a git
 # invocation added here later cannot be the unhardened one.
 _ext_git() {
-  GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null "$@"
+  GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -C / -c core.hooksPath=/dev/null "$@"
+}
+
+# _ext_git_stderr PREFIX FILE -> git's own stderr, prefixed, and made safe to
+# put on a terminal.
+#
+# git's message quotes the URL back, and in the discovery case above that URL
+# is the ATTACKER'S rewritten `ext::sh -c ...` string, verbatim. A terminal is
+# an interpreter (see the design's Security section, and _ext_update_diff,
+# which asks the same question of a diff body), so this gets the same
+# treatment: every C0 control character except TAB and LF, plus DEL, becomes
+# `?`; a line long enough to wrap the screen on its own is truncated; and a
+# message long enough to scroll a prompt away is capped with the number of
+# lines not shown. Sanitised rather than refused, because git's own words are
+# the most useful thing a user gets out of a remote that would not answer.
+_ext_git_stderr() {
+  local prefix="$1" file="$2"
+  [ -s "$file" ] || return 0
+  LC_ALL=C tr '\000-\010\013-\037\177' '?' < "$file" |
+    awk -v p="$prefix" -v cols="$_EXT_DIFF_COLS" -v max="$_EXT_ERR_LINES" '
+      { n++
+        if (n > max) next
+        if (length($0) > cols) $0 = substr($0, 1, cols) " … (line truncated)"
+        printf "%s%s\n", p, $0 }
+      END { if (n > max) printf "%s… %d more line(s) not shown\n", p, n - max }'
 }
 
 # _ext_pick_ref LS_REMOTE_OUTPUT QUERY -> the full SHA QUERY names, or nothing.
@@ -1256,6 +1308,9 @@ _EXT_DIFF_FILES=6
 _EXT_DIFF_LINES=40
 _EXT_DIFF_NAMES=40
 _EXT_DIFF_COLS=500
+# How many lines of git's own stderr _ext_git_stderr will pass through. Its
+# own header says why that text needs a cap and a sanitiser at all.
+_EXT_ERR_LINES=20
 _ext_update_diff() {
   local old="$1" new="$2" odb="$3"
   local names patch nfiles listed
@@ -1356,8 +1411,22 @@ _ext_update_diff() {
 # in exactly one way — as a read-only git ALTERNATE, so the old commit's
 # objects can be found for the diff — and an alternates entry is object
 # storage, not configuration: no value in it is ever honoured as a command.
-# That closes every config key at once, including the ones nobody has thought
-# of yet, which a list of `-c` overrides can never do.
+#
+# THAT IS NECESSARY AND IT IS NOT SUFFICIENT, and an earlier version of this
+# comment said otherwise: it claimed the arrangement "closes every config key
+# at once, including the ones nobody has thought of yet." It did not, and the
+# claim is why nobody looked again — git reads a repository's config whenever
+# it DISCOVERS one by walking up from the current working directory, so running
+# `roost ext update` from inside an installed extension handed git that
+# extension's config with no `-C` and no `GIT_DIR` anywhere. `_ext_git`'s own
+# header carries the measurement, and the `-C /` in front of every git in this
+# feature is what closes it.
+#
+# The rule the mistake is an instance of, written down because it generalises
+# well past git: CLAIM THE MECHANISM, NEVER THE CLOSURE. "an extension's own
+# config is never the repository git resolves" is checkable, and invites the
+# next reader to go and test it; "every config key is closed" ends the
+# conversation, which is exactly what it did.
 #
 # _ext_update_one NAME REPO REF COMMIT NEEDS -> 0 when the extension is up to
 # date or was updated, 1 when it was refused, declined or failed. The five
@@ -1419,7 +1488,7 @@ _ext_update_one() {
 
   if ! u_ls="$(_ext_git ls-remote -- "$u_url" "$u_ref" 2>"$ext_tmp/ls-err")"; then
     printf '%s: could not read %s\n' "$u_n" "$u_url"
-    sed "s|^|$u_n: git: |" "$ext_tmp/ls-err" || true
+    _ext_git_stderr "$u_n: git: " "$ext_tmp/ls-err" || true
     return 1
   fi
   if ! u_new="$(_ext_pick_ref "$u_ls" "$u_ref")"; then
@@ -1450,7 +1519,7 @@ _ext_update_one() {
   # written to disk at all; only the resolved commit is materialised.
   if ! _ext_git clone --quiet --no-checkout --no-recurse-submodules -- "$u_url" "$u_fresh" 2>"$u_work/clone-err"; then
     printf '%s: could not clone %s\n' "$u_n" "$u_url"
-    sed "s|^|$u_n: git: |" "$u_work/clone-err" || true
+    _ext_git_stderr "$u_n: git: " "$u_work/clone-err" || true
     return 1
   fi
   if ! _ext_git -C "$u_fresh" -c advice.detachedHead=false checkout --quiet --detach "$u_new" 2>/dev/null; then
@@ -1894,7 +1963,7 @@ case "${1:-}" in
         :
       else
         printf 'roost ext install: could not read %s\n' "$ext_url" >&2
-        sed 's/^/roost ext install: git: /' "$ext_tmp/ls-err" >&2 || true
+        _ext_git_stderr 'roost ext install: git: ' "$ext_tmp/ls-err" >&2 || true
         exit 1
       fi
       if ext_sha="$(_ext_pick_ref "$ext_ls" "$ext_query")"; then
@@ -1928,7 +1997,7 @@ case "${1:-}" in
       :
     else
       printf 'roost ext install: could not clone %s\n' "$ext_url" >&2
-      sed 's/^/roost ext install: git: /' "$ext_tmp/clone-err" >&2 || true
+      _ext_git_stderr 'roost ext install: git: ' "$ext_tmp/clone-err" >&2 || true
       exit 1
     fi
     if _ext_git -C "$ext_clone" -c advice.detachedHead=false checkout --quiet --detach "$ext_sha" 2>"$ext_tmp/co-err"; then

@@ -684,8 +684,23 @@ roost_ext_manifest_read() {
 # clean filter, installing an extension whose .gitattributes asks for it, runs
 # that filter here. It is the user's own configured program, the same class as
 # the hooks above, and it is written down rather than left to be discovered.
+#
+# `-C /` closes a different door from the three above, and scripts/roost-ext's
+# `_ext_git` carries the measurement behind it: git reads a repository's config
+# whenever it DISCOVERS one by walking up from the current directory, with no
+# `-C` and no `GIT_DIR` involved. Every call here already sets an explicit
+# GIT_DIR, which suppresses discovery on its own -- except `init`, which does
+# not, and which reads `init.templateDir` from whatever repository it found.
+# `/` needs no creation and has no parent to walk up into, and it goes FIRST so
+# a caller's own `-C <dir>` still wins; every `-C` in this feature is an
+# ABSOLUTE path, which is what makes that composition safe.
+#
+# It does not close every config key, and no comment here should say it does:
+# the user's own ~/.gitconfig and /etc/gitconfig are read exactly as they are
+# for every other git on the machine. The claim is the mechanism -- an
+# extension's own config is never the repository git resolves.
 roost_ext__git() {
-  GIT_LFS_SKIP_SMUDGE=1 git -c core.hooksPath=/dev/null -c init.templateDir= "$@"
+  GIT_LFS_SKIP_SMUDGE=1 git -C / -c core.hooksPath=/dev/null -c init.templateDir= "$@"
 }
 
 # roost_ext_tree_hash DIR -> the git tree hash of DIR's contents.
