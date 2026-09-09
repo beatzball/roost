@@ -109,6 +109,7 @@ roost-mark/
   "name": "mark",
   "contract": 1,
   "roost": ">=0.1.0 <0.2.0",
+  "needs": ["fleet"],
   "commands": ["mark", "marks"],
   "description": "Bookmark a spot in an agent pane, with a note."
 }
@@ -119,6 +120,7 @@ roost-mark/
 | `name` | yes | Install directory name. `[a-z][a-z0-9-]*`, max 32 chars. |
 | `contract` | yes | Seam version this extension speaks. **Hard gate** — a mismatch refuses the install with the reason. |
 | `roost` | no | Advisory semver range. A mismatch **warns and continues**; it never refuses. |
+| `needs` | no | Authority requested. Absent or `[]` means none. The only value in contract 1 is `fleet`. See "Declared authority". |
 | `commands` | yes | Subcommands claimed. Each needs `bin/roost-<cmd>`, executable. |
 | `description` | no | One line, shown by `roost ext list`. |
 
@@ -129,6 +131,41 @@ roost release a compatibility event, which is the cost the contract integer
 exists to avoid. Range support is deliberately tiny — `>=A.B.C <D.E.F`, `*`, or
 absent. Anything else warns "unparsable range, skipping check" and continues,
 so a fancy range can never harden into a refusal.
+
+### Declared authority
+
+An extension is not merely "a program you chose to run". Roost hands it
+`ROOST_SOCKET` and puts `$ROOST_HOME/scripts` on its `PATH`, and those two
+together are a capability no ordinary installed program has:
+
+- `roost read %N` on **any** pane — every agent's screen, including whatever
+  keys, tokens, `.env` contents and source have scrolled past
+- `roost send %N "..."` — inject a prompt into any agent, and those agents
+  write files and run commands
+
+That is the escalation worth controlling: not code execution, which the user
+already accepted by installing it, but **the ability to puppet the fleet**.
+
+So it is not granted by default. `needs` declares it:
+
+| `needs` | What the extension is given |
+|---|---|
+| absent, or `[]` | No `ROOST_SOCKET`. No roost scripts on `PATH`. It gets its own directories and nothing else. |
+| `["fleet"]` | `ROOST_SOCKET` and `$ROOST_HOME/scripts` on `PATH`, as above. |
+
+An unknown value in `needs` **refuses the install**, naming it. This is the one
+place the contract is deliberately strict rather than forgiving: a future
+`needs` value silently ignored by an older roost would grant nothing while the
+extension assumed it had everything, and the failure would surface as
+corrupted behaviour rather than a clean refusal.
+
+The consent block states the grant in words, not in field names — see
+`roost ext install`.
+
+`needs` exists in contract 1 precisely so it never has to be added later.
+Adding an authority field after extensions exist would mean every extension
+without it defaults to "everything", which is the wrong default arrived at
+irreversibly.
 
 ### Dispatch
 
@@ -153,15 +190,31 @@ the one that already holds it.
 
 ### Environment handed to an extension
 
+Always:
+
 ```sh
 ROOST_HOME        # the roost checkout
-ROOST_SOCKET      # which tmux server, so the ext talks to the right fleet
 ROOST_VERSION     # product version, so an ext can adapt
 ROOST_CONTRACT    # seam version
 ROOST_EXT_DIR     # this extension's own install directory (read-only by convention)
 ROOST_EXT_STATE   # this extension's private state directory; created before exec
+```
+
+Only when the manifest declares `"needs": ["fleet"]`:
+
+```sh
+ROOST_SOCKET      # which tmux server, so the ext talks to the right fleet
 PATH              # with $ROOST_HOME/scripts prepended, as panes already get
 ```
+
+Without `fleet`, `ROOST_SOCKET` is **unset**, not empty — an extension that
+reads it gets an unset-variable failure rather than silently addressing the
+default tmux server, which is the user's own ordinary tmux and the one thing
+roost exists to leave alone.
+
+The withholding happens in the dispatcher, at `exec` time. It is not a check
+the extension can pass and then bypass: the variable is simply never in its
+environment.
 
 `ROOST_EXT_STATE` is the answer to "where do I put my data". An extension that
 writes anywhere else is not covered by `roost ext remove --purge`, and its
@@ -188,12 +241,20 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.lock      what is installed, pin
     "repo": "beatzball/roost-mark",
     "ref": "v0.1.0",
     "commit": "a3f91c2e5b7d4419c2f0aa18e6cd3b7f92104a6d",
+    "tree": "6b1d0c94f2a7e5318cd40b7a2f9e6c1d83b45209",
     "contract": 1,
+    "needs": ["fleet"],
     "commands": ["mark", "marks"],
     "installed": "2026-09-08T10:14:22Z"
   }
 }
 ```
+
+`tree` is the commit's git tree hash, recorded so `roost ext verify` can prove
+the installed directory still matches what was agreed to. `needs` is copied
+from the manifest into the lockfile deliberately: the dispatcher must decide
+what to grant without reading the extension's own files, because those files
+are exactly what an attacker who reached the disk would edit.
 
 Alongside it, a **plain-text command index**:
 
@@ -231,14 +292,21 @@ something unexpected.
 list is a point-in-time claim that a repository can invalidate the next day;
 pinning to a commit is what actually holds.
 
-1. Resolve `--ref` (default: the repository's default branch) to a **full
+1. Validate `<org>/<repo>` against
+   `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`, refusing a leading `-` in either part,
+   **before it reaches `git`**. See "Input handling".
+2. Resolve `--ref` (default: the repository's default branch) to a **full
    commit SHA** with `git ls-remote`.
-2. Shallow-clone that SHA into a temporary directory.
-3. Read and validate `roost-ext.json`. Refuse on: missing manifest, bad `name`,
-   contract mismatch, a claimed command that collides with core or with an
-   installed extension, a declared command with no executable at
-   `bin/roost-<cmd>`.
-4. Print the plan and **wait for `y/N`**:
+3. Clone that SHA into a temporary directory, hardened as "The install must
+   actually run nothing" sets out: `--no-recurse-submodules`,
+   `GIT_LFS_SKIP_SMUDGE=1`, `-c core.hooksPath=/dev/null`. Then verify the
+   clone's `HEAD` is the SHA that was pinned, and refuse if it is not.
+4. Read and validate `roost-ext.json`. Refuse on: missing manifest, bad `name`,
+   contract mismatch, an unknown value in `needs`, a claimed command that
+   collides with core or with an installed extension, a declared command with
+   no executable at `bin/roost-<cmd>`, any path resolving outside the extension
+   directory, any setuid or setgid bit.
+5. Print the plan and **wait for `y/N`**:
 
 ```
   repo     github.com/beatzball/roost-mark
@@ -248,13 +316,27 @@ pinning to a commit is what actually holds.
   roost    >=0.1.0 <0.2.0          (you have 0.1.0)     ok
   claims   roost mark, roost marks
 
-  This runs code from the internet as you, when you type those commands.
-  Nothing runs during install.
+  This extension asks to drive your agents. If you install it, the code
+  in it can read any pane's screen and send prompts to any agent, the
+  same as you can.
+
+  Roost has checked that this is the exact commit named above. It has
+  NOT checked whether the code is honest. It cannot.
+
+  Nothing runs during install. Code runs when you type those commands.
 
   Install? [y/N]
 ```
 
-5. Move the clone into place, create `ROOST_EXT_STATE`, write `ext.lock`.
+The authority paragraph is printed **only** when `needs` contains `fleet`, and
+it is written in what the extension can do, not in the name of a field. An
+extension with no `needs` gets a one-line "asks for no access to your agents"
+instead. The paragraph about not checking honesty is printed always, because
+the moment roost looks like it vouched for something is the moment this design
+fails.
+
+6. Move the clone into place, create `ROOST_EXT_STATE`, write `ext.lock`
+   including `tree` and `needs`, regenerate `ext.index`.
 
 Not a tty → refuse, unless `--yes` is passed. Silence is never consent.
 **No post-install script is ever run.** Extension code executes only when the
@@ -272,9 +354,30 @@ The manifest, the lockfile entry, and the two directory paths.
 ### `roost ext update [<name>]`
 
 Re-resolves the recorded `ref` to a SHA. If unchanged, says so and stops.
-Otherwise shows the old and new commit, re-validates the manifest, and asks
-`y/N` again. **Install never auto-updates.** A pin that silently moves is not a
-pin.
+
+Otherwise it shows the old and new commit **and the diff between them**,
+re-validates the manifest, and asks `y/N` again. The diff is not a nicety: a
+consent was given to code, not to a repository name, and a repository that
+turns bad turns bad between two commits nobody was shown. Paged through
+`$PAGER` when one is set and stdout is a tty; capped, with the number of
+remaining files named, so a large diff cannot bury the prompt.
+
+A `needs` that has **grown** since install is called out on its own line above
+the prompt — an extension quietly acquiring `fleet` on an update is the exact
+shape of the attack this field exists to make visible.
+
+**Install never auto-updates.** A pin that silently moves is not a pin.
+
+### `roost ext verify [<name>]`
+
+Re-computes the tree hash of each installed extension and compares it with
+`ext.lock`. Prints `ok` or names every file that differs, and exits non-zero if
+any do.
+
+This is what makes the pin mean something **on disk** rather than only at fetch
+time. Without it, "pinned to a commit" describes what was downloaded once, not
+what will run tonight. Cheap enough to suggest in the `list` output whenever
+the lockfile and index disagree.
 
 ### `roost ext remove <name> [--purge]`
 
@@ -299,14 +402,82 @@ Keeping the revert clean is a constraint on the implementation, not a hope: the
 dispatcher is confined to the existing `*)` fallback and must not alter any
 existing branch of the `case`.
 
-## Trust
+## Security
 
-Stated plainly in the docs page, not buried:
+### What this design does not attempt
+
+**Roost never claims an extension is safe.** There is no scanner, no lint, no
+model review, and there must never be a line of output that reads like a
+verdict. Shell code can fetch its payload at run time or hide it in base64; any
+screen would pass a determined attacker and fail honest extensions, and a
+"scanned: safe" badge is worse than printing nothing because people believe it.
+
+Everything below is one of two things: **integrity** — it is exactly what you
+agreed to — or **least authority** — it can reach less.
+
+### Integrity
+
+| Control | Where |
+|---|---|
+| Pin to a full 40-character commit SHA, resolved before anything is fetched | `install` |
+| Verify the clone's `HEAD` equals the pinned SHA after cloning, and refuse otherwise | `install` |
+| Record the commit's tree hash in `ext.lock`; `roost ext verify` re-computes it | `install`, `verify` |
+| `update` shows the **diff**, not just a new SHA, before asking again | `update` |
+
+The diff at update time is the control that matters most in practice. Consent
+was given to *code*, not to a repository name, and a repository that turns bad
+turns bad between two commits you were never shown.
+
+### Least authority
+
+`needs` — see "Declared authority". Absent by default, granted only when
+declared, stated in words at the consent prompt.
+
+### Input handling
+
+`<org>/<repo>` is validated against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`
+**before it reaches `git`**, and a leading `-` is refused in either part. Not
+theatre: the argument otherwise flows into a `git` command line, where `../..`
+escapes the base, a `https://user:pass@host/` form smuggles credentials, and a
+leading dash becomes a flag.
+
+### The install must actually run nothing
+
+The consent block promises "nothing runs during install". That promise is false
+unless the clone is hardened, because git will happily execute code on the way
+in:
+
+- `--no-recurse-submodules` — a `.gitmodules` URL is another fetch, and can
+  point anywhere
+- `GIT_LFS_SKIP_SMUDGE=1` — an LFS smudge filter is a command
+- `-c core.hooksPath=/dev/null` — belt and braces; hooks are not transferred by
+  clone, but the clone is not the only path that reads a config
+- after cloning, refuse the extension if any path resolves outside the
+  extension directory (a symlink escape) or carries a setuid or setgid bit
+
+Each of these is a line of code. Together they are the difference between a
+true statement and a false one at the consent prompt.
+
+### Deferred, and recorded in `docs/known-gaps.md`
+
+- **Confinement.** Nothing stops a running extension from doing what any
+  program the user runs could do. Real containment means a `sandbox-exec`
+  profile on macOS and something else on Linux — large, platform-specific, and
+  out of scope for a tmux tool. Naming it as absent is the honest position.
+- **Pattern screening at consent** (`curl | sh`, writes to `~/.ssh`, `~/.aws`,
+  `crontab`). Deliberately not in build 1. It is worth adding only as
+  *information* — never a verdict, never a refusal, never the word "safe". It
+  catches careless, not malicious.
+- **No signature verification.** Pinning is the substitute.
+
+### What the docs page says, plainly
 
 > An extension is a program you install and run. Roost pins it to an exact
-> commit and asks before installing, so you know what you are getting and it
-> cannot change under you. It does not confine what the program can do once you
-> run it. Install extensions from people you would take a shell script from.
+> commit, tells you what authority it asks for, and asks before installing — so
+> you know what you are getting and it cannot change under you. Roost does not
+> confine what the program can do once you run it, and it does not check
+> whether the code is honest. Install extensions from people you would take a
+> shell script from.
 
 ## Oracle — automated
 
@@ -320,7 +491,12 @@ already builds a throwaway tmux server per run.
 - a second extension claiming an already-claimed command is refused
 - contract mismatch refuses; an out-of-range `roost` range warns and continues
 - an unparsable `roost` range warns and continues, never refuses
-- the environment handed to an extension contains every variable listed above
+- the environment handed to an extension contains every always-on variable
+- **`needs` is enforced**: without `fleet`, `ROOST_SOCKET` is *unset* in the
+  extension's environment (not empty) and `$ROOST_HOME/scripts` is not on its
+  `PATH`; with `fleet`, both are present. Asserted from inside a stub extension
+  that prints its own environment
+- an unknown value in `needs` refuses the install, naming it
 - **dispatch needs no JSON tool**: with `python3` and `jq` both absent from
   `PATH`, an installed command still runs. This guards the standing decision in
   `scripts/lib/roost-json.sh` that neither is a roost runtime dependency
@@ -328,6 +504,18 @@ already builds a throwaway tmux server per run.
 - `remove` keeps state; `remove --purge` deletes it
 - `update` on an unchanged ref reports no change and rewrites nothing
 - a non-tty install refuses without `--yes`
+- `<org>/<repo>` refusals, each before `git` is invoked: a `../..` component, a
+  leading `-` in either part, a `https://` URL, an embedded space
+- the clone is hardened: a fixture repository carrying a `.gitmodules` is
+  installed **without** fetching the submodule; a fixture whose tree contains a
+  symlink pointing outside the extension directory is refused; a fixture with a
+  setuid bit is refused
+- `install` refuses when the cloned `HEAD` is not the SHA that was pinned
+- `verify` reports `ok` on a fresh install, and after one byte is changed in an
+  installed file it names that file and exits non-zero
+- `update` prints a diff between the old and new commit before prompting
+- `update` calls out a `needs` that grew from `[]` to `["fleet"]`, on its own
+  line above the prompt
 
 ### Test isolation — read `AGENTS.md` §8 before writing any of this
 
@@ -354,8 +542,14 @@ look at the end, batched, not gating any task.
 | The seam is permanent core surface, added before any extension has proved its worth | medium | It is small and confined to the `*)` fallback; level-3 revert is one PR. Accepted knowingly. |
 | Semver, tags and a changelog are a new ongoing obligation | medium | Real. It is the price of the `roost` range field, which the user chose over a bare contract integer. |
 | An extension shadowing a core command could intercept fleet traffic | high | Structurally prevented: lookup lives only in the fallback, and install refuses core names. Both are tested. |
-| `git ls-remote` against a compromised repository returns an attacker SHA | low | Consent step shows the SHA; pinning means it cannot change later. Not confinement — see "Trust". |
+| `git ls-remote` against a compromised repository returns an attacker SHA | low | Consent step shows the SHA; pinning means it cannot change later. Not confinement — see "Security". |
 | Extension state grows without bound | low | Owned by the extension; `remove --purge` is the exit. |
+| **An extension reads every pane and puppets every agent** — keys, tokens and source scroll past in agent panes | **high** | Not granted by default. `needs: ["fleet"]` must be declared, is withheld at `exec` time rather than checked, is stated in words at consent, and is called out at `update` if it grows. |
+| Git executes code during clone via submodules or LFS filters, making "nothing runs during install" a false promise | **high** | Hardened clone: `--no-recurse-submodules`, `GIT_LFS_SKIP_SMUDGE=1`, `core.hooksPath=/dev/null`, plus symlink-escape and setuid refusal. Each is tested against a fixture. |
+| `<org>/<repo>` flows into a `git` command line | medium | Validated against a strict pattern before `git` is invoked; a leading `-` refused. Tested. |
+| Someone edits an installed extension on disk after consent | medium | `roost ext verify` re-computes the tree hash against `ext.lock`. Detection, not prevention. |
+| A user reads roost's checks as an endorsement of the code | medium | No output ever says "safe". The consent block states outright that roost has not checked whether the code is honest and cannot. |
+| A running extension does anything the user could do | **accepted** | Unconfined by design. Recorded in `docs/known-gaps.md`, stated in the docs page. Real containment is out of scope for a tmux tool. |
 
 Per `AGENTS.md` §11, anything left deferred at the end of build 1 goes into
 `docs/known-gaps.md`, not into a chat summary.
