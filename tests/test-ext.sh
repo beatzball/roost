@@ -1877,6 +1877,108 @@ for verdict in safe clean scanned verified trusted trustworthy secure vetted aud
   assert_eq "$verdict_hit" "0" "no install output reads as a verdict on the code: [$verdict]"
 done
 
+# --- the consent block is printed to a TERMINAL, and a terminal interprets --
+# THE MOST SERIOUS FINDING OF THIS BRANCH, kept as two live payloads rather
+# than as a sentence in a report.
+#
+# `roost` and `description` are the only free-text fields in a manifest, and
+# `install` prints the first one verbatim in the plan block. The manifest
+# reader used to refuse only \n and \r -- enough to protect its own KEY=VALUE
+# line protocol, and nothing at all to protect the terminal the value is
+# ultimately printed to. ESC is not a character there; it is an instruction.
+#
+# Payload one REPAINTS the commit row: cursor up two, column one, a forged
+# `commit 0000000...  (pinned)`, erase to end of line, cursor back down. The
+# user reads a commit that was never resolved, never cloned, never
+# HEAD-verified and never written to ext.lock -- and consents to it. That
+# defeats integrity at the one point where integrity is COMMUNICATED, which
+# makes every control downstream of the prompt worth nothing.
+#
+# Payload two is cruder and needs no cursor arithmetic: SGR 8 is conceal, so
+# everything after it -- the authority paragraph, the honesty paragraph and
+# the prompt itself -- is rendered invisible while the install proceeds.
+#
+# Every payload here is written as a JSON \u001b escape and never as a literal
+# byte: a raw ESC in a source file is invisible in the diff of the change that
+# would remove it, which is the review this file cannot afford to lose.
+#
+# The assertions are written against the OUTPUT, not against the reader: what
+# has to be true is that no escape sequence and no forged commit row ever
+# reaches a user's terminal, whichever layer stops it.
+esc="$(printf '\033')"
+ext_src "$EXT_SRCS/repaint" '{ "name": "repaint", "contract": 1, "roost": "*\u001b[2A\u001b[1G  commit   0000000...  (pinned)\u001b[K\u001b[2B\u001b[1G", "commands": ["repaint"] }' repaint
+ext_publish fix/repaint "$EXT_SRCS/repaint"
+out_repaint="$(ext_install fix/repaint --yes 2>"$TMP/err")"; rc=$?
+repaint_all="$(printf '%s\n%s\n' "$out_repaint" "$(cat "$TMP/err")")"
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses a manifest whose roost field carries an escape sequence"
+assert_contains "$(cat "$TMP/err")" "contains a control character" "...naming the reason"
+case "$repaint_all" in
+  *"$esc"*) esc_leaked=1 ;;
+  *) esc_leaked=0 ;;
+esac
+assert_eq "$esc_leaked" "0" "...and no ESC byte reaches the terminal, on either stream"
+case "$repaint_all" in
+  *"0000000...  (pinned)"*) forged=1 ;;
+  *) forged=0 ;;
+esac
+assert_eq "$forged" "0" "...so the forged commit row is never printed"
+assert_file_absent "$EXT_DATA/repaint" "...and nothing is installed"
+
+# The other half of the same claim, and the half that makes it mean something:
+# an HONEST manifest still shows the real commit. Asserting only that the
+# forgery is absent would pass on a build that printed no commit row at all.
+assert_contains "$good_out" "  commit   ${good_sha:0:7}...  (pinned)" \
+  "...while an honest manifest still shows the commit that was really resolved"
+case "$good_out" in
+  *"0000000...  (pinned)"*) forged=1 ;;
+  *) forged=0 ;;
+esac
+assert_eq "$forged" "0" "...and only that one"
+
+ext_src "$EXT_SRCS/conceal" '{ "name": "conceal", "contract": 1, "roost": ">=0.1.0 <9.0.0\u001b[8m", "commands": ["conceal"] }' conceal
+ext_publish fix/conceal "$EXT_SRCS/conceal"
+out_conceal="$(ext_install fix/conceal --yes 2>"$TMP/err")"; rc=$?
+conceal_all="$(printf '%s\n%s\n' "$out_conceal" "$(cat "$TMP/err")")"
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses a manifest whose roost field would conceal the rest of the block"
+case "$conceal_all" in
+  *"$esc"*) esc_leaked=1 ;;
+  *) esc_leaked=0 ;;
+esac
+assert_eq "$esc_leaked" "0" "...with no ESC byte on either stream"
+assert_file_absent "$EXT_DATA/conceal" "...and nothing installed"
+
+# `description` is the same class, and it reaches a terminal through
+# `roost ext info`'s manifest section rather than through the consent block.
+# One reader, one rule, both call sites.
+ext_src "$EXT_SRCS/descesc" '{ "name": "descesc", "contract": 1, "commands": ["descesc"], "description": "tidy\u001b[2Kforged" }' descesc
+ext_publish fix/descesc "$EXT_SRCS/descesc"
+out_desc="$(ext_install fix/descesc --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses an escape sequence in description too"
+assert_contains "$(cat "$TMP/err")" "contains a control character" "...naming the same reason"
+
+# And the lockfile side of the same rule: `roost ext list` and `roost ext info`
+# print ext.lock's own fields to the same terminal. Reaching this needs write
+# access to the user's state directory already -- install writes every one of
+# those fields from a validated alphabet -- so it is the weaker half of the
+# pair, and it is closed anyway.
+lock_saved="$(cat "$(roost_ext_lock)")"
+printf '%s\n' '{ "esc": { "repo": "o/esc", "ref": "v1\u001b[2A\u001b[1Gforged", "commands": ["esc"] } }' > "$(roost_ext_lock)"
+out_lockesc="$("$HERE/scripts/roost-ext" list 2>"$TMP/err")"; rc=$?
+lockesc_all="$(printf '%s\n%s\n' "$out_lockesc" "$(cat "$TMP/err")")"
+[ "$rc" -ne 0 ]
+assert_true "$?" "roost ext list refuses a lockfile field carrying an escape sequence"
+assert_contains "$(cat "$TMP/err")" "control character" "...naming the reason"
+case "$lockesc_all" in
+  *"$esc"*) esc_leaked=1 ;;
+  *) esc_leaked=0 ;;
+esac
+assert_eq "$esc_leaked" "0" "...and prints no ESC byte on either stream"
+printf '%s\n' "$lock_saved" > "$(roost_ext_lock)"
+roost_ext_index_write
+
 # --- every refusal in step 4 of the design, each with its own fixture -------
 # `assert_contains` on the REASON, not merely on a non-zero exit: a command
 # that refused everything for one generic reason would pass an exit-status
@@ -2054,43 +2156,131 @@ assert_file_absent "$EXT_DATA/withsub/sub/marker" \
 [ -f "$EXT_DATA/withsub/.gitmodules" ]
 assert_true "$?" "...while the .gitmodules file itself is present, so this really is the submodule case"
 
-# WHAT THE FIXTURE ABOVE DOES AND DOES NOT PROVE, measured rather than
-# assumed. Each hardening measure was removed from scripts/roost-ext in turn
-# and this file re-run:
+# WHAT THE FIXTURE ABOVE DOES AND DOES NOT PROVE. Measured on git 2.50.1, by
+# editing scripts/roost-ext and re-running this file:
 #
-#   --no-recurse-submodules removed, --no-checkout kept  -> ALL GREEN. With
-#   nothing checked out there is no submodule work to recurse into, and the
-#   `git checkout --detach` that follows does not recurse by default. The flag
-#   is real belt-and-braces, and this fixture cannot see it on its own.
+#   delete `--no-checkout --no-recurse-submodules` from the clone -> ALL GREEN
+#   before the source assertions below existed. git does not recurse into
+#   submodules unless it is asked to, so the fixture above cannot tell the
+#   flag being present from the flag being absent, in either direction.
 #
-#   both removed                                          -> the install FAILS
-#   and two assertions above go red, because git refuses to clone a file://
-#   submodule at all (protocol.file.allow). So the fixture catches the pair
-#   coming off -- but by the clone erroring, not by the marker appearing.
+# An earlier version of this comment claimed the opposite -- that deleting
+# both turns two assertions red. That measurement was of a DIFFERENT change:
+# passing `--recurse-submodules`, which is not what deleting `--no-...` does.
+# It is corrected here rather than quietly dropped, because a causal claim
+# nobody re-ran is the exact failure AGENTS.md §9 is about, and it was sitting
+# in a committed comment beside the assertions it was wrong about.
 #
-# Which means the marker file can never appear on a git this recent, and an
-# assertion resting on it alone would be asserting git's behaviour rather than
-# roost's. GIT_LFS_SKIP_SMUDGE and core.hooksPath are worse still: neither can
-# be provoked at all without installing git-lfs and a hook into a fixture.
+# So the fixture pins the PROPERTY -- a repository carrying a gitlink installs
+# with no submodule content on disk -- and the flag that is supposed to
+# guarantee it is pinned separately, in the SOURCE, below. GIT_LFS_SKIP_SMUDGE
+# and core.hooksPath are worse still: provoking either needs git-lfs installed
+# or a hook planted in a fixture, and neither is a dependency this suite
+# should acquire (the hooks half IS provoked, further down, for the one call
+# path where it can be).
 #
-# So the three measures the design names by name are ALSO pinned in the
-# source, and this is a grep -- it proves the line is PRESENT, not that it is
-# live (AGENTS.md §9), which is exactly why it sits beside the behavioural
-# fixture above rather than instead of it. Without it, deleting the flag that
-# makes the consent block's promise true is a change nothing in this suite
-# would notice.
-grep -q -- '--no-recurse-submodules' "$HERE/scripts/roost-ext"
-assert_true "$?" "the clone passes --no-recurse-submodules: a .gitmodules URL is another fetch"
-grep -q 'GIT_LFS_SKIP_SMUDGE=1' "$HERE/scripts/roost-ext"
-assert_true "$?" "every git runs with GIT_LFS_SKIP_SMUDGE=1: an LFS smudge filter is a command"
-grep -q -- '-c core.hooksPath=/dev/null' "$HERE/scripts/roost-ext"
-assert_true "$?" "every git runs with core.hooksPath=/dev/null"
-# All three on ONE wrapper, so a git invocation added later cannot be the
-# unhardened one. Asserted because the alternative -- repeating them per call
-# -- is what makes that possible, and it would still pass the three greps
-# above.
-grep -q 'GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null' "$HERE/scripts/roost-ext"
-assert_true "$?" "...carried by one wrapper, so a git added here later is hardened by construction"
+# THE SOURCE ASSERTIONS RUN AGAINST A COPY WITH THE COMMENTS STRIPPED, and
+# that is the whole point of them. The first version of these greps searched
+# the file as written and matched the PROSE describing the flags -- "the clone
+# passes --no-recurse-submodules" is a comment, and it kept the assertion
+# green with the flag deleted from the invocation. An assertion that a
+# sentence about the code exists is not an assertion about the code.
+ext_code="$TMP/roost-ext.code"
+ext_lib_code="$TMP/roost-ext-lib.code"
+grep -v '^[[:space:]]*#' "$HERE/scripts/roost-ext" > "$ext_code"
+grep -v '^[[:space:]]*#' "$HERE/scripts/lib/roost-ext.sh" > "$ext_lib_code"
+# Checked before it is trusted, the same shape the sandbox canary uses at the
+# end of this file: a phrase that exists ONLY in a comment has to be in the
+# original and gone from the filtered copy. Without this pair, a filter that
+# silently produced an empty file would make every grep below fail loudly --
+# but a filter that stripped nothing would make them all pass, which is the
+# direction that hides a defect.
+# The probe is the file's own first prose comment rather than a phrase written
+# out here: a literal would rot the first time somebody reworded that comment,
+# and a rotted detector fails in the direction that says "nothing to filter"
+# while the greps below quietly go back to matching prose.
+ext_first_comment="$(grep -m1 '^# ' "$HERE/scripts/roost-ext")"
+[ -n "$ext_first_comment" ]
+assert_true "$?" "the comment filter has a comment to filter"
+grep -qF "$ext_first_comment" "$ext_code"
+assert_eq "$?" "1" "...and the filtered copy really has the comment prose taken out"
+grep -qF '_ext_git()' "$ext_code"
+assert_true "$?" "...while the code it describes is still there"
+
+grep -qF -- '_ext_git clone --quiet --no-checkout --no-recurse-submodules --' "$ext_code"
+assert_true "$?" "the clone INVOCATION passes --no-checkout and --no-recurse-submodules"
+grep -qF 'GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null "$@"' "$ext_code"
+assert_true "$?" "install's git wrapper carries GIT_LFS_SKIP_SMUDGE=1 and core.hooksPath=/dev/null"
+# On ONE wrapper, so a git invocation added to this file later is hardened by
+# construction rather than by whoever adds it remembering.
+# Exactly ONE spelling of `git` in the whole of each file's code, and it is
+# the wrapper's own line. Stronger than "the wrapper exists", and it is the
+# assertion that would notice a second, unhardened git invocation being added
+# later -- which is the failure the wrapper exists to make impossible.
+assert_eq "$(grep -cE '(^|[^_a-zA-Z])git ' "$ext_code")" "1" \
+  "scripts/roost-ext spells git exactly once, inside the hardened wrapper"
+assert_eq "$(grep -cE '(^|[^_a-zA-Z])git ' "$ext_lib_code")" "1" \
+  "...and so does scripts/lib/roost-ext.sh"
+
+# The library's own git, which roost_ext_tree_hash runs INSIDE an extension's
+# directory during install and again during every verify. It was unhardened,
+# and with core.hooksPath and init.templateDir set in a user's global config
+# that meant hooks firing during an install that had just promised nothing
+# runs. Behaviour pins this one, below; these name the three call sites.
+grep -qF 'GIT_LFS_SKIP_SMUDGE=1 git -c core.hooksPath=/dev/null -c init.templateDir= "$@"' "$ext_lib_code"
+assert_true "$?" "the library's git wrapper is hardened the same way"
+grep -qF 'roost_ext__git init -q --bare' "$ext_lib_code"
+assert_true "$?" "tree_hash's git init goes through it"
+grep -qF 'roost_ext__git -C "$dir" add -A --force' "$ext_lib_code"
+assert_true "$?" "...its git add too"
+grep -qF 'roost_ext__git write-tree' "$ext_lib_code"
+assert_true "$?" "...and its git write-tree"
+
+# --- and the hooks half, provoked ------------------------------------------
+# The one hardening measure this suite CAN demonstrate rather than grep for.
+# These are the USER'S OWN hooks -- no manifest chooses them -- so this is not
+# an escalation; it is the consent block's "nothing runs during install" being
+# false on an ordinary developer machine, which is enough.
+#
+# GIT_CONFIG_GLOBAL rather than a $HOME/.gitconfig: HOME is the canary in this
+# file and nothing may be written under it.
+HOOKY="$TMP/hooky"; mkdir -p "$HOOKY/hooks"
+for h in post-index-change reference-transaction post-checkout pre-commit; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "$(basename "$0")" >> "%s/fired"\nexit 0\n' "$HOOKY" > "$HOOKY/hooks/$h"
+  chmod +x "$HOOKY/hooks/$h"
+done
+printf '[core]\n\thooksPath = %s/hooks\n' "$HOOKY" > "$HOOKY/gitconfig"
+# PUBLISHED FIRST, before the hook config is in force. ext_publish ends in a
+# plain `git clone --bare`, which is a git this suite hardens nowhere -- so
+# building the fixture under the config fires the hooks itself, and the first
+# version of this section read that as the install having fired them. The
+# marker is cleared again immediately before the install regardless, so the
+# assertion is about the install and nothing else.
+ext_src "$EXT_SRCS/hooky" '{ "name": "hooky", "contract": 1, "commands": ["hooky"] }' hooky
+ext_publish fix/hooky "$EXT_SRCS/hooky"
+export GIT_CONFIG_GLOBAL="$HOOKY/gitconfig"
+# The detector first, and it is not decoration: GIT_CONFIG_GLOBAL is git 2.32
+# and later, and on an older git this whole section would pass while proving
+# nothing at all. So make the hooks fire, through the exact shape
+# roost_ext_tree_hash uses, before believing the silence afterwards.
+mkdir -p "$HOOKY/work"; printf 'x\n' > "$HOOKY/work/a.txt"
+git init -q --bare "$HOOKY/odb" >/dev/null 2>&1
+GIT_DIR="$HOOKY/odb" GIT_WORK_TREE="$HOOKY/work" GIT_INDEX_FILE="$HOOKY/idx" \
+  git -C "$HOOKY/work" add -A --force -- . >/dev/null 2>&1
+[ -s "$HOOKY/fired" ]
+assert_true "$?" "the hook fixture really does fire hooks for an unhardened git"
+rm -f "$HOOKY/fired"
+# roost_ext_tree_hash on its own first: it is what `roost ext verify` will run
+# on every installed extension, so it has to be silent independently of
+# install.
+roost_ext_tree_hash "$HOOKY/work" >/dev/null 2>&1
+assert_file_absent "$HOOKY/fired" "roost_ext_tree_hash runs no hook from the user's own git config"
+rm -f "$HOOKY/fired"
+out_hooky="$(ext_install fix/hooky --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "an install runs to completion with hooks configured globally"
+assert_file_absent "$HOOKY/fired" \
+  "...and not one hook fired during it — 'nothing runs during install' stays true"
+unset GIT_CONFIG_GLOBAL
 
 # THE TREE HASH, AND WHICH FUNCTION PRODUCED IT. This is the fixture where
 # roost_ext_tree_hash and `git rev-parse HEAD^{tree}` genuinely disagree: the
@@ -2192,6 +2382,106 @@ assert_contains "$(cat "$TMP/err")" "halfway is not installed" "...and that the 
 assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" \
   "...with ext.lock put back exactly as it was, not left carrying an entry nothing dispatches"
 assert_file_absent "$EXT_DATA/halfway" "...and the clone taken back off the disk"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# --- a manifest that claims one command twice -------------------------------
+# Caught in the claim loop, with the other manifest problems and BEFORE the
+# prompt. roost_ext_index_write does refuse it -- but only after the user has
+# consented and the clone has been moved into place, in words written for a
+# lockfile that two DIFFERENT extensions edited ("claimed by both 'ds' and
+# 'ds'"), and the install then rolls back. The right outcome by a route nobody
+# can follow is still a defect: a manifest problem belongs in the manifest's
+# own refusal, at the moment the manifest is read.
+ext_src "$EXT_SRCS/twice" '{ "name": "twice", "contract": 1, "commands": ["dx", "dx"] }' dx
+ext_publish fix/twice "$EXT_SRCS/twice"
+out_twice="$(ext_install fix/twice --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses a manifest that claims the same command twice"
+assert_contains "$(cat "$TMP/err")" "claims dx twice" "...naming the command, once"
+# BEFORE the prompt, which is the whole point of moving it. If the plan block
+# was printed, the refusal happened after the user had already been asked.
+case "$out_twice" in
+  *"Install? [y/N]"*) twice_late=1 ;;
+  *) twice_late=0 ;;
+esac
+assert_eq "$twice_late" "0" "...before the consent prompt, not after it"
+assert_file_absent "$EXT_DATA/twice" "...and nothing is installed"
+
+# --- an empty --ref is a mistake, not a request for the default branch ------
+# `--ref "$TAG"` with an unset TAG is the shape this arrives in. Reading it as
+# "no ref given, use the default branch" answers a question the user did not
+# ask, on the one argument that decides which code gets installed.
+out_emptyref="$(ext_install fix/good --ref '' --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses an EMPTY --ref rather than silently using the default branch"
+assert_contains "$(cat "$TMP/err")" "not a plain ref name" "...naming the rule it broke"
+assert_contains "$(cat "$TMP/err")" "nothing has been fetched" "...and saying nothing was fetched"
+
+# --- a branch literally named HEAD -------------------------------------------
+# `git update-ref refs/heads/HEAD` creates one happily, and `git ls-remote <url>
+# HEAD` then answers with two lines: the repository's real HEAD, and that
+# branch. gitrevisions resolves a bare name by trying `<name>` before
+# refs/heads/<name>, so a default install has to pin the real HEAD -- pinning
+# the branch would not be the ref the user meant, however honestly the id was
+# shown.
+ext_src "$EXT_SRCS/headbranch" '{ "name": "headbranch", "contract": 1, "commands": ["headbranch"] }' headbranch
+ext_publish fix/headbranch "$EXT_SRCS/headbranch"
+hb_first="$(ext_fixture_git -C "$EXT_SRCS/headbranch" rev-parse HEAD)"
+printf 'second\n' > "$EXT_SRCS/headbranch/second.txt"
+ext_fixture_git -C "$EXT_SRCS/headbranch" add -A >/dev/null 2>&1
+ext_fixture_git -C "$EXT_SRCS/headbranch" commit -q -m second >/dev/null 2>&1
+hb_second="$(ext_fixture_git -C "$EXT_SRCS/headbranch" rev-parse HEAD)"
+rm -rf "$EXT_REMOTES/fix/headbranch"
+git clone -q --bare "$EXT_SRCS/headbranch" "$EXT_REMOTES/fix/headbranch" >/dev/null 2>&1
+ext_fixture_git -C "$EXT_REMOTES/fix/headbranch" update-ref refs/heads/HEAD "$hb_first" >/dev/null 2>&1
+# The fixture is checked before anything is concluded from it: two different
+# commits, and ls-remote really does answer with both lines.
+[ "$hb_first" != "$hb_second" ]
+assert_true "$?" "the HEAD-branch fixture really has two different commits"
+assert_eq "$(git ls-remote -- "file://$EXT_REMOTES/fix/headbranch" HEAD | wc -l | tr -d ' ')" "2" \
+  "...and ls-remote HEAD really is ambiguous, so this case has something to resolve"
+out_hb="$(ext_install fix/headbranch --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "install succeeds against a repository carrying a branch named HEAD"
+assert_eq "$(ext_lock_field headbranch commit)" "$hb_second" \
+  "...pinning the repository's real HEAD, not the branch that shares its name"
+
+# --- a failed install takes its state directory with it ---------------------
+# The rollback used to restore ext.lock and remove the clone and stop there,
+# leaving $state/ext/<name> behind: a failed install stayed visible afterwards
+# as an extension that had been there once. A rollback that is partial is a
+# rollback nobody can reason about.
+#
+# The failure is provoked the same way the lockfile one is -- a hand-wedged
+# ext.lock that can be read but cannot become a dispatch table -- because that
+# is the one abandonment point that happens AFTER the state directory is made.
+ext_src "$EXT_SRCS/statedir" '{ "name": "statedir", "contract": 1, "commands": ["statedir"] }' statedir
+ext_publish fix/statedir "$EXT_SRCS/statedir"
+printf '%s\n' '{ "wedged": { "repo": "o/wedged", "commands": [] } }' > "$(roost_ext_lock)"
+rm -f "$EXT_STATE_ROOT/ext.index"
+out_sd="$(ext_install fix/statedir --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "the install fails, as the wedged lockfile requires"
+assert_file_absent "$EXT_STATE_ROOT/ext/statedir" \
+  "...and the state directory it created is gone too, not left behind"
+
+# THE OTHER DIRECTION, and it is the one that matters more. `roost ext remove`
+# deliberately KEEPS an extension's state unless --purge is given, precisely so
+# an accidental removal does not destroy a year of bookmarks. A reinstall that
+# then fails must not be the thing that destroys them instead. The rollback
+# removes a state directory only when THIS run created it, with rmdir rather
+# than rm -rf, so a directory with anything in it survives structurally rather
+# than by care.
+mkdir -p "$EXT_STATE_ROOT/ext/statedir"
+printf 'a year of bookmarks\n' > "$EXT_STATE_ROOT/ext/statedir/data"
+out_sd="$(ext_install fix/statedir --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "the install fails again with the state directory already present"
+[ -f "$EXT_STATE_ROOT/ext/statedir/data" ]
+assert_true "$?" "...and the state a previous remove kept on purpose is untouched"
+assert_eq "$(cat "$EXT_STATE_ROOT/ext/statedir/data")" "a year of bookmarks" \
+  "...byte for byte"
+rm -rf "$EXT_STATE_ROOT/ext/statedir"
 rm -f "$(roost_ext_lock)"
 roost_ext_index_write
 

@@ -117,12 +117,26 @@ for name in sorted(data):
         strlist(entry, "commands", name),
         scalar(entry, "installed", name),
     ]
-    # A value carrying a tab or a newline would turn one row into more than
-    # one field, or more than one line, and the caller's `while IFS=$'\t'
-    # read` has no escaping to undo that with.
+    # ANY C0 control character, plus DEL. A tab or a newline would turn one
+    # row into more than one field, or more than one line, and the caller's
+    # `while IFS=$'\t' read` has no escaping to undo that with -- but that is
+    # only the half of this that breaks the LINE PROTOCOL. These nine fields
+    # are printed to a terminal by `roost ext list` and `roost ext info`, and
+    # an ESC is not a character on a terminal: it is an instruction to one. A
+    # `ref` of "v1\x1b[2A..." repaints whatever is above it, and the same
+    # class of payload against the CONSENT block was the most serious finding
+    # of this branch (see roost_ext__manifest_py's ctrl(), which asks the same
+    # question of the manifest's free-text fields).
+    #
+    # Reaching this one needs write access to the user's own state directory
+    # already -- `roost ext install` writes every field here from a validated
+    # alphabet -- so it is the weaker half of the pair. It is closed anyway,
+    # because "a free-text field is untrusted input to a terminal" is a rule
+    # about the destination, not about how the bytes got there.
     for field in fields:
-        if "\n" in field or "\r" in field or "\t" in field:
-            die("entry '%s' has a field containing a tab or newline" % name)
+        for ch in field:
+            if ord(ch) < 0x20 or ord(ch) == 0x7F:
+                die("entry '%s' has a field containing a control character" % name)
     rows.append("\t".join(fields))
 w("\n".join(rows))
 if rows:
@@ -154,7 +168,7 @@ def scalarv($n; $e; $k):
   if ($e | has($k)) then
     ($e[$k] as $v
      | if ($v | type) == "string" then
-         (if ($v | test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
+         (if ($v | test("[\\x00-\\x1f\\x7f]")) then {err: ("entry '" + $n + "' has a field containing a control character")}
           elif $v == "" then "-"
           else $v end)
        elif ($v | type) == "number" then
@@ -167,7 +181,7 @@ def strlistv($n; $e; $k):
     ($e[$k] as $v
      | if ($v | type) != "array" then {err: ("entry '" + $n + "' field '" + $k + "' must be an array")}
        elif any($v[]; (type != "string") or (. == "")) then {err: ("entry '" + $n + "' field '" + $k + "' must contain only non-empty strings")}
-       elif any($v[]; test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
+       elif any($v[]; test("[\\x00-\\x1f\\x7f]")) then {err: ("entry '" + $n + "' has a field containing a control character")}
        else (($v | join(",")) as $s | if $s == "" then "-" else $s end) end)
   else "-" end;
 if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
@@ -186,7 +200,7 @@ else
         # over the finished row would need its own special case for element
         # zero -- checking $n on its own line here is the same rule with no
         # extra case to keep in sync.
-        elif ($n | test("[\n\r\t]")) then [{err: ("entry '" + $n + "' has a field containing a tab or newline")}]
+        elif ($n | test("[\\x00-\\x1f\\x7f]")) then [{err: ("entry '" + $n + "' has a field containing a control character")}]
         else
           [ $n,
             scalarv($n; $e; "repo"),
@@ -539,6 +553,31 @@ _ext_ref_valid() {
   return 0
 }
 
+# _ext_install_undo -> take back everything the install arm has put on disk
+# so far: the clone, and the state directory IF this run is what created it.
+#
+# It reads the install arm's own variables rather than taking arguments --
+# they are globals in this script, the arm is one long linear branch, and a
+# repeated five-argument call at eight abandonment points is eight chances to
+# pass the wrong one.
+#
+# `rmdir`, never `rm -rf`, and only when this run created it. An extension's
+# state directory is the one thing `roost ext remove` deliberately KEEPS
+# unless `--purge` is given, so a reinstall that fails must not be the thing
+# that destroys a year of an extension's data. rmdir refuses a non-empty
+# directory, which makes that structural rather than careful.
+#
+# This was a bare `rm -rf "$ext_dest"` at every one of those points and left
+# the state directory behind, so a failed install stayed visible afterwards as
+# an extension that had been there once. A rollback that is partial is a
+# rollback nobody can reason about.
+_ext_install_undo() {
+  rm -rf "$ext_dest"
+  if [ "${ext_state_created:-0}" -eq 1 ]; then
+    rmdir "$ext_state_par/$ext_name" 2>/dev/null || true
+  fi
+}
+
 # _ext_git ARGS... -> git, hardened, every single time.
 #
 # THE THREE HARDENING MEASURES ARE WHAT MAKE THE CONSENT BLOCK'S PROMISE TRUE.
@@ -595,7 +634,19 @@ _ext_pick_ref() {
   done <<EOF
 $out
 EOF
-  for sha in "$peeled" "$tag" "$head" "$exact"; do
+  # EXACT first. gitrevisions resolves a bare name by trying `<name>` before
+  # refs/tags/<name> and refs/heads/<name>, and this has to agree with it or a
+  # `--ref` behaves differently here than the same string does in
+  # `git checkout`. It is not hypothetical for the DEFAULT install either: a
+  # repository carrying a branch literally named HEAD -- which
+  # `git update-ref refs/heads/HEAD` will happily create -- would otherwise
+  # have `roost ext install <org>/<repo>` pin that branch instead of the
+  # repository's actual HEAD. Integrity was never at risk (the id is shown and
+  # pinned), but it would not be the ref the user meant.
+  #
+  # The peeled tag still beats the tag itself: an ANNOTATED tag's own object
+  # id is not a commit id, and what gets pinned has to be the commit.
+  for sha in "$exact" "$peeled" "$tag" "$head"; do
     if [ -n "$sha" ]; then
       printf '%s\n' "$sha"
       return 0
@@ -673,7 +724,7 @@ case "${1:-}" in
     # around each split. `case` patterns are unaffected by it.
     set -f
 
-    spec=""; want_ref=""; assume_yes=0; saw_spec=0
+    spec=""; want_ref=""; assume_yes=0; saw_spec=0; saw_ref=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --ref)
@@ -682,9 +733,9 @@ case "${1:-}" in
             echo "roost ext install: --ref needs a value" >&2
             exit 2
           fi
-          want_ref="$1"
+          want_ref="$1"; saw_ref=1
           ;;
-        --ref=*) want_ref="${1#--ref=}" ;;
+        --ref=*) want_ref="${1#--ref=}"; saw_ref=1 ;;
         --yes|-y) assume_yes=1 ;;
         -*)
           # An argument that starts with a dash AND contains a slash is a
@@ -750,7 +801,11 @@ case "${1:-}" in
       printf 'roost ext install: nothing has been fetched — see docs/airig/specs/2026-09-08-extension-seam.md, "Input handling"\n' >&2
       exit 1
     fi
-    if [ -n "$want_ref" ] && ! _ext_ref_valid "$want_ref"; then
+    # `saw_ref`, not `[ -n "$want_ref" ]`. An EMPTY --ref is a mistake -- a
+    # shell variable that did not expand, most often -- and reading it as "no
+    # ref given, use the default branch" answers a question the user did not
+    # ask, on the one argument that decides which code gets installed.
+    if [ "$saw_ref" -eq 1 ] && ! _ext_ref_valid "$want_ref"; then
       printf 'roost ext install: refusing that --ref: it is not a plain ref name\n' >&2
       printf 'roost ext install: a ref may be [A-Za-z0-9._/+-], must not begin with a dash, and must not contain ".."\n' >&2
       printf 'roost ext install: nothing has been fetched\n' >&2
@@ -963,7 +1018,23 @@ case "${1:-}" in
 
     # --- what it claims, against what is already claimed --------------------
     ext_core_list="$(roost_ext_core_commands)"
+    ext_seen_cmds=""
     for ext_cmd in $ext_commands; do
+      # The SAME command twice in ONE manifest. Caught here, with the other
+      # claim problems and before the prompt, rather than left to
+      # roost_ext_index_write -- which does refuse it, but only after the user
+      # has consented and the clone has been moved into place, and does it in
+      # words written for a lockfile that two DIFFERENT extensions edited:
+      # "command 'dx' is claimed by both 'ds' and 'ds'". The install is then
+      # rolled back, which is the right outcome reached by a route nobody can
+      # follow. A manifest problem belongs in the manifest's own refusal.
+      for ext_one in $ext_seen_cmds; do
+        if [ "$ext_one" = "$ext_cmd" ]; then
+          printf 'roost ext install: refusing %s: its manifest claims %s twice\n' "$ext_name" "$ext_cmd" >&2
+          exit 1
+        fi
+      done
+      ext_seen_cmds="$ext_seen_cmds $ext_cmd"
       # The same grammar as a name, and for the same reason: this word becomes
       # `bin/roost-<cmd>` on disk and the first TAB-separated field of a line
       # in ext.index, which the dispatcher reads with a `while read` that has
@@ -1173,6 +1244,10 @@ EOF
     # somewhere to write. It is also the only path `roost ext remove --purge`
     # knows to delete, which is why an extension writing anywhere else has to
     # say so in its README.
+    # Recorded BEFORE the mkdir, because that is the only moment the answer is
+    # knowable: afterwards nothing on disk distinguishes a directory this run
+    # made from one `roost ext remove` left behind on purpose.
+    if [ -d "$ext_state_par/$ext_name" ]; then ext_state_created=0; else ext_state_created=1; fi
     mkdir -p -- "$ext_state_par/$ext_name" || { echo "roost ext install: cannot create $ext_state_par/$ext_name" >&2; exit 1; }
 
     # THE TREE HASH IS RECORDED FROM roost_ext_tree_hash, NOT FROM
@@ -1187,7 +1262,7 @@ EOF
       :
     else
       printf 'roost ext install: could not hash %s\n' "$ext_dest" >&2
-      rm -rf "$ext_dest"
+      _ext_install_undo
       exit 1
     fi
 
@@ -1207,7 +1282,7 @@ EOF
       # because the day somebody widens one of those validators, this is the
       # difference between a refusal and a corrupted ext.lock.
       printf 'roost ext install: internal: a recorded value is not safe to write as JSON\n' >&2
-      rm -rf "$ext_dest"
+      _ext_install_undo
       exit 1
     fi
     ext_entry="{$ext_entry_name:{\"repo\":$ext_entry_repo,\"ref\":$ext_entry_ref,\"commit\":$ext_entry_commit,\"tree\":$ext_entry_tree,\"contract\":$ext_mcontract,\"needs\":$ext_entry_needs,\"commands\":$ext_entry_cmds,\"installed\":$ext_entry_stamp}}"
@@ -1217,7 +1292,7 @@ EOF
     # that appears before consent is a lockfile that appears when the user
     # says no.
     if [ -f "$ext_lock_file" ]; then
-      cp "$ext_lock_file" "$ext_tmp/lock-in.json" || { echo "roost ext install: cannot read $ext_lock_file" >&2; rm -rf "$ext_dest"; exit 1; }
+      cp "$ext_lock_file" "$ext_tmp/lock-in.json" || { echo "roost ext install: cannot read $ext_lock_file" >&2; _ext_install_undo; exit 1; }
     else
       printf '{}\n' > "$ext_tmp/lock-in.json"
     fi
@@ -1225,12 +1300,12 @@ EOF
       :
     else
       printf 'roost ext install: could not add %s to %s\n' "$ext_name" "$ext_lock_file" >&2
-      rm -rf "$ext_dest"
+      _ext_install_undo
       exit 1
     fi
 
     roost_ext__roots
-    mkdir -p -- "$ROOST_EXT_STATE_ROOT" || { echo "roost ext install: cannot create $ROOST_EXT_STATE_ROOT" >&2; rm -rf "$ext_dest"; exit 1; }
+    mkdir -p -- "$ROOST_EXT_STATE_ROOT" || { echo "roost ext install: cannot create $ROOST_EXT_STATE_ROOT" >&2; _ext_install_undo; exit 1; }
     # A temp file in the SAME directory and then a rename, the shape
     # roost_ext_index_write already uses for the index: a concurrent reader
     # sees the old lockfile or the new one, never half of one.
@@ -1238,7 +1313,7 @@ EOF
       :
     else
       echo "roost ext install: cannot write into $ROOST_EXT_STATE_ROOT" >&2
-      rm -rf "$ext_dest"
+      _ext_install_undo
       exit 1
     fi
     printf '%s\n' "$ext_newlock" > "$ext_tmp_lock"
@@ -1275,7 +1350,7 @@ EOF
       if [ "$(cat "$ext_lock_file" 2>/dev/null || true)" = "{}" ]; then
         rm -f "$ext_lock_file"
       fi
-      rm -rf "$ext_dest"
+      _ext_install_undo
       roost_ext_index_write || true
       printf 'roost ext install: %s is not installed\n' "$ext_name" >&2
       exit 1

@@ -478,13 +478,45 @@ fields = [
     ("description", scalar("description", False)),
 ]
 
+def ctrl(value):
+    # ANY C0 control character, plus DEL -- not only the two that break this
+    # function's own line protocol.
+    #
+    # A newline or a carriage return would turn one KEY=VALUE line into two,
+    # and the caller's `while IFS== read` would take the tail of a description
+    # as a key of its own. That was the whole reason for this check, and it
+    # was the wrong reason: `roost` and `description` are the only free-text
+    # fields in a manifest, `roost ext install` PRINTS the first one verbatim
+    # in the consent block and `roost ext info` prints the second, and an ESC
+    # is not a character on a terminal -- it is an instruction to one.
+    #
+    # A manifest carrying
+    #   "roost": "*\x1b[2A\x1b[1G  commit 0000000...  (pinned)\x1b[K..."
+    # repaints the commit row of the consent block. The user is shown a
+    # commit that was never resolved, never cloned and never written to
+    # ext.lock, and consents to it. A cruder "\x1b[8m" hides the authority
+    # paragraph, the honesty paragraph and the prompt itself.
+    #
+    # That defeats integrity at the one point where integrity is
+    # COMMUNICATED, which makes every control downstream of the prompt worth
+    # nothing. So the rule is the whole class, stated in the design as: a
+    # free-text manifest field is untrusted input to a terminal, and a
+    # terminal is an interpreter.
+    #
+    # No `re` import: this is one comparison per character and it says
+    # exactly what it means. The jq engine asks the same question with the
+    # character class [\x00-\x1f\x7f], and tests/test-ext.sh runs an ESC
+    # through both.
+    for ch in value:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return True
+    return False
+
+
 out = []
 for key, value in fields:
-    # A value carrying a newline would turn one KEY=VALUE line into two, and
-    # the caller's `while IFS== read` would take the tail of a description as
-    # a key of its own.
-    if "\n" in value or "\r" in value:
-        die("field '%s' contains a newline" % key)
+    if ctrl(value):
+        die("field '%s' contains a control character" % key)
     out.append("%s=%s" % (key, value))
 w("\n".join(out) + "\n")
 PY
@@ -503,8 +535,13 @@ PY
 # means no legitimate value can ever be mistaken for an error.
 roost_ext__manifest_jq() {
   cat <<'JQ'
+# The same class python3's ctrl() asks about, and it has to be applied in
+# BOTH places python3 applies it -- python3 checks every FINISHED field,
+# strlist's joined output included, so a jq that only checked scalars would
+# pass an ESC inside a `commands` entry that python3 refuses. `\s` is not a
+# substitute: it matches whitespace, and ESC is not whitespace.
 def clean($k; $v):
-  if ($v | test("[\n\r]")) then {err: ("field '" + $k + "' contains a newline")} else $v end;
+  if ($v | test("[\\x00-\\x1f\\x7f]")) then {err: ("field '" + $k + "' contains a control character")} else $v end;
 def scalar($k; $req):
   if has($k) then
     (.[$k] as $v
@@ -533,7 +570,7 @@ def strlist($k; $req):
          then {err: ("field '" + $k + "' must contain only non-empty strings")}
        elif any($v[]; test("\\s"))
          then {err: ("field '" + $k + "' has an entry with whitespace in it")}
-       else ($v | join(" ")) end)
+       else clean($k; ($v | join(" "))) end)
   elif $req then {err: ("missing required field '" + $k + "'")}
   else "" end;
 if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
@@ -573,6 +610,40 @@ roost_ext_manifest_read() {
 
 # --- integrity --------------------------------------------------------------
 
+# roost_ext__git ARGS... -> git, hardened, for the calls this library makes.
+#
+# The same three measures scripts/roost-ext's `_ext_git` carries, and here for
+# the same reason rather than for symmetry. roost_ext_tree_hash runs git
+# INSIDE an extension's directory -- during `roost ext install`, and again
+# during every `roost ext verify` -- and the design names
+# `core.hooksPath=/dev/null` precisely because "the clone is not the only path
+# that reads a config". This is that path, and it was unhardened: with
+# core.hooksPath and init.templateDir set in a user's own global config,
+# `reference-transaction` and `post-index-change` hooks fire during an install
+# that has just promised nothing runs.
+#
+# Those are the USER'S OWN hooks, not an attacker's -- no manifest chooses
+# them -- so this is not an escalation, and the promise it breaks is still the
+# one printed at the prompt.
+#
+# `-c init.templateDir=` on top of the hooksPath override: hooksPath alone
+# stops a hook being FOUND, and the empty template stops one being COPIED into
+# the throwaway object database in the first place. Measured: with a template
+# dir configured, `git init --bare` writes its hooks into the new repository
+# unless this is set.
+#
+# WHAT IT DOES NOT CLOSE, stated rather than implied: `git add` runs a CLEAN
+# filter, and a filter is chosen by the extension's own in-tree .gitattributes
+# even though the command behind it comes from the user's config.
+# GIT_LFS_SKIP_SMUDGE governs the smudge direction only, and git has no
+# blanket "no filters" switch for `add`. So a user who has configured an LFS
+# clean filter, installing an extension whose .gitattributes asks for it, runs
+# that filter here. It is the user's own configured program, the same class as
+# the hooks above, and it is written down rather than left to be discovered.
+roost_ext__git() {
+  GIT_LFS_SKIP_SMUDGE=1 git -c core.hooksPath=/dev/null -c init.templateDir= "$@"
+}
+
 # roost_ext_tree_hash DIR -> the git tree hash of DIR's contents.
 #
 # The integrity control's arithmetic: `roost ext install` records what this
@@ -603,7 +674,7 @@ roost_ext_tree_hash() {
   # A throwaway object database. The tree objects have to be written
   # somewhere, and writing them into the extension's own clone would make a
   # read-only integrity check mutate the very thing it is checking.
-  if git init -q --bare "$tmp/odb" >/dev/null 2>&1; then
+  if roost_ext__git init -q --bare "$tmp/odb" >/dev/null 2>&1; then
     # `:(exclude).git` is not tidiness. The clone's .git holds ref state and
     # changes on every fetch, so including it would have `roost ext verify`
     # cry tamper at a no-op — and, since .git is itself a repository, git
@@ -617,9 +688,9 @@ roost_ext_tree_hash() {
     # A separate GIT_INDEX_FILE for the same reason as the separate object
     # database — the clone's own index is never touched.
     if GIT_DIR="$tmp/odb" GIT_WORK_TREE="$dir" GIT_INDEX_FILE="$tmp/index" \
-       git -C "$dir" add -A --force -- . ':(exclude).git' >/dev/null 2>&1; then
+       roost_ext__git -C "$dir" add -A --force -- . ':(exclude).git' >/dev/null 2>&1; then
       tree="$(GIT_DIR="$tmp/odb" GIT_WORK_TREE="$dir" GIT_INDEX_FILE="$tmp/index" \
-              git write-tree 2>/dev/null)"
+              roost_ext__git write-tree 2>/dev/null)"
     fi
   fi
   rm -rf "$tmp"
