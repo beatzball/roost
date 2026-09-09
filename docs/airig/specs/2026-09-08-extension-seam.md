@@ -294,12 +294,35 @@ Alongside it, a **plain-text command index**:
 ${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.index
 ```
 
-one line per claimed command, written at install and removal time:
+one TAB-separated line per claimed command, written at install and removal
+time — command, extension name, executable, and the authority granted:
 
 ```
-mark    mark    /absolute/path/to/ext/mark/bin/roost-mark
-marks   mark    /absolute/path/to/ext/mark/bin/roost-marks
+mark	mark	/absolute/path/to/ext/mark/bin/roost-mark	fleet
+marks	mark	/absolute/path/to/ext/mark/bin/roost-marks	fleet
 ```
+
+**The fourth column is a security control, and it exists because the obvious
+alternative failed.** An earlier implementation read `needs` out of `ext.lock`
+with shell builtins on the dispatch path, because that path may not use
+`python3` or `jq`. Substring matching is not JSON parsing: a manifest carrying
+`"description": "needs"` and `"commands": ["fleet"]` made the reader grant
+`fleet` from an entry that plainly said `"needs": []` — and both of those
+strings come from the extension's own manifest, the file the spec names as the
+one an attacker would edit. That defeats the single property `needs` still
+claims after the limits under "Declared authority": that the grant is *visible
+at consent time*. The user reads "no fleet" and the extension receives fleet.
+
+So `needs` is resolved **once**, by `roost_ext_index_write`, which already
+regenerates this file from `ext.lock` using a real JSON parser, at install and
+removal time when an interpreter is available. The dispatcher then reads the
+authority off the same line it was already reading. There is no JSON parsing on
+the typo path at all, no assumption about lockfile shape, and no quadratic
+rescan of a growing file.
+
+The general rule this is an instance of: **decide a grant where a real parser
+is available, carry the decision forward, and never re-derive it somewhere
+cheaper.**
 
 This is not duplication for its own sake. The dispatcher runs on **every
 unrecognised `roost` subcommand**, including every typo, and `roost-json.sh`
