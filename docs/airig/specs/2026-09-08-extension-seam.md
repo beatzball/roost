@@ -440,11 +440,23 @@ declared, stated in words at the consent prompt.
 
 ### Input handling
 
-`<org>/<repo>` is validated against `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`
-**before it reaches `git`**, and a leading `-` is refused in either part. Not
-theatre: the argument otherwise flows into a `git` command line, where `../..`
-escapes the base, a `https://user:pass@host/` form smuggles credentials, and a
-leading dash becomes a flag.
+`<org>/<repo>` is validated **before it reaches `git`**. Both parts must match
+`^[A-Za-z0-9._-]+$`, and additionally:
+
+- neither part may begin with `-`
+- neither part may be exactly `.` or `..`
+
+The second rule is not redundant, and an earlier draft of this spec got it
+wrong. `.` is inside the character class, so the pattern **alone admits
+`../..`** — while the sentence beside it claimed to block traversal. A regex
+that looks like it enforces a rule, sitting next to prose asserting the rule,
+is worse than no regex, because nobody re-reads it. Caught during
+implementation; recorded here because the same trap waits for whoever widens
+this pattern next.
+
+Not theatre: the argument otherwise flows into a `git` command line, where
+`../..` escapes the base, a `https://user:pass@host/` form smuggles
+credentials, and a leading dash becomes a flag.
 
 ### The install must actually run nothing
 
