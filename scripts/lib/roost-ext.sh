@@ -451,11 +451,27 @@ def die(msg):
 # `"contract": "1"` as a STRING was always accepted, so the gate was never a
 # defence against a manifest writing 1 in an unusual way.
 #
-# The residual, named rather than claimed away: jq's PARSER is more permissive
-# than python3's about a few malformed literals (`007` is read as 7 where
-# python3 refuses the document). That is upstream of this number model and
-# cannot be closed here; both engines still refuse the install, with different
-# messages.
+# THE RESIDUAL IS NOT CLOSED BY THIS, and it is worse than the number model it
+# sits beside. jq's PARSER accepts JSON this one rejects: a leading-zero
+# literal is invalid JSON, python3 refuses the whole document, and jq reads it.
+# `"contract": 001` therefore comes back as contract `1` under jq -- which
+# PASSES the hard gate and installs -- while python3 refuses the manifest
+# outright. Measured through this function on both engines: `001`, `01` and
+# `0001` all install on a jq machine and are refused on a python3 one.
+#
+# So the divergence lives in the version gate itself, and the honest statement
+# is that it is open. It cannot be closed here: jq has already consumed the
+# literal by the time this expression sees a number, and `001` is
+# indistinguishable from `1` in its value model -- the same wall the exponent
+# forms hit, in the other direction. Recorded in docs/known-gaps.md, which is
+# where a shipped risk belongs; tests/test-ext.sh asserts the divergence rather
+# than agreement, so it goes red if either engine ever changes.
+#
+# An earlier version of this comment named `007` instead, and said both engines
+# refuse the install. That is true of `007` -- 7 is not 1, so jq's gate refuses
+# too -- and it is exactly the wrong literal to pick: it is the leading-zero
+# case where the OUTCOME happens to coincide, the same selection bias as
+# choosing `1e2` from the exponent forms.
 try:
     data = json.load(sys.stdin, parse_int=decimal.Decimal, parse_float=decimal.Decimal)
 except Exception as exc:

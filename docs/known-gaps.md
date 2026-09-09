@@ -496,6 +496,34 @@ right-to-left text, and a tool that cannot describe itself in Arabic or Hebrew
 is a worse outcome than a line that can reorder itself. Named as absent rather
 than implied closed.
 
+### The two JSON engines disagree about a leading-zero `contract`
+
+**A live risk, narrow.** `contract` is the one hard gate in an extension's
+manifest: a version this roost does not speak refuses the install. Which JSON
+engine is on the machine decides whether a leading-zero contract passes it.
+
+**Input:** a manifest whose `contract` is written `001` (also `01`, `0001`).
+**Wrong output:** on a machine with `jq` and no `python3`, that reads as
+contract `1`, matches `ROOST_CONTRACT`, and the extension installs. On a
+machine with `python3`, the same manifest is refused before the gate is
+reached, with *"could not be read as JSON"*. Same roost, same repository, two
+outcomes.
+
+A leading zero is not valid JSON — python3 is right and jq is lenient. The
+divergence cannot be closed in the engines: by the time either expression sees
+a number, jq has consumed the literal and `001` is indistinguishable from `1`
+in its value model. Closing it would mean roost carrying its own JSON parser,
+or refusing every number, and neither is worth it for a manifest nobody writes
+by hand twice.
+
+Not an escalation — a contract of `001` is a contract of 1, and an extension
+that installs this way gets exactly the authority its `needs` declared and the
+consent block showed. What it costs is the promise that two users comparing
+notes get the same answer. Every other number form was made to agree (see
+`roost_ext__manifest_py`'s `json.load`); this one is named as absent rather
+than implied closed, and `tests/test-ext.sh` asserts the **divergence**, so it
+turns red if either engine ever changes.
+
 ### `roost install` reads back its own TAB row with the fields shifted
 
 **A live risk that is benign today — and pre-existing, not from the extension

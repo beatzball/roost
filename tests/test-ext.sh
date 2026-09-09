@@ -429,6 +429,37 @@ if command -v jq >/dev/null 2>&1; then
     '{ "name": "mark", "contract": -0, "commands": ["mark"] }'
   parity_case "a contract too big for a double" \
     '{ "name": "mark", "contract": 123456789012345678901234567890, "commands": ["mark"] }'
+
+  # A KNOWN DIVERGENCE, ASSERTED AS ONE. Everything else in this harness
+  # asserts that the engines AGREE; these three assert that they do not, and
+  # they are here so the gap is pinned rather than remembered.
+  #
+  # A leading-zero literal is not valid JSON. python3 refuses the whole
+  # document; jq's parser takes it. So `"contract": 001` reads as contract `1`
+  # on a jq machine -- which PASSES the hard gate and installs -- and is
+  # refused outright on a python3 one. The divergence is therefore in the
+  # version gate itself, not in some corner of the reader.
+  #
+  # It cannot be closed in these engines: by the time the expression sees a
+  # number, jq has consumed the literal and `001` is indistinguishable from
+  # `1` in its value model. Recorded in docs/known-gaps.md. If either engine
+  # ever changes, these go red and the entry gets revisited -- which is the
+  # whole reason to assert a divergence instead of leaving it in prose.
+  #
+  # `007` is NOT the case to use here. jq reads it as 7, 7 is not 1, so its
+  # gate refuses too and the outcome coincides -- the same selection bias that
+  # let `1e2` stand in for the exponent forms while four of them diverged.
+  printf '%s\n' '{ "name": "mark", "contract": 001, "commands": ["mark"] }' > "$MAN/parity.json"
+  roost_ext_manifest_read "$MAN/parity.json" >"$TMP/lz-py.out" 2>/dev/null; lz_py_rc=$?
+  PATH="$TMP/jq-only"
+  roost_ext_manifest_read "$MAN/parity.json" >"$TMP/lz-jq.out" 2>/dev/null; lz_jq_rc=$?
+  PATH="$saved_path"
+  assert_eq "$lz_py_rc" "1" \
+    "a leading-zero contract is refused by python3 — 001 is not valid JSON, so the document is"
+  assert_eq "$lz_jq_rc" "0" \
+    "...and ACCEPTED by jq, whose parser is more permissive: a known divergence, see docs/known-gaps.md"
+  assert_eq "$(sed -n 's/^contract=//p' "$TMP/lz-jq.out")" "1" \
+    "...read as contract 1, which passes the hard gate — the same manifest installs on jq and is refused on python3"
   parity_case "a contract given as a string" \
     '{ "name": "mark", "contract": "1", "commands": ["mark"] }'
   parity_case "a boolean contract" \
@@ -2585,10 +2616,26 @@ assert_true "$?" "...while the code it describes is still there"
 #
 # The behavioural fixture above cannot close it (git does not recurse by
 # default, as its own comment records), and the two assertions below already
-# use the counted form. `= 2` here, for the same reason: a count fails when a
-# call site loses the flags AND when one is added without them.
+# use the counted form. Two assertions here, and they answer two different
+# questions -- the first alone was claimed to answer both, and did not.
+#
+# `= 2` says the two call sites that exist are hardened. It does NOT notice a
+# THIRD one added without the flags: the hardened count stays 2, and the
+# "spells git exactly once" invariant further down cannot see it either,
+# because `_ext_git` is underscore-prefixed and its pattern excludes exactly
+# that. Demonstrated: a third `_ext_git clone --quiet -- ...` in this file
+# left the suite green at 975.
+#
+# So the second assertion pins EVERY `_ext_git clone` in the file to the
+# hardened spelling by comparing the two counts. A new call site has to carry
+# the flags to keep them equal, which is the property the wrapper pattern is
+# supposed to give and the reason the flags are not folded into `_ext_git`
+# itself: `_ext_git` runs plenty of commands that take neither flag.
 assert_eq "$(grep -cF -- '_ext_git clone --quiet --no-checkout --no-recurse-submodules --' "$ext_code")" "2" \
   "both clone INVOCATIONS -- install's and update's -- pass --no-checkout and --no-recurse-submodules"
+assert_eq "$(grep -cF -- '_ext_git clone' "$ext_code")" \
+          "$(grep -cF -- '_ext_git clone --quiet --no-checkout --no-recurse-submodules --' "$ext_code")" \
+  "...and EVERY clone in the file is one of those two: a new call site has to carry the flags to keep these counts equal"
 grep -qF 'GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -C / -c core.hooksPath=/dev/null "$@"' "$ext_code"
 assert_true "$?" "install's git wrapper carries GIT_LFS_SKIP_SMUDGE=1, core.hooksPath=/dev/null and the -C / that stops git DISCOVERING a repository from the cwd"
 # On ONE wrapper, so a git invocation added to this file later is hardened by
