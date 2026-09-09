@@ -209,8 +209,39 @@ Only when the manifest declares `"needs": ["fleet"]`:
 
 ```sh
 ROOST_SOCKET      # which tmux server, so the ext talks to the right fleet
+ROOST_SOCKET_FLAG # "-L" if that is a socket NAME, "-S" if it is a PATH
 PATH              # with $ROOST_HOME/scripts prepended, as panes already get
 ```
+
+`ROOST_SOCKET_FLAG` is not padding, and handing over the bare value without it
+was a real defect in an earlier draft of this contract — found by the
+conformance fixture, which is what that fixture is for.
+
+tmux needs `-L` for a socket **name** and `-S` for a socket **path**, and
+`bin/roost:125` already makes exactly this distinction for itself:
+
+```sh
+case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
+```
+
+Without it, the obvious `tmux -L "$ROOST_SOCKET"` an extension author will
+write works on the production server, whose socket is the *name* `roost`, and
+**silently addresses a different server everywhere else** — every test server
+uses a path. Silently talking to the wrong tmux is the one failure roost exists
+to prevent, and it has already happened once in this project: `roost-socket.sh`'s
+header records `roost-agent-state` reading the socket from `$TMUX` while
+`bin/roost` defaulted to `-L roost`, with the result that "badges landed and
+replies vanished, exit 0, nothing printed."
+
+Requiring every extension author to rediscover that rule would be requiring
+every one of them to rediscover that outage. So the contract hands over both,
+and an extension addresses the fleet as:
+
+```sh
+tmux "$ROOST_SOCKET_FLAG" "$ROOST_SOCKET" list-panes -a
+```
+
+Both variables are withheld together when `needs` does not contain `fleet`.
 
 Without `fleet`, `ROOST_SOCKET` is **unset**, not empty — an extension that
 reads it gets an unset-variable failure rather than silently addressing the
