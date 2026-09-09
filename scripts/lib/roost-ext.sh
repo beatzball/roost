@@ -69,11 +69,15 @@ roost_ext__roots() {
   ROOST_EXT_STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/roost"
 }
 
-# The clone of each installed extension: <data>/roost/ext/<name>/.
+# Where the clones live. Prints the PARENT — `<data>/roost/ext` — and each
+# installed extension is a directory under it, `<data>/roost/ext/<name>/`.
+# Callers append the name themselves; there is no per-extension resolver,
+# because the parent is what install, list and remove all iterate over.
 roost_ext_data_dir()  { roost_ext__roots; printf '%s\n' "$ROOST_EXT_DATA_ROOT/ext"; }
 
-# Each extension's own private data: <state>/roost/ext/<name>/. This is what
-# an extension is handed as ROOST_EXT_STATE, and the only place
+# Where each extension's own private data lives. Again the PARENT —
+# `<state>/roost/ext` — with `<state>/roost/ext/<name>/` being what one
+# extension is handed as ROOST_EXT_STATE, and the only place
 # `roost ext remove --purge` knows to delete.
 roost_ext_state_dir() { roost_ext__roots; printf '%s\n' "$ROOST_EXT_STATE_ROOT/ext"; }
 
@@ -169,26 +173,37 @@ roost_ext_repo_valid() {
 # terminal. Cleared on success, so a caller under `set -u` can always read it.
 roost_ext_needs_valid() {
   ROOST_EXT_NEEDS_UNKNOWN=""
-  local csv="$1" need
-  local -a wanted=()
-  # Commas AND whitespace. The plan names this parameter CSV;
-  # roost_ext_manifest_read emits the same field space-separated, and a
-  # translation step between the two in some caller is exactly where an
-  # unknown value gets dropped on the floor.
+  local csv="$1" need rc=0 noglob=0
+  # Commas AND whitespace, NEWLINES INCLUDED. The plan names this parameter
+  # CSV; roost_ext_manifest_read emits the same field space-separated; and
+  # task 3's dispatcher reads it out of ext.lock, which nothing validates. A
+  # translation step between those spellings in some caller is exactly where
+  # an unknown value gets dropped on the floor.
   #
-  # `read -a` rather than an unquoted `for need in $csv`: word splitting on an
-  # unquoted expansion also GLOBS, so a needs value of `*` would expand to the
-  # filenames in the caller's working directory and the refusal below would
-  # name a file instead of the authority that was actually asked for.
+  # This was `read -r -a wanted <<<"$csv"`, and that is precisely the silent
+  # ignore this function exists to prevent: `read` takes ONE line, so
+  # `fleet<newline>sudo` split to just `fleet` and returned 0 with nothing
+  # named, while `sudo<newline>fleet` refused correctly — a bug that reads as
+  # working from either end you test it from.
+  #
+  # Word splitting on an unquoted expansion handles every separator at once,
+  # but it also GLOBS: a needs value of `*` would expand to the filenames in
+  # the caller's working directory and the refusal below would name a file
+  # instead of the authority that was actually asked for. So globbing is
+  # turned off across the split and put back exactly as it was found —
+  # `local -` would say this in one line, and does not exist in bash 3.2,
+  # which is what macOS ships and what this file is tested under.
+  case "$-" in *f*) noglob=1 ;; esac
+  set -f
   local IFS=$', \t\n'
-  read -r -a wanted <<<"$csv"
-  for need in ${wanted[@]+"${wanted[@]}"}; do
+  for need in $csv; do
     case "$need" in
       fleet) ;;
-      *) ROOST_EXT_NEEDS_UNKNOWN="$need"; return 1 ;;
+      *) ROOST_EXT_NEEDS_UNKNOWN="$need"; rc=1; break ;;
     esac
   done
-  return 0
+  [ "$noglob" -eq 1 ] || set +f
+  return "$rc"
 }
 
 # --- the advisory roost-version range ---------------------------------------
@@ -492,7 +507,17 @@ def scalar($k; $req):
   if has($k) then
     (.[$k] as $v
      | if ($v | type) == "string" then clean($k; $v)
-       elif ($v | type) == "number" then ($v | tostring)
+       elif ($v | type) == "number" then
+         # python3 refuses any JSON number that is not an INTEGER literal --
+         # 1.5, 1.0 and 1e2 all arrive as floats there and die. jq has one
+         # number type, so the equivalent question is asked of the canonical
+         # string form: pure digits or nothing. That agrees with python3 on
+         # every literal jq preserves (1.0 -> "1.0", 1e2 -> "1E+2", both
+         # refused). Where an OLDER jq has already folded 1.0 to 1 there is
+         # nothing left in the document to tell the two apart, and reading it
+         # as contract 1 is the harmless side of that difference.
+         (if ($v | tostring | test("^-?[0-9]+$")) then ($v | tostring)
+          else {err: ("field '" + $k + "' must be a string or an integer")} end)
        else {err: ("field '" + $k + "' must be a string or an integer")} end)
   elif $req then {err: ("missing required field '" + $k + "'")}
   else "" end;
@@ -565,6 +590,13 @@ roost_ext_manifest_read() {
 roost_ext_tree_hash() {
   local dir="$1" tmp tree=""
   [ -d "$dir" ] || return 1
+  # Made absolute before anything else touches it. `git -C "$dir"` chdirs
+  # first, so a RELATIVE GIT_WORK_TREE would then resolve against DIR itself
+  # and point at DIR/DIR -- which fails safe, but returns the same bare 1 as
+  # "that is not a directory" and would have a caller chasing the wrong thing.
+  # Parameter expansion, not a `cd && pwd` subshell: no fork, and nothing here
+  # needs the symlinks resolved.
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
   tmp="$(mktemp -d)" || return 1
   # A throwaway object database. The tree objects have to be written
   # somewhere, and writing them into the extension's own clone would make a

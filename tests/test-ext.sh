@@ -186,6 +186,31 @@ assert_eq "$?" "1" "needs_valid refuses an unknown authority beside a known one"
 roost_ext_needs_valid fleet
 assert_eq "$ROOST_EXT_NEEDS_UNKNOWN" "" \
   "needs_valid clears the unknown-authority name on success"
+# A NEWLINE between two values, in BOTH orders. This is not decoration: the
+# first spelling passed while `sudo` was silently ignored, and the second
+# refused correctly -- so testing either one alone reads as working. Reachable
+# from task 3 onward, which takes `needs` from ext.lock, and nothing validates
+# ext.lock.
+roost_ext_needs_valid "$(printf 'fleet\nsudo')"
+assert_eq "$?" "1" "needs_valid refuses an unknown authority AFTER a newline"
+assert_eq "$ROOST_EXT_NEEDS_UNKNOWN" "sudo" \
+  "needs_valid names the unknown authority that followed a newline"
+roost_ext_needs_valid "$(printf 'sudo\nfleet')"
+assert_eq "$?" "1" "needs_valid refuses an unknown authority BEFORE a newline"
+roost_ext_needs_valid "$(printf 'fleet\nfleet')"
+assert_true "$?" "needs_valid accepts known authorities either side of a newline"
+# A glob character must be reported as itself. Splitting an unquoted expansion
+# also globs, so without `set -f` this names whatever files happen to sit in
+# the working directory instead.
+roost_ext_needs_valid '*'
+assert_eq "$?" "1" "needs_valid refuses a glob character"
+assert_eq "$ROOST_EXT_NEEDS_UNKNOWN" '*' \
+  "needs_valid names the glob itself, not a filename from the caller's directory"
+# ...and puts globbing back the way it found it, because `set -f` is a
+# SHELL-WIDE option and leaking it would quietly break every unquoted pattern
+# in the caller.
+case "$-" in *f*) globbing_off=1 ;; *) globbing_off=0 ;; esac
+assert_eq "$globbing_off" "0" "needs_valid leaves globbing enabled as it found it"
 
 # --- roost_ext_semver_in_range ----------------------------------------------
 roost_ext_semver_in_range 0.1.0 ">=0.1.0 <0.2.0"; assert_eq "$?" "0" "semver: the lower bound is inclusive"
@@ -354,6 +379,54 @@ if command -v jq >/dev/null 2>&1; then
   assert_eq "$jq_bad_rc" "1" "the jq engine refuses the manifest with no contract field"
   assert_contains "$(cat "$TMP/err-jq")" "contract" "the jq engine names the missing field too"
   assert_eq "$jq_broken_rc" "1" "the jq engine refuses malformed JSON with a 1, not jq's own 5"
+
+  # Past the three cases above, because "the engines agree" was asserted only
+  # for a good manifest, a missing field and a broken file -- and they did NOT
+  # agree on a contract of 1.5, which python3 refused and jq printed straight
+  # through. A stated invariant that is false is worse than none.
+  #
+  # Each case is run under BOTH engines and the two answers compared to each
+  # other, not to a hardcoded expectation: that is what makes this a parity
+  # test rather than two copies of the same assertion drifting apart.
+  parity_case() {
+    # parity_case <label> <manifest-json>
+    local label="$1" json="$2" p_out p_rc j_out j_rc
+    printf '%s\n' "$json" > "$MAN/parity.json"
+    p_out="$(roost_ext_manifest_read "$MAN/parity.json" 2>/dev/null)"; p_rc=$?
+    PATH="$TMP/jq-only"
+    j_out="$(roost_ext_manifest_read "$MAN/parity.json" 2>/dev/null)"; j_rc=$?
+    PATH="$saved_path"
+    assert_eq "$j_rc" "$p_rc" "both engines agree on the status for $label"
+    assert_eq "$j_out" "$p_out" "both engines agree on the output for $label"
+  }
+  parity_case "a fractional contract" \
+    '{ "name": "mark", "contract": 1.5, "commands": ["mark"] }'
+  parity_case "a contract written in exponent form" \
+    '{ "name": "mark", "contract": 1e2, "commands": ["mark"] }'
+  parity_case "a contract given as a string" \
+    '{ "name": "mark", "contract": "1", "commands": ["mark"] }'
+  parity_case "a boolean contract" \
+    '{ "name": "mark", "contract": true, "commands": ["mark"] }'
+  parity_case "an empty commands array" \
+    '{ "name": "mark", "contract": 1, "commands": [] }'
+  parity_case "commands that is not an array" \
+    '{ "name": "mark", "contract": 1, "commands": "mark" }'
+  parity_case "a command with a space in it" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark two"] }'
+  parity_case "a needs entry that is not a string" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark"], "needs": [1] }'
+  parity_case "a description carrying a newline" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark"], "description": "one\\ntwo" }'
+  parity_case "a top-level array" '[ "mark" ]'
+  # The refusal a user actually reads has to be the same sentence too, not
+  # just the same exit status.
+  printf '%s\n' '{ "name": "mark", "contract": 1.5, "commands": ["mark"] }' > "$MAN/parity.json"
+  roost_ext_manifest_read "$MAN/parity.json" 2>"$TMP/err-py" >/dev/null
+  PATH="$TMP/jq-only"
+  roost_ext_manifest_read "$MAN/parity.json" 2>"$TMP/err-jq" >/dev/null
+  PATH="$saved_path"
+  assert_eq "$(cat "$TMP/err-jq")" "$(cat "$TMP/err-py")" \
+    "both engines refuse a fractional contract in the same words"
 fi
 
 # --- roost_ext_tree_hash ----------------------------------------------------
@@ -378,6 +451,14 @@ printf 'hello\n' > "$TREE/a.txt"
 git -C "$TREE" init -q >/dev/null 2>&1
 h4="$(roost_ext_tree_hash "$TREE")"
 assert_eq "$h4" "$h1" "tree_hash ignores .git, so a repository and a plain copy hash alike"
+# A RELATIVE directory has to give the same answer as the absolute one. It
+# used to return a bare 1 -- indistinguishable from "no such directory" --
+# because `git -C "$dir"` chdirs before a relative GIT_WORK_TREE is resolved.
+tree_pwd="$PWD"
+cd "$TMP" || exit 1
+h_rel="$(roost_ext_tree_hash tree)"
+cd "$tree_pwd" || exit 1
+assert_eq "$h_rel" "$h1" "tree_hash accepts a relative directory and agrees with the absolute one"
 roost_ext_tree_hash "$TMP/does-not-exist" >/dev/null 2>&1
 assert_eq "$?" "1" "tree_hash refuses a directory that is not there"
 
@@ -393,6 +474,22 @@ assert_eq "$out" "$demo_bin" "index_lookup prints the executable's path"
 out="$(roost_ext_index_lookup nope)"; rc=$?
 assert_eq "$rc" "1" "index_lookup misses an unknown command"
 assert_eq "$out" "" "index_lookup prints nothing on a miss"
+
+# The two variables task 3's dispatcher reads. Called WITHOUT a `$(...)` here
+# on purpose: that is the only way the dispatcher can call it -- a command
+# substitution would put back the fork this function exists to avoid, and
+# would also throw the variables away with the subshell -- so this is the
+# call shape under test, not just the values.
+roost_ext_index_lookup demo >/dev/null
+assert_eq "$ROOST_EXT_LOOKUP_NAME" "demo" \
+  "index_lookup reports the extension NAME, which the dispatcher needs for ext.lock"
+assert_eq "$ROOST_EXT_LOOKUP_PATH" "$demo_bin" \
+  "index_lookup reports the path in a variable as well as on stdout"
+roost_ext_index_lookup nope >/dev/null
+assert_eq "$ROOST_EXT_LOOKUP_NAME" "" \
+  "index_lookup clears the reported name on a miss"
+assert_eq "$ROOST_EXT_LOOKUP_PATH" "" \
+  "index_lookup clears the reported path on a miss, so a stale hit cannot be exec'd"
 # A prefix is not a match. `dem` sharing three letters with `demo` must not
 # dispatch, or a typo runs somebody's extension.
 roost_ext_index_lookup dem >/dev/null; assert_eq "$?" "1" "index_lookup does not match a prefix of a command"
