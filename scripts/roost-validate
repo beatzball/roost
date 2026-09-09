@@ -2143,7 +2143,7 @@ drive_dialog() {
   if [ "$rc" -eq 3 ]; then
     record PASS 5 "$h: roost send refuses a blocked pane with exit 3" "3 is distinct from 2 (wrong target) and 1 (submit failed), so a caller can retry later"
   else
-    record FAIL 5 "$h: roost send refuses a blocked pane with exit 3" "exit $rc — one agent could type into another's permission dialog"
+    record FAIL 5 "$h: roost send refuses a blocked pane with exit 3" "exit $rc — one agent could paste into another's permission dialog"
   fi
   # The precise claim is that the TEXT did not arrive, so that is what is
   # checked. Byte-equality of the whole screen is reported alongside it but is

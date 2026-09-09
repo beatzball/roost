@@ -63,7 +63,7 @@ it gets tells it to wait for a human who has already answered. Declining a
 permission prompt is an everyday action, not an edge case.
 
 **Why it is not worse than that.** It fails closed, never open: nothing is
-typed into anything, the exit code is distinct, and the message it prints names
+pasted into anything, the exit code is distinct, and the message it prints names
 the escape hatch (`roost send --force`) in its own second line. A human typing
 anything into the pane clears it on the next `UserPromptSubmit`.
 
@@ -211,7 +211,7 @@ skipped anything. The pane simply stays unstamped, which roost renders exactly
 like a shell.
 
 **What that costs, precisely.** It is not only a missing badge. `roost send`
-refuses a `blocked` target with exit 3 so that one agent cannot type into
+refuses a `blocked` target with exit 3 so that one agent cannot paste into
 another's permission dialog — and an unbadged pane is not blocked, so the
 refusal never fires. A copilot pane whose extension never loaded, sitting at a
 permission prompt, will take a `roost send` straight into that dialog and press

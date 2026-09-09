@@ -55,7 +55,7 @@ Your `PostToolUse` hook is missing. No hook fires when you answer a permission d
 
 The exit code tells you which failure it is:
 
-- **exit 3** — the target's badge says 🛑 blocked, so `send` refused rather than typing into a permission dialog. Answer the dialog and retry the same target. If the pane has no dialog on it, see [A pane refuses every send but has no dialog](#a-pane-refuses-every-send-but-has-no-dialog) below.
+- **exit 3** — the target's badge says 🛑 blocked, so `send` refused rather than pasting into a permission dialog. Answer the dialog and retry the same target. If the pane has no dialog on it, see [A pane refuses every send but has no dialog](#a-pane-refuses-every-send-but-has-no-dialog) below.
 - **exit 2** — the target does not exist or its pane is dead. Re-resolve the target.
 - **exit 1** with a `roost send:` message — delivery to a valid target failed. Retry the same target or look at the pane; do not re-resolve. Two of these name their own cause: *could not confirm the message reached* (see [Only the end of my message arrived](#only-the-end-of-my-message-arrived) below) and *message too long for tmux*, which needs a file and a path instead.
 - **exit 1** with a `usage:` message — a missing argument. That is a caller bug.

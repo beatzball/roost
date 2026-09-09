@@ -209,6 +209,11 @@ assert_contains "$out" "usage" \
 out="$(with_preen "$ROOST" read "$other" -r 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "-r after the target is refused on the fallback path too"
+# The MESSAGE, not just the status. An exit-code-only assertion passes when the
+# command fails for a completely different reason -- proved by making this one
+# exit 7 for a made-up cause and watching it stay green.
+assert_contains "$out" "flags go BEFORE the target" \
+  "...and it is refused for the flag's position, not for something else"
 case "$out" in
   *"illegal offset"*) assert_eq leaked clean \
     "the refusal does not leak tail's error" ;;
@@ -254,6 +259,27 @@ err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
 assert_contains "$err" "nothing" \
   "a render that is visually empty is reported like an empty one"
 
+# An OSC-8 HYPERLINK is not visible text either. A render carrying only a link
+# is visually empty, but its URL is bytes -- so without a strip for it the
+# guard stepped aside and the reply was LOST, exit 0, silently. The first
+# attempt at that strip was a no-op on BSD sed (`[^\x07]` means "not \ x 0 7"
+# there), which read as correct and did nothing. Both reviewers proved it.
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+cat >/dev/null
+printf '\033]8;;https://example.com\007\033]8;;\007\n'
+SHIM
+chmod +x "$shimdir/preen"
+out="$(with_preen "$ROOST" read -r "$pane" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "a render that is only a hyperlink does not fail the read"
+assert_eq "$out" "$reply" \
+  "a render that is only a hyperlink still delivers the reply"
+case "$out" in
+  *"https://example.com"*) assert_eq leaked clean \
+    "the hyperlink URL is not served as if it were the reply" ;;
+  *) assert_eq ok ok "the hyperlink URL is not served as if it were the reply" ;;
+esac
+
 # ...and a render that has ONE visible character is a real render, not a
 # swallow. The guard must not fire here, or every short reply warns.
 cat > "$shimdir/preen" <<'SHIM'
@@ -284,6 +310,8 @@ chmod +x "$shimdir/preen"
 out="$(with_preen "$ROOST" read "$pane" 20 --render 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "a flag in the FOURTH slot is refused too"
+assert_contains "$out" "flags go BEFORE the target" \
+  "...and the fourth-slot refusal names the flag's position"
 # A REPEATED flag: the second one lands in the target slot. The unknown-flag
 # check ran once, before the shift, so a KNOWN flag arriving there was never
 # looked at again and became the target -- an empty read at exit 1.
@@ -295,6 +323,8 @@ assert_contains "$out" "usage" \
 out="$(with_preen "$ROOST" read --render --render "$pane" 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "a repeated --render is refused too"
+assert_contains "$out" "may be given once" \
+  "...and the repeat refusal says the flag may be given once"
 
 # A line count cannot come BEFORE the target. `roost read -r -3 TGT` used to
 # make `-3` the target, because the post-flag re-check let a negative number
@@ -330,6 +360,35 @@ case "$rc" in
   0) assert_eq 0 nonzero "--render with no target is still a usage error" ;;
   *) assert_eq ok ok "--render with no target is still a usage error" ;;
 esac
+
+# --- a usage error names the usage, not the script's own path ---------------
+# `${2:?usage: ...}` renders as `/abs/path/bin/roost: line 905: 2: usage: ...`
+# -- the checkout's absolute path and an internal line number, in front of
+# someone who simply typed the command wrong. Found by review; fixed for all
+# seven usage errors in the file, not just read's.
+out="$("$ROOST" read 2>&1)"; rc=$?
+assert_eq "$rc" "1" "roost read with no target exits 1"
+assert_prefix "$out" "usage: roost read" \
+  "roost read with no target prints the usage line and nothing before it"
+case "$out" in
+  *"$HERE"*) assert_eq leaked clean \
+    "the usage error does not print the checkout's absolute path" ;;
+  *) assert_eq ok ok "the usage error does not print the checkout's absolute path" ;;
+esac
+case "$out" in
+  *"line "*) assert_eq leaked clean \
+    "the usage error does not print an internal line number" ;;
+  *) assert_eq ok ok "the usage error does not print an internal line number" ;;
+esac
+
+# A bare `-5` is not a target. Slot 2 is the flag-or-target slot, and no target
+# begins with a dash -- `roost read -5` used to take it as one and fall through
+# to the screen fallback, while `roost read -r -5` refused the same word.
+out="$(with_preen "$ROOST" read -5 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "a bare -5 is refused rather than treated as a target"
+assert_contains "$out" "unknown flag" \
+  "...and it is refused as a flag, the same word both slots now agree on"
 
 # --- the flag is documented -------------------------------------------------
 

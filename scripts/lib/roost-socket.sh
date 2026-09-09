@@ -10,7 +10,7 @@
 # is the drift this file exists to prevent, so keep it one rule and one copy.
 #
 # It answers a NARROWER question than "is $TMUX set". A user's everyday tmux is
-# still a tmux server, and `roost spawn` / `roost send` typed from inside one
+# still a tmux server, and `roost spawn` / `roost send` run from inside one
 # must keep addressing the roost server — the same exemption
 # scripts/lib/roost-config.sh carries, and tests/test-socket-seams.sh pins.
 

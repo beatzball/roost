@@ -169,6 +169,20 @@ screen_dump() {
 # pipefail speak: the point here is to SWALLOW the renderer's failure after
 # reporting it, which is the one place in this file that is the right thing to
 # do. printf '%s\n', not echo, because a reply beginning with -n or -e is text.
+# need_arg VALUE USAGE -> print USAGE and exit 1 when VALUE is empty.
+#
+# `${2:?usage: ...}` was the old spelling, and bash renders that as
+# `/abs/path/to/bin/roost: line 905: 2: usage: ...` -- the checkout's absolute
+# path and an internal line number, in front of a user who typed a command
+# wrong. The path is noise at best and the author's home directory at worst,
+# and the line number is meaningless to a reader. Found by review.
+need_arg() {
+  if [ -z "${1:-}" ]; then
+    printf '%s\n' "$2" >&2
+    exit 1
+  fi
+}
+
 render_stdin() {
   local text rendered rc visible
   text="$(cat)"
@@ -196,12 +210,21 @@ render_stdin() {
     # `tr -d` rather than a shell glob: this runs on bash 3.2 with no regex
     # dependency, and the sed handles the CSI sequences preen actually emits.
     # Two strips, not one: SGR colour (CSI ... m) and OSC-8 hyperlinks
-    # (ESC ] 8 ; ... BEL), which carry a URL that is not text the reply ever
-    # contained. No case was found where the second one changes the answer --
-    # it closes the class rather than a known bug.
+    # (ESC ] 8 ; ... BEL), whose URL is not text the reply ever contained. A
+    # render carrying only a hyperlink is visually empty, and without the
+    # second strip its URL counted as visible: the guard stepped aside and the
+    # reply was lost, exit 0, silently. Both reviewers proved that end to end.
+    #
+    # THE ESCAPES ARE $'...' , NOT '\x07' INSIDE A BRACKET EXPRESSION, and the
+    # first version of this line got that wrong in a way that read as correct.
+    # BSD sed does not honour \x escapes inside `[...]`: `[^\x07]` means "not
+    # one of \ x 0 7", so the expression matched nothing and the strip was a
+    # no-op on macOS -- which CI also runs. Proved with `printf 'x07\ Q' | sed
+    # 's/[^\x07]//g'` returning `x07\`. bash expands the escapes before sed
+    # ever sees them, which works on both BSD and GNU.
     visible="$(printf '%s' "$rendered" \
-      | sed 's/\x1b\[[0-9;]*m//g' \
-      | sed 's/\x1b\]8;[^\x07]*\x07//g' \
+      | sed $'s/\033\\[[0-9;]*m//g' \
+      | sed $'s/\033\\]8;[^\a]*\a//g' \
       | tr -d '[:space:]')"
     if [ "${rc:-0}" -eq 0 ] && [ -n "$text" ] && [ -z "$visible" ]; then
       echo "roost read: preen returned nothing for a non-empty reply — printing the raw text instead." >&2
@@ -227,7 +250,7 @@ case "${1:-up}" in
     attach_session "$DEFAULT_SESSION"
     ;;
   session|s)
-    sess="${2:?usage: roost session NAME}"
+    need_arg "${2:-}" "usage: roost session NAME"; sess="$2"
     attach_session "$sess"
     ;;
   new)
@@ -308,7 +331,7 @@ case "${1:-up}" in
     printf '%s\n' "$me"
     ;;
   spawn)
-    name="${2:?usage: roost spawn NAME [CMD...]}"; shift 2
+    need_arg "${2:-}" "usage: roost spawn NAME [CMD...]"; name="$2"; shift 2
     reject_bad_name "$name" spawn
     # Helper lands in the caller's own session when inside roost, else the default.
     if [ -n "${TMUX_PANE:-}" ]; then
@@ -443,7 +466,7 @@ JSON
     roost_hooks_claude
     ;;
   ssh)
-    host="${2:?usage: roost ssh HOST [ARGS...]}"; shift 2
+    need_arg "${2:-}" "usage: roost ssh HOST [ARGS...]"; host="$2"; shift 2
     # Run roost on the remote (must be installed there); agents run remote,
     # you drive them from this terminal. Just SSH + a remote roost — no daemon.
     exec ssh -t "$host" roost "$@"
@@ -460,7 +483,7 @@ JSON
       shift 2
       set -- send "$@"
     fi
-    raw="${2:?usage: roost send [--force] [SESSION:]WINDOW TEXT...}"; shift 2
+    need_arg "${2:-}" "usage: roost send [--force] [SESSION:]WINDOW TEXT..."; raw="$2"; shift 2
     tgt="$(target "$raw")"
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
     # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
@@ -856,7 +879,11 @@ JSON
       # like `--renderr` came back as tmux's "can't find session" instead.
       # Refused by name here, so the message names the typo rather than the
       # session it was mistaken for.
-      -[0-9]*) ;;
+      # No `-[0-9]*` exemption: slot 2 is the flag-or-TARGET slot, and no
+      # target begins with a dash. `roost read -5` used to take `-5` as the
+      # target and fall through to the screen fallback for it, while
+      # `roost read -r -5` refused the same word -- two slots disagreeing
+      # about the same input. Found by review.
       --render|-r) ;;
       -*)
         echo "roost read: unknown flag '$2'." >&2
@@ -866,8 +893,8 @@ JSON
     # Consumed once, and a SECOND one is refused rather than absorbed. The
     # first version checked for an unknown flag once, before the shift, so a
     # repeated `-r` landed in the target slot, was never looked at again, and
-    # became the target -- an empty read at exit 1 that looked like a dead
-    # pane. Found by review.
+    # became the target -- an empty read at exit 1 that surfaced as tmux's
+    # "can't find session". Found by review.
     #
     # A loop that consumed flags until they ran out was tried and removed: it
     # was dead code, because the second flag is an error rather than something
@@ -893,7 +920,7 @@ JSON
         esac
         ;;
     esac
-    raw="${2:?usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    need_arg "${2:-}" "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
     # A flag AFTER the target is refused rather than swallowed. It used to land
     # in $lines: with a recorded reply that printed the raw text at exit 0 with
     # no warning (the flag looked like it worked and did nothing), and on the
@@ -1016,7 +1043,7 @@ JSON
     # half. skills/roost/SKILL.md's "roost read it to see what's stuck"
     # guidance points here, because a stuck TUI is exactly the case where the
     # rendering IS the thing you want, chrome included.
-    raw="${2:?usage: roost screen [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    need_arg "${2:-}" "usage: roost screen [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
     screen_dump "$(target "$raw")" "$lines"
     ;;
   reply)
@@ -1059,7 +1086,7 @@ JSON
     t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
     ;;
   wait-done|wait)
-    raw="${2:?usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
+    need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout="${3:-0}"; waited=0
     tgt="$(target "$raw")"
     # A %N target is pane-precise; anything else aggregates the window's agent
     # panes. The two cases MUST branch on the target form: `list-panes -t %N`
