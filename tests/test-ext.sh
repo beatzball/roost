@@ -14,6 +14,14 @@ trap 'rm -rf "$TMP"' EXIT
 # Copied in shape from tests/test-install.sh, which grew this after a test
 # about a PATH line rewrote the developer's live agent config: one idiom for
 # "a test must never touch the real user's homes," not a new one per file.
+# AGENTS.md §8 names the full set that gets forgotten -- ZDOTDIR, the XDG
+# pair, and the four harness homes (COPILOT_HOME, PI_CODING_AGENT_DIR,
+# CODEX_HOME, CLAUDE_SETTINGS) -- and calls out that any of them left
+# exported in the runner's own environment passes straight through a
+# sandboxed HOME. Task 3 makes this concrete rather than defensive: the
+# dispatcher execs extension binaries with an inherited environment, so this
+# file has to be right about the whole set before that lands, not patched
+# after it does.
 #
 # HOME is canaried here, unlike test-install.sh's copy: everything this file
 # exercises today (--version) only READS, so nothing legitimately needs to
@@ -33,6 +41,10 @@ export ZDOTDIR="$CANARY/zdot"
 export XDG_CONFIG_HOME="$CANARY/xdg-config"
 export XDG_DATA_HOME="$CANARY/xdg-data"
 export XDG_STATE_HOME="$CANARY/xdg-state"
+export COPILOT_HOME="$CANARY/copilot"
+export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
+export CODEX_HOME="$CANARY/codex"
+export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
 
 # What escaped, if anything. -mindepth 1 so the directory itself is never the
 # finding, and the whole listing is printed on failure rather than a count —
@@ -53,6 +65,13 @@ assert_eq "$(cat "$TMP/err")" "" "roost --version writes nothing to stderr"
 # re-implementing what -E already does correctly.
 printf '%s' "$version_file" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
 assert_true "$?" "VERSION matches ^[0-9]+\\.[0-9]+\\.[0-9]+\$"
+
+# Grepped rather than invoked: contract 1 has no subcommand of its own to
+# report it through yet, that arrives with the seam itself in a later task.
+# Without this, nothing fails if the line is deleted, and tasks 3 onward
+# version-gate their whole feature on it being there.
+grep -q '^ROOST_CONTRACT=1$' "$HERE/bin/roost"
+assert_true "$?" "bin/roost pins ROOST_CONTRACT=1"
 
 out_flag="$("$ROOST" -V 2>"$TMP/err")"
 assert_eq "$out_flag" "$out" "roost -V matches roost --version"

@@ -35,6 +35,7 @@
 #   roost status             list running sessions + agents
 #   roost kill [SESSION]     kill one session, or the whole server if none given
 #   roost help               show this text
+#   roost --version          print roost's version (-V, or `roost version`)
 set -euo pipefail
 
 # Resolve the repo root even when invoked via a symlink on PATH.
@@ -54,7 +55,22 @@ ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 # field, a different lookup path — never when roost merely gains a feature or
 # fixes a bug. Splitting them means an ordinary roost release, no matter how
 # large, never invalidates an extension that was written against contract 1.
-ROOST_VERSION="$(cat "$ROOST_HOME/VERSION")"
+#
+# `read` rather than `cat` under `set -e`: a missing or unreadable VERSION
+# (a half-copied checkout, a stray permissions change) must not take EVERY
+# roost command down with it, because this line runs before the subcommand
+# case even sees what was asked for. `roost state` sits on that path and
+# fires on every tool call of every live agent (AGENTS.md §2) — a damaged
+# checkout breaking that would freeze real agents mid-session — and `roost
+# doctor`, the tool a user reaches for to diagnose a damaged checkout, cannot
+# be the thing a damaged checkout takes out first. So a read failure falls
+# back to the literal string "unknown" instead of aborting.
+# 2>/dev/null precedes the `<`: bash applies simple-command redirections
+# left to right, and a MISSING file fails at the `<` step itself, before a
+# trailing `2>/dev/null` would take effect — so that order still prints
+# "No such file or directory" straight past this line. Put here first, the
+# redirect is already in place when the open fails.
+read -r ROOST_VERSION 2>/dev/null < "$ROOST_HOME/VERSION" || ROOST_VERSION=unknown
 ROOST_CONTRACT=1
 
 # Socket, in order: $ROOST_SOCKET (explicit seam — tests, a second server, a
@@ -1343,6 +1359,7 @@ JSON
     ;;
   --version|-V|version)
     printf '%s\n' "$ROOST_VERSION"
+    exit 0
     ;;
   *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|--version|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

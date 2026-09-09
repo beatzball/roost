@@ -3,11 +3,7 @@
 All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project uses [Semantic Versioning](https://semver.org/). Separately
-from the product version, `bin/roost` also carries `ROOST_CONTRACT`, an
-integer that versions the extension wiring's own shape rather than the
-product — see `docs/airig/specs/2026-09-08-extension-seam.md` for why the two
-are tracked apart.
+and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0] - 2026-09-08
 
