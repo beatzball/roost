@@ -120,28 +120,30 @@ Nothing is installed into the roost checkout.
 | `${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext/<name>/` | the extension's own data |
 | `${XDG_STATE_HOME:-$HOME/.local/state}/roost/ext.lock` | what is installed, and the commit each is pinned to |
 
-The lockfile is the record of what is installed, not the clone. A half-deleted clone degrades to "command not found" rather than to running something unexpected.
+The lockfile is the record of what is installed, not the clone. If a clone goes missing, its command degrades to the ordinary usage error rather than to running something unexpected — the dispatcher checks that the executable is really there before it hands anything over.
 
 ## Turning extensions off
 
-Three levels, cheapest first.
+Three switches, cheapest first. The first two make the dispatcher inert, so roost behaves exactly as it did before extensions existed: an extension's command becomes the ordinary usage error, the same one you get for a typo.
 
-**1. Turn the whole seam off.** Either of these makes the dispatcher inert, and roost behaves exactly as it did before extensions existed — an extension command becomes the ordinary usage error:
-
-```sh
-ROOST_NO_EXT=1 roost mark          # for one command
-export ROOST_NO_EXT=1              # for a shell, or from your profile
-```
+**1. For one command, or one shell.**
 
 ```sh
-set -g @roost-ext-enabled off      # in roost.conf, for the whole server
+ROOST_NO_EXT=1 roost mark          # this command only
+export ROOST_NO_EXT=1              # this shell, or from your profile
 ```
 
 `ROOST_NO_EXT` is tested for being **non-empty**, not for a particular value — so `ROOST_NO_EXT=0` turns extensions **off** too, which is the opposite of what `0` usually means. If you want them on, unset the variable rather than setting it to zero.
 
-**2. Remove one extension.** `roost ext remove mark --purge` leaves nothing of it behind, and the roost checkout never held any of it in the first place.
+**2. For the whole server.** In `roost.conf`:
 
-**3. Remove the seam.** It is one pull request, confined to the fallback branch of `bin/roost` plus two scripts of its own, so reverting it is clean. See the [README](https://github.com/beatzball/roost#the-extension-seam).
+```sh
+set -g @roost-ext-enabled off
+```
+
+**3. Take one off the machine.** `roost ext remove mark --purge` leaves nothing of it behind, and the roost checkout never held any of it in the first place.
+
+The seam itself can also be taken out of roost altogether. That is a contributor's job rather than a setting, and it is [one revert](https://github.com/beatzball/roost#the-extension-seam).
 
 ## Writing one
 

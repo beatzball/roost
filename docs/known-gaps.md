@@ -478,13 +478,23 @@ made the consent block display a commit other than the one installed. It does
 **not** refuse Unicode bidi formatting characters (`U+202A`–`U+202E`,
 `U+2066`–`U+2069`).
 
-They cannot forge the commit row: the commit is printed above the free-text
-fields and the bidi algorithm is per-line, so a `description` cannot reach it.
-What they can do is reorder how a `description` itself renders. It is left open
-rather than closed because refusing the class would refuse legitimate
-right-to-left text, and a docs tool that cannot describe itself in Arabic or
-Hebrew is a worse outcome than a reorderable one-line description. Named as
-absent rather than implied closed.
+Two free-text fields carry the exposure, and they are not equally visible.
+`roost` (capped at 64) is **printed inside the consent block**, on the
+`roost  >=A.B.C <D.E.F  (you have X)  ok` row; `description` (capped at 200) is
+not in that block at all — `roost ext install` prints `repo`, `ref`, `commit`,
+`contract`, `roost` and `claims` (`scripts/roost-ext:2091`–`:2104`) — and
+surfaces only in `roost ext info`'s manifest dump. So this gap does reach the
+consent prompt. Do not read it as leaving that prompt untouched.
+
+What it cannot do is forge the commit row, and the reason is **per-line**: the
+bidi algorithm resolves each line on its own, so no formatting character in the
+`roost` row or in a `description` can reorder any other line, including the
+`commit` row above it. The exposure is one line reordering itself.
+
+Left open rather than closed because refusing the class would refuse legitimate
+right-to-left text, and a tool that cannot describe itself in Arabic or Hebrew
+is a worse outcome than a line that can reorder itself. Named as absent rather
+than implied closed.
 
 ### `roost install` reads back its own TAB row with the fields shifted
 

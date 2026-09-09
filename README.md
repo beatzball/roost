@@ -337,12 +337,14 @@ extension has to look like.
 Three files, and nothing else in the tree changes shape:
 
 - **`bin/roost`** — the dispatcher lives in the `*)` fallback of the subcommand
-  `case`, the branch that used to only print usage. Core is looked up first and
-  always wins, so an extension can never shadow a built-in. Keeping the seam
-  inside that one branch is what makes the whole feature revertible in a single
-  clean patch, so keep new work there.
-- **`scripts/roost-ext`** — the six verbs, the consent block, and the git
-  hardening.
+  `case`, the branch that used to only print usage. A core subcommand never
+  reaches that branch, which is the mechanism behind the guarantee the
+  [docs page](https://roosting.dev/docs/extensions) gives users. It is also what
+  keeps the feature revertible: the seam is that one branch plus the two files
+  below, one docs page and one test file, so taking it out is a single clean
+  revert with no core behaviour to rewrite. Keep new work inside that branch.
+- **`scripts/roost-ext`** — the six verbs, the consent block, and the clone
+  flags that keep git from executing anything on the way in.
 - **`scripts/lib/roost-ext.sh`** — paths, manifest reading, the semver range
   check, and `roost_ext_index_lookup`, which the dispatcher calls on every
   mistyped subcommand and which therefore forks nothing.
@@ -390,7 +392,7 @@ roost-mark/
 | `roost` | no | Advisory range. `>=A.B.C <D.E.F`, `*`, or absent; anything else warns and is skipped. |
 | `needs` | no | Authority requested. `["fleet"]` or nothing. An unknown value refuses the install. |
 | `commands` | yes | Each needs an executable `bin/roost-<cmd>`. Core names and commands another extension holds are refused. |
-| `description` | no | One line, shown by `roost ext list`. |
+| `description` | no | One line, shown by `roost ext info`. It is not printed by `roost ext list`, and not in the consent block. |
 
 Your command is `exec`'d with the remaining arguments, and its exit status and
 output pass through untouched. It is handed:
