@@ -1048,12 +1048,27 @@ JSON
     # `roost read` refuses it; without this, `roost screen -5` took `-5` as a
     # target and read a pane for it, so the two commands disagreed about the
     # same input. Found by review.
+    # Both slots, not just the target. Fixing slot 2 alone left
+    # `roost screen TGT --render` reaching `tail -n --render` and printing
+    # `tail: illegal offset` -- the exact leak that was removed from `read`,
+    # still live here under a commit claiming the two commands agreed. A
+    # negative LINES is allowed in the count slot for the reason read's is:
+    # `tail -n -3` means "the last 3 lines".
     case "$raw" in
       -*)
         echo "roost screen: '$raw' is not a target — roost screen takes no flags." >&2
         echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
         exit 1 ;;
     esac
+    for _arg in "${@:3}"; do
+      case "$_arg" in
+        -[0-9]*) continue ;;
+        -*)
+          echo "roost screen: '$_arg' is not valid — roost screen takes no flags." >&2
+          echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
+          exit 1 ;;
+      esac
+    done
     screen_dump "$(target "$raw")" "$lines"
     ;;
   reply)

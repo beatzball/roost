@@ -399,6 +399,21 @@ assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "roost screen refuses a dash target too"
 assert_contains "$out" "not a target" \
   "...and says why, rather than reading a pane for it"
+# BOTH slots. Fixing only the target slot left `roost screen TGT --render`
+# reaching `tail -n --render` and printing `tail: illegal offset` -- the exact
+# leak removed from `read` in round one, still live in screen under a commit
+# claiming the two agreed. Asserted on the message so it cannot pass because
+# the pane lookup failed instead.
+out="$("$ROOST" screen "$pane" --render 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "roost screen refuses a flag in the LINES slot too"
+assert_contains "$out" "takes no flags" \
+  "...for being a flag, not with tail's illegal-offset error"
+case "$out" in
+  *"illegal offset"*) assert_eq leaked clean \
+    "roost screen does not leak tail's error for a misplaced flag" ;;
+  *) assert_eq ok ok "roost screen does not leak tail's error for a misplaced flag" ;;
+esac
 
 # --- the flag is documented -------------------------------------------------
 

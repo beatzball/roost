@@ -208,7 +208,7 @@ launch() {
 # reason.
 #
 # Then wait for the prompt box itself. A fixed sleep is long enough on an idle
-# machine and not on one loaded by repeated model runs: the prompt is delivered at
+# machine and not on one loaded by repeated model runs: the prompt gets typed at
 # a TUI that has not rendered yet and is silently dropped, so the pane never
 # leaves its empty state and the failure reads as an adapter regression. "open
 # sidebar" is part of the TUI footer and is present once (and only once) the
