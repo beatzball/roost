@@ -1597,6 +1597,738 @@ if command -v jq >/dev/null 2>&1; then
   roost_ext_index_write
 fi
 
+# --- roost ext install ------------------------------------------------------
+# The security-critical command of this feature, and the one place where a
+# refusal that quietly stopped working would not be noticed by anything else
+# in this file: every other section here is handed a lockfile and a clone that
+# a test wrote by hand, so nothing above proves that the thing which PUT them
+# there refuses what it is supposed to refuse.
+#
+# NO NETWORK, EVER. `git ls-remote` and `git clone` resolve through
+# ROOST_EXT_GIT_BASE, which is pointed at a directory of local bare
+# repositories addressed as file:// URLs. A suite that reached GitHub would be
+# flaky, and -- much worse -- would go green while the pinning logic was
+# wrong, because a network install that works proves nothing about which
+# commit was pinned.
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+# The names this section installs under, cleared first. Earlier sections
+# hand-build clone directories with some of these names (the index_lookup
+# fixtures use `demo`), and `roost ext install` REFUSES a directory it did not
+# put there rather than moving a clone inside it -- correct behaviour, and
+# without this line it would show up here as a puzzling failure of the first
+# install rather than as the leftover it is.
+rm -rf "$EXT_DATA/demo" "$EXT_DATA/quiet" "$EXT_DATA/inlink" "$EXT_DATA/withsub" \
+       "$EXT_DATA/later" "$EXT_DATA/weird" "$EXT_DATA/parity"
+
+EXT_REMOTES="$TMP/remotes"
+EXT_SRCS="$TMP/ext-src"
+mkdir -p "$EXT_REMOTES" "$EXT_SRCS"
+EXT_BASE="file://$EXT_REMOTES/"
+
+# Every git that BUILDS a fixture, in one place. -c rather than a written
+# config because HOME is the canary in this file and must stay empty: git
+# would otherwise have no identity to commit with and no default branch name,
+# and would say so on stderr in the middle of an unrelated assertion.
+# core.hooksPath=/dev/null keeps the developer's own global hooks off these
+# throwaway commits -- this machine has a pre-commit hook that scans content,
+# and a fixture commit is not something it has any business reading.
+ext_fixture_git() {
+  git -c init.defaultBranch=main -c core.hooksPath=/dev/null \
+      -c user.name=roost-test -c user.email=roost-test@example.invalid \
+      -c commit.gpgsign=false "$@"
+}
+
+# ext_src DIR MANIFEST-JSON [CMD...] -> a source tree for a fixture: the
+# manifest at the root, and one executable per CMD at bin/roost-<CMD>. The
+# executables print their own name and their arguments, so a dispatch
+# assertion can tell "the right program ran" from "something ran".
+ext_src() {
+  local dir="$1" json="$2" c
+  shift 2
+  mkdir -p "$dir/bin"
+  printf '%s\n' "$json" > "$dir/roost-ext.json"
+  for c in "$@"; do
+    printf '#!/bin/sh\nprintf "%s ran [%%s]\\n" "$*"\n' "$c" > "$dir/bin/roost-$c"
+    chmod +x "$dir/bin/roost-$c"
+  done
+}
+
+# ext_publish ORG/REPO SRCDIR [TAG] -> publish SRCDIR as a BARE repository at
+# the path ROOST_EXT_GIT_BASE maps ORG/REPO to. Bare, and reached over
+# file://, because that is what makes `git clone` and `git ls-remote` take the
+# same code path they take against a real remote -- a plain directory would
+# still clone, but a local-path clone hardlinks objects and skips the transfer
+# entirely, so the one thing this fixture exists to exercise would not run.
+ext_publish() {
+  local spec="$1" src="$2" tag="${3:-}"
+  local bare="$EXT_REMOTES/$spec"
+  mkdir -p "$(dirname "$bare")"
+  rm -rf "$bare"
+  ext_fixture_git init -q "$src" >/dev/null 2>&1
+  ext_fixture_git -C "$src" add -A >/dev/null 2>&1
+  ext_fixture_git -C "$src" commit -q -m "roost-ext fixture" >/dev/null 2>&1
+  if [ -n "$tag" ]; then
+    ext_fixture_git -C "$src" tag "$tag" >/dev/null 2>&1
+  fi
+  git clone -q --bare "$src" "$bare" >/dev/null 2>&1
+}
+
+# The command under test, always through ROOST_EXT_GIT_BASE.
+ext_install() { ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" install "$@"; }
+
+# ext_lock_field NAME KEY -> one field of one ext.lock entry, read back with
+# roost's own reader rather than with grep: a grep over JSON would pass on a
+# lockfile this feature could not itself read.
+ext_lock_field() {
+  local name="$1" key="$2" rows
+  rows="$("$HERE/scripts/roost-ext" info "$name" 2>/dev/null)" || return 1
+  # Only the "lockfile entry:" stanza, cut at the blank line that ends it.
+  # `info` prints the MANIFEST underneath with the same two-space layout, and
+  # four of the keys (name, contract, needs, commands) appear in both -- a
+  # reader that took the first match anywhere would be reading the lockfile
+  # for some keys and the extension's own file for others, which is exactly
+  # the confusion the fourth column of ext.index exists to prevent.
+  printf '%s\n' "$rows" | sed -n '/^lockfile entry:/,/^$/p' | sed -n "s/^  $key  *//p" | head -1
+}
+
+ext_index_col() {
+  # ext_index_col CMD N -> field N of the ext.index line claiming CMD.
+  awk -F'\t' -v c="$1" -v n="$2" '$1==c{print $n}' "$EXT_STATE_ROOT/ext.index"
+}
+
+# --- <org>/<repo> is refused BEFORE git is invoked --------------------------
+# The one check in this command that happens before network contact, and the
+# only way to prove it happened first is to make the network contact
+# impossible to survive: ROOST_EXT_GIT_BASE points at a directory that does
+# not exist, so ANY install that reached git would fail with git's own words.
+# Each of these fails with roost's instead, naming the rule and the section of
+# the design that carries it.
+ext_nowhere() { ROOST_EXT_GIT_BASE="file://$TMP/there-is-no-such-directory/" "$HERE/scripts/roost-ext" install "$@"; }
+for bad in '../..' '-x/y' 'x/-y' 'https://host/o/r' 'a b/c' './..' 'o/..'; do
+  out="$(ext_nowhere "$bad" --yes 2>"$TMP/err")"; rc=$?
+  err="$(cat "$TMP/err")"
+  assert_eq "$rc" "1" "install refuses [$bad]"
+  assert_eq "$out" "" "install prints nothing on stdout for [$bad]"
+  assert_contains "$err" "Input handling" \
+    "the refusal for [$bad] names the design's own rule, not git's error"
+  case "$err" in
+    *fatal:*|*"install: git:"*) leaked=1 ;;
+    *) leaked=0 ;;
+  esac
+  assert_eq "$leaked" "0" "nothing reached git for [$bad] — no git message in the refusal"
+done
+# A single argument with an embedded space is one argv element, and the loop
+# above passes it as one. Asserted separately rather than assumed, because a
+# `for bad in $list` with the wrong quoting would have split it into two and
+# the case would have silently become a different, easier one.
+out="$(ext_nowhere 'a b/c' --yes 2>"$TMP/err")"
+assert_contains "$(cat "$TMP/err")" "refusing a b/c" \
+  "the embedded-space spec really did arrive as ONE argument"
+
+# The other value that reaches a git command line.
+for badref in '-x' 'a..b' '/abs' 'a b'; do
+  out="$(ext_nowhere fix/good --ref "$badref" --yes 2>"$TMP/err")"; rc=$?
+  assert_eq "$rc" "1" "install refuses the ref [$badref]"
+  assert_contains "$(cat "$TMP/err")" "not a plain ref name" \
+    "the refusal for the ref [$badref] says which rule it broke"
+  assert_contains "$(cat "$TMP/err")" "nothing has been fetched" \
+    "...and says nothing was fetched"
+done
+
+# --- a real install, against a real file:// repository ----------------------
+ext_src "$EXT_SRCS/good" '{
+  "name": "demo",
+  "contract": 1,
+  "roost": ">=0.1.0 <9.0.0",
+  "needs": ["fleet"],
+  "commands": ["demo", "demos"],
+  "description": "A fixture, not a published extension."
+}' demo demos
+ext_publish fix/good "$EXT_SRCS/good" v0.1.0
+# What the remote really holds, resolved HERE with git rather than taken from
+# the installer's own output: an assertion that compared the installer to
+# itself would hold however wrong the pin was.
+good_sha="$(git ls-remote -- "file://$EXT_REMOTES/fix/good" v0.1.0 | awk '{print $1}')"
+good_head="$(git ls-remote -- "file://$EXT_REMOTES/fix/good" HEAD | awk '{print $1}')"
+
+# Its own variable, not `out`: the consent-block assertions further down read
+# this again, and `out` is reused by every run between here and there.
+good_out="$(ext_install fix/good --ref v0.1.0 --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "install succeeds against a file:// fixture with --yes"
+assert_eq "$(cat "$TMP/err")" "" "a successful install writes nothing to stderr"
+
+# The plan block, line for line against the design's own layout.
+assert_contains "$good_out" "  repo     file://$EXT_REMOTES/fix/good" \
+  "the plan names the repository it is about to fetch from"
+assert_contains "$good_out" "  ref      v0.1.0" "the plan names the ref that was asked for"
+assert_contains "$good_out" "  commit   ${good_sha:0:7}...  (pinned)" \
+  "the plan shows the resolved commit, marked as pinned"
+assert_contains "$good_out" "  contract 1                       (roost speaks 1)     ok" \
+  "the contract row sits where the design's block puts it"
+assert_contains "$good_out" "  claims   roost demo, roost demos" \
+  "the plan names every command the extension would claim"
+
+# THE PIN. A full 40-character commit id, and the one the remote really
+# resolves that tag to -- not the ref, not an abbreviation.
+lock_commit="$(ext_lock_field demo commit)"
+assert_eq "$lock_commit" "$good_sha" "ext.lock records the commit the ref resolved to"
+assert_eq "${#lock_commit}" "40" "...as the full 40-character id, not the ref and not an abbreviation"
+assert_eq "$(ext_lock_field demo ref)" "v0.1.0" "ext.lock records the ref that was asked for, beside the commit"
+assert_eq "$(ext_lock_field demo repo)" "fix/good" "ext.lock records the repository"
+assert_eq "$(ext_lock_field demo needs)" "fleet" "ext.lock records the authority that was consented to"
+assert_eq "$(ext_lock_field demo contract)" "1" "ext.lock records the contract"
+printf '%s' "$(ext_lock_field demo installed)" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+assert_true "$?" "ext.lock records an install time in UTC ISO-8601"
+
+# THE TREE, and WHICH function produced it. On a pristine clone
+# roost_ext_tree_hash and `git rev-parse HEAD^{tree}` agree, so this pair of
+# assertions cannot tell them apart on its own -- the submodule fixture
+# further down is where they genuinely diverge, and that is where the choice
+# is actually pinned. What this one proves is the half that matters to task
+# 7: the recorded value is what verify will recompute.
+lock_tree="$(ext_lock_field demo tree)"
+assert_eq "$lock_tree" "$(roost_ext_tree_hash "$EXT_DATA/demo")" \
+  "ext.lock records the tree hash roost_ext_tree_hash computes for the installed directory"
+printf '%s' "$lock_tree" | grep -Eq '^[0-9a-f]{40}$'
+assert_true "$?" "...as a 40-character git object id"
+
+# The dispatch table, in the four columns the dispatcher reads.
+assert_eq "$(ext_index_col demo 2)" "demo" "ext.index names the extension in column 2"
+assert_eq "$(ext_index_col demo 3)" "$EXT_DATA/demo/bin/roost-demo" \
+  "ext.index points at the installed executable"
+assert_eq "$(ext_index_col demo 4)" "fleet" \
+  "ext.index carries the authority in column 4, where the dispatcher reads it"
+assert_eq "$(ext_index_col demos 3)" "$EXT_DATA/demo/bin/roost-demos" \
+  "the second claimed command gets its own line"
+
+# AND IT RUNS. Everything above is bookkeeping until the command a user types
+# reaches the program that was installed.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" demo a 'b c' 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "roost <cmd> runs the freshly installed extension"
+assert_eq "$out" "demo ran [a b c]" "...the right program, with its arguments"
+
+# --- the default ref is the remote's HEAD -----------------------------------
+ext_src "$EXT_SRCS/quiet" '{
+  "name": "quiet",
+  "contract": 1,
+  "commands": ["quiet"]
+}' quiet
+ext_publish fix/quiet "$EXT_SRCS/quiet"
+quiet_head="$(git ls-remote -- "file://$EXT_REMOTES/fix/quiet" HEAD | awk '{print $1}')"
+quiet_out="$(ext_install fix/quiet --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "install with no --ref succeeds"
+assert_eq "$(ext_lock_field quiet commit)" "$quiet_head" \
+  "with no --ref the pin is the remote's own HEAD, resolved to a full id"
+assert_eq "$(ext_lock_field quiet ref)" "HEAD" "...and the recorded ref says so"
+
+# --- the consent block: what it says about authority, and what it never says -
+# The two fixtures are compared as a PAIR. Either assertion on its own would
+# pass on a build that printed the same paragraph for both, which is the one
+# failure that would make the whole declaration worthless: a user who reads
+# "asks to drive your agents" on every install stops reading it.
+assert_contains "$good_out" "This extension asks to drive your agents" \
+  "a fleet extension's consent block says what it can do, in words"
+assert_contains "$good_out" "read any pane's screen and send prompts to any agent" \
+  "...naming the two capabilities, not the name of a manifest field"
+case "$quiet_out" in
+  *"asks to drive your agents"*) quiet_authority=1 ;;
+  *) quiet_authority=0 ;;
+esac
+assert_eq "$quiet_authority" "0" \
+  "an extension that declared no authority gets NO authority paragraph"
+assert_contains "$quiet_out" "does not ask for access to your agents" \
+  "...it gets the one line that says what it declared"
+# "does not ask", never "cannot reach" -- the second would be false, and the
+# design says so outright. This is the assertion that would catch someone
+# tightening the wording into a promise roost cannot keep.
+case "$quiet_out" in
+  *"cannot reach"*) quiet_overclaim=1 ;;
+  *) quiet_overclaim=0 ;;
+esac
+assert_eq "$quiet_overclaim" "0" \
+  "...and never claims the extension CANNOT reach the agents, which would be false"
+
+# Printed under BOTH branches, because `needs` is a declaration and not a
+# boundary: a pane's own $TMUX and PATH already carry the fleet, and the
+# production socket is the guessable name `roost`. The user who reads "does
+# not ask" has to be told that in the same breath.
+for consent_out in "$good_out" "$quiet_out"; do
+  assert_contains "$consent_out" "An extension that did NOT ask can still reach them if it tries" \
+    "the consent block says a declaration is not a boundary"
+  assert_contains "$consent_out" "Roost has checked that this is the exact commit named above" \
+    "the consent block states the one thing roost really checked"
+  assert_contains "$consent_out" "NOT checked whether the code is honest. It cannot." \
+    "...and states, always, what it did not check"
+  assert_contains "$consent_out" "Nothing runs during install." \
+    "the consent block promises nothing runs during install"
+done
+
+# NO WORD THAT READS AS A VERDICT. Roost checks integrity and grants
+# authority; it cannot judge whether code is honest, and one reassuring
+# adjective undoes the whole design because people believe badges. Checked
+# case-insensitively over both consent blocks and over the success message.
+consent_all="$(printf '%s\n%s\n' "$good_out" "$quiet_out" | tr 'A-Z' 'a-z')"
+for verdict in safe clean scanned verified trusted trustworthy secure vetted audited approved legitimate; do
+  case "$consent_all" in
+    *"$verdict"*) verdict_hit=1 ;;
+    *) verdict_hit=0 ;;
+  esac
+  assert_eq "$verdict_hit" "0" "no install output reads as a verdict on the code: [$verdict]"
+done
+
+# --- every refusal in step 4 of the design, each with its own fixture -------
+# `assert_contains` on the REASON, not merely on a non-zero exit: a command
+# that refused everything for one generic reason would pass an exit-status
+# test and tell a user nothing.
+ext_refuse_case() {
+  # ext_refuse_case <label> <org/repo> <expected-substring> [extra args...]
+  local label="$1" spec="$2" want="$3"
+  shift 3
+  local r_out r_rc
+  r_out="$(ext_install "$spec" --yes "$@" 2>"$TMP/err")"; r_rc=$?
+  [ "$r_rc" -ne 0 ]
+  assert_true "$?" "install refuses $label"
+  assert_contains "$(cat "$TMP/err")" "$want" "...naming the reason: $label"
+  # Nothing installed, nothing recorded. A refusal that left a clone behind
+  # would leave `roost ext list` reporting an extension nobody consented to.
+  assert_eq "$(ext_index_col "$refuse_cmd" 3)" "" "...and claims no command in ext.index: $label"
+}
+
+mkdir -p "$EXT_SRCS/nomanifest"
+printf 'not a manifest\n' > "$EXT_SRCS/nomanifest/README.md"
+ext_publish fix/nomanifest "$EXT_SRCS/nomanifest"
+refuse_cmd=nothing
+ext_refuse_case "a repository with no roost-ext.json" fix/nomanifest "has no roost-ext.json"
+
+ext_src "$EXT_SRCS/badname" '{ "name": "Bad Name", "contract": 1, "commands": ["bad"] }' bad
+ext_publish fix/badname "$EXT_SRCS/badname"
+refuse_cmd=bad
+ext_refuse_case "a manifest whose name is not usable" fix/badname "is not usable"
+
+ext_src "$EXT_SRCS/contract2" '{ "name": "future", "contract": 2, "commands": ["future"] }' future
+ext_publish fix/contract2 "$EXT_SRCS/contract2"
+refuse_cmd=future
+ext_refuse_case "a contract this roost does not speak" fix/contract2 "speaks contract 2, this roost speaks 1"
+
+ext_src "$EXT_SRCS/badneeds" '{ "name": "greedy", "contract": 1, "needs": ["sudo"], "commands": ["greedy"] }' greedy
+ext_publish fix/badneeds "$EXT_SRCS/badneeds"
+refuse_cmd=greedy
+ext_refuse_case "an authority roost does not know" fix/badneeds "does not know: sudo"
+
+# CORE ALWAYS WINS, and `send` is the command the design picks out by name: an
+# extension that could shadow it could silently intercept every message
+# between the user's agents.
+ext_src "$EXT_SRCS/shadow" '{ "name": "shadow", "contract": 1, "commands": ["send"] }' send
+ext_publish fix/shadow "$EXT_SRCS/shadow"
+refuse_cmd=send
+ext_refuse_case "a manifest claiming a core command" fix/shadow "which is a roost command"
+
+# Already claimed by the extension installed at the top of this section.
+ext_src "$EXT_SRCS/collide" '{ "name": "rival", "contract": 1, "commands": ["demo"] }' demo
+ext_publish fix/collide "$EXT_SRCS/collide"
+out_collide="$(ext_install fix/collide --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses a command another extension already claims"
+assert_contains "$(cat "$TMP/err")" "already claimed by demo" \
+  "...naming the extension that holds it, which is the actionable half"
+assert_eq "$(ext_index_col demo 2)" "demo" "...and the extension that held it still holds it"
+
+# A declared command with nothing behind it. The manifest claims `ghost`; the
+# repository has bin/roost-real and no bin/roost-ghost.
+ext_src "$EXT_SRCS/nobin" '{ "name": "ghosty", "contract": 1, "commands": ["ghost"] }' real
+ext_publish fix/nobin "$EXT_SRCS/nobin"
+refuse_cmd=ghost
+ext_refuse_case "a declared command with no executable" fix/nobin "has no executable bin/roost-ghost"
+
+# Present but not executable is the same refusal, and it is the one a real
+# extension author hits: a file committed without its mode bit.
+ext_src "$EXT_SRCS/notexec" '{ "name": "flat", "contract": 1, "commands": ["flat"] }' flat
+chmod -x "$EXT_SRCS/notexec/bin/roost-flat"
+ext_publish fix/notexec "$EXT_SRCS/notexec"
+refuse_cmd=flat
+ext_refuse_case "a declared command whose file is not executable" fix/notexec "has no executable bin/roost-flat"
+
+# --- a hostile tree, refused after cloning and before anything is moved -----
+# A SYMLINK OUT OF THE EXTENSION DIRECTORY. That directory is deleted whole by
+# `remove`, hashed whole by `verify` and replaced whole by `update`; a link
+# out of it turns each of those into an operation on the user's own files.
+# git stores symlinks (mode 120000) and a clone materialises them, so this one
+# really does arrive through the pipeline rather than being staged by hand.
+ext_src "$EXT_SRCS/escape" '{ "name": "escapee", "contract": 1, "commands": ["escapee"] }' escapee
+ln -s ../../../../etc/passwd "$EXT_SRCS/escape/outside"
+ext_publish fix/escape "$EXT_SRCS/escape"
+refuse_cmd=escapee
+ext_refuse_case "a tree with a symlink pointing outside the extension" fix/escape \
+  "a symlink pointing outside the extension: outside"
+
+# An ABSOLUTE symlink, which escapes whatever its text says.
+ext_src "$EXT_SRCS/abslink" '{ "name": "abslink", "contract": 1, "commands": ["abslink"] }' abslink
+ln -s /etc/hosts "$EXT_SRCS/abslink/hosts"
+ext_publish fix/abslink "$EXT_SRCS/abslink"
+refuse_cmd=abslink
+ext_refuse_case "a tree with an absolute symlink" fix/abslink "a symlink pointing outside"
+
+# A symlink that stays INSIDE is ordinary and must still install: a check that
+# refused every link would be refused by every real extension, and would be
+# turned off within a week.
+ext_src "$EXT_SRCS/inlink" '{ "name": "inlink", "contract": 1, "commands": ["inlink"] }' inlink
+ln -s bin/roost-inlink "$EXT_SRCS/inlink/alias"
+ln -s ../roost-ext.json "$EXT_SRCS/inlink/bin/manifest"
+ext_publish fix/inlink "$EXT_SRCS/inlink"
+out_inlink="$(ext_install fix/inlink --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "a symlink that resolves INSIDE the extension installs normally"
+assert_eq "$(cat "$TMP/err")" "" "...with nothing on stderr"
+
+# THE SETUID CASE CANNOT COME THROUGH GIT, and saying so is the point. Git
+# records exactly three file modes -- 100644, 100755 and 120000 -- so no
+# repository, hostile or otherwise, can deliver a setuid bit through a clone.
+# The check still has to exist (the clone is not the only way a directory gets
+# populated, and `update` will move trees around too), so it is exercised
+# where it CAN be exercised: directly, against a directory with a real setuid
+# file in it. A fixture repository here would have proved nothing, because the
+# bit would never have survived the round trip.
+HOSTILE="$TMP/hostile"; mkdir -p "$HOSTILE/bin"
+printf '#!/bin/sh\n:\n' > "$HOSTILE/bin/roost-x"; chmod 4755 "$HOSTILE/bin/roost-x"
+roost_ext_tree_hostile "$HOSTILE"
+assert_true "$?" "tree_hostile finds a setuid file"
+assert_contains "$ROOST_EXT_HOSTILE_FOUND" "setuid or setgid file: bin/roost-x" \
+  "...and names the file, relative to the extension directory"
+chmod 2755 "$HOSTILE/bin/roost-x"
+roost_ext_tree_hostile "$HOSTILE"
+assert_true "$?" "tree_hostile finds a setgid file too"
+chmod 755 "$HOSTILE/bin/roost-x"
+roost_ext_tree_hostile "$HOSTILE"
+assert_eq "$?" "1" "...and finds nothing once the bit is off"
+# A setgid DIRECTORY is deliberately not a finding: on macOS and the BSDs a
+# new directory inherits the bit from its parent, so refusing it would refuse
+# an ordinary install for a property of the machine's temp directory.
+chmod 2755 "$HOSTILE/bin"
+roost_ext_tree_hostile "$HOSTILE"
+assert_eq "$?" "1" "a setgid DIRECTORY is not a finding — it is inherited, not chosen"
+chmod 755 "$HOSTILE/bin"
+
+# The lexical rule the symlink half rests on, asserted on its own so the
+# reasoning is pinned rather than inferred from one fixture.
+roost_ext__link_escapes "bin/x" "../../etc/passwd"
+assert_true "$?" "a link two levels up from bin/ escapes"
+roost_ext__link_escapes "bin/x" "../roost-ext.json"
+assert_eq "$?" "1" "...and one level up from bin/ does not"
+roost_ext__link_escapes "x" "../y"
+assert_true "$?" "a link one level up from the root escapes"
+roost_ext__link_escapes "x" "/etc/hosts"
+assert_true "$?" "an absolute target escapes"
+roost_ext__link_escapes "x" "a/../b"
+assert_eq "$?" "1" "a target that dips and returns without leaving stays inside"
+roost_ext__link_escapes "x" "../ext/x"
+assert_true "$?" "...but one that leaves and comes back is refused anyway — conservative on purpose"
+
+# --- the hardened clone: a submodule is NOT fetched -------------------------
+# A .gitmodules URL is another fetch, to a host the user was never shown, and
+# its checkout is another tree nothing has looked at. The fixture carries a
+# real gitlink and a real .gitmodules pointing at a second local repository
+# whose only file is unmistakable; installing must leave that file absent.
+ext_src "$EXT_SRCS/subpayload" '{ "name": "payload", "contract": 1, "commands": ["payload"] }' payload
+printf 'THE-SUBMODULE-WAS-FETCHED\n' > "$EXT_SRCS/subpayload/marker"
+ext_publish fix/subpayload "$EXT_SRCS/subpayload"
+sub_sha="$(git ls-remote -- "file://$EXT_REMOTES/fix/subpayload" HEAD | awk '{print $1}')"
+ext_src "$EXT_SRCS/withsub" '{ "name": "withsub", "contract": 1, "commands": ["withsub"] }' withsub
+cat > "$EXT_SRCS/withsub/.gitmodules" <<GITMOD
+[submodule "sub"]
+	path = sub
+	url = file://$EXT_REMOTES/fix/subpayload
+GITMOD
+ext_fixture_git init -q "$EXT_SRCS/withsub" >/dev/null 2>&1
+ext_fixture_git -C "$EXT_SRCS/withsub" add -A >/dev/null 2>&1
+# A gitlink written straight into the index: `git submodule add` would clone
+# the thing this fixture exists to prove is never cloned.
+ext_fixture_git -C "$EXT_SRCS/withsub" update-index --add --cacheinfo "160000,$sub_sha,sub" >/dev/null 2>&1
+ext_fixture_git -C "$EXT_SRCS/withsub" commit -q -m "roost-ext fixture" >/dev/null 2>&1
+rm -rf "$EXT_REMOTES/fix/withsub"
+git clone -q --bare "$EXT_SRCS/withsub" "$EXT_REMOTES/fix/withsub" >/dev/null 2>&1
+
+out_sub="$(ext_install fix/withsub --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "a repository carrying a .gitmodules still installs"
+assert_file_absent "$EXT_DATA/withsub/sub/marker" \
+  "...but the submodule was never fetched — nothing ran and nothing was downloaded"
+[ -f "$EXT_DATA/withsub/.gitmodules" ]
+assert_true "$?" "...while the .gitmodules file itself is present, so this really is the submodule case"
+
+# WHAT THE FIXTURE ABOVE DOES AND DOES NOT PROVE, measured rather than
+# assumed. Each hardening measure was removed from scripts/roost-ext in turn
+# and this file re-run:
+#
+#   --no-recurse-submodules removed, --no-checkout kept  -> ALL GREEN. With
+#   nothing checked out there is no submodule work to recurse into, and the
+#   `git checkout --detach` that follows does not recurse by default. The flag
+#   is real belt-and-braces, and this fixture cannot see it on its own.
+#
+#   both removed                                          -> the install FAILS
+#   and two assertions above go red, because git refuses to clone a file://
+#   submodule at all (protocol.file.allow). So the fixture catches the pair
+#   coming off -- but by the clone erroring, not by the marker appearing.
+#
+# Which means the marker file can never appear on a git this recent, and an
+# assertion resting on it alone would be asserting git's behaviour rather than
+# roost's. GIT_LFS_SKIP_SMUDGE and core.hooksPath are worse still: neither can
+# be provoked at all without installing git-lfs and a hook into a fixture.
+#
+# So the three measures the design names by name are ALSO pinned in the
+# source, and this is a grep -- it proves the line is PRESENT, not that it is
+# live (AGENTS.md §9), which is exactly why it sits beside the behavioural
+# fixture above rather than instead of it. Without it, deleting the flag that
+# makes the consent block's promise true is a change nothing in this suite
+# would notice.
+grep -q -- '--no-recurse-submodules' "$HERE/scripts/roost-ext"
+assert_true "$?" "the clone passes --no-recurse-submodules: a .gitmodules URL is another fetch"
+grep -q 'GIT_LFS_SKIP_SMUDGE=1' "$HERE/scripts/roost-ext"
+assert_true "$?" "every git runs with GIT_LFS_SKIP_SMUDGE=1: an LFS smudge filter is a command"
+grep -q -- '-c core.hooksPath=/dev/null' "$HERE/scripts/roost-ext"
+assert_true "$?" "every git runs with core.hooksPath=/dev/null"
+# All three on ONE wrapper, so a git invocation added later cannot be the
+# unhardened one. Asserted because the alternative -- repeating them per call
+# -- is what makes that possible, and it would still pass the three greps
+# above.
+grep -q 'GIT_LFS_SKIP_SMUDGE=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null' "$HERE/scripts/roost-ext"
+assert_true "$?" "...carried by one wrapper, so a git added here later is hardened by construction"
+
+# THE TREE HASH, AND WHICH FUNCTION PRODUCED IT. This is the fixture where
+# roost_ext_tree_hash and `git rev-parse HEAD^{tree}` genuinely disagree: the
+# commit's tree carries a gitlink entry for `sub`, and the working tree that
+# was actually installed does not carry it at all. Recording the commit's tree
+# here would have `roost ext verify` compare a hash of something that is not
+# on the disk, and cry tamper at a clean install every single time.
+sub_lock_tree="$(ext_lock_field withsub tree)"
+assert_eq "$sub_lock_tree" "$(roost_ext_tree_hash "$EXT_DATA/withsub")" \
+  "ext.lock records roost_ext_tree_hash's answer for the installed directory"
+sub_commit_tree="$(git -C "$EXT_DATA/withsub" rev-parse 'HEAD^{tree}' 2>/dev/null)"
+[ "$sub_lock_tree" != "$sub_commit_tree" ]
+assert_true "$?" \
+  "...which is NOT git rev-parse HEAD^{tree} — the two really do differ here, so the choice is pinned"
+
+# --- the pin is checked against what actually arrived -----------------------
+# The ref moved between resolving it and cloning it: the commit that was
+# pinned is no longer in the repository at all. This is the shape of the
+# attack the pin exists to survive, built rather than imagined -- the tip is
+# rewritten and the old object pruned.
+ext_src "$EXT_SRCS/moved" '{ "name": "moved", "contract": 1, "commands": ["moved"] }' moved
+ext_publish fix/moved "$EXT_SRCS/moved"
+moved_sha="$(git ls-remote -- "file://$EXT_REMOTES/fix/moved" HEAD | awk '{print $1}')"
+printf 'second\n' > "$EXT_SRCS/moved/second.txt"
+ext_fixture_git -C "$EXT_SRCS/moved" add -A >/dev/null 2>&1
+ext_fixture_git -C "$EXT_SRCS/moved" commit -q --amend -m "rewritten" >/dev/null 2>&1
+rm -rf "$EXT_REMOTES/fix/moved"
+git clone -q --bare "$EXT_SRCS/moved" "$EXT_REMOTES/fix/moved" >/dev/null 2>&1
+moved_new="$(git ls-remote -- "file://$EXT_REMOTES/fix/moved" HEAD | awk '{print $1}')"
+[ "$moved_new" != "$moved_sha" ]
+assert_true "$?" "the fixture really did rewrite the tip, so this case has something to catch"
+out_moved="$(ext_install fix/moved --ref "$moved_sha" --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses when the pinned commit is not in the repository"
+assert_contains "$(cat "$TMP/err")" "$moved_sha" "...naming the commit that was asked for"
+assert_contains "$(cat "$TMP/err")" "refusing rather than installing something else" \
+  "...and saying it would rather refuse than install a different commit"
+assert_file_absent "$EXT_DATA/moved" "...leaving nothing on disk"
+
+# --- an out-of-range or unparsable `roost` warns, and still installs --------
+# The range is advisory on purpose: a hard product-version gate would make
+# every roost release a compatibility event, which is the cost the contract
+# integer exists to avoid. Both directions warn; neither may ever refuse.
+ext_src "$EXT_SRCS/future" '{ "name": "later", "contract": 1, "roost": ">=9.0.0 <10.0.0", "commands": ["later"] }' later
+ext_publish fix/future "$EXT_SRCS/future"
+out_range="$(ext_install fix/future --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "an out-of-range roost range still installs"
+assert_contains "$out_range" ">=9.0.0 <10.0.0" "...the plan shows the range that was declared"
+assert_contains "$out_range" "warn" "...marked as a warning rather than as ok"
+assert_contains "$out_range" "the range is advisory" "...saying in words that it is advisory"
+assert_eq "$(ext_index_col later 2)" "later" "...and it really is installed"
+
+ext_src "$EXT_SRCS/weird" '{ "name": "weird", "contract": 1, "roost": "^1.0.0", "commands": ["weird"] }' weird
+ext_publish fix/weird "$EXT_SRCS/weird"
+out_weird="$(ext_install fix/weird --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "an unparsable roost range still installs"
+assert_contains "$out_weird" "cannot read" "...saying roost could not read the range"
+assert_eq "$(ext_index_col weird 2)" "weird" "...and it really is installed"
+
+# --- silence is never consent ------------------------------------------------
+# Not a terminal, and no --yes. The install must refuse AND leave nothing
+# behind: an install driven from a script, a cron entry or a pipe has nobody
+# to answer, and the answer roost invents for an absent person must be no.
+ext_src "$EXT_SRCS/silent" '{ "name": "silent", "contract": 1, "commands": ["silent"] }' silent
+ext_publish fix/silent "$EXT_SRCS/silent"
+lock_before="$(cat "$(roost_ext_lock)")"
+index_before="$(cat "$EXT_STATE_ROOT/ext.index")"
+out_silent="$(ext_install fix/silent </dev/null 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "a non-tty install without --yes refuses"
+assert_contains "$(cat "$TMP/err")" "not a terminal" "...saying why"
+assert_contains "$out_silent" "Install? [y/N]" "...after printing the plan it was asking about"
+assert_file_absent "$EXT_DATA/silent" "...and installs nothing"
+assert_file_absent "$EXT_STATE_ROOT/ext/silent" "...creates no state directory"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" "...leaves ext.lock byte-identical"
+assert_eq "$(cat "$EXT_STATE_ROOT/ext.index")" "$index_before" "...leaves ext.index byte-identical"
+
+# --- a lockfile write without a matching index is not an install ------------
+# ext.index is the authority of record: the dispatcher never opens ext.lock,
+# so a lockfile written without a matching index is a grant nobody can see and
+# nobody can revoke. The design states it as a requirement -- every command
+# that changes ext.lock regenerates ext.index in the same operation and must
+# not report success if that regeneration failed.
+#
+# The failure is provoked with a lockfile that `roost ext list` can read but
+# that cannot be turned into a dispatch table: an entry claiming no commands
+# at all. That is what a hand-edited ext.lock looks like, and it is the only
+# way to reach this branch without breaking the machine's JSON tools.
+ext_src "$EXT_SRCS/halfway" '{ "name": "halfway", "contract": 1, "commands": ["halfway"] }' halfway
+ext_publish fix/halfway "$EXT_SRCS/halfway"
+printf '%s\n' '{ "wedged": { "repo": "o/wedged", "commands": [] } }' > "$(roost_ext_lock)"
+lock_before="$(cat "$(roost_ext_lock)")"
+rm -f "$EXT_STATE_ROOT/ext.index"
+out_half="$(ext_install fix/halfway --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install fails when ext.index cannot be regenerated"
+assert_contains "$(cat "$TMP/err")" "could not be turned into a dispatch table" "...saying what failed"
+assert_contains "$(cat "$TMP/err")" "halfway is not installed" "...and that the install did not happen"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" \
+  "...with ext.lock put back exactly as it was, not left carrying an entry nothing dispatches"
+assert_file_absent "$EXT_DATA/halfway" "...and the clone taken back off the disk"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# --- install's own engine pair: python3 and jq must agree -------------------
+# A THIRD pair of JSON engines lands with this task -- _ext_lock_add_py and
+# _ext_lock_add_jq, which merge one entry into ext.lock. Three separate times
+# on this branch a pair that was CLAIMED to agree did not, and each divergence
+# was silent and only wrong on a jq-only machine. So the parity test lands
+# with the engines rather than after them.
+#
+# It cannot call the two functions directly -- they live in scripts/roost-ext,
+# not in the sourced library -- so it proves the same thing the way
+# _ext_lock_rows_parity_case does: run the WHOLE install twice, against the
+# same fixture and the same pre-existing lockfile, once under the ambient PATH
+# and once under a PATH carrying jq and no python3, then compare the ext.lock
+# that came out of each, byte for byte.
+#
+# Skipped, not failed, where jq is absent: it is not a roost dependency.
+if command -v jq >/dev/null 2>&1; then
+  # Everything `roost ext install` actually runs. Longer than the other
+  # jq-only PATHs in this file because install is the one verb that fetches,
+  # hashes and writes -- but the same shape, and the same reason for the
+  # shape: files WRITTEN here, never symlinks to the real binaries. A `>`
+  # follows a symlink, and overwriting an entry in a shim directory built out
+  # of symlinks has destroyed real binaries on this machine before.
+  mkdir -p "$TMP/install-jq-only"
+  for c in bash sh dirname cat jq git sed date mktemp mv cp rm mkdir find readlink chmod awk sort head; do
+    if command -v "$c" >/dev/null 2>&1; then
+      printf '#!/bin/sh\nexec %s "$@"\n' "$(command -v "$c")" > "$TMP/install-jq-only/$c"
+      chmod +x "$TMP/install-jq-only/$c"
+    fi
+  done
+  ext_src "$EXT_SRCS/parity" '{
+  "name": "parity",
+  "contract": 1,
+  "roost": ">=0.1.0 <9.0.0",
+  "needs": ["fleet"],
+  "commands": ["parity"],
+  "description": "parité — a description that is not ASCII"
+}' parity
+  ext_publish fix/parity "$EXT_SRCS/parity"
+
+  # _ext_lock_add_parity_case <label> <pre-existing ext.lock> -- installs the
+  # same fixture into two throwaway sandboxes, one per engine, and diffs the
+  # lockfile each wrote. The `installed` timestamp is the one field that
+  # legitimately differs between two runs a second apart, so it is normalised
+  # away; everything else has to match exactly.
+  _ext_lock_add_parity_case() {
+    local label="$1" seed="$2" engine root rc
+    for engine in py jq; do
+      root="$TMP/parity-$engine"
+      rm -rf "$root"; mkdir -p "$root/state/roost" "$root/data"
+      printf '%s\n' "$seed" > "$root/state/roost/ext.lock"
+      if [ "$engine" = jq ]; then
+        XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+          PATH="$TMP/install-jq-only" ROOST_EXT_GIT_BASE="$EXT_BASE" \
+          "$HERE/scripts/roost-ext" install fix/parity --yes >/dev/null 2>"$TMP/perr-$engine"
+      else
+        XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+          ROOST_EXT_GIT_BASE="$EXT_BASE" \
+          "$HERE/scripts/roost-ext" install fix/parity --yes >/dev/null 2>"$TMP/perr-$engine"
+      fi
+      rc=$?
+      # Through files rather than through two variables built by `eval`: the
+      # engine name is part of the variable name and an eval there is one
+      # quoting mistake away from comparing a variable with itself, which is
+      # the shape of a parity test that passes while proving nothing.
+      printf '%s\n' "$rc" > "$TMP/prc-$engine"
+      sed 's/"installed": ".*"/"installed": "<t>"/' "$root/state/roost/ext.lock" > "$TMP/plock-$engine" 2>/dev/null
+    done
+    assert_eq "$(cat "$TMP/prc-jq")" "$(cat "$TMP/prc-py")" \
+      "both engines agree on the exit status for $label"
+    assert_eq "$(cat "$TMP/plock-jq")" "$(cat "$TMP/plock-py")" \
+      "both engines write a byte-identical ext.lock for $label"
+    # The engine name is part of the sandbox PATH, and both engines quote the
+    # lockfile's path back in their refusals -- so the two roots are
+    # normalised away before comparing. Without this the assertion compares
+    # ".../parity-py/..." with ".../parity-jq/..." and fails on two messages
+    # that agree in every word that matters.
+    sed "s|$TMP/parity-py|<root>|g" "$TMP/perr-py" > "$TMP/perr-py.norm"
+    sed "s|$TMP/parity-jq|<root>|g" "$TMP/perr-jq" > "$TMP/perr-jq.norm"
+    assert_eq "$(cat "$TMP/perr-jq.norm")" "$(cat "$TMP/perr-py.norm")" \
+      "both engines agree on the stderr message for $label"
+  }
+  _ext_lock_add_parity_case "a machine with nothing installed" '{}'
+  _ext_lock_add_parity_case "an existing entry that must survive untouched" \
+    '{ "mark": { "repo": "o/mark", "ref": "v1.0.0", "commit": "abc", "commands": ["mark"], "needs": ["fleet"] } }'
+  _ext_lock_add_parity_case "an existing entry carrying fields roost does not write" \
+    '{ "mark": { "commands": ["mark"], "future": { "b": 2, "a": [1, {"z": null, "y": true}] } } }'
+  _ext_lock_add_parity_case "an existing entry with a non-ASCII description" \
+    '{ "mark": { "commands": ["mark"], "description": "caffè — ünïcode" } }'
+  _ext_lock_add_parity_case "a name already in the lockfile" \
+    '{ "parity": { "repo": "o/parity", "commands": ["parity"] } }'
+  _ext_lock_add_parity_case "a lockfile that is not an object" '[ "mark" ]'
+  # NOT a case here: a lockfile that is not JSON at all. The two engines
+  # deliberately word a parse failure differently -- roost_ext__json_read's
+  # header records that decision, and says why pretending they agree would be
+  # worse -- so comparing their stderr there would be asserting the opposite
+  # of the contract.
+
+  # THE ONE PLACE THE TWO ENGINES DO NOT AGREE, asserted rather than glossed
+  # over. A JSON number written in EXPONENT form comes back as `100.0` from
+  # python3 and as `1E+2` from jq 1.7: the same value, spelled differently.
+  # Nothing roost writes produces an exponent literal -- only a hand-edited
+  # lockfile can -- and no reader in this feature cares which spelling it
+  # sees. Recorded here because a stated invariant that is false is worse than
+  # no invariant, and the next person to add a parity case needs to know this
+  # one is expected rather than a fresh bug.
+  for engine in py jq; do
+    root="$TMP/parity-$engine"
+    rm -rf "$root"; mkdir -p "$root/state/roost" "$root/data"
+    printf '%s\n' '{ "mark": { "commands": ["mark"], "odd": 1e2 } }' > "$root/state/roost/ext.lock"
+    if [ "$engine" = jq ]; then
+      XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" PATH="$TMP/install-jq-only" \
+        ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" install fix/parity --yes >/dev/null 2>&1
+    else
+      XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+        ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" install fix/parity --yes >/dev/null 2>&1
+    fi
+  done
+  exp_py="$(sed -e 's/"installed": ".*"/"installed": "<t>"/' -e 's/"odd": .*/"odd": <num>/' "$TMP/parity-py/state/roost/ext.lock" 2>/dev/null)"
+  exp_jq="$(sed -e 's/"installed": ".*"/"installed": "<t>"/' -e 's/"odd": .*/"odd": <num>/' "$TMP/parity-jq/state/roost/ext.lock" 2>/dev/null)"
+  assert_eq "$exp_jq" "$exp_py" \
+    "the two engines agree on everything but the spelling of an exponent-form number"
+  grep -q '"odd": 100.0' "$TMP/parity-py/state/roost/ext.lock"
+  assert_true "$?" "python3 re-spells 1e2 as 100.0 — the known divergence, pinned so it is not mistaken for a bug"
+  rm -rf "$TMP/parity-py" "$TMP/parity-jq"
+fi
+
+# Leave the state this section built behind, so the conformance block below
+# starts from nothing. The clones go too: the block underneath copies its own
+# fixtures into this same directory.
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/demo" "$EXT_DATA/quiet" "$EXT_DATA/inlink" "$EXT_DATA/withsub" \
+       "$EXT_DATA/later" "$EXT_DATA/weird"
+
 # Leave a clean slate for the conformance block below, which builds its own
 # lockfile from scratch and must not inherit any entry from this section.
 rm -f "$(roost_ext_lock)"
@@ -1979,6 +2711,72 @@ out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" argv-ext 2>"$TM
 # lines has to be able to tell "received nothing" from "was never dispatched".
 assert_eq "$rc" "0" "the argv extension runs with no arguments at all"
 assert_eq "$out" "" "with no arguments the extension receives none -- not its own name"
+
+# --- the same conformance check, THROUGH A REAL INSTALL ---------------------
+# Everything above this line in the conformance block installed its fixtures
+# by hand: ext.lock written here, ext.index derived from it. That proved the
+# CONTRACT -- what the seam hands an extension is enough to rebuild a command
+# roost already ships, byte for byte.
+#
+# This proves the PIPELINE that delivers it. `roost ext install` resolves a
+# ref to a commit, clones it hardened, validates the manifest, asks, moves the
+# tree into place and writes both files; every one of those steps handles the
+# extension's own bytes, and any of them could corrupt what arrives -- a lost
+# executable bit, a mangled path, an authority that did not survive the trip
+# from the manifest to the fourth column of ext.index. The comparison is worth
+# running a second time for exactly that reason, and it is the cheapest
+# possible end-to-end test of the whole command.
+#
+# The hand-installed copy is taken back off the disk first: the fixture claims
+# the name `status-ext` and the command `status-ext`, and install refuses a
+# name that is already in the lockfile -- which is itself the behaviour being
+# relied on here rather than worked around.
+rm -f "$EXT_STATE_ROOT/ext.lock"
+roost_ext_index_write
+rm -rf "$EXT_DATA/status-ext"
+
+conf_pub="$TMP/conf-publish"
+rm -rf "$conf_pub"; mkdir -p "$conf_pub"
+# A COPY, published from $TMP. Never the fixture directory in the checkout:
+# `git init` inside tests/fixtures/ would put a repository inside this
+# repository, and the first person to run the suite would find it in
+# `git status`.
+cp -R "$CONF_FIX/ext-status/." "$conf_pub/"
+ext_publish fix/status "$conf_pub" v1.0.0
+
+conf_install="$(ext_install fix/status --ref v1.0.0 --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "the conformance fixture installs through the real pipeline"
+assert_eq "$(cat "$TMP/err")" "" "...with nothing on stderr"
+assert_contains "$conf_install" "This extension asks to drive your agents" \
+  "...and the consent block named the authority it was about to be granted"
+
+# The authority survived the trip: manifest -> ext.lock -> ext.index, resolved
+# once by a real JSON parser and carried forward. This is the column the
+# dispatcher acts on, and nothing else in this file checks it on a lockfile an
+# INSTALLER wrote rather than one this test wrote.
+assert_eq "$(conf_needs status-ext)" "fleet" \
+  "a real install grants the fleet in column 4 of ext.index"
+assert_eq "$(ext_index_col status-ext 3)" "$EXT_DATA/status-ext/bin/roost-status-ext" \
+  "...and points at the installed executable"
+# The executable bit is the one that would be lost silently: the dispatcher's
+# lookup treats a non-executable path as a miss and falls through to the usage
+# error, which reads exactly like a typo.
+[ -x "$EXT_DATA/status-ext/bin/roost-status-ext" ]
+assert_true "$?" "the installed program is still executable after the trip through git and mv"
+
+conf_core="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
+assert_eq "$rc" "0" "core roost status still exits 0 against the conformance fleet"
+conf_ext="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
+assert_eq "$rc" "0" "the INSTALLED status extension exits 0 against the same fleet"
+# Checked before the comparison, for the reason the hand-installed run checks
+# it: two empty strings compare equal, so an assertion that only says "these
+# match" passes loudest exactly when both sides have broken.
+assert_contains "$conf_core" "roost: running (socket=$ROOST_TEST_SOCK)" \
+  "core really printed a fleet, so this comparison has something to compare"
+assert_eq "$conf_ext" "$conf_core" \
+  "an extension delivered by roost ext install reproduces roost status BYTE FOR BYTE"
+assert_eq "$(cat "$TMP/ext-err")" "$(cat "$TMP/core-err")" \
+  "...and writes the same nothing to stderr"
 
 rm -f "$EXT_STATE_ROOT/ext.lock" "$EXT_STATE_ROOT/ext.index"
 ext_sandbox_off

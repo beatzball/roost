@@ -5,12 +5,13 @@
 # done at source time is the one path resolution below — nothing else here
 # happens until a caller asks for it.
 #
-# Three of the functions here are SECURITY CONTROLS rather than conveniences,
+# Four of the functions here are SECURITY CONTROLS rather than conveniences,
 # and each says so where it is defined:
 #
 #   roost_ext_repo_valid    runs before <org>/<repo> reaches a git command line
 #   roost_ext_needs_valid   REFUSES an unknown authority rather than ignoring it
 #   roost_ext_index_lookup  forks nothing, on the path every typo takes
+#   roost_ext_tree_hostile  looks at the tree a clone actually delivered
 #
 # roost-json.sh is sourced LAZILY, inside the two functions that parse JSON,
 # rather than at file scope. bin/roost sources THIS file on every invocation —
@@ -624,6 +625,155 @@ roost_ext_tree_hash() {
   rm -rf "$tmp"
   [ -n "$tree" ] || return 1
   printf '%s\n' "$tree"
+}
+
+# roost_ext__link_escapes REL TARGET -> 0 when a symlink at REL (a path
+# RELATIVE to the extension directory) pointing at TARGET resolves outside
+# that directory; 1 when it stays inside.
+#
+# Lexical, not filesystem: the answer must be the same whether or not the
+# target exists, because a link pointing at a file that is not there today is
+# a link pointing at a file that may be there tomorrow -- and `readlink -f`
+# and `realpath` disagree about a missing target, and macOS ships neither in
+# the GNU spelling this would need.
+#
+# The rule is two lines: an ABSOLUTE target escapes by definition, and a
+# relative one escapes when normalising it takes the depth below zero. That
+# second test is deliberately conservative -- `../ext/name/x` from the root of
+# the extension dips to -1 and is refused even though it lands back inside --
+# because the alternative is resolving a path against a tree an attacker
+# wrote, and "refuse a link nobody has a reason to write" costs nothing.
+#
+# It is also what makes checking each link ON ITS OWN sufficient. Every link
+# that survives this is relative AND lands inside, so a chain of them cannot
+# reach out either: the first link that could have provided the way out is
+# refused before the chain is ever followed.
+roost_ext__link_escapes() {
+  local rel="$1" target="$2" base full comp depth=0 esc=0 noglob=0
+  case "$target" in
+    # readlink printing nothing at all. Not a link this can reason about, and
+    # the direction to fail is towards refusing it.
+    '') return 0 ;;
+    /*) return 0 ;;
+  esac
+  # The link resolves against the directory it SITS IN, not against the root.
+  # `bin/x -> ../../etc/passwd` is two levels up from bin/, which is one level
+  # outside the extension -- getting this wrong in the safe-looking direction
+  # would read every link as if it were at the top.
+  base="${rel%/*}"
+  [ "$base" = "$rel" ] && base=""
+  if [ -n "$base" ]; then full="$base/$target"; else full="$target"; fi
+  # Word splitting on an unquoted expansion also GLOBS, and a path component
+  # containing `*` would expand against the caller's working directory and be
+  # counted as however many files happen to be there. Off across the split and
+  # put back exactly as it was found -- `local -` would say this in one line
+  # and does not exist in bash 3.2, which is what macOS ships.
+  case "$-" in *f*) noglob=1 ;; esac
+  set -f
+  local IFS=/
+  for comp in $full; do
+    case "$comp" in
+      # An empty component is a doubled slash; `.` is a no-op.
+      ''|.) ;;
+      ..)
+        depth=$((depth-1))
+        # An `if`, not `[ ... ] && esc=1`: a false test on the LAST iteration
+        # would make the whole `for` return 1, and a caller under `set -e`
+        # would take that as this function failing rather than as this
+        # component not being the one that escaped.
+        if [ "$depth" -lt 0 ]; then esc=1; fi
+        ;;
+      *) depth=$((depth+1)) ;;
+    esac
+  done
+  [ "$noglob" -eq 1 ] || set +f
+  if [ "$esc" -eq 1 ]; then return 0; fi
+  return 1
+}
+
+# roost_ext_tree_hostile DIR -> 0 when DIR carries something an install must
+# REFUSE, naming it in ROOST_EXT_HOSTILE_FOUND; 1 when it carries none of
+# them. Cleared on entry, so a caller under `set -u` can always read it.
+#
+# A SECURITY CONTROL, and the second half of what makes the consent block's
+# "nothing runs during install" true. `roost ext install` hardens the CLONE so
+# git executes nothing on the way in -- --no-recurse-submodules,
+# GIT_LFS_SKIP_SMUDGE=1, -c core.hooksPath=/dev/null -- and this is the check
+# on what actually arrived, run after cloning and before anything is moved
+# into place. Two findings, both from the design's "The install must actually
+# run nothing":
+#
+#   a symlink resolving OUTSIDE the extension directory. That directory is
+#   deleted whole by `roost ext remove`, hashed whole by `roost ext verify`
+#   and replaced whole by `roost ext update`; a link out of it turns each of
+#   those into an operation on somebody else's files.
+#
+#   a setuid or setgid FILE. Nothing in this contract needs one, and a
+#   program carrying one is a privilege boundary sitting inside a directory
+#   the user was told holds an ordinary program.
+#
+# Returns 0 for "found something", which reads backwards until you write the
+# caller: `if roost_ext_tree_hostile "$dir"; then refuse; fi`. That is the
+# same shape scripts/roost-ext's `_ext_index_disagrees` uses, and a security
+# check is worth making easy to write in the refusing direction.
+#
+# DIRECTORIES are deliberately excluded from the setgid sweep. On macOS and
+# the BSDs a new directory INHERITS setgid from its parent, so a clone made
+# below a setgid temp directory carries the bit on every directory it created
+# -- refusing that would refuse an ordinary install for a property of the
+# machine's /tmp rather than for anything the repository did. On a file the
+# bit is the whole risk; on a directory it is a group-ownership convention.
+#
+# .git is skipped for the same reason roost_ext_tree_hash excludes it: git
+# built it, not the manifest author, and nothing under it is executed, hashed
+# or moved by this feature.
+#
+# What this does NOT do is judge the code. It finds two specific things and
+# names them. An extension that passes has had two questions answered about
+# it, and roost has still not checked whether the program is honest -- see the
+# consent block, which says so in those words every single time.
+roost_ext_tree_hostile() {
+  ROOST_EXT_HOSTILE_FOUND=""
+  local dir="$1" found link target rel
+  if [ ! -d "$dir" ]; then
+    ROOST_EXT_HOSTILE_FOUND="not a directory: $dir"
+    return 0
+  fi
+  # Absolute before find is asked anything, so the `${link#$dir/}` below
+  # really does strip a prefix -- the same reason roost_ext_tree_hash makes it
+  # absolute first.
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+
+  # No `| head -1`. Under `set -o pipefail`, which scripts/roost-ext runs
+  # with, head closing the pipe early can take find down with SIGPIPE and the
+  # whole substitution reports failure -- on a run that FOUND something, which
+  # is the run that must not be mistaken for an error. The first line is taken
+  # with parameter expansion instead, and nothing forks.
+  found="$(find "$dir" -path "$dir/.git" -prune -o -type f \( -perm -4000 -o -perm -2000 \) -print 2>/dev/null)" || found=""
+  found="${found%%
+*}"
+  if [ -n "$found" ]; then
+    ROOST_EXT_HOSTILE_FOUND="a setuid or setgid file: ${found#"$dir/"}"
+    return 0
+  fi
+
+  found="$(find "$dir" -path "$dir/.git" -prune -o -type l -print 2>/dev/null)" || found=""
+  # A here-document rather than a pipe, so the loop body runs in THIS shell
+  # and the variable it sets survives -- a `find ... | while read` would set
+  # ROOST_EXT_HOSTILE_FOUND in a subshell and return as if it had found
+  # nothing.
+  while IFS= read -r link || [ -n "$link" ]; do
+    [ -n "$link" ] || continue
+    rel="${link#"$dir/"}"
+    target="$(readlink "$link" 2>/dev/null)" || target=""
+    if roost_ext__link_escapes "$rel" "$target"; then
+      ROOST_EXT_HOSTILE_FOUND="a symlink pointing outside the extension: $rel -> $target"
+      return 0
+    fi
+  done <<EOF
+$found
+EOF
+  return 1
 }
 
 # --- the dispatch table -----------------------------------------------------

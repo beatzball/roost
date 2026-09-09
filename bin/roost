@@ -351,8 +351,8 @@ case "${1:-up}" in
     # `roost ext <verb>` -- the extension seam's own subcommand, kept in its
     # own file (scripts/roost-ext) rather than folded into this case, the
     # same shape `install`/`update` (scripts/roost-install) and `validate`
-    # (scripts/roost-validate) already use. Only `list` and `info` exist so
-    # far; `install`, `verify`, `update` and `remove` are tasks 6-8 of the
+    # (scripts/roost-validate) already use. `install`, `list` and `info`
+    # exist so far; `verify`, `update` and `remove` are tasks 7-8 of the
     # same plan. See docs/airig/specs/2026-09-08-extension-seam.md.
     shift
     exec "$ROOST_HOME/scripts/roost-ext" "$@"
