@@ -908,8 +908,21 @@ CONF_TMUXTMP="$(mktemp -d /tmp/amx.XXXX)"
 # holding a stale command.
 conf_teardown() { :; }
 trap 'conf_teardown; roost_test_teardown; rm -rf "$TMP" "$CONF_TMUXTMP"' EXIT
+# EXPORTED once, here, rather than prefixed onto each `-L` invocation. The
+# prefixed form was the first version of this and it was wrong in a way that
+# is easy to miss: it makes safety a thing every FUTURE `-L` line in this file
+# has to remember, and the assertion below that checks the sandbox is empty
+# would still pass while a forgotten prefix put the server in the real
+# directory. Exported, every later line is safe by construction.
+# tests/test-session-context.sh and tests/test-reply-socket.sh already do
+# exactly this; nothing after this point wants `-L` to reach the real
+# directory. NT() below keeps its own prefix as belt and braces.
+export TMUX_TMPDIR="$CONF_TMUXTMP"
+# ...and REFUSE to go on if that did not take. Exits 1, so tests/run.sh reports
+# this file as died-mid-run rather than letting a green count hide it.
+roost_test_tmux_named_guard
 conf_named_sock="roost-conformance-no-such-socket"
-out="$(TMUX_TMPDIR="$CONF_TMUXTMP" ROOST_SOCKET="$conf_named_sock" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+out="$(ROOST_SOCKET="$conf_named_sock" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
 assert_eq "$rc" "7" "an extension runs when the socket is a NAME rather than a path"
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$conf_named_sock" \
   "a socket name is handed over verbatim"
@@ -918,7 +931,14 @@ assert_eq "$(ext_field "$out" ROOST_SOCKET_FLAG)" "-L" \
 # Proof that the paragraph above is true rather than merely believed: if that
 # show-options call had started a server, this is where the socket would be.
 assert_file_absent "$CONF_TMUXTMP/tmux-$(id -u)/$conf_named_sock" \
-  "probing a named socket started no tmux server anywhere"
+  "probing a named socket started no tmux server in the sandbox"
+# The sandbox check above is not enough on its own, and saying "anywhere" while
+# only looking in the sandbox is exactly the kind of assertion this repository
+# gets bitten by: if the export were ever dropped, the server would land in the
+# REAL directory and that check would still pass. So look there too -- at both
+# named sockets this file uses. These two are the assertions that would notice.
+assert_file_absent "/tmp/tmux-$(id -u)/$conf_named_sock" \
+  "...and none in the REAL tmux directory, where a dropped TMUX_TMPDIR would put it"
 
 # A needs array split over several lines is the same grant. The design prints
 # the lockfile pretty-printed and a hand-edit or a different writer will wrap
@@ -1238,6 +1258,20 @@ assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
 # would be a permanent duplicate of a core command, maintained forever, which
 # is the exact bloat this design exists to prevent. They live under
 # tests/fixtures/ and go away with the branch.
+# THIS BLOCK MUST REMAIN THE LAST ONE BEFORE THE SANDBOX CANARY, and a later
+# task appending to this file has to append ABOVE it, not below.
+#
+# The header of this file invites exactly that appending -- every task in this
+# feature adds to this one file rather than a file of its own -- so the
+# constraint has to be written down rather than inferred. What follows is not
+# self-contained: it MUTATES the shared test server every section above uses.
+# It renames the session tests/lib.sh created from `0` to `conf`, adds a second
+# session `side`, adds windows and panes, and turns automatic-rename off
+# globally. A section added underneath would inherit all of that and would be
+# debugging a renamed session it never created.
+#
+# It also leaves TMUX_TMPDIR exported, which is safe in every direction but is
+# another piece of inherited state a later section should know about.
 CONF_FIX="$HERE/tests/fixtures"
 
 # Installed by hand, because `roost ext install` is a later task and this one
@@ -1334,11 +1368,22 @@ assert_eq "$(conf_needs argv-ext)"          ""      "the index grants argv-ext n
 # and the extension run makes two correct programs print different bytes. This
 # was not theorised: a first draft of the overhead measurement, built the same
 # way but without this line, refused to time anything on one run in two
-# because its own before-and-after sanity check saw the name change. Turning
-# the option off globally before any window exists is what makes the fleet
-# below actually fixed. (rename-window disables it per window as a side
-# effect, which is why the two renamed windows would have been safe anyway and
-# the `-n api` one would not.)
+# because its own before-and-after sanity check saw the name change.
+#
+# What makes the fleet below fixed is TWO things, and neither of them is
+# ordering -- roost_test_server has already created conf:0 by the time this
+# line runs, so "before any window exists" would be false:
+#
+#   - `-g` sets the option's DEFAULT, and a window that has never set it
+#     locally inherits that. conf:0 has not, so turning it off globally
+#     reaches the already-created window as well as every later one.
+#   - every window here is then explicitly renamed, and rename-window turns
+#     automatic-rename off for that window as a side effect, which pins the
+#     name whatever the global says.
+#
+# So the two renamed windows would have been safe on the second mechanism
+# alone; the `-n api` window, which is created named and then renamed only to
+# pin it, is the one that flaked before the global default covered it.
 T set-option -g automatic-rename off
 conf_sess="$(T list-sessions -F '#{session_name}' | head -n 1)"
 T rename-session -t "=$conf_sess" conf
@@ -1417,8 +1462,12 @@ assert_eq "$(printf '%s\n' "$conf_core" | wc -l | tr -d ' ')" "7" \
 
 assert_eq "$conf_ext" "$conf_core" \
   "an extension rebuilt on contract 1 reproduces roost status BYTE FOR BYTE"
+# Both halves of the claim, because the label makes two: that the two agree,
+# and that what they agree on is nothing. Asserting only the first would let a
+# future change make BOTH of them noisy and still read as a pass.
+assert_eq "$(cat "$TMP/core-err")" "" "core roost status writes nothing to stderr"
 assert_eq "$(cat "$TMP/ext-err")" "$(cat "$TMP/core-err")" \
-  "...and writes the same thing to stderr, which for both of them is nothing"
+  "...and the extension writes the same thing, which is therefore also nothing"
 
 # The other branch of the same command. A reimplementation that only ever
 # handled a live server would pass everything above and then print a tmux
@@ -1457,6 +1506,13 @@ NT() { TMUX_TMPDIR="$CONF_TMUXTMP" tmux -L "$conf_named" "$@"; }
 # the author's live server.
 conf_teardown() { NT kill-server 2>/dev/null; return 0; }
 NT -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
+# automatic-rename again, and here it can only be turned off AFTER the server
+# exists -- there is no server to set an option on until new-session has run,
+# so this ordering is forced rather than chosen and the option is briefly on.
+# What makes this window safe is the rename two lines down: rename-window
+# disables automatic-rename for the window as a side effect, and it runs before
+# anything reads #{window_name}. The `-g` line is the belt-and-braces half,
+# covering any window a later edit adds here without renaming it.
 NT set-option -g automatic-rename off
 NT rename-session -t '=0' named
 NT rename-window -t '=named:0' solo
@@ -1468,18 +1524,34 @@ NT set-option -p -t "$conf_np_a" @roost-name solo
 NT set-option -p -t "$conf_np_b" @roost-name sidekick
 NT set-option -p -t "$conf_np_b" @agent_state working
 
-conf_core="$(TMUX_TMPDIR="$CONF_TMUXTMP" ROOST_SOCKET="$conf_named" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
+# WHERE that server actually landed, asserted rather than assumed, and this is
+# the pair that would notice a future edit dropping TMUX_TMPDIR. The positive
+# half comes first on purpose: "no socket in the real directory" is also what a
+# detector aimed at the wrong path says, so make it find the socket where it is
+# supposed to be before believing it about where it is not. The same shape
+# tests/test-install.sh uses for its canary.
+[ -S "$CONF_TMUXTMP/tmux-$(id -u)/$conf_named" ]
+assert_true "$?" "the named server's socket really is inside the sandbox"
+assert_file_absent "/tmp/tmux-$(id -u)/$conf_named" \
+  "...and NOT in the real /tmp/tmux-<uid>/, beside the author's live agents"
+
+conf_core="$(ROOST_SOCKET="$conf_named" PATH="$EXT_PATH" "$ROOST" status 2>"$TMP/core-err")"; rc=$?
 assert_eq "$rc" "0" "core roost status runs against a server addressed by NAME"
 assert_contains "$conf_core" "roost: running (socket=$conf_named)" \
   "core really reached the named server, so this comparison has something to compare"
-conf_ext="$(TMUX_TMPDIR="$CONF_TMUXTMP" ROOST_SOCKET="$conf_named" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
+conf_ext="$(ROOST_SOCKET="$conf_named" PATH="$EXT_PATH" "$ROOST" status-ext 2>"$TMP/ext-err")"; rc=$?
 assert_eq "$rc" "0" "the rebuilt status extension runs against it too"
 # The assertion that closes the hardcoded-`-S` direction: an extension using
 # `-S` here would address a relative PATH called "roost-conformance-named",
 # find no server, and print "roost: not running" while core printed a fleet.
 assert_eq "$conf_ext" "$conf_core" \
   "the extension reproduces roost status BYTE FOR BYTE on a NAME-addressed server too"
-assert_eq "$(cat "$TMP/ext-err")" "" "...with nothing on stderr"
+# Symmetric with the path-addressed comparison above: core's stderr is checked
+# too, not just the extension's. A comparison that only ever looked at one side
+# could not tell "both silent" from "both noisy in the same way".
+assert_eq "$(cat "$TMP/core-err")" "" "core writes nothing to stderr on the named server"
+assert_eq "$(cat "$TMP/ext-err")" "$(cat "$TMP/core-err")" \
+  "...and the extension writes the same thing there too"
 NT kill-server 2>/dev/null
 conf_teardown() { :; }
 
