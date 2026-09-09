@@ -89,6 +89,13 @@ deletes the characters in it that look like syntax — `<ttyUSB0>` disappears,
 output you read to work out what a pane is doing is worse than not colouring
 it, so the screen goes through untouched and `--render` says why on stderr.
 
+**`--render` is for eyes, never for a parser.** Rendering is lossy by design:
+`use Vec<T> here` comes back as `use Vec here`, because a renderer reads `<T>`
+as markup. roost catches the case where a render comes back visually empty and
+prints the raw text instead, but it cannot catch a render that merely lost
+*some* of its characters. Anything that reads the output — a script, a `grep`,
+another agent — should use plain `roost read`.
+
 Neither a missing nor a failing `preen` costs you the text. In both cases the
 raw text is printed, the reason goes to stderr, and the exit status is still
 zero — the reply is the payload, the rendering is a convenience.

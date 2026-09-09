@@ -170,7 +170,7 @@ screen_dump() {
 # reporting it, which is the one place in this file that is the right thing to
 # do. printf '%s\n', not echo, because a reply beginning with -n or -e is text.
 render_stdin() {
-  local text rendered rc
+  local text rendered rc visible
   text="$(cat)"
   if command -v preen >/dev/null 2>&1; then
     # preen's own stderr is NOT discarded. It is the only diagnosis available
@@ -179,14 +179,22 @@ render_stdin() {
     rendered="$(printf '%s\n' "$text" | preen -)" && rc=0 || rc=$?
     # A renderer that SUCCEEDS and returns nothing is the more common failure,
     # and the exit-status net does not catch it. Measured against the real
-    # preen: `<ttyUSB0>` in, ZERO bytes out, exit 0, nothing on stderr -- the
-    # whole reply gone. A renderer may change how text LOOKS; it may not make
-    # it disappear. Non-empty in, empty out, is treated as a failed render.
+    # preen: `<ttyUSB0>` in, 2 bytes out (both newlines), exit 0, nothing on
+    # stderr -- the whole reply gone. A renderer may change how text LOOKS; it
+    # may not make it disappear.
     #
-    # The `[ -n "$text" ]` half matters: an empty reply legitimately renders to
-    # nothing, and warning about that would cry wolf on the one case where
-    # losing nothing is correct.
-    if [ "${rc:-0}" -eq 0 ] && [ -n "$text" ] && [ -z "$rendered" ]; then
+    # WHAT IS TESTED IS WHAT SURVIVES, NOT THE BYTE COUNT, and the first
+    # version of this check got that wrong. preen pads every line to the
+    # terminal width and wraps it in colour codes, so `$rendered` is never the
+    # empty string: `&nbsp;` came back as 1754 bytes of which two were visible,
+    # and a `[ -z "$rendered" ]` test stepped aside for exactly the input it
+    # existed to catch. Escape sequences and whitespace are stripped first, and
+    # what is left is the question. Found by both reviewers, separately.
+    #
+    # `tr -d` rather than a shell glob: this runs on bash 3.2 with no regex
+    # dependency, and the sed handles the CSI sequences preen actually emits.
+    visible="$(printf '%s' "$rendered" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '[:space:]')"
+    if [ "${rc:-0}" -eq 0 ] && [ -n "$text" ] && [ -z "$visible" ]; then
       echo "roost read: preen returned nothing for a non-empty reply — printing the raw text instead." >&2
       printf '%s\n' "$text"
       return 0
@@ -836,7 +844,9 @@ JSON
     case "${2:-}" in
       # An unknown flag in the flag slot used to fall through and be treated as
       # the TARGET, which failed later with an empty read and exit 1 -- a typo
-      # like `--renderr` looked like a dead pane. Refused by name instead.
+      # like `--renderr` came back as tmux's "can't find session" instead.
+      # Refused by name here, so the message names the typo rather than the
+      # session it was mistaken for.
       -[0-9]*) ;;
       --render|-r) ;;
       -*)
@@ -844,6 +854,16 @@ JSON
         echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
         exit 1 ;;
     esac
+    # Consumed once, and a SECOND one is refused rather than absorbed. The
+    # first version checked for an unknown flag once, before the shift, so a
+    # repeated `-r` landed in the target slot, was never looked at again, and
+    # became the target -- an empty read at exit 1 that looked like a dead
+    # pane. Found by review.
+    #
+    # A loop that consumed flags until they ran out was tried and removed: it
+    # was dead code, because the second flag is an error rather than something
+    # to consume. A mutation that made the loop run only once turned nothing
+    # red, which is what exposed it.
     case "${2:-}" in
       --render|-r)
         render=1
@@ -851,6 +871,15 @@ JSON
         # positional reference below keeps its original number.
         shift 2
         set -- read "$@"
+        # The word after a consumed flag is a flag slot too. A second --render,
+        # or a typo following a good flag, must not fall through to the target.
+        case "${2:-}" in
+          -[0-9]*) ;;
+          -*)
+            echo "roost read: '$2' is not valid here — --render/-r may be given once, before the target." >&2
+            echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+            exit 1 ;;
+        esac
         ;;
     esac
     raw="${2:?usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"

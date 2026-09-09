@@ -80,7 +80,7 @@ are real and cost tokens — only spawn what you need.
 
 ## Message an agent
 
-`roost send TARGET "text"` types the text and submits it reliably. Until roost
+`roost send TARGET "text"` pastes the text and submits it reliably. Until roost
 adds sender attribution, prefix who you are so the receiver can reply (as
 above). Exit codes tell you WHAT to do next, so branch on `$?`:
 

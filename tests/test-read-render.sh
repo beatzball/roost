@@ -234,17 +234,40 @@ err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
 assert_contains "$err" "nothing" \
   "a renderer that swallowed the text says so on stderr"
 
-# ...but an EMPTY input legitimately renders to nothing, and must not warn.
-as_pane "$ROOST" reply ""
+# WHITESPACE IS NOT EMPTY, and a byte-count test cannot see the difference.
+# The real preen pads every line to the terminal width and wraps it in colour
+# codes, so its output is NEVER the empty string -- 1754 bytes for `&nbsp;`,
+# of which two are visible. A net that tests `[ -z "$rendered" ]` steps aside
+# for exactly the inputs it exists to catch. The test is on what SURVIVES:
+# escape codes and whitespace stripped, is there anything left?
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+cat >/dev/null
+printf '\033[38;2;200;195;224m   \033[m\n   \n'
+SHIM
+chmod +x "$shimdir/preen"
 out="$(with_preen "$ROOST" read -r "$pane" 2>/dev/null)"; rc=$?
-assert_eq "$rc" "0" "an empty reply under --render still exits 0"
+assert_eq "$rc" "0" "a preen that returns only whitespace does not fail the read"
+assert_eq "$out" "$reply" \
+  "a preen that returns only padding and colour still delivers the reply"
+err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
+assert_contains "$err" "nothing" \
+  "a render that is visually empty is reported like an empty one"
+
+# ...and a render that has ONE visible character is a real render, not a
+# swallow. The guard must not fire here, or every short reply warns.
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+cat >/dev/null
+printf '\033[1mx\033[m   \n'
+SHIM
+chmod +x "$shimdir/preen"
 err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
 case "$err" in
   *nothing*) assert_eq warned quiet \
-    "an empty reply does not trigger the swallowed-text warning" ;;
-  *) assert_eq ok ok "an empty reply does not trigger the swallowed-text warning" ;;
+    "a render with one visible character is not called empty" ;;
+  *) assert_eq ok ok "a render with one visible character is not called empty" ;;
 esac
-as_pane "$ROOST" reply "$reply"
 cat > "$shimdir/preen" <<'SHIM'
 #!/bin/sh
 printf 'PREEN-IN[%s]\n' "$1"
@@ -261,6 +284,18 @@ chmod +x "$shimdir/preen"
 out="$(with_preen "$ROOST" read "$pane" 20 --render 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "a flag in the FOURTH slot is refused too"
+# A REPEATED flag: the second one lands in the target slot. The unknown-flag
+# check ran once, before the shift, so a KNOWN flag arriving there was never
+# looked at again and became the target -- an empty read at exit 1.
+out="$(with_preen "$ROOST" read -r -r "$pane" 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "a repeated -r is refused, not taken as the target"
+assert_contains "$out" "usage" \
+  "a repeated -r says what the right shape is"
+out="$(with_preen "$ROOST" read --render --render "$pane" 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "a repeated --render is refused too"
+
 out="$(with_preen "$ROOST" read --renderr "$pane" 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "an unknown flag before the target is a usage error, not an empty read"

@@ -60,7 +60,7 @@ T set-option -gu remain-on-exit 2>/dev/null || true
 
 # --- blocked target ------------------------------------------------------
 #
-# A blocked pane is showing a permission dialog. send types text, then presses
+# A blocked pane is showing a permission dialog. send pastes text, then presses
 # Enter; against a dialog the text lands IN the dialog and the Enter activates
 # whatever option is highlighted -- so one agent driving another could answer a
 # prompt that existed to ask a human. The old behaviour was a clean exit 0,
@@ -79,8 +79,8 @@ assert_eq "$("$ROOST" send "nope:99" x >/dev/null 2>&1; echo $?)" "2" \
 # refusing is only defensible if it delivered nothing at all
 sleep 0.5
 T capture-pane -p -t "$recv" 2>/dev/null | grep -q 'SHOULD-NOT-RUN' \
-  && assert_eq delivered nothing "a refused send types nothing into the pane" \
-  || assert_eq nothing nothing "a refused send types nothing into the pane"
+  && assert_eq delivered nothing "a refused send pastes nothing into the pane" \
+  || assert_eq nothing nothing "a refused send pastes nothing into the pane"
 
 # --force is the escape hatch: same target, same state, now it goes through
 "$ROOST" send --force "$recv" "printf 'FORCED-%s\n' OK"; rc=$?
