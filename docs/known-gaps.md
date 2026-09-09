@@ -407,30 +407,6 @@ the default is never taken. Recorded because "inert today" is a property of
 the callers, not of the code.
 
 
-### A reply ending in `;` loses that character
-
-**Input:** an agent whose turn ends with a line like `return 0;` — ordinary in
-any answer that quotes code.
-**Wrong output:** `roost read` gives back `return 0`. The semicolon is gone,
-silently, with nothing on stderr and exit 0.
-
-The cause is tmux, not roost's own parsing: `set-option -p @roost-reply "..."`
-goes through tmux's command parser, and a **trailing** `;` there is a command
-separator rather than text. Reproduced on tmux 3.6 against a throwaway socket —
-`return 0;` in, `return 0` out, confirmed with `od -c`. Only a trailing one is
-affected; `a;b` survives intact, and so does `case x;;` minus its last
-character.
-
-It reaches every reply, so it hits `bin/roost`'s `reply` arm and
-`scripts/roost-agent-state`, and it predates the `--render` work — both
-reviewers of PR #29 found it independently while testing something else.
-
-**Why it is still here:** the fix is an escaping layer around every option
-write, and the write path is shared with `@agent_state`, which is what badges
-every pane. That is a change worth making on its own, with its own tests,
-rather than folded into an unrelated branch. The loss is one character at the
-very end of a reply, and the reply is still delivered.
-
 ## Behaviour changes
 
 ### A moved or re-cloned checkout still needs codex wired by hand
