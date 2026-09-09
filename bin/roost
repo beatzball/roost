@@ -28,6 +28,7 @@
 #   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
+#   roost ext SUBCOMMAND     add subcommands from a git repository: install, list, info, verify, update, remove
 #   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout
 #   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
@@ -351,9 +352,9 @@ case "${1:-up}" in
     # `roost ext <verb>` -- the extension seam's own subcommand, kept in its
     # own file (scripts/roost-ext) rather than folded into this case, the
     # same shape `install`/`update` (scripts/roost-install) and `validate`
-    # (scripts/roost-validate) already use. `install`, `list` and `info`
-    # exist so far; `verify`, `update` and `remove` are tasks 7-8 of the
-    # same plan. See docs/airig/specs/2026-09-08-extension-seam.md.
+    # (scripts/roost-validate) already use. All six verbs live there --
+    # `install`, `list`, `info`, `verify`, `update` and `remove`. See
+    # docs/airig/specs/2026-09-08-extension-seam.md.
     shift
     exec "$ROOST_HOME/scripts/roost-ext" "$@"
     ;;
@@ -1403,12 +1404,15 @@ JSON
     # on their way past.
     #
     # Nothing above this line was touched to add the seam, and nothing inside
-    # it changes what an unknown subcommand does: on a miss the usage error at
-    # the bottom is the same bytes, on the same stream, with the same exit
-    # status it had before extensions existed. Ripping the whole feature out
-    # is deleting this body back to that one line, which is a constraint on
-    # the implementation rather than a hope -- so keep new work inside this
-    # branch.
+    # it changes what an unknown subcommand does: on a miss it still falls
+    # through to the usage error at the bottom, on the same stream, with the
+    # same exit status it had before extensions existed. The BYTES of that
+    # line did change -- it gained `ext` when this arm landed, and `--version`
+    # with the version flag -- so what is pinned is the line itself, written
+    # out literally in tests/test-ext.sh, and it has to move in lockstep with
+    # the usage string here. Ripping the whole feature out is deleting this
+    # body back to that one line, which is a constraint on the implementation
+    # rather than a hope -- so keep new work inside this branch.
     #
     # ROOST_NO_EXT is the cheapest rung of the design's "ripping it out"
     # ladder: with it set the seam is inert and roost behaves exactly as it

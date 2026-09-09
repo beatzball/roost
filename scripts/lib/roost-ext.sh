@@ -177,9 +177,9 @@ roost_ext_needs_valid() {
   local csv="$1" need rc=0 noglob=0
   # Commas AND whitespace, NEWLINES INCLUDED. The plan names this parameter
   # CSV; roost_ext_manifest_read emits the same field space-separated; and
-  # task 3's dispatcher reads it out of ext.lock, which nothing validates. A
-  # translation step between those spellings in some caller is exactly where
-  # an unknown value gets dropped on the floor.
+  # bin/roost's dispatcher reads it out of ext.index's fourth column, which
+  # nothing validates. A translation step between those spellings in some
+  # caller is exactly where an unknown value gets dropped on the floor.
   #
   # This was `read -r -a wanted <<<"$csv"`, and that is precisely the silent
   # ignore this function exists to prevent: `read` takes ONE line, so

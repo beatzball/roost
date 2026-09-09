@@ -333,7 +333,7 @@ _ext_join_comma() {
 #
 # A SECURITY check, not a tidiness one -- see
 # docs/airig/specs/2026-09-08-extension-seam.md, "ext.index is the authority
-# of record". Since task 3 the dispatcher in bin/roost reads the authority
+# of record". The dispatcher in bin/roost reads the authority
 # an extension runs with off ext.index ALONE and never opens ext.lock again,
 # so a lockfile that has moved on -- an authority revoked, an extension
 # removed by hand -- has no effect at all until something regenerates
@@ -2570,13 +2570,24 @@ EOF2
     # header), so the two can never quietly drift into two different
     # definitions of "the contents of that directory".
     #
-    # THIS IS DETECTION, NOT PREVENTION, AND SAYS SO IN ITS OWN OUTPUT. `ok`
-    # means "the bytes on disk match what ext.lock recorded", full stop --
-    # never "safe", "clean", "verified as trustworthy" or "scanned". Roost
-    # has no scanner and makes no claim about whether the pinned code is
-    # honest; see the design's "What this design does not attempt". The one
-    # thing this command can say is whether what is ABOUT to run is what was
-    # AGREED to.
+    # THIS IS DETECTION, NOT PREVENTION. `ok` means "the bytes on disk match
+    # what ext.lock recorded", full stop -- never "safe", "clean", "verified
+    # as trustworthy" or "scanned". Roost has no scanner and makes no claim
+    # about whether the pinned code is honest; see the design's "What this
+    # design does not attempt". The one thing this command can say is whether
+    # what is ABOUT to run is what was AGREED to.
+    #
+    # HOW THE OUTPUT KEEPS THAT NARROW, because an earlier version of this
+    # comment claimed the output "says so" and it does not: the FAILURE line
+    # names the record it compared against ("does not match the tree recorded
+    # in ext.lock"), while the success line is the bare word `ok` and nothing
+    # else. That is deliberate rather than unfinished. A success line long
+    # enough to explain itself is where a reassuring adjective gets added by
+    # someone being helpful, and it is the line a user glances at rather than
+    # reads. So the honesty is enforced from outside instead: tests/test-ext.sh
+    # pins `NAME: ok` byte for byte in four places and sweeps every line of a
+    # FAILING run -- the multi-line path, the only one with room for a verdict
+    # -- against the same word list the consent block is held to.
     #
     # STDOUT vs STDERR, deliberately: every line ABOUT one extension's
     # result -- `ok`, `MISSING`, a mismatch and its files -- is the report
