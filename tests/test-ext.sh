@@ -1360,6 +1360,13 @@ assert_contains "$gamma_warn" "SECURITY" "the warning reads as a security warnin
 assert_contains "$gamma_warn" "install, update, remove" "the warning says how to reconcile the two files"
 assert_contains "$gamma_warn" "gamma" "the warning names the extension it is ABOUT, not just the two filenames"
 assert_contains "$gamma_warn" "authority" "the warning says the disagreement is about an AUTHORITY, not just any difference"
+# Task 7's requirement item 3: cheap to check while the user is already
+# looking at this warning, and a DIFFERENT question from the one the warning
+# itself answers -- deleting the two `printf` lines that add this would leave
+# the suite green without this assertion, which is exactly the "a pin that
+# passes while the thing it pins is gone" shape task 6 already ran into once.
+assert_contains "$gamma_warn" "roost ext verify" \
+  "the disagreement warning also suggests running roost ext verify"
 # Every printed line stays short enough to read -- roost-install and
 # roost-validate hold their own user-facing lines under 150 characters, and a
 # security warning nobody reads because it wrapped badly in a narrow terminal
@@ -2774,14 +2781,27 @@ assert_eq "$out_v" "pin: ok" "...back to ok, byte for byte"
 # --- no output reads as a verdict on the CODE, only on the BYTES -------------
 # Roost has no scanner and makes no claim about whether the pinned code is
 # honest -- see the design's "What this design does not attempt". `ok` means
-# only "matches the pin".
+# only "matches the pin". Checked against a FAILING call's output, not the
+# "pin: ok" one still sitting in $out_v above -- a check of a 7-character
+# constant for these words is a tautology that would pass no matter what
+# verify printed on the multi-line FAILURE path, which is the one path that
+# could actually carry a verdict word (the per-file "modified"/"added"/
+# "removed" lines, and the header line above them).
+printf 'unexpected again\n' > "$EXT_DATA/pin/extra2.txt"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "the fixture built for the verdict-language check really is a failing one"
+assert_contains "$out_v" "extra2.txt" "...and really is the multi-line per-file output, not just a header"
 for bad_word in clean safe trustworthy scanned honest; do
   case "$out_v" in
     *"$bad_word"*) said=1 ;;
     *) said=0 ;;
   esac
-  assert_eq "$said" "0" "verify's output never says '$bad_word'"
+  assert_eq "$said" "0" "verify's output never says '$bad_word', even on a failing, multi-line result"
 done
+rm -f "$EXT_DATA/pin/extra2.txt"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "verify is ok again once the verdict-language fixture is cleaned up"
 
 # --- an unknown name exits 1 --------------------------------------------------
 out_v="$(ext_verify nosuchextension 2>"$TMP/err")"; rc=$?
@@ -2794,7 +2814,71 @@ rm -rf "$EXT_DATA/pin"
 out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
 [ "$rc" -ne 0 ]
 assert_true "$?" "verify fails when the clone is missing entirely"
-assert_contains "$out_v" "pin" "...naming the extension"
+# Not just "pin" -- the fixture is NAMED pin, so that would pass no matter
+# what verify printed. MISSING and the actual (now-absent) clone path are
+# specific to this failure mode and could not appear by accident.
+assert_contains "$out_v" "MISSING" "...saying so in words"
+assert_contains "$out_v" "$EXT_DATA/pin" "...and naming the path that is not there"
+
+# --- verify refuses a lockfile key it did not write, before touching a path -
+# The identical property `list`/`info` already guard (see "info / list: a
+# hand-edited ext.lock cannot escape the extensions dir" above) applied to
+# `verify`, which does far more with the resolved path than a stat: a MATCH
+# runs `git add -A --force` over the whole directory. The traversal target
+# carries a file whose content would never legitimately reach verify's
+# output; if it ever does, the guard failed to stop the path before it was
+# used. The lockfile key is "../verify-traversal-target", which from
+# $EXT_DATA/ (this section's ext/ directory) resolves to
+# $TMP/verify-traversal-target -- outside ext/ entirely.
+mkdir -p "$TMP/verify-traversal-target"
+printf 'ROOST_VERIFY_TRAVERSAL_CANARY\n' > "$TMP/verify-traversal-target/canary.txt"
+lock_install <<'JSON'
+{ "../verify-traversal-target": { "repo": "o/x", "commands": ["x"] } }
+JSON
+out_v="$(ext_verify 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify with a traversal key in ext.lock exits non-zero rather than reading through it"
+assert_contains "$out_v" "invalid name" "...marking the entry as an invalid name, the same wording list/info use"
+case "$out_v" in
+  *"ROOST_VERIFY_TRAVERSAL_CANARY"*) assert_true 1 "the traversal target's own content never reaches stdout" ;;
+  *) assert_true 0 "the traversal target's own content never reaches stdout" ;;
+esac
+case "$(cat "$TMP/err")" in
+  *"ROOST_VERIFY_TRAVERSAL_CANARY"*) assert_true 1 "...or stderr" ;;
+  *) assert_true 0 "...or stderr" ;;
+esac
+rm -rf "$TMP/verify-traversal-target"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# --- a hand-edited `tree` cannot smuggle an option onto a git command line ---
+# ext.lock's `tree` field reaches `_ext_verify_diff`, which hands it to `git
+# diff-tree` as a bare positional argument. `"--output=<path>"` is what a
+# read-only integrity check turns into a file-writer if that value is ever
+# trusted as a plain 40-character id -- provoked here exactly the way it
+# would happen for real: the byte changes (so the mismatch branch runs) and
+# the lockfile is hand-edited (so `tree` is no longer a real object id).
+ext_src "$EXT_SRCS/pin" '{ "name": "pin", "contract": 1, "commands": ["pin"] }' pin
+ext_publish fix/pin "$EXT_SRCS/pin"
+ext_install fix/pin --yes >/dev/null 2>&1
+printf '#!/bin/sh\nprintf "TAMPERED\\n"\n' > "$EXT_DATA/pin/bin/roost-pin"
+pwned="$TMP/verify-pwned-$$"
+rm -f "$pwned"
+sed "s#\"tree\": \"[0-9a-f]*\"#\"tree\": \"--output=$pwned\"#" "$(roost_ext_lock)" > "$TMP/lock-pwned.json"
+# The fixture is checked before anything is concluded from it: if the
+# substitution above did not actually change the recorded tree, this case has
+# nothing to catch and would pass whether or not the fix works.
+grep -qF -- "--output=$pwned" "$TMP/lock-pwned.json"
+assert_true "$?" "the malicious tree fixture really does carry an option-shaped value"
+cp "$TMP/lock-pwned.json" "$(roost_ext_lock)"
+out_v="$(ext_verify pin 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "verify exits non-zero when ext.lock's tree is not a 40-character id"
+assert_file_absent "$pwned" "...and never lets that value reach a git command line as an option"
+assert_contains "$out_v" "not a 40-character object id" \
+  "...saying specifically that the recorded tree is malformed, not just 'could not list'"
+rm -f "$(roost_ext_lock)"; roost_ext_index_write
+rm -rf "$EXT_DATA/pin"
 
 # --- verify with no name checks every installed extension --------------------
 ext_src "$EXT_SRCS/pin2" '{ "name": "pin2", "contract": 1, "commands": ["pin2"] }' pin2
