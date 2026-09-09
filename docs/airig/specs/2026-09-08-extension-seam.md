@@ -155,7 +155,7 @@ So it is not granted by default. `needs` declares it:
 
 | `needs` | What the extension is given |
 |---|---|
-| absent, or `[]` | No `ROOST_SOCKET`. No roost scripts on `PATH`. It gets its own directories and nothing else. |
+| absent, or `[]` | No `ROOST_SOCKET`, and no roost scripts on `PATH`. Not a guarantee it cannot reach the fleet — see the limit below. |
 | `["fleet"]` | `ROOST_SOCKET` and `$ROOST_HOME/scripts` on `PATH`, as above. |
 
 An unknown value in `needs` **refuses the install**, naming it. This is the one
@@ -217,9 +217,36 @@ reads it gets an unset-variable failure rather than silently addressing the
 default tmux server, which is the user's own ordinary tmux and the one thing
 roost exists to leave alone.
 
-The withholding happens in the dispatcher, at `exec` time. It is not a check
-the extension can pass and then bypass: the variable is simply never in its
+The withholding happens in the dispatcher, at `exec` time, so it is not a check
+the extension can pass and then skip — the variable is simply never in its
 environment.
+
+**But `needs` is not a security boundary, and this spec must not pretend it
+is.** An extension is nearly always run from inside a roost pane, and such a
+pane already carries the fleet in its environment before the dispatcher runs:
+
+- `$TMUX` holds the socket path verbatim — measured in a live pane:
+  `/private/tmp/tmux-<uid>/roost,<pid>,<n>`
+- `bin/roost` puts `$ROOST_HOME/scripts` on the session `PATH` for every pane
+  it starts (`t set-environment -g PATH ...`)
+- `tmux` itself is an ordinary binary on `PATH`, and the default socket name is
+  the literal string `roost` — guessable with no leak at all
+
+Scrubbing `$TMUX` and rewriting `PATH` would close the first two and not the
+third. No arrangement of environment variables stops a program from running
+`tmux -L roost list-panes`.
+
+So what `needs` actually buys, stated exactly:
+
+- it makes the intent **visible at consent time**, and visible again at
+  `update` when it grows
+- it removes the *convenient* path, so an extension reaching the fleet without
+  declaring `fleet` has to do something deliberate and inspectable
+- it costs nothing, and it is honest about being a declaration
+
+What it does **not** buy is prevention. An extension that wants the fleet and
+lies about it, gets it. Anyone reading this section, the docs page, or the
+consent prompt must come away knowing that.
 
 `ROOST_EXT_STATE` is the answer to "where do I put my data". An extension that
 writes anywhere else is not covered by `roost ext remove --purge`, and its
@@ -325,6 +352,9 @@ pinning to a commit is what actually holds.
   in it can read any pane's screen and send prompts to any agent, the
   same as you can.
 
+  An extension that did NOT ask can still reach them if it tries. This
+  line tells you what it declared, not what it is stopped from doing.
+
   Roost has checked that this is the exact commit named above. It has
   NOT checked whether the code is honest. It cannot.
 
@@ -335,8 +365,8 @@ pinning to a commit is what actually holds.
 
 The authority paragraph is printed **only** when `needs` contains `fleet`, and
 it is written in what the extension can do, not in the name of a field. An
-extension with no `needs` gets a one-line "asks for no access to your agents"
-instead. The paragraph about not checking honesty is printed always, because
+extension with no `needs` gets "does not ask for access to your agents"
+instead — never "cannot reach your agents", which would be false. The paragraph about not checking honesty is printed always, because
 the moment roost looks like it vouched for something is the moment this design
 fails.
 
@@ -411,6 +441,13 @@ existing branch of the `case`.
 
 ### What this design does not attempt
 
+**`needs` is a declaration, not a sandbox.** See the limit under "Declared
+authority": a pane's own `$TMUX` and `PATH` already carry the fleet, and the
+default socket name is guessable regardless. Withholding those variables
+removes the convenient path and puts the intent in front of the user at consent
+time. It confines nothing. Every piece of user-facing wording about `needs` has
+to survive that sentence being true.
+
 **Roost never claims an extension is safe.** There is no scanner, no lint, no
 model review, and there must never be a line of output that reads like a
 verdict. Shell code can fetch its payload at run time or hide it in base64; any
@@ -477,6 +514,11 @@ true statement and a false one at the consent prompt.
 
 ### Deferred, and recorded in `docs/known-gaps.md`
 
+- **`needs` is unenforceable against a dishonest extension**, for the reasons
+  under "Declared authority". It is a declaration that makes intent visible,
+  not a boundary. Recording this is not optional: the value of the field rests
+  on users trusting what it tells them, and that trust is only warranted if
+  they also know its limit.
 - **Confinement.** Nothing stops a running extension from doing what any
   program the user runs could do. Real containment means a `sandbox-exec`
   profile on macOS and something else on Linux — large, platform-specific, and
@@ -603,7 +645,7 @@ look at the end, batched, not gating any task.
 | An extension shadowing a core command could intercept fleet traffic | high | Structurally prevented: lookup lives only in the fallback, and install refuses core names. Both are tested. |
 | `git ls-remote` against a compromised repository returns an attacker SHA | low | Consent step shows the SHA; pinning means it cannot change later. Not confinement — see "Security". |
 | Extension state grows without bound | low | Owned by the extension; `remove --purge` is the exit. |
-| **An extension reads every pane and puppets every agent** — keys, tokens and source scroll past in agent panes | **high** | Not granted by default. `needs: ["fleet"]` must be declared, is withheld at `exec` time rather than checked, is stated in words at consent, and is called out at `update` if it grows. |
+| **An extension reads every pane and puppets every agent** — keys, tokens and source scroll past in agent panes | **high** | Reduced, not closed. `needs: ["fleet"]` must be declared, is withheld at `exec` time, is stated in words at consent, and is called out at `update` if it grows. It is **not** prevention: a pane's own `$TMUX` and `PATH` already carry the fleet, and the socket name is guessable. Recorded in `docs/known-gaps.md`. |
 | Git executes code during clone via submodules or LFS filters, making "nothing runs during install" a false promise | **high** | Hardened clone: `--no-recurse-submodules`, `GIT_LFS_SKIP_SMUDGE=1`, `core.hooksPath=/dev/null`, plus symlink-escape and setuid refusal. Each is tested against a fixture. |
 | `<org>/<repo>` flows into a `git` command line | medium | Validated against a strict pattern before `git` is invoked; a leading `-` refused. Tested. |
 | Someone edits an installed extension on disk after consent | medium | `roost ext verify` re-computes the tree hash against `ext.lock`. Detection, not prevention. |
