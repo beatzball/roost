@@ -41,7 +41,7 @@ Two gates stand in front of the copilot extension, and **neither one tells you w
 1. **Extensions are off by default.** `roost install` turns the flag on for you. By hand: launch your panes as `copilot --experimental`, or put `{"enabledFeatureFlags": {"EXTENSIONS": true}}` in `~/.copilot/settings.json`. Without one of them copilot never reads the adapter.
 2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading, and choosing "Yes" persists nothing, so a new worktree asks again. There is no global pre-approval, and this is the one copilot gate no installer can pass for you.
 
-Take the blank badge seriously rather than living with it. `roost send` refuses a 🛑 blocked target so one agent cannot type into another's permission dialog — and an unbadged pane is not blocked, so that refusal never fires. A copilot pane whose extension never loaded, sitting at a permission prompt, will take a `roost send` straight into that dialog.
+Take the blank badge seriously rather than living with it. `roost send` refuses a 🛑 blocked target so one agent cannot paste into another's permission dialog — and an unbadged pane is not blocked, so that refusal never fires. A copilot pane whose extension never loaded, sitting at a permission prompt, will take a `roost send` straight into that dialog.
 
 ## A finished agent shows red
 

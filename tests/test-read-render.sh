@@ -296,6 +296,20 @@ out="$(with_preen "$ROOST" read --render --render "$pane" 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "a repeated --render is refused too"
 
+# A line count cannot come BEFORE the target. `roost read -r -3 TGT` used to
+# make `-3` the target, because the post-flag re-check let a negative number
+# through the way the LINES sweep does -- but LINES is the word AFTER the
+# target, so a number here is always a mistake.
+# Asserted on the MESSAGE, not just the exit code. Exit code alone is vacuous
+# here: with `-3` allowed through it becomes the target, target lookup fails,
+# and the command exits non-zero for the wrong reason -- a mutation removing
+# the guard turned nothing red until this said which error it wanted.
+out="$(with_preen "$ROOST" read -r -3 "$pane" 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "a line count before the target is refused, not taken as the target"
+assert_contains "$out" "not valid here" \
+  "...and it is refused for being in the wrong place, not for being a bad target"
+
 out="$(with_preen "$ROOST" read --renderr "$pane" 2>&1)"; rc=$?
 assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
   "an unknown flag before the target is a usage error, not an empty read"

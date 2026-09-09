@@ -10,7 +10,7 @@ sidebar:
 roost exposes tmux's scripting as small agent-shaped commands, so you (or a script, or one agent) can drive the others:
 
 ```sh
-roost send api "run the tests"   # type a prompt + Enter into the "api" agent
+roost send api "run the tests"   # paste a prompt + Enter into the "api" agent
 roost read api                   # print the reply that agent just gave
 roost screen api 20              # print what is ON its screen: last 20 non-blank lines
 roost wait-done api              # block until "api" is done/idle
@@ -34,7 +34,7 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 - `roost whoami` — this agent's own target (its `%N`)
 - `roost spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
 - `roost split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
-- `roost send TARGET "…"` — reliably type a prompt into an agent and submit it (refuses a 🛑 blocked target; see below)
+- `roost send TARGET "…"` — reliably paste a prompt into an agent and submit it (refuses a 🛑 blocked target; see below)
 - `roost wait-done TARGET` / `roost read TARGET` — wait for it to finish, then read the reply
 - `roost screen TARGET` — what is on that pane's screen, chrome and all
 - `roost reply "…"` — record what *you* just said, so another agent's `read` gets it

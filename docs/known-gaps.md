@@ -171,7 +171,7 @@ lives.
 
 **What that costs, precisely.** The same as the copilot entry below: an
 unbadged pane is not `blocked`, so `roost send`'s exit-3 refusal never fires,
-and a `send` aimed at a codex pane sitting at a permission dialog types into
+and a `send` aimed at a codex pane sitting at a permission dialog pastes into
 that dialog and presses Enter on whatever is highlighted.
 
 **Why it shipped anyway.** The gate is codex's and cannot be answered from this
@@ -246,7 +246,7 @@ crash and no error. The badge simply never appears again.
 of their own are exposed, because a stock pi has no dialogs at all. For them the
 failure is the "silently stuck" one the adapter contract's §3 names: the pane
 reads `working` while a human stares at a prompt, `roost next-blocked` does not
-find it, and `roost send` types into the dialog and presses Enter on whatever is
+find it, and `roost send` pastes into the dialog and presses Enter on whatever is
 highlighted.
 
 **Why it shipped anyway.** The alternative is not to offer `blocked` for pi at
@@ -406,6 +406,30 @@ It is inert today because every live caller passes the argument explicitly, so
 the default is never taken. Recorded because "inert today" is a property of
 the callers, not of the code.
 
+
+### A reply ending in `;` loses that character
+
+**Input:** an agent whose turn ends with a line like `return 0;` — ordinary in
+any answer that quotes code.
+**Wrong output:** `roost read` gives back `return 0`. The semicolon is gone,
+silently, with nothing on stderr and exit 0.
+
+The cause is tmux, not roost's own parsing: `set-option -p @roost-reply "..."`
+goes through tmux's command parser, and a **trailing** `;` there is a command
+separator rather than text. Reproduced on tmux 3.6 against a throwaway socket —
+`return 0;` in, `return 0` out, confirmed with `od -c`. Only a trailing one is
+affected; `a;b` survives intact, and so does `case x;;` minus its last
+character.
+
+It reaches every reply, so it hits `bin/roost`'s `reply` arm and
+`scripts/roost-agent-state`, and it predates the `--render` work — both
+reviewers of PR #29 found it independently while testing something else.
+
+**Why it is still here:** the fix is an escaping layer around every option
+write, and the write path is shared with `@agent_state`, which is what badges
+every pane. That is a change worth making on its own, with its own tests,
+rather than folded into an unrelated branch. The loss is one character at the
+very end of a reply, and the reply is still delivered.
 
 ## Behaviour changes
 

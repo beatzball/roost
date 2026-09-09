@@ -186,14 +186,23 @@ render_stdin() {
     # WHAT IS TESTED IS WHAT SURVIVES, NOT THE BYTE COUNT, and the first
     # version of this check got that wrong. preen pads every line to the
     # terminal width and wraps it in colour codes, so `$rendered` is never the
-    # empty string: `&nbsp;` came back as 1754 bytes of which two were visible,
-    # and a `[ -z "$rendered" ]` test stepped aside for exactly the input it
-    # existed to catch. Escape sequences and whitespace are stripped first, and
-    # what is left is the question. Found by both reviewers, separately.
+    # empty string: `&nbsp;` came back as 1754 bytes with NOTHING visible in
+    # them -- the only non-padding bytes were a non-breaking space, which this
+    # check deletes as whitespace like any other. A `[ -z "$rendered" ]` test
+    # stepped aside for exactly the input it existed to catch. Escape
+    # sequences and whitespace are stripped first, and what is left is the
+    # question. Found by both reviewers, separately.
     #
     # `tr -d` rather than a shell glob: this runs on bash 3.2 with no regex
     # dependency, and the sed handles the CSI sequences preen actually emits.
-    visible="$(printf '%s' "$rendered" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '[:space:]')"
+    # Two strips, not one: SGR colour (CSI ... m) and OSC-8 hyperlinks
+    # (ESC ] 8 ; ... BEL), which carry a URL that is not text the reply ever
+    # contained. No case was found where the second one changes the answer --
+    # it closes the class rather than a known bug.
+    visible="$(printf '%s' "$rendered" \
+      | sed 's/\x1b\[[0-9;]*m//g' \
+      | sed 's/\x1b\]8;[^\x07]*\x07//g' \
+      | tr -d '[:space:]')"
     if [ "${rc:-0}" -eq 0 ] && [ -n "$text" ] && [ -z "$visible" ]; then
       echo "roost read: preen returned nothing for a non-empty reply — printing the raw text instead." >&2
       printf '%s\n' "$text"
@@ -873,8 +882,10 @@ JSON
         set -- read "$@"
         # The word after a consumed flag is a flag slot too. A second --render,
         # or a typo following a good flag, must not fall through to the target.
+        # No `-[0-9]*` exemption here, unlike the LINES sweep below: a line
+        # count comes AFTER the target, never before it, so `roost read -r -3
+        # TGT` is malformed and used to make `-3` the target.
         case "${2:-}" in
-          -[0-9]*) ;;
           -*)
             echo "roost read: '$2' is not valid here — --render/-r may be given once, before the target." >&2
             echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
