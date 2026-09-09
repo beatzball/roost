@@ -603,18 +603,18 @@ has already produced a real bug here.
 ### A sweep done from a review's list is not a sweep
 
 PR #29 changed one phrase across the repo after #31 replaced typing with
-pasting. Three review rounds running, a reviewer returned with more sites: one
-more, then about fifteen — two of them in the very file whose section had just
+pasting. Three review rounds running, a reviewer returned with more sites:
+five, then about fifteen — two of them in the very file whose section had just
 been rewritten — then five more, plus two the author found alongside them. Each
 round the listed sites were fixed and the job called done.
 
 Only `fc6c30c` ran a `grep` over the whole tree instead of working from the
 report, and that is the commit that actually closed it.
 
-**And the mirror of it, in the same commit that claimed to be thorough.**
-Sweeping a phrase without reading each site produced the opposite error:
-`394f314` changed four comments in `tests/live/*-smoke.sh` to say "delivered"
-when those scripts use raw `tmux send-keys`, not `roost send`. "Typed" was
+**And the mirror of it, in the very next commit.** Sweeping a phrase without
+reading each site produced the opposite error: `394f314` changed four comments
+in `tests/live/*-smoke.sh` to say "delivered" when those scripts use raw
+`tmux send-keys`, not `roost send`. "Typed" was
 correct there, and load-bearing — the race those comments explain exists
 *because* keystrokes reach a TUI that has not rendered. Reverted in `fbb805f`.
 
