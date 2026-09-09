@@ -561,6 +561,33 @@ turns bad between two commits you were never shown.
 `needs` — see "Declared authority". Absent by default, granted only when
 declared, stated in words at the consent prompt.
 
+### Anything from a manifest that reaches the terminal is attacker-controlled
+
+The consent block is where integrity is *communicated*, so it is the highest
+value thing to attack: a user who is shown the wrong commit has consented to
+nothing.
+
+Every manifest field rendered at consent, and every one rendered by `list` or
+`info`, must be refused if it contains **any C0 control character**, not merely
+`\n` and `\r`. An earlier implementation refused only those two, and ESC went
+through. A `roost` field of
+
+```
+*\x1b[2A\x1b[1G  commit   0000000...  (pinned)\x1b[K\x1b[2B\x1b[1G
+```
+
+repainted the commit line, so the block displayed `0000000...` while the commit
+actually resolved, cloned, verified and written to `ext.lock` was
+`25cbb3bd1768c9b4c6e5ab582b4c32a1f2819c75`. A cruder `\x1b[8m` concealed the
+authority paragraph, the honesty paragraph and the prompt itself.
+
+The rule, stated so it survives the next field being added: **a free-text
+manifest field is untrusted input to a terminal, and a terminal is an
+interpreter.** Fields constrained to a safe alphabet — `name`, `contract`,
+`commands`, `needs` — are already safe by validation. It is the free-text ones
+(`roost`, `description`) that need the control-character refusal, in **both**
+JSON engines, or the pair silently diverges.
+
 ### Input handling
 
 `<org>/<repo>` is validated **before it reaches `git`**. Both parts must match
@@ -593,7 +620,17 @@ in:
 - `-c core.hooksPath=/dev/null` — belt and braces; hooks are not transferred by
   clone, but the clone is not the only path that reads a config
 - after cloning, refuse the extension if any path resolves outside the
-  extension directory (a symlink escape) or carries a setuid or setgid bit
+  extension directory (a symlink escape)
+- refuse a setuid or setgid bit — **but note this one is a different kind of
+  control from its neighbours, and the spec previously implied otherwise.** Git
+  records only three file modes: `chmod 4755` then commit stores `100755`, and
+  the cloned file lands `0755`. Verified twice, independently. So no repository
+  can hand `install` a setuid bit, and unlike the flags above this clause is
+  unreachable from a clone and cannot be tested end-to-end. It earns its place
+  for `update`, for `verify`, and for any future population path that is not a
+  git clone — and it is tested directly against a real setuid file rather than
+  through a fixture repository. Written down because the next reader will
+  otherwise assume it is covered end-to-end, as its neighbours are.
 
 Each of these is a line of code. Together they are the difference between a
 true statement and a false one at the consent prompt.
