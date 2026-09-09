@@ -42,6 +42,11 @@ checkout.
 - **No events in contract 1.** See "Contract 1 — commands only".
 - **No registry, no curation.** Any GitHub repository, by `<org>/<repo>`.
 - **Not a way to override core.** A core subcommand can never be shadowed.
+- **Not a second home for existing commands.** The conformance fixture below
+  rebuilds `roost status` as an extension to prove the contract is sufficient.
+  It is a test fixture and is never published. A real `roost-status` extension
+  would be a duplicate of a core command, maintained forever — the exact bloat
+  this design exists to prevent.
 
 ## Two builds, two repositories
 
@@ -517,6 +522,47 @@ already builds a throwaway tmux server per run.
 - `update` calls out a `needs` that grew from `[]` to `["fleet"]`, on its own
   line above the prompt
 
+### Conformance — is the contract rich enough to build on?
+
+Every assertion above asks whether the seam behaves as specified. None asks the
+question that actually decides whether contract 1 was designed well: **could a
+command roost already ships be rebuilt on it?** If not, the contract is missing
+something, and the cheap moment to discover that is before an extension exists
+that depends on the shape.
+
+So `roost status` is reimplemented as a contract-1 extension, in
+`tests/fixtures/ext-status/`, and its output is compared **byte for byte**
+against the core command running against the same test server. It is chosen for
+three reasons: it needs `ROOST_SOCKET`, so it exercises `needs: ["fleet"]` —
+the newest and riskiest mechanism here; it is about ten lines of `list-sessions`
+and `list-panes`, so writing it twice costs little; and its output is plain
+text, which against a fixed set of panes makes the comparison a real automated
+oracle rather than a person squinting.
+
+The reimplementation must be **independent**. It may use only what the contract
+hands it. It may not source anything from `$ROOST_HOME` the contract does not
+name, and it may not shell out to `roost status`. A wrapper around the original
+proves only that `exec` works.
+
+Two companion fixtures carry the rest of the load:
+
+- `tests/fixtures/ext-status-noneed/` — identical but with `needs` absent. It
+  must **fail**, with an unset-variable error rather than quiet output from the
+  wrong tmux server. This is the more valuable of the two: an authority never
+  watched being refused is an authority that has not been tested.
+- `tests/fixtures/ext-argv/` — prints its own `argv`. `roost status` takes no
+  arguments, so nothing else here tests argument fidelity, and seams break on
+  quoting far more often than on logic. `%200`, `sess:win`, `--force` and an
+  argument containing spaces must all arrive intact and in order.
+
+The comparison runs twice: once with the index hand-written, which tests the
+**contract**, and once after a real `install` from a `file://` repository, which
+tests the **pipeline** that delivers it.
+
+Dispatch overhead is measured at the same time and recorded as a ratio **with
+the method**. Never a bare figure: `AGENTS.md` §9 exists because bare figures
+get quoted back later as if they were measurements.
+
 ### Test isolation — read `AGENTS.md` §8 before writing any of this
 
 Two traps specific to this feature:
@@ -540,6 +586,7 @@ look at the end, batched, not gating any task.
 | Risk | Severity | Response |
 |---|---|---|
 | The seam is permanent core surface, added before any extension has proved its worth | medium | It is small and confined to the `*)` fallback; level-3 revert is one PR. Accepted knowingly. |
+| **Contract 1 turns out to be missing something an extension needs**, discovered only after extensions exist and the shape is frozen | medium | `roost status` is rebuilt on the contract and byte-compared, before any real extension is written. A contract that cannot express a command roost already ships is not finished. |
 | Semver, tags and a changelog are a new ongoing obligation | medium | Real. It is the price of the `roost` range field, which the user chose over a bare contract integer. |
 | An extension shadowing a core command could intercept fleet traffic | high | Structurally prevented: lookup lives only in the fallback, and install refuses core names. Both are tested. |
 | `git ls-remote` against a compromised repository returns an attacker SHA | low | Consent step shows the SHA; pinning means it cannot change later. Not confinement — see "Security". |
