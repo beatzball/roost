@@ -193,7 +193,7 @@ start_pane() {  # start_pane <logname> <pihome> -> sets PANE
     tmux -S "$S" send-keys -t "$PANE" Enter; sleep 2
   fi
   # Then wait for the prompt box itself. A fixed sleep is long enough on an idle
-  # machine and not on one loaded by repeated model runs: the prompt gets typed
+  # machine and not on one loaded by repeated model runs: the prompt is delivered
   # at a TUI that has not rendered yet and is silently dropped, so the pane never
   # leaves its empty state and the failure reads as an adapter regression.
   # "ctrl+o more" is part of pi's header and is present once the TUI is live.

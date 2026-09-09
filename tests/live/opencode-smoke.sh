@@ -157,7 +157,7 @@ approve_until_done() {
 # wait_ready PANE TIMEOUT -> 0 once opencode's TUI is actually accepting
 # input. A fixed sleep before the first send-keys is long enough on an idle
 # machine and not on one loaded by repeated 21GB model runs -- the prompt
-# gets typed at a TUI that has not rendered yet and is silently dropped, so
+# is delivered to a TUI that has not rendered yet and is silently dropped, so
 # the pane never leaves its empty state and the failure reads as a plugin
 # regression. "ctrl+p commands" is part of the TUI's footer and is present
 # once (and only once) the prompt box is live; verified by capturing a real
@@ -346,7 +346,7 @@ else no "an unreachable provider drives the pane to error (got '$(state "$p2")')
 # new turn, which is what this second prompt measures. `attempts` prints one
 # line per finished turn per session.
 #
-# The first turn must be OVER before the prompt is typed, and reaching `error`
+# The first turn must be OVER before the prompt is sent, and reaching `error`
 # is not over: error fires at the second retry, ~6s in, while opencode keeps
 # retrying to ~66s. A prompt sent into that window is accepted by the TUI, is
 # drawn in the transcript, and then never runs -- observed exactly once, and it

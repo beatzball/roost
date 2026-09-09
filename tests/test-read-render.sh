@@ -390,6 +390,16 @@ assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
 assert_contains "$out" "unknown flag" \
   "...and it is refused as a flag, the same word both slots now agree on"
 
+# --- roost screen agrees with roost read about a dash --------------------
+# `roost screen -5` took `-5` as a target and read a pane for it while
+# `roost read -5` refused the same word. Two commands disagreeing about one
+# input is how a caller learns the wrong rule. Found by review.
+out="$("$ROOST" screen -5 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "roost screen refuses a dash target too"
+assert_contains "$out" "not a target" \
+  "...and says why, rather than reading a pane for it"
+
 # --- the flag is documented -------------------------------------------------
 
 # `roost help` reads the command list back out of bin/roost's own header

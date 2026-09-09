@@ -141,6 +141,20 @@ screen_dump() {
   t capture-pane -p -t "$1" | grep -v '^[[:space:]]*$' | tail -n "$2"
 }
 
+# need_arg VALUE USAGE -> print USAGE and exit 1 when VALUE is empty.
+#
+# `${2:?usage: ...}` was the old spelling, and bash renders that as
+# `/abs/path/to/bin/roost: line 905: 2: usage: ...` -- the checkout's absolute
+# path and an internal line number, in front of a user who typed a command
+# wrong. The path is noise at best and the author's home directory at worst,
+# and the line number is meaningless to a reader. Found by review.
+need_arg() {
+  if [ -z "${1:-}" ]; then
+    printf '%s\n' "$2" >&2
+    exit 1
+  fi
+}
+
 # The `--render` half of `roost read`: hand the text to preen
 # (https://github.com/beatzball/preen), which renders markdown read on stdin.
 #
@@ -169,20 +183,6 @@ screen_dump() {
 # pipefail speak: the point here is to SWALLOW the renderer's failure after
 # reporting it, which is the one place in this file that is the right thing to
 # do. printf '%s\n', not echo, because a reply beginning with -n or -e is text.
-# need_arg VALUE USAGE -> print USAGE and exit 1 when VALUE is empty.
-#
-# `${2:?usage: ...}` was the old spelling, and bash renders that as
-# `/abs/path/to/bin/roost: line 905: 2: usage: ...` -- the checkout's absolute
-# path and an internal line number, in front of a user who typed a command
-# wrong. The path is noise at best and the author's home directory at worst,
-# and the line number is meaningless to a reader. Found by review.
-need_arg() {
-  if [ -z "${1:-}" ]; then
-    printf '%s\n' "$2" >&2
-    exit 1
-  fi
-}
-
 render_stdin() {
   local text rendered rc visible
   text="$(cat)"
@@ -1044,6 +1044,16 @@ JSON
     # guidance points here, because a stuck TUI is exactly the case where the
     # rendering IS the thing you want, chrome included.
     need_arg "${2:-}" "usage: roost screen [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
+    # No target begins with a dash, so a word that does is a flag or a typo.
+    # `roost read` refuses it; without this, `roost screen -5` took `-5` as a
+    # target and read a pane for it, so the two commands disagreed about the
+    # same input. Found by review.
+    case "$raw" in
+      -*)
+        echo "roost screen: '$raw' is not a target — roost screen takes no flags." >&2
+        echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
+        exit 1 ;;
+    esac
     screen_dump "$(target "$raw")" "$lines"
     ;;
   reply)
