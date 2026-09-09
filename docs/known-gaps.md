@@ -603,12 +603,13 @@ has already produced a real bug here.
 ### A sweep done from a review's list is not a sweep
 
 PR #29 changed one phrase across the repo after #31 replaced typing with
-pasting. Three rounds running, a reviewer returned with more sites: seven the
-third time, two of them in the very file whose section had just been rewritten.
-Each round the listed sites were fixed and the job called done.
+pasting. Four review rounds running, a reviewer returned with more sites: one
+more in the third round, about fifteen in the fourth — two of them in the very
+file whose section had just been rewritten — and seven more in the fifth. Each
+round the listed sites were fixed and the job called done.
 
-The fix was to run the sweep rather than the list. The fourth round used one
-`grep` over the whole tree and closed it.
+Only the fifth round's fix ran a `grep` over the whole tree instead of working
+from the report, and the sixth round confirmed it closed.
 
 **And the mirror of it, one round later.** Sweeping a phrase without reading
 each site produced the opposite error: four comments in `tests/live/*-smoke.sh`
@@ -623,7 +624,7 @@ real.
 
 ### A mutation that fails to apply reports the fix as unnecessary
 
-Six mutations across PR #29 paid for themselves, and one lied. Its anchor
+Six mutations across PR #29 earned their keep. A seventh lied: its anchor
 string did not match, so nothing was mutated, the suite stayed green, and the
 result read exactly like "this fix was not needed". Every mutation since
 asserts its own anchor before running.
