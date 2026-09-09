@@ -406,6 +406,121 @@ It is inert today because every live caller passes the argument explicitly, so
 the default is never taken. Recorded because "inert today" is a property of
 the callers, not of the code.
 
+### Nothing confines an extension once it runs
+
+**A live risk, and a deliberate one.** `roost ext` installs code from a git
+repository and runs it when you type its command. Roost pins the commit and
+asks first; it does not sandbox what runs. An extension can do anything the
+user can — read any file, use any key, reach the network.
+
+Real containment means a `sandbox-exec` profile on macOS and something else
+entirely on Linux: large, platform-specific, and out of scope for a tmux tool.
+Naming it as absent is the honest position, and every piece of user-facing
+wording has to survive that. Nothing roost prints may read as a verdict on an
+extension's code, and the word "safe" must never appear in it.
+
+### `needs` is a declaration, not a boundary, and cannot be made one
+
+**A live risk about what the field means, not a defect in it.** A manifest
+declaring `"needs": ["fleet"]` is given `ROOST_SOCKET`, `ROOST_SOCKET_FLAG` and
+roost's scripts on `PATH`; one that declares nothing is given none of them. That
+withholding is real and it prevents nothing.
+
+An extension is nearly always run from inside a roost pane, and such a pane
+already carries the fleet before the dispatcher runs: `$TMUX` holds the socket
+path verbatim, and `bin/roost` puts `$ROOST_HOME/scripts` on the session `PATH`
+for every pane it starts. The default socket is the guessable name `roost`
+besides. Scrubbing `$TMUX` and rewriting `PATH` would close the first two and
+not the third: no arrangement of environment variables stops a program running
+`tmux -L roost list-panes`.
+
+So `needs` buys visibility at consent time (and again at `update`, when it
+grows) and removes the convenient path. It does not buy prevention. The consent
+block says so in as many words — *"An extension that did NOT ask can still reach
+them if it tries"* — and the docs page says it again, because the value of the
+field rests on users knowing its limit.
+
+### `roost ext verify` does not cover the clone's `.git`
+
+**A live risk, and the cost of a correct exclusion.** An installed extension
+keeps a full `.git`, whose ref state changes on every fetch; without the
+exclusion every ordinary git operation inside an extension would make `verify`
+report a change that is not one. Measured: `git checkout -b` and `git gc` inside
+an installed clone leave `verify` reporting `ok`, which is what we want.
+
+What it costs: a payload written to `.git/hooks/post-checkout` or
+`.git/payload.sh` inside an installed extension is invisible to `verify`, which
+reports `ok`. That is honest — `ok` means "matches what was recorded", and
+install recorded with the same exclusion — but it is a region of the tree
+integrity does not cover. Nothing roost does today executes from there: the
+dispatcher execs only `bin/roost-<cmd>`, every git call sets `GIT_DIR` to a
+throwaway object database, and the wrapper forces `core.hooksPath=/dev/null`.
+The docs page states the limit rather than implying `ok` covers everything.
+
+### `install` and `verify` run whatever clean filter the user's gitconfig names
+
+**A live risk, small, and it is the user's own code.** `roost_ext_tree_hash`
+hashes an extension's tree with `git add`, and `git add` runs any clean filter
+configured in the user's own `~/.gitconfig`. No blanket switch exists to turn
+filters off, so both `install` and `verify` execute it. Measured: a filter
+configured in the user's gitconfig ran three times during one install.
+
+It is named because the consent block promises *"Nothing runs during install"*,
+and that sentence is about the extension's code. Anyone tightening that promise
+should know this is the one thing it does not cover. The docs page carries the
+same qualification.
+
+### The control-character refusal does not cover Unicode bidi formatting
+
+**A live risk, narrow.** Manifest text shown at consent is refused if it
+contains any C0 control character or DEL, which closes the ESC repaint that
+made the consent block display a commit other than the one installed. It does
+**not** refuse Unicode bidi formatting characters (`U+202A`–`U+202E`,
+`U+2066`–`U+2069`).
+
+They cannot forge the commit row: the commit is printed above the free-text
+fields and the bidi algorithm is per-line, so a `description` cannot reach it.
+What they can do is reorder how a `description` itself renders. It is left open
+rather than closed because refusing the class would refuse legitimate
+right-to-left text, and a docs tool that cannot describe itself in Arabic or
+Hebrew is a worse outcome than a reorderable one-line description. Named as
+absent rather than implied closed.
+
+### `roost install` reads back its own TAB row with the fields shifted
+
+**A live risk that is benign today — and pre-existing, not from the extension
+branch. It is recorded here rather than fixed there.**
+
+`scripts/roost-install` emits a seven-field TAB row at `:781` (and `:784`) whose
+sixth field, `json_dead`, is **empty on every ordinary install**. It reads that
+row back at `:995` with:
+
+```sh
+while IFS="$TAB" read -r h real cfg kept replaced dead label; do
+```
+
+Tab is IFS whitespace, so `read` squeezes the two consecutive tabs and every
+field after the gap shifts left by one: `dead` receives the label text and
+`label` receives nothing. Measured on the exact producer and consumer strings:
+
+```
+row:  h<TAB>real<TAB>cfg<TAB>1<TAB>0<TAB><TAB>roost's four Claude hooks
+read: dead=[roost's four Claude hooks]  label=[]
+cut:  -f6=[]  -f7=[roost's four Claude hooks]
+```
+
+Why it is benign **today**: `label` is never read in that loop, and `dead` is
+passed on only as `${dead:+"$dead"}` to `roost_json_merge`, where a deaddir of
+`roost's four Claude hooks` matches no hook command and changes nothing. It
+stops being benign the moment `label` is used, a label string starts resembling
+a hook command, or the deaddir match loosens.
+
+`scripts/roost-switch` produces TAB rows the same way but consumes them with
+`cut -f` (`:85`–`:87`), which does not squeeze, so it is unaffected. The same
+class of bug was found and fixed inside the extension branch, which is how this
+one was noticed. The fix here is to read with `IFS=` unset over `read -d` — or
+to stop emitting an empty interior field — and it belongs in a branch that owns
+`roost-install`.
 
 ## Behaviour changes
 
@@ -521,6 +636,36 @@ has already produced a real bug here.
 
 ## Small deferred items
 
+- **No signature verification of an extension.** Pinning to a full commit SHA,
+  and recording the tree hash `roost ext verify` re-checks, is the substitute:
+  it proves what runs is what was agreed to, and says nothing about who wrote
+  it. Deliberate for build 1.
+- **No pattern screening at consent** (`curl | sh`, writes to `~/.ssh`,
+  `~/.aws`, `crontab`). Deliberately absent. If it is ever added it must be
+  *information only* — never a refusal, never a verdict, and never the word
+  "safe". It would catch careless, not malicious, and a screen users believe is
+  worse than no screen at all.
+- **Extension events are contract 2, with no consumer yet.** Contract 1 is
+  commands only. Roost's state hook already fires on every tool call, so events
+  are reachable; shipping an event API with no consumer would have frozen its
+  shape on the day it landed. The contract integer is what makes adding them
+  later non-breaking.
+- **`roost doctor` does not check extensions.** It reports nothing about
+  `ext.lock`, a clone that is missing, or a lockfile that disagrees with
+  `ext.index`. `roost ext list` warns on the disagreement and `roost ext verify`
+  answers the integrity question, but neither is on the path a user takes when
+  something is wrong and they reach for `doctor`.
+- **The `roost` range parser handles three forms only** — `>=A.B.C <D.E.F`, `*`,
+  and absent. Anything else warns "unparsable range, skipping check" and
+  continues. Deliberately tiny: the field is advisory, so a fancier range must
+  never be able to harden into a refusal. Whoever widens it inherits that rule.
+- **`roost_test_tmux_named_guard` protects only the three test files that call
+  it**, and cannot detect its own absence in a fourth. It refuses unless
+  `TMUX_TMPDIR` is set, exists, and sits under a temp root — which is what keeps
+  a `tmux -L <name>` in a test away from the live agents' socket directory — but
+  a new test file that uses `-L` and forgets the call gets no warning from
+  anything. Closing it mechanically is a CI grep for `tmux -L` under `tests/`
+  with no nearby guard call; it has not been written.
 - A `roost.conf` produced by the legacy migration **before** it learned to
   backfill `@roost-glyph-error` still predates the error state, and migration
   cannot re-fire on it (it only runs while `roost.conf` is absent — an

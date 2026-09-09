@@ -252,8 +252,9 @@ Everything below is for people working **on** roost.
 ```
 bin/roost                   # launcher / CLI (up, session, new, spawn, split, view,
                             #   whoami, ssh, send, read, screen, reply, wait-done,
-                            #   state, hooks, doctor, validate, install, update,
-                            #   init, settings, status, kill)
+                            #   state, hooks, doctor, validate, ext, install, update,
+                            #   init, settings, status, kill). Its `*)` fallback is the
+                            #   extension dispatcher — see "The extension seam"
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the
@@ -270,6 +271,7 @@ scripts/roost-install       # `roost install` / `roost update`: wire every insta
                             #   Refuses rather than replace a file that is not roost's
 scripts/roost-settings      # live settings TUI (prefix S)
 scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
+scripts/roost-ext           # `roost ext`: install, list, info, verify, update, remove
 scripts/roost-themes.sh     # built-in theme palettes
 scripts/lib/roost-adapters.sh   # the one table of where each adapter goes, so an
                             #   install plan and a doctor report cannot disagree
@@ -284,6 +286,9 @@ scripts/lib/roost-reply.sh  # the one place that decides how a reply is
                             #   truncated to fit tmux's command-length limit
 scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
                             #   in?", for bin/roost and roost-agent-state alike
+scripts/lib/roost-ext.sh    # the extension seam's helpers: XDG paths, manifest
+                            #   reading, the tiny semver range check, and the
+                            #   fork-free ext.index lookup bin/roost dispatches on
 adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 adapters/pi/roost.ts        # pi extension, same two jobs (.ts: pi loads it
@@ -319,6 +324,107 @@ switcher (it degrades to a hint if missing).
   lets two agents share one window — `roost split` puts a second agent beside
   the first without either clobbering the other's badge. A pane is an agent only
   if it has been stamped, so a plain shell or a `tail -f` never badges anything.
+
+## The extension seam
+
+`roost ext` installs subcommands from a git repository. Everything a **user**
+needs — what installing one does and does not check, what `needs` declares,
+where the files go, and the three ways to turn the seam off — is on
+[roosting.dev/docs/extensions](https://roosting.dev/docs/extensions). This
+section is the author-and-maintainer half: where the code is, and what an
+extension has to look like.
+
+Three files, and nothing else in the tree changes shape:
+
+- **`bin/roost`** — the dispatcher lives in the `*)` fallback of the subcommand
+  `case`, the branch that used to only print usage. Core is looked up first and
+  always wins, so an extension can never shadow a built-in. Keeping the seam
+  inside that one branch is what makes the whole feature revertible in a single
+  clean patch, so keep new work there.
+- **`scripts/roost-ext`** — the six verbs, the consent block, and the git
+  hardening.
+- **`scripts/lib/roost-ext.sh`** — paths, manifest reading, the semver range
+  check, and `roost_ext_index_lookup`, which the dispatcher calls on every
+  mistyped subcommand and which therefore forks nothing.
+
+The design, including why each control is where it is, is in
+[`docs/airig/specs/2026-09-08-extension-seam.md`](docs/airig/specs/2026-09-08-extension-seam.md).
+`tests/test-ext.sh` is the suite; its fixtures are under `tests/fixtures/ext-*`.
+
+### Contract 1
+
+`ROOST_CONTRACT` in `bin/roost` is the version of the *seam*, separate from
+`VERSION`, which is the version of the product. Contract 1 is **commands only**:
+an extension adds subcommands and nothing else. Agent-state events are contract
+2 and have no consumer yet — the integer is what lets them arrive later without
+breaking a contract-1 extension.
+
+### Writing an extension
+
+A repository with a manifest at its root and one executable per command:
+
+```
+roost-mark/
+├── roost-ext.json
+├── bin/
+│   ├── roost-mark        # executable; runs as `roost mark`
+│   └── roost-marks
+└── README.md
+```
+
+```json
+{
+  "name": "mark",
+  "contract": 1,
+  "roost": ">=0.1.0 <0.2.0",
+  "needs": ["fleet"],
+  "commands": ["mark", "marks"],
+  "description": "Bookmark a spot in an agent pane, with a note."
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | Install directory name. `[a-z][a-z0-9-]*`, max 32 chars. |
+| `contract` | yes | Seam version. A mismatch refuses the install. |
+| `roost` | no | Advisory range. `>=A.B.C <D.E.F`, `*`, or absent; anything else warns and is skipped. |
+| `needs` | no | Authority requested. `["fleet"]` or nothing. An unknown value refuses the install. |
+| `commands` | yes | Each needs an executable `bin/roost-<cmd>`. Core names and commands another extension holds are refused. |
+| `description` | no | One line, shown by `roost ext list`. |
+
+Your command is `exec`'d with the remaining arguments, and its exit status and
+output pass through untouched. It is handed:
+
+```sh
+ROOST_HOME        # the roost checkout
+ROOST_VERSION     # product version
+ROOST_CONTRACT    # seam version
+ROOST_EXT_DIR     # your install directory (read-only by convention)
+ROOST_EXT_STATE   # your private state directory, created before exec
+```
+
+and, **only** if the manifest declared `"needs": ["fleet"]`:
+
+```sh
+ROOST_SOCKET      # which tmux server
+ROOST_SOCKET_FLAG # "-L" if that is a socket NAME, "-S" if it is a PATH
+PATH              # with $ROOST_HOME/scripts prepended
+```
+
+Address the fleet as `tmux "$ROOST_SOCKET_FLAG" "$ROOST_SOCKET" list-panes -a`.
+Never hardcode `-L`: tmux takes `-L` for a socket *name* and `-S` for a *path*,
+so `tmux -L "$ROOST_SOCKET"` works against the production socket (the name
+`roost`) and silently addresses a **different server** everywhere else. Without
+`fleet`, `ROOST_SOCKET` is unset rather than empty, so reading it fails loudly
+instead of falling through to the user's own ordinary tmux.
+
+Write your data under `ROOST_EXT_STATE`. Anything you write elsewhere is not
+covered by `roost ext remove --purge`, and your README should say so.
+
+`needs` is a declaration that makes intent visible at consent time, not a
+boundary — see the [docs page](https://roosting.dev/docs/extensions) and
+`docs/known-gaps.md`. Nothing in this repository, and nothing you write, should
+describe an extension as checked, screened, or vouched for.
 
 ## Running the tests
 

@@ -22,6 +22,7 @@ export const siteConfig = {
       items: [
         { label: 'Using roost',     slug: 'using-roost' },
         { label: 'Driving a Fleet', slug: 'driving-a-fleet' },
+        { label: 'Extensions',      slug: 'extensions' },
       ],
     },
     {
