@@ -1,0 +1,438 @@
+#!/usr/bin/env bash
+# roost ext — the extension seam's own subcommand. bin/roost's `ext)` arm
+# execs straight into this file, the same shape `install`/`update`
+# (scripts/roost-install) and `validate` (scripts/roost-validate) already
+# use, so this file's own `case` is where the VERB lives.
+#
+# Only `list` and `info` exist so far. `install`, `verify`, `update` and
+# `remove` are tasks 6-8 of the same plan; the usage error below already
+# names all six so a user typing one of the not-yet-built ones is told it is
+# coming rather than told it is a typo. See
+# docs/airig/specs/2026-09-08-extension-seam.md, "Commands".
+#
+# Read-only, no network: neither verb here writes ext.lock or ext.index, and
+# neither touches tmux. `set -euo pipefail`, the same as bin/roost, because
+# this file has the same shape (a `case` dispatching short, mostly-linear
+# branches) and the same hazard -- a command substitution whose failure
+# should be CAUGHT, not left to fall through -- so every fallible
+# substitution below is written `if x="$(...)"; then ... else ... fi`, never
+# a bare assignment. `roost_ext_index_lookup`'s own header spells out why a
+# bare call under `set -e` is the wrong shape to copy.
+set -euo pipefail
+
+. "$(dirname "$0")/lib/roost-ext.sh"
+
+# --- reading ext.lock for display (NOT the dispatcher's authority read) -----
+#
+# This is a SEPARATE reader from roost_ext_index_write's, on purpose. That one
+# lives in scripts/lib/roost-ext.sh because it decides a GRANT -- the
+# fourth column of ext.index the dispatcher trusts -- and nothing about
+# reading a lockfile for a human to look at should share code with the
+# function that makes a security decision. This reader only ever feeds
+# `roost ext list`/`info`'s stdout; it is not consulted by bin/roost's
+# dispatcher and never will be.
+#
+# One row per lockfile entry, TAB-separated, sorted by name (matching
+# roost_ext__index_py/jq's own sort, so the two are easy to eyeball side by
+# side): name, repo, ref, commit, tree, contract, needs (comma-separated),
+# commands (comma-separated), installed. An absent or empty field prints the
+# placeholder `-` rather than nothing, the same way `list`/`info` show it --
+# NOT the empty string roost_ext_manifest_read's contract uses for the same
+# case. That is a deliberate departure, not an inconsistency: this row has
+# NINE columns and several of them are routinely absent (tree, contract,
+# needs, installed are all optional), so a real lockfile puts more than one
+# EMPTY field in the MIDDLE of a row. bash's `read` with `IFS=$'\t'` still
+# squeezes consecutive tab characters as if they were plain whitespace --
+# measured directly: `IFS=$'\t'; read -r a b c d e <<<$'x\t\t\ty\t'` reads
+# back as `a=x b=y c= d= e=`, not `a=x b= c= d=y e=`. Every field this reader
+# produces is therefore guaranteed non-empty, which is what actually defeats
+# the squeeze; a caller may still show `-` as "none" or "unknown" itself.
+_ext_lock_rows_py() {
+  cat <<'PY'
+import json
+import sys
+
+
+def w(text):
+    sys.stdout.buffer.write(text.encode("utf-8"))
+
+
+def die(msg):
+    w("roost-ext-error=" + msg + "\n")
+    raise SystemExit(0)
+
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(str(exc) + "\n")
+    raise SystemExit(1)
+if not isinstance(data, dict):
+    die("top-level JSON value must be an object")
+
+
+def scalar(entry, key, name):
+    if key not in entry:
+        return "-"
+    value = entry[key]
+    # bool is an int subclass in python -- "contract": true must not read as 1.
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        die("entry '%s' field '%s' must be a string or an integer" % (name, key))
+    # `or "-"` catches a JSON value that is the empty string, not only an
+    # absent key -- both mean "nothing here" to this reader, and only the
+    # placeholder keeps a field from ever being genuinely empty (see the
+    # header comment on why that matters for `read` on the caller's side).
+    return (value if isinstance(value, str) else "%d" % value) or "-"
+
+
+def strlist(entry, key, name):
+    if key not in entry:
+        return "-"
+    value = entry[key]
+    if not isinstance(value, list):
+        die("entry '%s' field '%s' must be an array" % (name, key))
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            die("entry '%s' field '%s' must contain only non-empty strings" % (name, key))
+        out.append(item)
+    return ",".join(out) or "-"
+
+
+rows = []
+for name in sorted(data):
+    entry = data[name]
+    if not isinstance(entry, dict):
+        die("entry '%s' is not an object" % name)
+    fields = [
+        name,
+        scalar(entry, "repo", name),
+        scalar(entry, "ref", name),
+        scalar(entry, "commit", name),
+        scalar(entry, "tree", name),
+        scalar(entry, "contract", name),
+        strlist(entry, "needs", name),
+        strlist(entry, "commands", name),
+        scalar(entry, "installed", name),
+    ]
+    # A value carrying a tab or a newline would turn one row into more than
+    # one field, or more than one line, and the caller's `while IFS=$'\t'
+    # read` has no escaping to undo that with.
+    for field in fields:
+        if "\n" in field or "\r" in field or "\t" in field:
+            die("entry '%s' has a field containing a tab or newline" % name)
+    rows.append("\t".join(fields))
+w("\n".join(rows))
+if rows:
+    w("\n")
+PY
+}
+
+# _ext_lock_rows_jq -- agrees with _ext_lock_rows_py line for line and message
+# for message, the same discipline roost_ext__manifest_jq and
+# roost_ext__index_jq hold themselves to: a machine with only jq must show a
+# user exactly what a machine with only python3 would.
+#
+# Every field is looked up as `$e.<key>` -- explicit, not through a generic
+# helper that reads the implicit `.` -- because by the time a field is
+# wanted here `.` is the {key, value} pair `to_entries` produced, not the
+# entry itself. roost_ext__index_jq's own header is the place that mistake
+# was already made and unmade; this reader is written to not repeat it.
+_ext_lock_rows_jq() {
+  cat <<'JQ'
+def scalarv($n; $k; $v):
+  if $v == null then "-"
+  elif ($v | type) == "string" then
+    (if ($v | test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
+     elif $v == "" then "-"
+     else $v end)
+  elif ($v | type) == "number" then
+    (if ($v | tostring | test("^-?[0-9]+$")) then ($v | tostring)
+     else {err: ("entry '" + $n + "' field '" + $k + "' must be a string or an integer")} end)
+  else {err: ("entry '" + $n + "' field '" + $k + "' must be a string or an integer")} end;
+def strlistv($n; $k; $v):
+  if $v == null then "-"
+  elif ($v | type) != "array" then {err: ("entry '" + $n + "' field '" + $k + "' must be an array")}
+  elif any($v[]; (type != "string") or (. == "")) then {err: ("entry '" + $n + "' field '" + $k + "' must contain only non-empty strings")}
+  elif any($v[]; test("[\n\r\t]")) then {err: ("entry '" + $n + "' has a field containing a tab or newline")}
+  else (($v | join(",")) as $s | if $s == "" then "-" else $s end) end;
+if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
+else
+  ( [ to_entries | sort_by(.key)[]
+      | .key as $n | .value as $e
+      | if ($e | type) != "object" then [{err: ("entry '" + $n + "' is not an object")}]
+        else
+          [ $n,
+            scalarv($n; "repo"; $e.repo),
+            scalarv($n; "ref"; $e.ref),
+            scalarv($n; "commit"; $e.commit),
+            scalarv($n; "tree"; $e.tree),
+            scalarv($n; "contract"; $e.contract),
+            strlistv($n; "needs"; $e.needs),
+            strlistv($n; "commands"; $e.commands),
+            scalarv($n; "installed"; $e.installed) ]
+        end
+    ] ) as $rows
+  | ([$rows[] | select(any(.[]; type == "object"))] | first) as $bad
+  | if $bad != null then ["roost-ext-error=" + ($bad[] | select(type == "object") | .err)]
+    else [$rows[] | join("\t")]
+    end
+end
+| .[]
+JQ
+}
+
+# _ext_lock_rows FILE -> the rows above, on stdout. Same 0/1/3 contract as
+# roost_ext_manifest_read: 0 printed, 1 refused (message on stderr, naming
+# what), 3 neither python3 nor jq is on PATH.
+_ext_lock_rows() {
+  roost_ext__json_read "$1" _ext_lock_rows_py _ext_lock_rows_jq
+}
+
+# --- the disagreement check --------------------------------------------------
+#
+# A SECURITY check, not a tidiness one -- see
+# docs/airig/specs/2026-09-08-extension-seam.md, "ext.index is the authority
+# of record". Since task 3 the dispatcher in bin/roost reads the authority
+# an extension runs with off ext.index ALONE and never opens ext.lock again,
+# so a lockfile that has moved on -- an authority revoked, an extension
+# removed by hand -- has no effect at all until something regenerates
+# ext.index. Measured on this implementation: editing ext.lock's `needs` down
+# to `[]` and leaving ext.index alone leaves the grant standing.
+#
+# This does NOT re-derive "agree" by reading ext.lock's fields itself and
+# comparing them one by one to ext.index's columns -- that would be a THIRD
+# definition of what the two files are supposed to say, alongside
+# roost_ext_index_write's Python and jq engines, and a fourth place that could
+# drift from the other three. Instead it asks those exact two engines what
+# ext.index WOULD look like if regenerated right now, and compares that,
+# byte for byte, against what is actually on disk. That is the same
+# question roost_ext_index_write itself answers before it writes -- this
+# function only stops short of the write.
+_ext_index_disagrees() {
+  local lock="$1" index="$2" data_dir="$3" expected="" actual=""
+  if [ -f "$lock" ]; then
+    # A failure here means ext.lock is malformed enough that even the writer's
+    # own engine refuses it -- `roost ext list` will already have exited on
+    # that same failure via _ext_lock_rows before this is ever reached, since
+    # both readers parse the same file. Falling back to "expected nothing" in
+    # that otherwise-unreachable case fails toward a WARNING rather than
+    # toward silence, which is the safe direction for a check whose whole job
+    # is noticing when something is wrong.
+    if expected="$(roost_ext__json_read "$lock" roost_ext__index_py roost_ext__index_jq "$data_dir" 2>/dev/null)"; then
+      :
+    else
+      expected=""
+    fi
+  fi
+  if [ -f "$index" ]; then
+    if actual="$(cat "$index" 2>/dev/null)"; then
+      :
+    else
+      actual=""
+    fi
+  fi
+  if [ "$expected" = "$actual" ]; then
+    return 1
+  fi
+  return 0
+}
+
+# The wording a user actually reads. Deliberately says WHICH file wins
+# (ext.index), WHY (the dispatcher never opens ext.lock), and HOW to make them
+# agree again (re-run whatever last wrote ext.lock, which regenerates
+# ext.index in the same step) -- an untidiness warning would say only that the
+# two differ, and that is the version of this message the design spec calls
+# out as the wrong one to ship.
+_ext_index_disagree_warning() {
+  cat <<'EOF'
+roost ext list: SECURITY WARNING — ext.lock and ext.index disagree.
+roost ext list: bin/roost's dispatcher grants authority from ext.index alone and never reads ext.lock at dispatch time, so an extension can be holding (or lacking) authority that ext.lock no longer agrees with, until something rewrites ext.index. See docs/airig/specs/2026-09-08-extension-seam.md, "ext.index is the authority of record".
+roost ext list: ext.index is the file being obeyed right now — NOT ext.lock.
+roost ext list: every command that writes ext.lock (install, update, remove) regenerates ext.index in the same step. Re-run whichever of those last touched the extension in question to bring the two files back into agreement.
+EOF
+}
+
+case "${1:-}" in
+  list)
+    lock="$(roost_ext_lock)"
+    index="$(roost_ext_index)"
+    data_dir="$(roost_ext_data_dir)"
+
+    rows=""
+    if [ -f "$lock" ]; then
+      if rows="$(_ext_lock_rows "$lock")"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      case "$rc" in
+        0) : ;;
+        3)
+          echo "roost ext list: neither python3 nor jq found on PATH — cannot read $lock" >&2
+          exit 1
+          ;;
+        *)
+          # _ext_lock_rows already printed roost_ext__json_read's own message
+          # naming what was wrong with the file.
+          exit 1
+          ;;
+      esac
+    fi
+
+    if _ext_index_disagrees "$lock" "$index" "$data_dir"; then
+      _ext_index_disagree_warning >&2
+    fi
+
+    if [ -z "$rows" ]; then
+      echo "no extensions installed — install one with: roost ext install <org>/<repo>"
+      exit 0
+    fi
+
+    # IFS pinned to TAB alone, the same reason roost_ext_index_lookup pins it:
+    # an install path or a description can legitimately contain a space.
+    # `|| [ -n "$name" ]` reads a final row with no trailing newline, which is
+    # exactly what _ext_lock_rows_py/jq print when there is exactly one entry.
+    while IFS=$'\t' read -r name repo ref commit tree contract needs commands installed \
+        || [ -n "$name" ]; do
+      [ -n "$name" ] || continue
+      # commit is never the empty string here -- _ext_lock_rows_py/jq print
+      # `-` for a missing one -- and `${-:0:7}` is `-` right back, so no
+      # separate "was it recorded at all" check is needed.
+      short="${commit:0:7}"
+      disp_commands="${commands//,/, }"
+      line="$name  $short  $disp_commands"
+      if [ ! -d "$data_dir/$name" ]; then
+        line="$line (missing)"
+      fi
+      printf '%s\n' "$line"
+    done <<EOF
+$rows
+EOF
+    ;;
+
+  info)
+    shift
+    name="${1:-}"
+    if [ -z "$name" ]; then
+      echo "usage: roost ext info NAME" >&2
+      exit 2
+    fi
+
+    lock="$(roost_ext_lock)"
+    data_dir="$(roost_ext_data_dir)"
+    state_dir="$(roost_ext_state_dir)"
+    clone_dir="$data_dir/$name"
+    ext_state_dir="$state_dir/$name"
+
+    found=0
+    repo=""; ref=""; commit=""; tree=""; contract=""; needs=""; commands=""; installed=""
+    if [ -f "$lock" ]; then
+      if rows="$(_ext_lock_rows "$lock")"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      case "$rc" in
+        0) : ;;
+        3)
+          echo "roost ext info: neither python3 nor jq found on PATH — cannot read $lock" >&2
+          exit 1
+          ;;
+        *) exit 1 ;;
+      esac
+      while IFS=$'\t' read -r rname rrepo rref rcommit rtree rcontract rneeds rcommands rinstalled \
+          || [ -n "$rname" ]; do
+        [ -n "$rname" ] || continue
+        if [ "$rname" = "$name" ]; then
+          found=1
+          repo="$rrepo"; ref="$rref"; commit="$rcommit"; tree="$rtree"
+          contract="$rcontract"; needs="$rneeds"; commands="$rcommands"; installed="$rinstalled"
+          break
+        fi
+      done <<EOF
+$rows
+EOF
+    fi
+
+    # The lockfile, not the clone, is the record of what is installed --
+    # roost_ext_index_lookup's own header makes the same call for the
+    # dispatcher. An unknown NAME is one that is not a key in ext.lock, full
+    # stop; a clone sitting on disk under a name nothing installed does not
+    # make it known.
+    if [ "$found" -ne 1 ]; then
+      echo "roost ext info: no such extension: $name" >&2
+      exit 1
+    fi
+
+    # repo/ref/commit/tree/contract/installed are never the empty string here
+    # -- _ext_lock_rows_py/jq already print `-` for a field that was absent,
+    # so there is nothing left to default. `needs` gets its OWN word, "none",
+    # because "-" reads as "unknown"; "none" is the actual claim the design
+    # makes about an absent `needs` (see "Declared authority").
+    disp_repo="$repo"
+    disp_ref="$ref"
+    disp_commit="$commit"
+    disp_tree="$tree"
+    disp_contract="$contract"
+    disp_commands="${commands//,/, }"
+    disp_installed="$installed"
+    if [ "$needs" = "-" ]; then
+      disp_needs="none"
+    else
+      disp_needs="$needs"
+    fi
+
+    echo "name: $name"
+    echo
+    echo "lockfile entry:"
+    printf '  repo       %s\n' "$disp_repo"
+    printf '  ref        %s\n' "$disp_ref"
+    printf '  commit     %s\n' "$disp_commit"
+    printf '  tree       %s\n' "$disp_tree"
+    printf '  contract   %s\n' "$disp_contract"
+    printf '  needs      %s\n' "$disp_needs"
+    printf '  commands   %s\n' "$disp_commands"
+    printf '  installed  %s\n' "$disp_installed"
+    echo
+    echo "manifest (from the clone):"
+    manifest="$clone_dir/roost-ext.json"
+    if [ -f "$manifest" ]; then
+      if man="$(roost_ext_manifest_read "$manifest")"; then
+        mrc=0
+      else
+        mrc=$?
+      fi
+      if [ "$mrc" -eq 0 ]; then
+        while IFS='=' read -r mkey mval || [ -n "$mkey" ]; do
+          [ -n "$mkey" ] || continue
+          printf '  %-11s %s\n' "$mkey" "$mval"
+        done <<EOF2
+$man
+EOF2
+      else
+        echo "  (could not be read — see the message above)"
+      fi
+    else
+      # The clone can be gone while the lockfile entry above is not: the
+      # lockfile is the record of what is installed, not the clone (the same
+      # rule roost_ext_index_lookup enforces on the dispatch path). `info`
+      # says so rather than failing outright -- there is still a real answer
+      # to "what does roost think is installed here".
+      echo "  missing — $manifest is not there; the clone may have been deleted"
+    fi
+    echo
+    echo "paths:"
+    printf '  clone  %s\n' "$clone_dir"
+    printf '  state  %s\n' "$ext_state_dir"
+    ;;
+
+  *)
+    # Every verb this feature will ever have, named even though only two of
+    # them work today -- so `roost ext install ...` reads as "not built yet"
+    # rather than as a typo, and a user who mistypes `list` still sees the
+    # whole shape of the command.
+    echo "usage: roost ext <install|list|info|verify|update|remove>" >&2
+    exit 2
+    ;;
+esac

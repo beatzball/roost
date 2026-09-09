@@ -799,7 +799,10 @@ lock_no_needs
 # move all four together and every comparison would still hold. This is the
 # one assertion that would notice, and the whole point of this branch is that
 # an unknown subcommand behaves exactly as it did before the seam existed.
-usage_want='usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|--version|help]'
+# `|ext|` is new as of task 5, alongside the wiring in bin/roost's `ext)`
+# case arm -- this literal has to move in lockstep with that arm's usage
+# string or this assertion stops meaning anything.
+usage_want='usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|ext|install|update|init|settings|status|kill [SESSION]|--version|help]'
 
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" definitely-not-a-subcommand 2>"$TMP/err")"; rc=$?
 usage_ref="$(cat "$TMP/err")"
@@ -1232,6 +1235,216 @@ lock_no_needs
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$TMP/no-json" "$ROOST" probe 2>"$TMP/err")"
 assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
   "...and so is the refusal to grant it"
+
+# --- roost ext list / roost ext info ----------------------------------------
+# Task 5. Both verbs are read-only and never touch tmux, so unlike everything
+# above this comment neither needs $EXT_PATH's scrubbed PATH or a live server
+# to be correct about -- ROOST_SOCKET is still exported on every call anyway,
+# for the same belt-and-braces reason the rest of this file does: the test
+# suite should never be one dropped export away from falling through to `-L
+# roost`, the author's live fleet (AGENTS.md §2), even on a path that
+# provably never calls `t`.
+[ -x "$HERE/scripts/roost-ext" ]
+assert_true "$?" "scripts/roost-ext exists and is executable"
+
+# An unknown verb -- and no verb at all -- is a usage error naming every verb
+# this feature will have by the end of task 8, not just the two that work
+# today. Breaks if the case in scripts/roost-ext stops listing all six, or if
+# the exit code drifts off the usage-error convention every other unknown
+# roost command uses.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext bogus-verb 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "2" "an unknown 'roost ext' verb exits 2"
+assert_eq "$out" "" "an unknown 'roost ext' verb prints nothing on stdout"
+ext_usage_err="$(cat "$TMP/err")"
+for v in install list info verify update remove; do
+  assert_contains "$ext_usage_err" "$v" "the roost ext usage error names the '$v' verb"
+done
+
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "2" "'roost ext' with no verb at all is the same usage error"
+assert_eq "$(cat "$TMP/err")" "$ext_usage_err" "...byte for byte"
+
+# --- list: nothing installed -------------------------------------------------
+# Both "no lockfile at all" and "a lockfile that is the empty object" have to
+# read the same way to a user: nothing is installed. Neither should trip the
+# disagreement warning on its own -- there being nothing in ext.lock is not a
+# disagreement as long as ext.index says the same.
+rm -f "$(roost_ext_lock)" "$(roost_ext_index)"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "roost ext list with no lockfile at all exits 0"
+assert_contains "$out" "no extensions installed" "...and says nothing is installed"
+assert_contains "$out" "roost ext install" "...and says how to install one"
+assert_eq "$(cat "$TMP/err")" "" "no lockfile and no index: nothing to warn about"
+
+printf '{}\n' > "$(roost_ext_lock)"
+roost_ext_index_write
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "roost ext list with an empty ({}) lockfile exits 0"
+assert_contains "$out" "no extensions installed" "...and reads the same as no lockfile at all"
+assert_eq "$(cat "$TMP/err")" "" "an empty lockfile freshly regenerated into an empty index: no warning"
+
+# --- list: two entries, and the commit is SHORTENED -------------------------
+mkdir -p "$EXT_DATA/alpha/bin" "$EXT_DATA/beta/bin"
+: > "$EXT_DATA/alpha/bin/roost-alpha"; chmod +x "$EXT_DATA/alpha/bin/roost-alpha"
+: > "$EXT_DATA/beta/bin/roost-beta";   chmod +x "$EXT_DATA/beta/bin/roost-beta"
+lock_install <<'JSON'
+{
+  "alpha": { "repo": "o/alpha", "ref": "v1.0.0", "commit": "1111111111111111111111111111111111111111", "commands": ["alpha"] },
+  "beta":  { "repo": "o/beta",  "ref": "v2.0.0", "commit": "2222222222222222222222222222222222222222", "commands": ["beta", "beta2"], "needs": ["fleet"] }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "roost ext list with two entries exits 0"
+assert_eq "$(cat "$TMP/err")" "" "two entries written together with the index (lock_install's own shape): no disagreement"
+assert_contains "$out" "alpha" "roost ext list names the alpha extension"
+assert_contains "$out" "1111111" "roost ext list shows alpha's commit, shortened"
+assert_contains "$out" "beta" "roost ext list names the beta extension"
+assert_contains "$out" "beta2" "roost ext list shows every command an entry claims, not just the first"
+case "$out" in
+  *1111111111111111111111111111111111111111*) commit_not_shortened=1 ;;
+  *)                                           commit_not_shortened=0 ;;
+esac
+assert_eq "$commit_not_shortened" "0" "the full 40-character commit never appears -- only the shortened form does"
+
+# --- list: a deleted clone is marked missing --------------------------------
+rm -rf "$EXT_DATA/alpha"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+alpha_line="$(printf '%s\n' "$out" | grep '^alpha ')"
+beta_line="$(printf '%s\n' "$out" | grep '^beta ')"
+assert_contains "$alpha_line" "missing" "a clone whose directory is gone is marked missing"
+case "$beta_line" in
+  *missing*) beta_marked_missing=1 ;;
+  *)         beta_marked_missing=0 ;;
+esac
+assert_eq "$beta_marked_missing" "0" "an intact clone is NOT marked missing"
+
+# --- list: the ext.lock / ext.index disagreement warning --------------------
+# The security property task 5 exists to surface, not merely a formatting
+# one: the dispatcher (bin/roost's `*)` fallback, wired in task 3) obeys
+# ext.index alone, so a lockfile that has moved on has no effect until
+# something regenerates the index. These assertions would not notice a
+# regression that turned the warning into plain "the two files differ" --
+# that is why they check for the file names, "obeyed", and a way to fix it,
+# not just that SOME text appeared on stderr.
+mkdir -p "$EXT_DATA/gamma/bin"
+: > "$EXT_DATA/gamma/bin/roost-gamma"; chmod +x "$EXT_DATA/gamma/bin/roost-gamma"
+lock_install <<'JSON'
+{ "gamma": { "repo": "o/gamma", "commands": ["gamma"], "needs": ["fleet"] } }
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+assert_eq "$(cat "$TMP/err")" "" "gamma installed and the index regenerated together: no warning yet"
+
+# The sharper case from the design doc's own table: an authority REVOKED in
+# ext.lock by hand, with ext.index never rewritten. This is the unsafe
+# direction -- the grant is still live -- and list's job is to say so loudly,
+# not to pretend the lockfile's new "no fleet" already took effect.
+cat > "$(roost_ext_lock)" <<'JSON'
+{ "gamma": { "repo": "o/gamma", "commands": ["gamma"], "needs": [] } }
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+gamma_warn="$(cat "$TMP/err")"
+assert_eq "$rc" "0" "list still runs and shows what it can when the two files disagree -- it warns, it does not refuse"
+assert_contains "$out" "gamma" "list still shows gamma while the two files disagree"
+assert_contains "$gamma_warn" "ext.lock" "the warning names ext.lock"
+assert_contains "$gamma_warn" "ext.index" "the warning names ext.index"
+assert_contains "$gamma_warn" "obeyed" "the warning says which file is being OBEYED, not merely that they differ"
+assert_contains "$gamma_warn" "SECURITY" "the warning reads as a security warning, not a tidiness one"
+assert_contains "$gamma_warn" "install, update, remove" "the warning says how to reconcile the two files"
+
+roost_ext_index_write
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+assert_eq "$(cat "$TMP/err")" "" "regenerating the index is what makes the warning go away"
+
+# The other direction the design's table names: the lockfile deleted outright
+# and the index left behind. `list` reports from the lockfile (there is
+# nothing installed, as far as ext.lock says) while STILL warning that
+# ext.index disagrees -- an index with entries and no lockfile at all is
+# exactly the shape a hand-deleted ext.lock leaves.
+rm -f "$(roost_ext_lock)"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+gone_warn="$(cat "$TMP/err")"
+assert_eq "$rc" "0" "list with the lockfile gone entirely still exits 0"
+assert_contains "$out" "no extensions installed" "...and reports what the (now empty) lockfile says"
+assert_contains "$gone_warn" "ext.index" "...while still warning that a now-stale ext.index disagrees"
+
+# ...and the last row in the table: a lockfile with entries and NO index file
+# at all (rather than a stale one). Also a disagreement -- an index that
+# cannot even be found is not "in agreement" with a lockfile that names
+# commands to dispatch.
+lock_install <<'JSON'
+{ "delta": { "repo": "o/delta", "commands": ["delta"] } }
+JSON
+rm -f "$(roost_ext_index)"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "list with the index missing outright still exits 0"
+assert_contains "$out" "delta" "...and still reports what the lockfile says"
+assert_contains "$(cat "$TMP/err")" "ext.index" "...while warning that the missing index disagrees with the lockfile"
+roost_ext_index_write
+
+# --- info: a known name ------------------------------------------------------
+mkdir -p "$EXT_DATA/mark/bin"
+: > "$EXT_DATA/mark/bin/roost-mark";  chmod +x "$EXT_DATA/mark/bin/roost-mark"
+: > "$EXT_DATA/mark/bin/roost-marks"; chmod +x "$EXT_DATA/mark/bin/roost-marks"
+cat > "$EXT_DATA/mark/roost-ext.json" <<'JSON'
+{
+  "name": "mark",
+  "contract": 1,
+  "roost": ">=0.1.0 <0.2.0",
+  "needs": ["fleet"],
+  "commands": ["mark", "marks"],
+  "description": "Bookmark a spot in an agent pane, with a note."
+}
+JSON
+lock_install <<'JSON'
+{
+  "mark": {
+    "repo": "beatzball/roost-mark",
+    "ref": "v0.1.0",
+    "commit": "a3f91c2e5b7d4419c2f0aa18e6cd3b7f92104a6d",
+    "tree": "6b1d0c94f2a7e5318cd40b7a2f9e6c1d83b45209",
+    "contract": 1,
+    "needs": ["fleet"],
+    "commands": ["mark", "marks"],
+    "installed": "2026-09-08T10:14:22Z"
+  }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info mark 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "roost ext info on a known name exits 0"
+assert_eq "$(cat "$TMP/err")" "" "...and writes nothing to stderr"
+assert_contains "$out" "mark" "info names the extension"
+assert_contains "$out" "beatzball/roost-mark" "info shows the lockfile's repo"
+assert_contains "$out" "v0.1.0" "info shows the lockfile's ref"
+assert_contains "$out" "a3f91c2e5b7d4419c2f0aa18e6cd3b7f92104a6d" "info shows the lockfile's commit IN FULL, unlike list"
+assert_contains "$out" "fleet" "info shows the declared authority"
+assert_contains "$out" "Bookmark a spot in an agent pane" "info shows the manifest's own description"
+assert_contains "$out" "$EXT_DATA/mark" "info shows the clone directory path"
+assert_contains "$out" "$EXT_STATE_ROOT/ext/mark" "info shows the extension's private state directory path"
+
+# --- info: an unknown name, and a missing NAME argument ---------------------
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info definitely-not-installed 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "roost ext info on an unknown name exits 1"
+assert_eq "$out" "" "...and prints nothing on stdout"
+assert_contains "$(cat "$TMP/err")" "definitely-not-installed" "...and the refusal names the unknown extension"
+
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "2" "roost ext info with no NAME at all is a usage error, not an unknown-name refusal"
+
+# --- info: the lockfile entry survives a deleted clone -----------------------
+# The lockfile is the record of what is installed, not the clone -- the same
+# rule roost_ext_index_lookup enforces on the dispatch path. `info` on a name
+# ext.lock still names has a real answer even with the clone gone.
+rm -rf "$EXT_DATA/mark"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info mark 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "info on a name whose clone is gone still succeeds"
+assert_contains "$out" "beatzball/roost-mark" "...and still shows the lockfile entry"
+assert_contains "$out" "missing" "...and says the manifest/clone is missing"
+
+# Leave a clean slate for the conformance block below, which builds its own
+# lockfile from scratch and must not inherit any entry from this section.
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/alpha" "$EXT_DATA/beta" "$EXT_DATA/gamma" "$EXT_DATA/delta" "$EXT_DATA/mark"
 
 # --- conformance: could a command roost already ships be rebuilt on this? ---
 # Every assertion above this line asks whether the seam behaves as specified.

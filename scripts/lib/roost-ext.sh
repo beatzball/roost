@@ -315,6 +315,7 @@ roost_ext_core_commands() {
     help --help -h \
     doctor \
     validate \
+    ext \
     install update \
     init \
     settings \

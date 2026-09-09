@@ -347,6 +347,16 @@ case "${1:-up}" in
     shift
     exec "$ROOST_HOME/scripts/roost-validate" "$@"
     ;;
+  ext)
+    # `roost ext <verb>` -- the extension seam's own subcommand, kept in its
+    # own file (scripts/roost-ext) rather than folded into this case, the
+    # same shape `install`/`update` (scripts/roost-install) and `validate`
+    # (scripts/roost-validate) already use. Only `list` and `info` exist so
+    # far; `install`, `verify`, `update` and `remove` are tasks 6-8 of the
+    # same plan. See docs/airig/specs/2026-09-08-extension-seam.md.
+    shift
+    exec "$ROOST_HOME/scripts/roost-ext" "$@"
+    ;;
   install|update)
     # `update` is an ALIAS, not a second arm: one shift, one exec, so the two
     # spellings cannot drift. They are the same command because re-running the
@@ -1600,6 +1610,6 @@ JSON
         fi
       fi
     fi
-    echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|--version|help]" >&2; exit 2
+    echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|ext|doctor|validate|install|update|init|settings|status|kill [SESSION]|--version|help]" >&2; exit 2
     ;;
 esac
