@@ -600,6 +600,44 @@ has already produced a real bug here.
 
 ## Process lessons
 
+### A sweep done from a review's list is not a sweep
+
+PR #29 changed one phrase across the repo after #31 replaced typing with
+pasting. Three rounds running, a reviewer returned with more sites: seven the
+third time, two of them in the very file whose section had just been rewritten.
+Each round the listed sites were fixed and the job called done.
+
+The fix was to run the sweep rather than the list. The fourth round used one
+`grep` over the whole tree and closed it.
+
+**And the mirror of it, one round later.** Sweeping a phrase without reading
+each site produced the opposite error: four comments in `tests/live/*-smoke.sh`
+were changed to say "delivered" when those scripts use raw `tmux send-keys`,
+not `roost send`. "Typed" was correct there, and load-bearing — the race those
+comments explain exists *because* keystrokes reach a TUI that has not rendered.
+Reverted.
+
+Neither half is reading the code: taking a list on trust, or taking a phrase on
+trust. A sweep finds the candidates; only the surrounding code says which are
+real.
+
+### A mutation that fails to apply reports the fix as unnecessary
+
+Six mutations across PR #29 paid for themselves, and one lied. Its anchor
+string did not match, so nothing was mutated, the suite stayed green, and the
+result read exactly like "this fix was not needed". Every mutation since
+asserts its own anchor before running.
+
+Two others earned their keep by finding what the tests could not: one showed a
+flag-consuming loop was dead code, because removing it turned nothing red. One
+showed an assertion passing for the wrong reason — it checked only that the
+exit code was non-zero, and the command failed for an unrelated cause. Three
+assertions in that file were checking status where they meant to check the
+message.
+
+**A test that cannot fail and a fix that is not needed look identical from
+here.** Only a mutation that is proven to have been applied tells them apart.
+
 ### Blast radius enumerated from memory misses consumers
 
 The `error` state's blast radius was enumerated from recall and missed two
