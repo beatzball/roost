@@ -4,16 +4,21 @@
 # (scripts/roost-install) and `validate` (scripts/roost-validate) already
 # use, so this file's own `case` is where the VERB lives.
 #
-# `install`, `list`, `info` and `verify` exist so far. `update` and `remove`
-# are task 8 of the same plan; the usage error below already names all six
-# so a user typing one of the not-yet-built ones is told it is coming rather
-# than told it is a typo. See
-# docs/airig/specs/2026-09-08-extension-seam.md, "Commands".
+# All six verbs live here -- `install`, `list`, `info`, `verify`, `update`
+# and `remove`. See docs/airig/specs/2026-09-08-extension-seam.md, "Commands".
 #
 # `list`, `info` and `verify` are read-only and touch no network. `install`
-# is the one verb here that fetches, that writes ext.lock and ext.index, and
-# that asks the user a question -- it is the security-critical command of
-# this feature, and its own comments carry the reasons. Nothing here touches tmux. `set -euo pipefail`, the same as bin/roost, because
+# and `update` are the two that fetch, that write ext.lock and ext.index, and
+# that ask the user a question -- they are the security-critical commands of
+# this feature, and their own comments carry the reasons. `update` carries one
+# hazard `install` does not have at all: it is the only verb with any reason
+# to touch a clone that is ALREADY INSTALLED, whose .git is attacker-writable
+# and outside what `roost ext verify` covers -- _ext_update_one's header is
+# where that is answered, and it is the first thing to read before changing
+# which git runs where. `remove` writes ext.lock and ext.index too, and
+# deletes; it fetches nothing.
+#
+# Nothing here touches tmux. `set -euo pipefail`, the same as bin/roost, because
 # this file has the same shape (a `case` dispatching short, mostly-linear
 # branches) and the same hazard -- a command substitution whose failure
 # should be CAUGHT, not left to fall through -- so every fallible
@@ -826,6 +831,921 @@ _ext_verify_diff() {
   printf '%s\n' "$diffout"
 }
 
+# --- remove/update: taking one entry back out of ext.lock --------------------
+#
+# A FOURTH engine pair, and the same discipline as the other three: python3
+# and jq must produce the same bytes, and tests/test-ext.sh runs both over the
+# same input and diffs the answers (`_ext_lock_drop_parity_case`, beside the
+# harnesses for the manifest reader, the index writer and the lockfile
+# adder). Every divergence found on this branch was silent and only wrong on
+# a jq-only machine, so the parity test lands with the engines rather than
+# after them.
+#
+# What it does: read the current ext.lock on stdin, take a NAME on $arg, and
+# print the whole new lockfile with that one entry gone. It refuses a name
+# that is not there -- `remove` has already told the user "no such extension"
+# by then, so reaching that here means the lockfile changed underneath, and
+# reporting success for a removal that removed nothing is the one outcome
+# this pair must never produce.
+#
+# Every other entry is carried through UNTOUCHED, key by key, for the reason
+# _ext_lock_add gives at length: another entry is another consent decision,
+# and a writer that rebuilt it from the fields it happens to know would
+# silently drop every field a future roost adds.
+_ext_lock_drop_py() {
+  cat <<'PY'
+import json
+import sys
+
+
+def w(text):
+    # Bytes, UTF-8, for the reason roost_ext__manifest_py gives: a description
+    # with an accent in it has to come back out as the same bytes it went in
+    # as, whatever the environment's locale claims.
+    sys.stdout.buffer.write(text.encode("utf-8"))
+
+
+def die(msg):
+    w("roost-ext-error=" + msg + "\n")
+    raise SystemExit(0)
+
+
+try:
+    lock = json.load(sys.stdin)
+except Exception as exc:
+    sys.stderr.write(str(exc) + "\n")
+    raise SystemExit(1)
+if not isinstance(lock, dict):
+    die("top-level JSON value must be an object")
+
+name = sys.argv[1]
+if name not in lock:
+    die("'%s' is not in the lockfile" % name)
+del lock[name]
+
+# ensure_ascii=False and the same indent/sort as _ext_lock_add_py: the two
+# write the same file and a machine with only one of the two engines must not
+# end up with a lockfile that differs from the other's byte for byte.
+w(json.dumps(lock, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+PY
+}
+
+# _ext_lock_drop_jq -- agrees with _ext_lock_drop_py byte for byte. `deepsort`
+# is what python3's sort_keys=True does at every level; jq's own --sort-keys
+# is a command-line flag and roost_ext__json_read does not pass one, so the
+# sort is written into the program instead of into the invocation.
+#
+# `del(.[$arg])` rather than `to_entries | map(select(...))`: the key is an
+# arbitrary string and the second form would need it compared, not looked up.
+_ext_lock_drop_jq() {
+  cat <<'JQ'
+def deepsort:
+  if type == "object" then
+    to_entries | sort_by(.key) | map({key: .key, value: (.value | deepsort)}) | from_entries
+  elif type == "array" then map(deepsort)
+  else . end;
+if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
+else
+  . as $lock
+  | if ($lock | has($arg)) | not
+    then ["roost-ext-error='" + $arg + "' is not in the lockfile"]
+    else [ (($lock | del(.[$arg])) | deepsort) ]
+    end
+end
+| .[]
+JQ
+}
+
+# _ext_lock_drop FILE NAME -> the whole new lockfile on stdout, without NAME.
+# Same 0/1/3 contract as every other reader here: 0 printed, 1 refused
+# (message on stderr naming what), 3 neither python3 nor jq is on PATH.
+_ext_lock_drop() {
+  roost_ext__json_read "$1" _ext_lock_drop_py _ext_lock_drop_jq "$2"
+}
+
+# _ext_rows_read VERB LOCK -> set EXT_ROWS to _ext_lock_rows' output; 0 when
+# the lockfile could be read, 1 when it could not (message already on stderr).
+#
+# SETS A VARIABLE rather than printing, and that is not a style choice. The
+# obvious shape -- `rows="$(_ext_rows_or_die ...)"`, with the function calling
+# `exit 1` on a lockfile it cannot read -- puts the exit inside a COMMAND
+# SUBSTITUTION, which is a subshell: it ends the subshell, the assignment
+# succeeds with an empty value, and the caller carries on believing nothing is
+# installed. On `remove` that is the difference between "refusing to touch a
+# lockfile roost cannot parse" and "no such extension".
+#
+# The four read-only arms below each grew their own copy of this three-way
+# case before `update` and `remove` existed; these two share one, so a fifth
+# verb cannot get the `3` case subtly wrong.
+#
+# An ABSENT lockfile is EMPTY and SUCCEEDS -- that is what a machine with
+# nothing installed looks like, and the caller decides what to say about it,
+# because "nothing to update" and "no such extension" are different answers to
+# the same empty file.
+_ext_rows_read() {
+  local verb="$1" lock="$2" rc=0
+  EXT_ROWS=""
+  [ -f "$lock" ] || return 0
+  if EXT_ROWS="$(_ext_lock_rows "$lock")"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0) return 0 ;;
+    3)
+      echo "roost ext $verb: neither python3 nor jq found on PATH — cannot read $lock" >&2
+      EXT_ROWS=""
+      return 1
+      ;;
+    *)
+      # _ext_lock_rows already printed roost_ext__json_read's own message
+      # naming what was wrong with the file.
+      EXT_ROWS=""
+      return 1
+      ;;
+  esac
+}
+
+# --- the manifest gate, shared by install and update ------------------------
+#
+# EVERY REFUSAL IN STEP 4 OF THE DESIGN, IN ONE PLACE. `update` re-validates
+# the manifest at the new commit, and it has to apply the SAME checks
+# `install` applied to the old one -- an update is a second consent decision
+# about a different tree, not a lighter one. Written as one function rather
+# than as two copies precisely because the copies would drift: the check that
+# gets added to install and forgotten in update is the check an attacker
+# reaches by publishing a second commit.
+#
+# _ext_manifest_gate VERB SUBJECT DIR -> 0 when DIR is a tree this roost is
+# willing to run, 1 when it is not, with the reason already on stderr.
+#
+#   VERB    the word in "roost ext VERB:", and what "nothing has been ..."
+#           says at the end of a hostile-tree refusal
+#   SUBJECT what is being refused, in the user's terms -- "<org>/<repo> at
+#           <short sha>" for both callers today
+#   DIR     the freshly cloned tree, never anything already installed
+#
+# Sets on success: ext_name ext_mcontract ext_range ext_needs ext_commands
+# ext_wants_fleet ext_range_state ext_range_note.
+# Reads: ext_contract, ext_roost_version.
+_ext_manifest_gate() {
+  local verb="$1" subject="$2" dir="$3"
+  local nothing="installed" manifest cmd one core
+  case "$verb" in update) nothing="changed" ;; esac
+
+  # BEFORE the manifest is opened, not after. roost-ext.json is itself a
+  # path in that tree, and a symlink at that name pointing outside the
+  # extension directory would have roost reading, and then quoting back to
+  # the user, a file the repository does not contain. The scan is cheap and
+  # it goes first.
+  if roost_ext_tree_hostile "$dir"; then
+    printf 'roost ext %s: refusing %s\n' "$verb" "$subject" >&2
+    printf 'roost ext %s: the tree carries %s\n' "$verb" "$ROOST_EXT_HOSTILE_FOUND" >&2
+    printf 'roost ext %s: nothing has been %s\n' "$verb" "$nothing" >&2
+    return 1
+  fi
+
+  manifest="$dir/roost-ext.json"
+  if [ ! -f "$manifest" ]; then
+    printf 'roost ext %s: %s has no roost-ext.json\n' "$verb" "$subject" >&2
+    printf 'roost ext %s: that file, at the repository root, is what makes a repository an extension\n' "$verb" >&2
+    return 1
+  fi
+  if ext_man="$(roost_ext_manifest_read "$manifest")"; then
+    ext_man_rc=0
+  else
+    ext_man_rc=$?
+  fi
+  case "$ext_man_rc" in
+    0) : ;;
+    3)
+      echo "roost ext $verb: neither python3 nor jq found on PATH — cannot read roost-ext.json" >&2
+      return 1
+      ;;
+    *)
+      # roost_ext_manifest_read has already named what was wrong with the
+      # file, in its own words, on stderr.
+      printf 'roost ext %s: refusing %s: its roost-ext.json could not be read\n' "$verb" "$subject" >&2
+      return 1
+      ;;
+  esac
+
+  ext_name="$(_ext_manifest_field "$ext_man" name)"
+  ext_mcontract="$(_ext_manifest_field "$ext_man" contract)"
+  ext_range="$(_ext_manifest_field "$ext_man" roost)"
+  ext_needs="$(_ext_manifest_field "$ext_man" needs)"
+  ext_commands="$(_ext_manifest_field "$ext_man" commands)"
+
+  if ! roost_ext_name_valid "$ext_name"; then
+    printf 'roost ext %s: refusing: the manifest name %s is not usable\n' "$verb" "${ext_name:-<empty>}" >&2
+    printf 'roost ext %s: a name is [a-z][a-z0-9-]*, at most 32 characters — it is the install directory\n' "$verb" >&2
+    return 1
+  fi
+
+  # The contract is a HARD gate, and the only one in this manifest. An
+  # extension written against a different seam than the one this roost
+  # speaks is not something to run and hope: the shape of what it is handed
+  # at exec time is exactly what the number describes.
+  if [ "$ext_mcontract" != "$ext_contract" ]; then
+    printf 'roost ext %s: refusing %s: it speaks contract %s, this roost speaks %s\n' \
+      "$verb" "$ext_name" "${ext_mcontract:-<none>}" "$ext_contract" >&2
+    return 1
+  fi
+
+  # An unknown authority REFUSES rather than being ignored -- the one place
+  # this contract is deliberately strict. An older roost that silently
+  # granted nothing would leave the extension believing it had everything,
+  # and that surfaces as corrupted behaviour instead of a clean stop.
+  if ! roost_ext_needs_valid "$ext_needs"; then
+    printf 'roost ext %s: refusing %s: it asks for an authority this roost does not know: %s\n' \
+      "$verb" "$ext_name" "$ROOST_EXT_NEEDS_UNKNOWN" >&2
+    printf 'roost ext %s: contract %s knows one authority: fleet\n' "$verb" "$ext_contract" >&2
+    return 1
+  fi
+  ext_wants_fleet=0
+  for one in $ext_needs; do
+    if [ "$one" = fleet ]; then ext_wants_fleet=1; fi
+  done
+
+  # The advisory range. It WARNS and continues, in both the out-of-range and
+  # the unparsable direction, and it must never do anything else: a hard
+  # product-version gate would make every roost release a compatibility
+  # event, which is the cost the contract integer exists to avoid.
+  ext_range_note=""
+  ext_range_state="ok"
+  if [ -n "$ext_range" ]; then
+    if roost_ext_semver_in_range "$ext_roost_version" "$ext_range"; then
+      ext_range_rc=0
+    else
+      ext_range_rc=$?
+    fi
+    case "$ext_range_rc" in
+      1)
+        ext_range_state="warn"
+        ext_range_note="it says it wants roost $ext_range and you have $ext_roost_version — installing anyway, the range is advisory"
+        ;;
+      2)
+        ext_range_state="warn"
+        ext_range_note="its roost range ($ext_range) is one roost cannot read — skipping the check, the range is advisory"
+        ;;
+    esac
+  fi
+
+  # --- what it claims, in the manifest's own terms ------------------------
+  # What OTHER extensions already claim is a separate question, asked by
+  # _ext_claims_free against ext.lock; this loop is only about whether the
+  # manifest's own list is usable at all.
+  ext_core_list="$(roost_ext_core_commands)"
+  ext_seen_cmds=""
+  for cmd in $ext_commands; do
+    # The SAME command twice in ONE manifest. Caught here, with the other
+    # claim problems and before the prompt, rather than left to
+    # roost_ext_index_write -- which does refuse it, but only after the user
+    # has consented and the clone has been moved into place, and does it in
+    # words written for a lockfile that two DIFFERENT extensions edited:
+    # "command 'dx' is claimed by both 'ds' and 'ds'". The install is then
+    # rolled back, which is the right outcome reached by a route nobody can
+    # follow. A manifest problem belongs in the manifest's own refusal.
+    for one in $ext_seen_cmds; do
+      if [ "$one" = "$cmd" ]; then
+        printf 'roost ext %s: refusing %s: its manifest claims %s twice\n' "$verb" "$ext_name" "$cmd" >&2
+        return 1
+      fi
+    done
+    ext_seen_cmds="$ext_seen_cmds $cmd"
+    # The same grammar as a name, and for the same reason: this word becomes
+    # `bin/roost-<cmd>` on disk and the first TAB-separated field of a line
+    # in ext.index, which the dispatcher reads with a `while read` that has
+    # no unescaping in it. roost_ext_index_write refuses a command with a
+    # slash or a space in it outright, so a manifest that got past here with
+    # one would install a lockfile that cannot produce a dispatch table.
+    if ! roost_ext_name_valid "$cmd"; then
+      printf 'roost ext %s: refusing %s: %s is not a usable command name\n' "$verb" "$ext_name" "$cmd" >&2
+      printf 'roost ext %s: a command is [a-z][a-z0-9-]*, at most 32 characters\n' "$verb" >&2
+      return 1
+    fi
+    # CORE ALWAYS WINS, and being told so at install time is what makes that
+    # comprehensible. The dispatcher makes shadowing structurally impossible
+    # as well -- the lookup lives only in bin/roost's `*)` fallback, which
+    # a core subcommand never reaches -- but an extension claiming `send`
+    # would then simply never run, with nothing said about why.
+    for core in $ext_core_list; do
+      if [ "$cmd" = "$core" ]; then
+        printf 'roost ext %s: refusing %s: it claims %s, which is a roost command\n' "$verb" "$ext_name" "$cmd" >&2
+        printf 'roost ext %s: core commands can never be shadowed by an extension\n' "$verb" >&2
+        return 1
+      fi
+    done
+    # Declared, therefore it has to be there. An extension that claims a
+    # command with no executable behind it installs a dispatch table entry
+    # pointing at nothing, and the user meets it as "unknown subcommand"
+    # weeks later with no way to tell that from a typo.
+    if [ ! -x "$dir/bin/roost-$cmd" ]; then
+      printf 'roost ext %s: refusing %s: it claims %s but has no executable bin/roost-%s\n' \
+        "$verb" "$ext_name" "$cmd" "$cmd" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# _ext_claims_free VERB ROWS SELF -> 0 when nothing already in ext.lock stands
+# in the way of ext_name claiming ext_commands.
+#
+# ROWS is _ext_lock_rows' output for the current ext.lock. SELF is the
+# lockfile key the caller is allowed to collide with -- empty for `install`,
+# which may collide with nothing, and the extension's own name for `update`,
+# whose entry is exactly the one about to be replaced. Passing SELF rather
+# than pre-filtering ROWS keeps the "is this name already taken" question and
+# the "is this command already taken" question answered by one loop over one
+# definition of the lockfile.
+_ext_claims_free() {
+  local verb="$1" rows="$2" self="$3"
+  local r_name r_repo r_ref r_commit r_tree r_contract r_needs r_commands r_installed
+  local held one cmd
+  while IFS=$'\t' read -r r_name r_repo r_ref r_commit r_tree r_contract r_needs r_commands r_installed \
+      || [ -n "$r_name" ]; do
+    [ -n "$r_name" ] || continue
+    # The caller's own entry: skipped whole, both for the name and for the
+    # commands it already holds. An update that did not skip it would refuse
+    # every extension on earth for colliding with itself.
+    if [ -n "$self" ] && [ "$r_name" = "$self" ]; then continue; fi
+    if [ "$r_name" = "$ext_name" ]; then
+      printf 'roost ext %s: %s is already installed (%s, %s)\n' "$verb" "$ext_name" "$r_repo" "$r_commit" >&2
+      printf 'roost ext %s: move the pin with "roost ext update %s", or take it off with "roost ext remove %s"\n' \
+        "$verb" "$ext_name" "$ext_name" >&2
+      return 1
+    fi
+    # Two extensions claiming one command is an ambiguous dispatch table,
+    # and which one ran would depend on the order the lockfile was written
+    # in. Named on both sides, because "that command is taken" without
+    # saying by what is a message a user cannot act on.
+    held="${r_commands//,/ }"
+    for one in $held; do
+      for cmd in $ext_commands; do
+        if [ "$one" = "$cmd" ]; then
+          printf 'roost ext %s: refusing %s: %s is already claimed by %s\n' "$verb" "$ext_name" "$cmd" "$r_name" >&2
+          return 1
+        fi
+      done
+    done
+  done <<EOF
+$rows
+EOF
+  return 0
+}
+
+# _ext_roost_self VERB -> set ext_home, ext_roost_version and ext_contract
+# from THIS checkout, or refuse.
+#
+# From this checkout rather than from an inherited environment: bin/roost
+# exports ROOST_VERSION and ROOST_CONTRACT into every pane of the session it
+# starts, so a `roost ext install` run inside a roost pane would otherwise
+# gate a manifest against whatever checkout started the session -- which is
+# the same argument roost-adapters.sh and scripts/lib/roost-ext.sh both make
+# about resolving relative to the file rather than to $ROOST_HOME.
+_ext_roost_self() {
+  local verb="$1"
+  ext_home="$(cd -P "$(dirname "$0")/.." && pwd)"
+  read -r ext_roost_version 2>/dev/null < "$ext_home/VERSION" || ext_roost_version=unknown
+  ext_contract="$(sed -n 's/^ROOST_CONTRACT=\([0-9][0-9]*\)$/\1/p' "$ext_home/bin/roost" 2>/dev/null || true)"
+  if [ -z "$ext_contract" ]; then
+    printf 'roost ext %s: cannot read ROOST_CONTRACT from %s/bin/roost\n' "$verb" "$ext_home" >&2
+    printf 'roost ext %s: refusing rather than guessing which contract this roost speaks\n' "$verb" >&2
+    return 1
+  fi
+  return 0
+}
+
+# --- update: the diff, made safe to put in front of a question --------------
+#
+# THE DIFF IS THE CONTROL THIS COMMAND EXISTS FOR. Consent was given to code,
+# not to a repository name, and a repository that turns bad turns bad between
+# two commits nobody was shown. Everything below is about making sure the
+# thing a user is shown is (a) actually shown and (b) unable to lie about
+# what is around it.
+#
+# TWO HAZARDS, BOTH REAL:
+#
+#   A DIFF IS ATTACKER-CONTROLLED TEXT AND A TERMINAL IS AN INTERPRETER. The
+#   design's Security section records what a manifest field carrying
+#   `\x1b[2A\x1b[1G...` did to the consent block: it repainted the commit
+#   line, so the block displayed one commit while another was installed. A
+#   diff is the same class of input with far more room in it, sitting
+#   directly above a y/N prompt. So every byte is run through `tr` first and
+#   every C0 control character except TAB and LF -- plus DEL -- becomes `?`.
+#   SANITISED rather than REFUSED, which is the opposite of the rule for a
+#   manifest field: refusing to show the diff at all is exactly the outcome
+#   an attacker wants, and a legitimate repository may well hold a file with
+#   an escape sequence in it. UTF-8 is left alone; `tr` works on bytes and
+#   nothing above 0x7F is touched.
+#
+#   A LONG DIFF SCROLLS THE QUESTION OFF THE SCREEN. Burying the prompt under
+#   40,000 lines is how a bad update gets approved, so the patch body is
+#   capped at _EXT_DIFF_FILES files and _EXT_DIFF_LINES lines per file, every
+#   line is truncated at _EXT_DIFF_COLS columns, and the number of files whose
+#   contents were NOT shown is named. The name-status list above it is capped
+#   separately and much more loosely: one line per file is cheap, and knowing
+#   WHICH files changed is most of the value when the bodies do not fit.
+#
+# _ext_update_diff OLD NEW ODB -> the whole rendered block on stdout.
+# Returns 1, having printed nothing, when git cannot compare the two commits
+# at all -- the caller must treat that as a refusal and not as "no changes".
+_EXT_DIFF_FILES=6
+_EXT_DIFF_LINES=40
+_EXT_DIFF_NAMES=40
+_EXT_DIFF_COLS=500
+_ext_update_diff() {
+  local old="$1" new="$2" odb="$3"
+  local names patch nfiles listed
+  # 40 lowercase hex, both of them, before either becomes a git argument.
+  # `--end-of-options` below is the second lock on the same door -- see
+  # _ext_verify_diff's own header for the measurement behind preferring it
+  # to a bare `--`, which diff-tree reads as "paths follow" and which
+  # therefore breaks the two-revision form this call needs.
+  _ext_is_sha40 "$old" || return 1
+  _ext_is_sha40 "$new" || return 1
+  if ! names="$(GIT_DIR="$odb" _ext_git --no-pager diff-tree -r --name-status --no-renames \
+                --end-of-options "$old" "$new" 2>/dev/null)"; then
+    return 1
+  fi
+  if ! patch="$(GIT_DIR="$odb" _ext_git --no-pager diff-tree -r -p --no-renames \
+                --end-of-options "$old" "$new" 2>/dev/null)"; then
+    return 1
+  fi
+  nfiles="$(printf '%s\n' "$names" | awk 'NF' | wc -l | tr -d ' ')"
+  printf '  changes between %s and %s — %s file(s) changed:\n' "${old:0:7}" "${new:0:7}" "$nfiles"
+  listed=0
+  printf '%s\n' "$names" | LC_ALL=C tr '\000-\010\013-\037\177' '?' |
+    awk -F'\t' -v max="$_EXT_DIFF_NAMES" '
+      NF == 0 { next }
+      { n++ }
+      n > max { next }
+      { label = "changed"
+        if ($1 == "A") label = "added"
+        else if ($1 == "D") label = "removed"
+        else if ($1 == "M") label = "modified"
+        printf "    %-9s %s\n", label, $2 }
+      END { if (n > max) printf "    (%d more file(s) not listed)\n", n - max }'
+  printf '\n'
+  # The patch body. `tr` first so the cap is applied to text that can no
+  # longer move the cursor, then one awk that counts files, caps each file
+  # and truncates a line long enough to wrap the terminal on its own -- a
+  # minified file is one line and can be megabytes.
+  printf '%s\n' "$patch" | LC_ALL=C tr '\000-\010\013-\037\177' '?' |
+    awk -v maxf="$_EXT_DIFF_FILES" -v maxl="$_EXT_DIFF_LINES" -v cols="$_EXT_DIFF_COLS" '
+      # A new file section. `/^diff /` rather than the full header this
+      # matches, because tests/test-ext.sh asserts that the whole of this
+      # file spells the four letters of that program exactly once, inside
+      # _ext_git -- a source assertion whose entire value is that it notices
+      # a second, UNHARDENED invocation being added later, so it is not worth
+      # weakening for an awk pattern. Nothing else in unified diff output can
+      # begin with "diff ": every content line carries a leading `+`, `-` or
+      # space, so a changed line that is itself a diff header arrives as
+      # "+diff ..." and never matches here.
+      /^diff / { nf++; fl = 0 }
+      { if (nf > maxf) next
+        fl++
+        if (fl > maxl) {
+          if (fl == maxl + 1) print "    … (the rest of this file is not shown)"
+          next
+        }
+        if (length($0) > cols) $0 = substr($0, 1, cols) " … (line truncated)"
+        print }
+      END { if (nf > maxf) printf "  … %d more file(s) not shown — every changed file is listed above\n", nf - maxf }'
+  return 0
+}
+
+# --- update: one extension, end to end --------------------------------------
+#
+# NEVER TRUST THE INSTALLED CLONE'S .git, AND THE WAY THIS FUNCTION MAKES
+# THAT TRUE IS STRUCTURAL RATHER THAN A LIST OF OVERRIDES.
+#
+# `update` is the only command in this feature that has any reason to fetch
+# into an extension that is already on disk, and that clone's `.git/config` is
+# attacker-writable: `roost ext verify` excludes `.git` deliberately (see the
+# design's "roost ext verify"), so a compromised extension can put anything in
+# its own config and verify still reports `ok`.
+#
+# Forcing `core.hooksPath=/dev/null` is NOT enough, and neither is passing the
+# remote URL on the command line. All three of these were MEASURED to fire on
+# this machine, against git 2.50.1, with nothing but the clone's own config:
+#
+#   remote.origin.url = ext::sh -c touch% /path/MARKER
+#       plus protocol.ext.allow = always in the same file, which is the
+#       attacker's file too. `git -C <clone> fetch origin` ran the command.
+#
+#   url."ext::sh -c touch% /path/MARKER% #".insteadOf = file://
+#       THE ONE THAT DEFEATS THE OBVIOUS FIX. The URL was rebuilt from
+#       ext.lock and passed on the command line, exactly as the design asks
+#       — and the clone's own config rewrote it back into the payload before
+#       git ever dialled it. Passing the URL is necessary and is not
+#       sufficient.
+#
+#   core.fsmonitor = /path/script
+#       runs on any command that refreshes the index in that repository.
+#
+# `core.pager` is the same shape and is not in that list only because it needs
+# a terminal, which the test suite does not have.
+#
+# So this function NEVER RUNS GIT WITH THE INSTALLED CLONE AS ITS REPOSITORY.
+# Every git here is either a fresh, hardened clone into a temporary directory
+# from a URL rebuilt out of ext.lock's `repo` field, or a throwaway bare
+# object database this function created itself. The installed clone is reached
+# in exactly one way — as a read-only git ALTERNATE, so the old commit's
+# objects can be found for the diff — and an alternates entry is object
+# storage, not configuration: no value in it is ever honoured as a command.
+# That closes every config key at once, including the ones nobody has thought
+# of yet, which a list of `-c` overrides can never do.
+#
+# _ext_update_one NAME REPO REF COMMIT NEEDS -> 0 when the extension is up to
+# date or was updated, 1 when it was refused, declined or failed. The five
+# arguments are the fields of that extension's ext.lock row this function
+# needs; `tree` is recomputed here rather than trusted, and `contract` and
+# `commands` come from the NEW manifest rather than from the old record.
+# Reads the arm's own globals: data_dir, lock, ext_base, ext_tmp, u_yes, u_tty.
+_ext_update_one() {
+  local u_n="$1" u_repo="$2" u_ref="$3" u_commit="$4" u_needs="$5"
+  local u_dest u_url u_ls u_new u_work u_fresh u_odb u_head u_backup u_tree u_stamp
+  local u_old_needs u_grew="" u_one u_two u_found u_grew_disp u_disp_claims u_disp_needs
+  local u_diff u_entry u_newlock u_tmp_lock u_reply u_rows
+  local u_e_repo u_e_ref u_e_commit u_e_tree u_e_name u_e_stamp u_e_needs u_e_cmds
+
+  # Every path this function builds from a lockfile key is built AFTER this
+  # line, never before it. `list` and `verify` make the same check in the same
+  # place and their comments carry the longer reason: a hand-edited key of
+  # "../../../../etc" is a question about somewhere this feature has no
+  # business looking, and this function does far more than stat the answer --
+  # it moves the directory aside and replaces it.
+  if ! roost_ext_name_valid "$u_n"; then
+    printf '%.40s: invalid name in ext.lock — not something roost ext install could have written\n' "$u_n"
+    return 1
+  fi
+  u_dest="$data_dir/$u_n"
+  if [ ! -d "$u_dest" ]; then
+    printf '%s: MISSING — %s is not there; install it again rather than updating it\n' "$u_n" "$u_dest"
+    return 1
+  fi
+  # THE REMOTE, REBUILT FROM ext.lock AND VALIDATED AGAIN HERE. ext.lock is a
+  # file a hand edit can put anything into, and this value is about to be
+  # pasted into a URL and handed to `git ls-remote` and `git clone` -- where
+  # `../..` escapes the base, `https://user:pass@host/` smuggles credentials
+  # and a leading dash arrives as a flag. It went through roost_ext_repo_valid
+  # once at install; it goes through it again here, because the file it came
+  # back out of is not the one it went into.
+  if [ "$u_repo" = "-" ] || ! roost_ext_repo_valid "$u_repo"; then
+    printf '%s: ext.lock records no usable repository for this entry — cannot update\n' "$u_n"
+    return 1
+  fi
+  if [ "$u_ref" = "-" ] || ! _ext_ref_valid "$u_ref"; then
+    printf '%s: ext.lock records no usable ref for this entry — cannot update\n' "$u_n"
+    return 1
+  fi
+  if ! _ext_is_sha40 "$u_commit"; then
+    printf '%s: ext.lock records no 40-character commit for this entry — cannot update\n' "$u_n"
+    return 1
+  fi
+  u_url="$ext_base$u_repo"
+
+  # A pin that IS a commit id has nothing to re-resolve: `install --ref
+  # <40 hex>` records the id itself, and there is no ref for a remote to move.
+  # Said out loud rather than reported as "up to date", which would suggest a
+  # question was asked of the remote and answered.
+  if _ext_is_sha40 "$u_ref"; then
+    printf '%s: pinned to the commit %s... itself — there is no ref to re-resolve\n' "$u_n" "${u_ref:0:7}"
+    return 0
+  fi
+
+  if ! u_ls="$(_ext_git ls-remote -- "$u_url" "$u_ref" 2>"$ext_tmp/ls-err")"; then
+    printf '%s: could not read %s\n' "$u_n" "$u_url"
+    sed "s|^|$u_n: git: |" "$ext_tmp/ls-err" || true
+    return 1
+  fi
+  if ! u_new="$(_ext_pick_ref "$u_ls" "$u_ref")"; then
+    printf '%s: %s no longer has a ref named %s\n' "$u_n" "$u_url" "$u_ref"
+    return 1
+  fi
+  if ! _ext_is_sha40 "$u_new"; then
+    printf '%s: %s did not resolve to a commit id\n' "$u_n" "$u_ref"
+    return 1
+  fi
+
+  # UNCHANGED WRITES NOTHING. Not the lockfile, not the index, not the
+  # `installed` timestamp -- a command that rewrote a byte here would make
+  # "nothing changed" indistinguishable from "something did" to anything
+  # watching the file.
+  if [ "$u_new" = "$u_commit" ]; then
+    printf '%s: up to date at %s...  (%s %s)\n' "$u_n" "${u_commit:0:7}" "$u_repo" "$u_ref"
+    return 0
+  fi
+
+  u_work="$ext_tmp/w-$u_n"
+  rm -rf "$u_work"
+  mkdir -p "$u_work" || { printf '%s: cannot create a temporary directory\n' "$u_n"; return 1; }
+  u_fresh="$u_work/clone"
+
+  # THE SAME HARDENED CLONE `install` USES, into a temporary directory, from
+  # the URL rebuilt above. --no-checkout so the DEFAULT branch's tree is never
+  # written to disk at all; only the resolved commit is materialised.
+  if ! _ext_git clone --quiet --no-checkout --no-recurse-submodules -- "$u_url" "$u_fresh" 2>"$u_work/clone-err"; then
+    printf '%s: could not clone %s\n' "$u_n" "$u_url"
+    sed "s|^|$u_n: git: |" "$u_work/clone-err" || true
+    return 1
+  fi
+  if ! _ext_git -C "$u_fresh" -c advice.detachedHead=false checkout --quiet --detach "$u_new" 2>/dev/null; then
+    printf '%s: %s is not in %s — refusing rather than updating to something else\n' "$u_n" "$u_new" "$u_url"
+    return 1
+  fi
+  # THE PIN, CHECKED, exactly as install checks it. Resolving and fetching are
+  # two separate conversations with a remote, and nothing but this line
+  # notices if the second one answered differently.
+  u_head="$(_ext_git -C "$u_fresh" rev-parse HEAD 2>/dev/null || true)"
+  if [ "$u_head" != "$u_new" ]; then
+    printf '%s: the clone is at %s, not the %s that was resolved — refusing\n' "$u_n" "${u_head:-<unknown>}" "$u_new"
+    return 1
+  fi
+
+  # The object database the diff is computed in: ours, empty, and told where
+  # to FIND objects rather than pointed at anyone's repository. The fresh
+  # clone holds the new commit; the installed clone holds the old one, which
+  # may no longer be reachable from any ref on the remote. `-c
+  # init.templateDir=` for the reason roost_ext__git's own header measured:
+  # with a template directory configured, `git init` copies the user's hooks
+  # into the new repository before anything else runs.
+  u_odb="$u_work/odb"
+  if ! _ext_git -c init.templateDir= init -q --bare "$u_odb" >/dev/null 2>&1; then
+    printf '%s: could not prepare a temporary object database\n' "$u_n"
+    return 1
+  fi
+  {
+    printf '%s\n' "$u_fresh/.git/objects"
+    if [ -d "$u_dest/.git/objects" ]; then printf '%s\n' "$u_dest/.git/objects"; fi
+  } > "$u_odb/objects/info/alternates"
+
+  # NO DIFF, NO UPDATE. The design calls the diff "the control that matters
+  # most in practice", so a diff that cannot be produced is not a detail to
+  # note and carry on past -- being asked to consent to a change nobody can
+  # show is the exact situation this command exists to prevent. The usual
+  # cause is an installed clone whose .git has been deleted, in which case
+  # there is nothing to update against either.
+  if ! u_diff="$(_ext_update_diff "$u_commit" "$u_new" "$u_odb")"; then
+    printf '%s: cannot show what changed between %s and %s — refusing to ask you to approve a diff nobody can see\n' \
+      "$u_n" "${u_commit:0:7}" "${u_new:0:7}"
+    printf '%s: remove and install it again if you want the new commit\n' "$u_n"
+    return 1
+  fi
+
+  # RE-VALIDATED WITH EVERY CHECK INSTALL APPLIES, against the new tree. An
+  # update is a second consent decision about different code, not a lighter
+  # one -- see _ext_manifest_gate.
+  if ! _ext_manifest_gate update "$u_repo at ${u_new:0:7}" "$u_fresh"; then
+    return 1
+  fi
+  # A manifest that renames itself. The install directory, the lockfile key
+  # and every path this function touches are the OLD name; accepting a new one
+  # here would leave an extension installed under a name its own manifest
+  # disagrees with, and `roost ext info <newname>` would find nothing.
+  if [ "$ext_name" != "$u_n" ]; then
+    printf 'roost ext update: refusing %s: the manifest at %s calls itself %s\n' "$u_n" "${u_new:0:7}" "$ext_name" >&2
+    printf 'roost ext update: remove it and install it again under the new name\n' >&2
+    return 1
+  fi
+  # Against the CURRENT lockfile, re-read rather than reused: updating two
+  # extensions in one run changes what the first one claims before the second
+  # one is asked about.
+  _ext_rows_read update "$lock" || return 1
+  u_rows="$EXT_ROWS"
+  if ! _ext_claims_free update "$u_rows" "$u_n"; then
+    return 1
+  fi
+
+  # --- the consent block ---------------------------------------------------
+  # The same rules as install's, and for the same reasons: nothing here may
+  # read as a verdict on the code, the honesty paragraph prints always, and
+  # the authority paragraph is written in what the extension can DO.
+  u_old_needs=""
+  if [ "$u_needs" != "-" ]; then u_old_needs="${u_needs//,/ }"; fi
+  for u_one in $ext_needs; do
+    u_found=0
+    for u_two in $u_old_needs; do
+      if [ "$u_one" = "$u_two" ]; then u_found=1; fi
+    done
+    if [ "$u_found" -eq 0 ]; then u_grew="$u_grew $u_one"; fi
+  done
+  u_disp_claims=""
+  for u_one in $ext_commands; do
+    if [ -n "$u_disp_claims" ]; then
+      u_disp_claims="$u_disp_claims, roost $u_one"
+    else
+      u_disp_claims="roost $u_one"
+    fi
+  done
+  u_disp_needs="$(printf '%s' "${u_old_needs:-none}" | tr ' ' ',')  ->  $(printf '%s' "${ext_needs:-none}" | tr ' ' ',')"
+
+  printf '\n'
+  printf '  %-8s %s\n' repo "${u_url#https://}"
+  printf '  %-8s %s\n' ref "$u_ref"
+  printf '  %-8s %s...  (installed)\n' old "${u_commit:0:7}"
+  printf '  %-8s %s...  (would be pinned)\n' new "${u_new:0:7}"
+  printf '  %-8s %-24s(roost speaks %s)     ok\n' contract "$ext_mcontract" "$ext_contract"
+  if [ -n "$ext_range" ]; then
+    printf '  %-8s %-24s(you have %s)     %s\n' roost "$ext_range" "$ext_roost_version" "$ext_range_state"
+  fi
+  printf '  %-8s %s\n' claims "$u_disp_claims"
+  printf '  %-8s %s\n' needs "$u_disp_needs"
+  if [ -n "$ext_range_note" ]; then
+    printf '\n'
+    printf '  Note: %s\n' "$ext_range_note"
+  fi
+  printf '\n'
+  # PAGED ONLY WHEN THERE IS SOMEBODY AT A TERMINAL TO PAGE FOR. `$PAGER` is
+  # the user's own program, exactly like `$EDITOR`, and it is deliberately not
+  # consulted when stdout is not a tty: a pager in a pipe either does nothing
+  # or blocks forever waiting for a keypress nobody is there to press. The
+  # diff has already been capped and stripped of control characters by
+  # _ext_update_diff, so what a pager receives is what a terminal would have
+  # received.
+  if [ -t 1 ] && [ -n "${PAGER:-}" ]; then
+    printf '%s\n' "$u_diff" | $PAGER || true
+  else
+    printf '%s\n' "$u_diff"
+  fi
+  printf '\n'
+  if [ "$ext_wants_fleet" -eq 1 ]; then
+    printf '  This extension asks to drive your agents. If you update it, the code\n'
+    printf "  in it can read any pane's screen and send prompts to any agent, the\n"
+    printf '  same as you can.\n'
+  else
+    # "does not ask", never "cannot reach". The second would be false -- see
+    # the caveat printed underneath, which is why it is printed under BOTH
+    # branches rather than only under the one that asked.
+    printf '  This extension does not ask for access to your agents.\n'
+  fi
+  printf '\n'
+  printf '  An extension that did NOT ask can still reach them if it tries. This\n'
+  printf '  line tells you what it declared, not what it is stopped from doing.\n'
+  printf '\n'
+  printf '  Roost has checked that this is the exact commit named above. It has\n'
+  printf '  NOT checked whether the code is honest. It cannot.\n'
+  printf '\n'
+  printf '  Nothing runs during update. Code runs when you type those commands.\n'
+  printf '\n'
+  # AN AUTHORITY THAT GREW, ON ITS OWN LINE, IMMEDIATELY ABOVE THE QUESTION.
+  # An extension quietly acquiring `fleet` on an update is the exact attack
+  # the field exists to make visible, and a line the eye passes on its way to
+  # the prompt is where it has to be -- not above the diff, which is where it
+  # would scroll away.
+  if [ -n "$u_grew" ]; then
+    u_grew_disp="$(printf '%s' "${u_grew# }" | tr ' ' ',')"
+    printf '  NEW AUTHORITY: this update asks for %s, which the installed version did not' "$u_grew_disp"
+    case " $u_grew " in
+      *" fleet "*) printf ' — it could read any pane and send prompts to any agent' ;;
+    esac
+    printf '.\n'
+  fi
+
+  # SILENCE IS NEVER CONSENT, the same rule install applies. The read is from
+  # file descriptor 3, not from stdin: the arm below drives this function from
+  # a `while read` over the lockfile's rows, so stdin here is the row list and
+  # a bare `read` would swallow the next extension instead of the user's
+  # answer. u_tty was measured on the ORIGINAL stdin before that loop started,
+  # for the same reason.
+  if [ "$u_yes" -eq 1 ]; then
+    printf '  Update? [y/N] y  (--yes)\n\n'
+  elif [ "$u_tty" -eq 1 ]; then
+    printf '  Update? [y/N] '
+    if IFS= read -r u_reply <&3; then
+      :
+    else
+      u_reply=""
+    fi
+    printf '\n'
+    case "$u_reply" in
+      y|Y|yes|Yes|YES) : ;;
+      *)
+        printf 'roost ext update: %s not updated\n' "$u_n" >&2
+        return 1
+        ;;
+    esac
+  else
+    printf '  Update? [y/N]\n\n'
+    printf 'roost ext update: stdin is not a terminal and --yes was not given — %s not updated\n' "$u_n" >&2
+    return 1
+  fi
+
+  # --- into place -----------------------------------------------------------
+  # The old clone is moved ASIDE rather than deleted, so every failure below
+  # can put it back. It goes with the temporary directory when this command
+  # exits.
+  u_backup="$u_work/old"
+  if ! mv "$u_dest" "$u_backup"; then
+    printf 'roost ext update: could not move %s aside\n' "$u_dest" >&2
+    return 1
+  fi
+  if ! mv "$u_fresh" "$u_dest"; then
+    printf 'roost ext update: could not move the new clone into %s\n' "$u_dest" >&2
+    mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+  # roost_ext_tree_hash, and computed AFTER the move, on the directory
+  # `roost ext verify` will recompute it for -- see install's own comment for
+  # why `git rev-parse HEAD^{tree}` is the wrong one to record.
+  if ! u_tree="$(roost_ext_tree_hash "$u_dest")"; then
+    printf 'roost ext update: could not hash %s\n' "$u_dest" >&2
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+
+  # `installed` is refreshed rather than carried forward. Every other field in
+  # this entry describes what is on disk NOW -- the commit, the tree, the
+  # authority -- and a timestamp beside them that describes some earlier tree
+  # is the one field a reader would have to know not to trust. The consent
+  # that matters is the one just given, and this is when it was given.
+  u_stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if u_e_repo="$(_ext_json_str "$u_repo")" &&
+     u_e_ref="$(_ext_json_str "$u_ref")" &&
+     u_e_commit="$(_ext_json_str "$u_new")" &&
+     u_e_tree="$(_ext_json_str "$u_tree")" &&
+     u_e_name="$(_ext_json_str "$u_n")" &&
+     u_e_stamp="$(_ext_json_str "$u_stamp")" &&
+     u_e_needs="$(_ext_json_words "$ext_needs")" &&
+     u_e_cmds="$(_ext_json_words "$ext_commands")"; then
+    :
+  else
+    # Unreachable by construction -- every one of those values has been
+    # through a validator that admits nothing needing an escape. Kept because
+    # the day somebody widens one of those validators, this is the difference
+    # between a refusal and a corrupted ext.lock.
+    printf 'roost ext update: internal: a recorded value is not safe to write as JSON\n' >&2
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+  u_entry="{$u_e_name:{\"repo\":$u_e_repo,\"ref\":$u_e_ref,\"commit\":$u_e_commit,\"tree\":$u_e_tree,\"contract\":$ext_mcontract,\"needs\":$u_e_needs,\"commands\":$u_e_cmds,\"installed\":$u_e_stamp}}"
+
+  # DROP THEN ADD, through the same two engine pairs the rest of this file
+  # uses. Every OTHER entry is carried through untouched by both of them; the
+  # entry being replaced is rebuilt from the new manifest, which is the point
+  # -- every field in it describes the commit that just changed.
+  if ! cp "$lock" "$u_work/lock-before.json"; then
+    printf 'roost ext update: cannot read %s\n' "$lock" >&2
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+  if ! _ext_lock_drop "$u_work/lock-before.json" "$u_n" > "$u_work/lock-dropped.json"; then
+    printf 'roost ext update: could not take %s out of %s\n' "$u_n" "$lock" >&2
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+  if ! u_newlock="$(_ext_lock_add "$u_work/lock-dropped.json" "$u_entry")"; then
+    printf 'roost ext update: could not put %s back into %s\n' "$u_n" "$lock" >&2
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+  roost_ext__roots
+  if ! u_tmp_lock="$(mktemp "$ROOST_EXT_STATE_ROOT/.roost-ext-lock.XXXXXX")"; then
+    printf 'roost ext update: cannot write into %s\n' "$ROOST_EXT_STATE_ROOT" >&2
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    return 1
+  fi
+  # A temp file in the SAME directory and then a rename, the shape install and
+  # roost_ext_index_write both use: a concurrent reader sees the old lockfile
+  # or the new one, never half of one.
+  printf '%s\n' "$u_newlock" > "$u_tmp_lock"
+  mv "$u_tmp_lock" "$lock"
+
+  # ------------------------------------------------------------------
+  # ext.index IS THE AUTHORITY OF RECORD, AND THIS IS THE SAME OPERATION.
+  #
+  # THE DANGEROUS DIRECTION IS AN AUTHORITY THAT SHRANK. The block above is
+  # written around a `needs` that GREW, because that is the visible attack --
+  # but the dispatcher never opens ext.lock, so until this line runs the
+  # extension still holds exactly what the user just revoked. Measured on this
+  # implementation and asserted in tests/test-ext.sh: with the lockfile edited
+  # to `needs: []` and the index not regenerated, the grant survives.
+  #
+  # Failure here therefore UNDOES the update rather than reporting it: the
+  # lockfile goes back, the old clone goes back, and the index is regenerated
+  # from the restored lockfile so what the dispatcher obeys matches the record
+  # again. Reporting success on a half-written pair is the one outcome this
+  # branch exists to prevent.
+  # ------------------------------------------------------------------
+  if ! roost_ext_index_write; then
+    printf 'roost ext update: %s could not be turned into a dispatch table\n' "$lock" >&2
+    printf 'roost ext update: undoing this update rather than leaving ext.lock and ext.index disagreeing\n' >&2
+    cp "$u_work/lock-before.json" "$lock" || true
+    rm -rf "$u_dest"; mv "$u_backup" "$u_dest" || true
+    roost_ext_index_write || true
+    printf 'roost ext update: %s is unchanged\n' "$u_n" >&2
+    return 1
+  fi
+
+  printf 'updated %s to %s...  (was %s...)\n' "$u_n" "${u_new:0:7}" "${u_commit:0:7}"
+  printf 'commands:  %s\n' "$u_disp_claims"
+  printf 'needs:     %s\n' "$(printf '%s' "${ext_needs:-none}" | tr ' ' ',')"
+  return 0
+}
+
 case "${1:-}" in
   install)
     # `roost ext install <org>/<repo> [--ref REF] [--yes]` -- the whole of
@@ -947,21 +1867,10 @@ case "${1:-}" in
     case "$ext_base" in */) ;; *) ext_base="$ext_base/" ;; esac
     ext_url="$ext_base$spec"
 
-    # This checkout's own version and contract, read from THIS checkout rather
-    # than from an inherited environment. bin/roost exports ROOST_VERSION and
-    # ROOST_CONTRACT into every pane of the session it starts, so a `roost ext
-    # install` run inside a roost pane would otherwise gate a manifest against
-    # whatever checkout started the session -- which is the same argument
-    # roost-adapters.sh and scripts/lib/roost-ext.sh both make about resolving
-    # relative to the file rather than to $ROOST_HOME.
-    ext_home="$(cd -P "$(dirname "$0")/.." && pwd)"
-    read -r ext_roost_version 2>/dev/null < "$ext_home/VERSION" || ext_roost_version=unknown
-    ext_contract="$(sed -n 's/^ROOST_CONTRACT=\([0-9][0-9]*\)$/\1/p' "$ext_home/bin/roost" 2>/dev/null || true)"
-    if [ -z "$ext_contract" ]; then
-      printf 'roost ext install: cannot read ROOST_CONTRACT from %s/bin/roost\n' "$ext_home" >&2
-      printf 'roost ext install: refusing rather than guessing which contract this roost speaks\n' >&2
-      exit 1
-    fi
+    # This checkout's own version and contract -- see _ext_roost_self, which
+    # `update` shares, for why they are read from THIS checkout rather than
+    # from an inherited environment.
+    _ext_roost_self install || exit 1
 
     ext_tmp="$(mktemp -d)" || { echo "roost ext install: cannot create a temporary directory" >&2; exit 1; }
     # Removed whichever way this arm leaves, including the refusals below and
@@ -1044,156 +1953,15 @@ case "${1:-}" in
     fi
 
     # --- what the clone actually delivered ----------------------------------
-    # BEFORE the manifest is opened, not after. roost-ext.json is itself a
-    # path in that tree, and a symlink at that name pointing outside the
-    # extension directory would have roost reading, and then quoting back to
-    # the user, a file the repository does not contain. The scan is cheap and
-    # it goes first.
-    if roost_ext_tree_hostile "$ext_clone"; then
-      printf 'roost ext install: refusing %s at %s\n' "$spec" "${ext_sha:0:7}" >&2
-      printf 'roost ext install: the tree carries %s\n' "$ROOST_EXT_HOSTILE_FOUND" >&2
-      printf 'roost ext install: nothing has been installed\n' >&2
+    # EVERY REFUSAL IN STEP 4 OF THE DESIGN, in _ext_manifest_gate, which
+    # `roost ext update` calls with the same three arguments against the tree
+    # a NEW commit delivered. That function's header carries the reasons the
+    # individual checks used to carry here; the one that governs this call
+    # site is that the hostile-tree scan happens BEFORE the manifest is
+    # opened, because roost-ext.json is itself a path in that tree.
+    if ! _ext_manifest_gate install "$spec at ${ext_sha:0:7}" "$ext_clone"; then
       exit 1
     fi
-
-    ext_manifest="$ext_clone/roost-ext.json"
-    if [ ! -f "$ext_manifest" ]; then
-      printf 'roost ext install: %s has no roost-ext.json at %s\n' "$spec" "${ext_sha:0:7}" >&2
-      printf 'roost ext install: that file, at the repository root, is what makes a repository an extension\n' >&2
-      exit 1
-    fi
-    if ext_man="$(roost_ext_manifest_read "$ext_manifest")"; then
-      ext_man_rc=0
-    else
-      ext_man_rc=$?
-    fi
-    case "$ext_man_rc" in
-      0) : ;;
-      3)
-        echo "roost ext install: neither python3 nor jq found on PATH — cannot read roost-ext.json" >&2
-        exit 1
-        ;;
-      *)
-        # roost_ext_manifest_read has already named what was wrong with the
-        # file, in its own words, on stderr.
-        printf 'roost ext install: refusing %s: its roost-ext.json could not be read\n' "$spec" >&2
-        exit 1
-        ;;
-    esac
-
-    ext_name="$(_ext_manifest_field "$ext_man" name)"
-    ext_mcontract="$(_ext_manifest_field "$ext_man" contract)"
-    ext_range="$(_ext_manifest_field "$ext_man" roost)"
-    ext_needs="$(_ext_manifest_field "$ext_man" needs)"
-    ext_commands="$(_ext_manifest_field "$ext_man" commands)"
-
-    if ! roost_ext_name_valid "$ext_name"; then
-      printf 'roost ext install: refusing: the manifest name %s is not usable\n' "${ext_name:-<empty>}" >&2
-      printf 'roost ext install: a name is [a-z][a-z0-9-]*, at most 32 characters — it is the install directory\n' >&2
-      exit 1
-    fi
-
-    # The contract is a HARD gate, and the only one in this manifest. An
-    # extension written against a different seam than the one this roost
-    # speaks is not something to run and hope: the shape of what it is handed
-    # at exec time is exactly what the number describes.
-    if [ "$ext_mcontract" != "$ext_contract" ]; then
-      printf 'roost ext install: refusing %s: it speaks contract %s, this roost speaks %s\n' \
-        "$ext_name" "${ext_mcontract:-<none>}" "$ext_contract" >&2
-      exit 1
-    fi
-
-    # An unknown authority REFUSES rather than being ignored -- the one place
-    # this contract is deliberately strict. An older roost that silently
-    # granted nothing would leave the extension believing it had everything,
-    # and that surfaces as corrupted behaviour instead of a clean stop.
-    if ! roost_ext_needs_valid "$ext_needs"; then
-      printf 'roost ext install: refusing %s: it asks for an authority this roost does not know: %s\n' \
-        "$ext_name" "$ROOST_EXT_NEEDS_UNKNOWN" >&2
-      printf 'roost ext install: contract %s knows one authority: fleet\n' "$ext_contract" >&2
-      exit 1
-    fi
-    ext_wants_fleet=0
-    for ext_need in $ext_needs; do
-      if [ "$ext_need" = fleet ]; then ext_wants_fleet=1; fi
-    done
-
-    # The advisory range. It WARNS and continues, in both the out-of-range and
-    # the unparsable direction, and it must never do anything else: a hard
-    # product-version gate would make every roost release a compatibility
-    # event, which is the cost the contract integer exists to avoid.
-    ext_range_note=""
-    ext_range_state="ok"
-    if [ -n "$ext_range" ]; then
-      if roost_ext_semver_in_range "$ext_roost_version" "$ext_range"; then
-        ext_range_rc=0
-      else
-        ext_range_rc=$?
-      fi
-      case "$ext_range_rc" in
-        1)
-          ext_range_state="warn"
-          ext_range_note="it says it wants roost $ext_range and you have $ext_roost_version — installing anyway, the range is advisory"
-          ;;
-        2)
-          ext_range_state="warn"
-          ext_range_note="its roost range ($ext_range) is one roost cannot read — skipping the check, the range is advisory"
-          ;;
-      esac
-    fi
-
-    # --- what it claims, against what is already claimed --------------------
-    ext_core_list="$(roost_ext_core_commands)"
-    ext_seen_cmds=""
-    for ext_cmd in $ext_commands; do
-      # The SAME command twice in ONE manifest. Caught here, with the other
-      # claim problems and before the prompt, rather than left to
-      # roost_ext_index_write -- which does refuse it, but only after the user
-      # has consented and the clone has been moved into place, and does it in
-      # words written for a lockfile that two DIFFERENT extensions edited:
-      # "command 'dx' is claimed by both 'ds' and 'ds'". The install is then
-      # rolled back, which is the right outcome reached by a route nobody can
-      # follow. A manifest problem belongs in the manifest's own refusal.
-      for ext_one in $ext_seen_cmds; do
-        if [ "$ext_one" = "$ext_cmd" ]; then
-          printf 'roost ext install: refusing %s: its manifest claims %s twice\n' "$ext_name" "$ext_cmd" >&2
-          exit 1
-        fi
-      done
-      ext_seen_cmds="$ext_seen_cmds $ext_cmd"
-      # The same grammar as a name, and for the same reason: this word becomes
-      # `bin/roost-<cmd>` on disk and the first TAB-separated field of a line
-      # in ext.index, which the dispatcher reads with a `while read` that has
-      # no unescaping in it. roost_ext_index_write refuses a command with a
-      # slash or a space in it outright, so a manifest that got past here with
-      # one would install a lockfile that cannot produce a dispatch table.
-      if ! roost_ext_name_valid "$ext_cmd"; then
-        printf 'roost ext install: refusing %s: %s is not a usable command name\n' "$ext_name" "$ext_cmd" >&2
-        printf 'roost ext install: a command is [a-z][a-z0-9-]*, at most 32 characters\n' >&2
-        exit 1
-      fi
-      # CORE ALWAYS WINS, and being told so at install time is what makes that
-      # comprehensible. The dispatcher makes shadowing structurally impossible
-      # as well -- the lookup lives only in bin/roost's `*)` fallback, which
-      # a core subcommand never reaches -- but an extension claiming `send`
-      # would then simply never run, with nothing said about why.
-      for ext_core in $ext_core_list; do
-        if [ "$ext_cmd" = "$ext_core" ]; then
-          printf 'roost ext install: refusing %s: it claims %s, which is a roost command\n' "$ext_name" "$ext_cmd" >&2
-          printf 'roost ext install: core commands can never be shadowed by an extension\n' >&2
-          exit 1
-        fi
-      done
-      # Declared, therefore it has to be there. An extension that claims a
-      # command with no executable behind it installs a dispatch table entry
-      # pointing at nothing, and the user meets it as "unknown subcommand"
-      # weeks later with no way to tell that from a typo.
-      if [ ! -x "$ext_clone/bin/roost-$ext_cmd" ]; then
-        printf 'roost ext install: refusing %s: it claims %s but has no executable bin/roost-%s\n' \
-          "$ext_name" "$ext_cmd" "$ext_cmd" >&2
-        exit 1
-      fi
-    done
 
     ext_lock_file="$(roost_ext_lock)"
     ext_rows=""
@@ -1216,31 +1984,13 @@ case "${1:-}" in
           ;;
       esac
     fi
-    while IFS=$'\t' read -r r_name r_repo r_ref r_commit r_tree r_contract r_needs r_commands r_installed \
-        || [ -n "$r_name" ]; do
-      [ -n "$r_name" ] || continue
-      if [ "$r_name" = "$ext_name" ]; then
-        printf 'roost ext install: %s is already installed (%s, %s)\n' "$ext_name" "$r_repo" "$r_commit" >&2
-        printf 'roost ext install: move the pin with "roost ext update %s", or take it off with "roost ext remove %s"\n' \
-          "$ext_name" "$ext_name" >&2
-        exit 1
-      fi
-      # Two extensions claiming one command is an ambiguous dispatch table,
-      # and which one ran would depend on the order the lockfile was written
-      # in. Named on both sides, because "that command is taken" without
-      # saying by what is a message a user cannot act on.
-      ext_held="${r_commands//,/ }"
-      for ext_one in $ext_held; do
-        for ext_cmd in $ext_commands; do
-          if [ "$ext_one" = "$ext_cmd" ]; then
-            printf 'roost ext install: refusing %s: %s is already claimed by %s\n' "$ext_name" "$ext_cmd" "$r_name" >&2
-            exit 1
-          fi
-        done
-      done
-    done <<EOF
-$ext_rows
-EOF
+    # What ext.lock already says is claimed -- the name, and every command --
+    # in _ext_claims_free, which `roost ext update` shares. Install may
+    # collide with nothing, so the third argument (the entry allowed to
+    # collide with itself) is empty here; update passes its own name.
+    if ! _ext_claims_free install "$ext_rows" ""; then
+      exit 1
+    fi
 
     # --- the consent block --------------------------------------------------
     # Printed exactly as the design's "roost ext install" section sets it out,
@@ -1887,11 +2637,266 @@ EOF
     [ "$fail" -eq 0 ]
     ;;
 
+  update)
+    # `roost ext update [NAME] [--yes]` --
+    # docs/airig/specs/2026-09-08-extension-seam.md, "roost ext update".
+    #
+    # Re-resolves the ref ext.lock recorded, and if it has moved shows the old
+    # commit, the new one, and THE DIFF BETWEEN THEM before asking again.
+    # INSTALL NEVER DOES THIS IMPLICITLY: a pin that moves on its own is not a
+    # pin, and nothing else in this feature calls into here.
+    #
+    # With no NAME, every installed extension, ONE AT A TIME -- one prompt per
+    # extension, each with its own diff. A single "update everything?" question
+    # would be one consent covering code nobody looked at, which is the thing
+    # this command exists to prevent.
+    #
+    # _ext_update_one carries the security argument for how the fetch is done;
+    # read its header before changing anything about which git runs where.
+    shift
+
+    # Globbing off for the whole arm, the same reason install turns it off:
+    # the manifest's `commands` and `needs` and the lockfile's own comma
+    # lists are split on whitespace below, and a `*` in any of them would
+    # expand against the working directory.
+    set -f
+
+    u_yes=0; u_name=""; u_saw_name=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --yes|-y) u_yes=1 ;;
+        -*)
+          echo "roost ext update: unknown option: $1" >&2
+          echo "usage: roost ext update [NAME] [--yes]" >&2
+          exit 2
+          ;;
+        *)
+          if [ "$u_saw_name" -eq 1 ]; then
+            echo "roost ext update: one extension at a time" >&2
+            exit 2
+          fi
+          u_name="$1"; u_saw_name=1
+          ;;
+      esac
+      shift
+    done
+    # Refused before it is compared to anything or used to build a path, on
+    # the same grammar `install` enforces on the directory name -- the same
+    # three lines `info` and `verify` open with, and for the same reason.
+    if [ "$u_saw_name" -eq 1 ] && ! roost_ext_name_valid "$u_name"; then
+      echo "roost ext update: no such extension: $u_name" >&2
+      exit 1
+    fi
+
+    _ext_roost_self update || exit 1
+
+    # The one override point between <org>/<repo> and a URL, so that this
+    # command can be exercised against a local bare repository and the test
+    # suite never reaches the network.
+    ext_base="${ROOST_EXT_GIT_BASE:-https://github.com/}"
+    case "$ext_base" in */) ;; *) ext_base="$ext_base/" ;; esac
+
+    lock="$(roost_ext_lock)"
+    data_dir="$(roost_ext_data_dir)"
+    _ext_rows_read update "$lock" || exit 1
+    rows="$EXT_ROWS"
+    if [ -z "$rows" ]; then
+      if [ -n "$u_name" ]; then
+        echo "roost ext update: no such extension: $u_name" >&2
+        exit 1
+      fi
+      echo "no extensions installed — nothing to update"
+      exit 0
+    fi
+
+    ext_tmp="$(mktemp -d)" || { echo "roost ext update: cannot create a temporary directory" >&2; exit 1; }
+    # Removed whichever way this arm leaves, including a signal: it holds a
+    # fresh clone of every extension being updated, and the OLD clone of each
+    # one that was replaced.
+    trap 'rm -rf "$ext_tmp"' EXIT
+
+    # THE USER'S OWN STDIN, KEPT OPEN ON FILE DESCRIPTOR 3. The loop below
+    # reads the lockfile's rows on stdin, so inside it stdin is the row list:
+    # a bare `read` at the consent prompt would swallow the NEXT EXTENSION as
+    # the answer to this one's question, and `[ -t 0 ]` would report "not a
+    # terminal" for every run including an interactive one -- silently turning
+    # every update into the non-tty refusal. Both are measured off fd 3
+    # instead, which still refers to whatever the user's stdin was.
+    exec 3<&0
+    if [ -t 3 ]; then u_tty=1; else u_tty=0; fi
+
+    # fail is exit-non-zero-if-any-extension-was-not-updated, tracked across
+    # every row rather than returned per row, so `update` with no NAME can
+    # visit every extension in one pass and still end with a single exit
+    # status covering all of them -- the shape `verify` already uses. A
+    # DECLINED prompt counts: `install` exits 1 when the user says no, and a
+    # script asking "did the pin move" has to get the same answer here.
+    fail=0
+    matched=0
+    while IFS=$'\t' read -r r_name r_repo r_ref r_commit r_tree r_contract r_needs r_commands r_installed \
+        || [ -n "$r_name" ]; do
+      [ -n "$r_name" ] || continue
+      if [ -n "$u_name" ] && [ "$r_name" != "$u_name" ]; then continue; fi
+      matched=1
+      if _ext_update_one "$r_name" "$r_repo" "$r_ref" "$r_commit" "$r_needs"; then
+        :
+      else
+        fail=1
+      fi
+    done <<EOF
+$rows
+EOF
+
+    if [ -n "$u_name" ] && [ "$matched" -ne 1 ]; then
+      echo "roost ext update: no such extension: $u_name" >&2
+      exit 1
+    fi
+
+    [ "$fail" -eq 0 ]
+    ;;
+
+  remove)
+    # `roost ext remove NAME [--purge]` --
+    # docs/airig/specs/2026-09-08-extension-seam.md, "roost ext remove".
+    #
+    # THE STATE DIRECTORY IS KEPT UNLESS --purge IS GIVEN, and the retained
+    # path is printed. An accidental `remove` must not be the thing that
+    # destroys a year of somebody's bookmarks; deleting it is a second,
+    # deliberate word on the command line.
+    shift
+
+    x_purge=0; x_name=""; x_saw_name=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --purge) x_purge=1 ;;
+        -*)
+          echo "roost ext remove: unknown option: $1" >&2
+          echo "usage: roost ext remove NAME [--purge]" >&2
+          exit 2
+          ;;
+        *)
+          if [ "$x_saw_name" -eq 1 ]; then
+            echo "roost ext remove: one extension at a time" >&2
+            exit 2
+          fi
+          x_name="$1"; x_saw_name=1
+          ;;
+      esac
+      shift
+    done
+    if [ "$x_saw_name" -ne 1 ]; then
+      echo "usage: roost ext remove NAME [--purge]" >&2
+      exit 2
+    fi
+    # Before it is compared to a lockfile key and before it builds either of
+    # the two paths this command DELETES. `list`, `info` and `verify` make the
+    # same check for a read; this arm is the one where getting it wrong runs
+    # `rm -rf` on somewhere else entirely.
+    if ! roost_ext_name_valid "$x_name"; then
+      echo "roost ext remove: no such extension: $x_name" >&2
+      exit 1
+    fi
+
+    lock="$(roost_ext_lock)"
+    data_dir="$(roost_ext_data_dir)"
+    state_par="$(roost_ext_state_dir)"
+    _ext_rows_read remove "$lock" || exit 1
+    rows="$EXT_ROWS"
+
+    # THE LOCKFILE, NOT THE CLONE, IS THE RECORD OF WHAT IS INSTALLED --
+    # roost_ext_index_lookup's own header makes the same call for the
+    # dispatcher, and `info` for a read. A clone sitting on disk under a name
+    # nothing installed is not something `remove` will delete.
+    found=0
+    while IFS=$'\t' read -r r_name r_repo r_ref r_commit r_tree r_contract r_needs r_commands r_installed \
+        || [ -n "$r_name" ]; do
+      [ -n "$r_name" ] || continue
+      if [ "$r_name" = "$x_name" ]; then found=1; break; fi
+    done <<EOF
+$rows
+EOF
+    if [ "$found" -ne 1 ]; then
+      echo "roost ext remove: no such extension: $x_name" >&2
+      exit 1
+    fi
+
+    x_tmp="$(mktemp -d)" || { echo "roost ext remove: cannot create a temporary directory" >&2; exit 1; }
+    trap 'rm -rf "$x_tmp"' EXIT
+    if ! cp "$lock" "$x_tmp/lock-before.json"; then
+      echo "roost ext remove: cannot read $lock" >&2
+      exit 1
+    fi
+    if ! x_newlock="$(_ext_lock_drop "$x_tmp/lock-before.json" "$x_name")"; then
+      printf 'roost ext remove: could not take %s out of %s\n' "$x_name" "$lock" >&2
+      exit 1
+    fi
+
+    # ------------------------------------------------------------------
+    # THE RECORD FIRST, THE FILES SECOND, AND ext.index IN THE SAME
+    # OPERATION AS ext.lock.
+    #
+    # The dispatcher never opens ext.lock: it reads the executable and the
+    # authority off one line of ext.index, so until that file is rewritten the
+    # extension keeps everything it had -- see the design's "ext.index is the
+    # authority of record" and the measurement in tests/test-ext.sh. Writing
+    # the lockfile and regenerating the index BEFORE the clone comes off the
+    # disk means the window between them is "the command no longer resolves",
+    # which fails closed. The other order would leave a dispatch table
+    # pointing at an executable that is not there.
+    #
+    # An empty result REMOVES the file rather than leaving `{}` behind, the
+    # same call install's rollback makes: an empty record is not a record, and
+    # a machine with nothing installed should look exactly like one.
+    # ------------------------------------------------------------------
+    roost_ext__roots
+    if [ "$x_newlock" = "{}" ]; then
+      rm -f "$lock"
+    else
+      if ! x_tmp_lock="$(mktemp "$ROOST_EXT_STATE_ROOT/.roost-ext-lock.XXXXXX")"; then
+        echo "roost ext remove: cannot write into $ROOST_EXT_STATE_ROOT" >&2
+        exit 1
+      fi
+      printf '%s\n' "$x_newlock" > "$x_tmp_lock"
+      mv "$x_tmp_lock" "$lock"
+    fi
+    if ! roost_ext_index_write; then
+      printf 'roost ext remove: %s could not be turned into a dispatch table\n' "$lock" >&2
+      printf 'roost ext remove: putting ext.lock back rather than leaving it disagreeing with ext.index\n' >&2
+      cp "$x_tmp/lock-before.json" "$lock" || true
+      roost_ext_index_write || true
+      printf 'roost ext remove: %s has not been removed\n' "$x_name" >&2
+      exit 1
+    fi
+
+    x_clone="$data_dir/$x_name"
+    x_state="$state_par/$x_name"
+    if [ -e "$x_clone" ]; then
+      rm -rf "$x_clone"
+      x_clone_note="deleted"
+    else
+      x_clone_note="was already gone"
+    fi
+
+    printf 'removed %s\n' "$x_name"
+    printf 'clone:     %s  (%s)\n' "$x_clone" "$x_clone_note"
+    if [ "$x_purge" -eq 1 ]; then
+      if [ -e "$x_state" ]; then
+        rm -rf "$x_state"
+        printf 'state:     %s  (deleted — --purge)\n' "$x_state"
+      else
+        printf 'state:     %s  (was already gone)\n' "$x_state"
+      fi
+    else
+      # THE RETAINED PATH, PRINTED. A user who removed the wrong extension
+      # needs to know their data is still there and where; a user who meant it
+      # needs to be told the one word that takes it away too.
+      printf 'state:     %s  (kept — delete it with: roost ext remove %s --purge)\n' "$x_state" "$x_name"
+    fi
+    ;;
+
   *)
-    # Every verb this feature will ever have, named even though only four of
-    # them work today -- so `roost ext update`/`remove` read as "not built
-    # yet" rather than as a typo, and a user who mistypes `list` still sees
-    # the whole shape of the command.
+    # Every verb this feature has, named in the order a user meets them, so
+    # somebody who mistypes one still sees the whole shape of the command.
     echo "usage: roost ext <install|list|info|verify|update|remove>" >&2
     exit 2
     ;;

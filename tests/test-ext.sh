@@ -2900,6 +2900,583 @@ rm -f "$(roost_ext_lock)"
 roost_ext_index_write
 rm -rf "$EXT_DATA/pin" "$EXT_DATA/pin2"
 
+# --- roost ext update -------------------------------------------------------
+# The only command in this feature that touches an extension ALREADY ON DISK,
+# and therefore the only one where the clone's own `.git` is in play. Two
+# things are being asserted here and they pull in opposite directions:
+#
+#   the diff and the consent prompt have to be SHOWN, because consent was
+#   given to code and a repository that turns bad turns bad between two
+#   commits nobody looked at;
+#
+#   and nothing the repository or the installed clone can write may be
+#   HONOURED -- not a hook, not a config value, not an escape sequence in a
+#   diff that repaints the block above the question.
+#
+# This section starts from its own clean state, the same reason the verify
+# section does: an assertion that depended on which fixture survived every
+# refusal above it would be reading the wrong thing the moment one of those
+# refusals changed shape.
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/moving" "$EXT_DATA/grower" "$EXT_DATA/poison" "$EXT_DATA/turncoat" \
+       "$EXT_DATA/shy" "$EXT_DATA/loud" "$EXT_DATA/goner" "$EXT_DATA/second"
+rm -rf "$EXT_STATE_ROOT/ext/goner"
+
+ext_update() { ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" update "$@"; }
+ext_remove() { ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" remove "$@"; }
+ext_list()   { ROOST_EXT_GIT_BASE="$EXT_BASE" "$HERE/scripts/roost-ext" list "$@"; }
+
+# ext_bin DIR CMD MARK -> an extension executable that reports the one thing
+# the authority assertions in this section are about: whether ROOST_SOCKET
+# reached it. MARK is what tells the FIRST commit's program from the SECOND's
+# -- "the pin moved" and "the new code is what runs" are different claims, and
+# a lockfile field cannot prove the second one.
+#
+# `${VAR-...}` and never `${VAR:-...}`, for the reason the dispatcher's own
+# probe stub gives at length: absent and present-but-empty are exactly the
+# distinction, and an empty ROOST_SOCKET would address the user's own everyday
+# tmux server.
+ext_bin() {
+  local dir="$1" cmd="$2" mark="$3"
+  mkdir -p "$dir/bin"
+  {
+    printf '#!/bin/sh\n'
+    printf 'printf "ROOST_SOCKET=%%s\\n" "${ROOST_SOCKET-<unset>}"\n'
+    printf 'printf "MARK=%s\\n"\n' "$mark"
+  } > "$dir/bin/roost-$cmd"
+  chmod +x "$dir/bin/roost-$cmd"
+}
+
+# ext_head SPEC -> what the fixture remote really resolves HEAD to, asked of
+# git rather than taken from roost's own output: an assertion that compared
+# the updater to itself would hold however wrong the pin was.
+ext_head() { git ls-remote -- "file://$EXT_REMOTES/$1" HEAD | awk '{print $1}'; }
+
+ext_src "$EXT_SRCS/moving" '{
+  "name": "moving",
+  "contract": 1,
+  "needs": ["fleet"],
+  "commands": ["moving"]
+}' moving
+ext_bin "$EXT_SRCS/moving" moving first
+ext_publish fix/moving "$EXT_SRCS/moving"
+moving_1="$(ext_head fix/moving)"
+ext_install fix/moving --yes >/dev/null 2>"$TMP/err"
+assert_eq "$(cat "$TMP/err")" "" "the update fixture installs cleanly"
+
+# The grant as it stands, measured through a real dispatch rather than read
+# out of the file that grants it. Everything below about a revocation taking
+# effect is worthless without this line: an authority never seen working is an
+# authority whose absence proves nothing.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" moving 2>"$TMP/err")"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
+  "baseline: the installed extension really is granted fleet"
+assert_eq "$(ext_field "$out" MARK)" "first" "...and it is the first commit's program that runs"
+
+# --- update on an unchanged ref writes NOTHING ------------------------------
+# Not the lockfile, not the index, not the `installed` timestamp. A command
+# that rewrote one byte here would make "nothing changed" indistinguishable
+# from "something did" to anything watching the file -- and would move the
+# `installed` date of a pin nobody moved.
+lock_before="$(cat "$(roost_ext_lock)")"
+index_before="$(cat "$EXT_STATE_ROOT/ext.index")"
+out_u="$(ext_update moving --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update on an unchanged ref exits 0"
+assert_contains "$out_u" "up to date at ${moving_1:0:7}" \
+  "...says so, naming the commit it is still pinned to"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" "...and leaves ext.lock BYTE-IDENTICAL"
+assert_eq "$(cat "$EXT_STATE_ROOT/ext.index")" "$index_before" "...and ext.index byte-identical"
+case "$out_u" in *"Update? [y/N]"*) u_asked=1 ;; *) u_asked=0 ;; esac
+assert_eq "$u_asked" "0" "...without asking a question there was nothing to answer"
+
+# --- a new commit: the diff, the pin, the tree, and the revocation ----------
+# The manifest's `needs` SHRINKS from ["fleet"] to [] in the same commit. That
+# is the direction the design calls dangerous: `ext.index` is the authority of
+# record and the dispatcher never opens `ext.lock`, so until the index is
+# regenerated the extension still holds exactly what the user just revoked.
+sed 's/"needs": \["fleet"\]/"needs": []/' "$EXT_SRCS/moving/roost-ext.json" > "$TMP/m.json"
+mv "$TMP/m.json" "$EXT_SRCS/moving/roost-ext.json"
+ext_bin "$EXT_SRCS/moving" moving second
+ext_publish fix/moving "$EXT_SRCS/moving"
+moving_2="$(ext_head fix/moving)"
+[ "$moving_2" != "$moving_1" ]
+assert_true "$?" "the fixture repository really moved to a second commit"
+
+out_u="$(ext_update moving --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update accepts a moved ref with --yes"
+assert_eq "$(cat "$TMP/err")" "" "a successful update writes nothing to stderr"
+assert_contains "$out_u" "  old      ${moving_1:0:7}...  (installed)" \
+  "the block names the commit that is installed now"
+assert_contains "$out_u" "  new      ${moving_2:0:7}...  (would be pinned)" \
+  "...and the commit it would move to"
+assert_contains "$out_u" "modified  bin/roost-moving" \
+  "...lists every file that changed between the two"
+assert_contains "$out_u" '+printf "MARK=second' \
+  "...and shows the DIFF, carrying the line that actually changed"
+assert_contains "$out_u" "Update? [y/N]" "...then asks"
+
+# THE PIN MOVED, and the tree was rewritten with it.
+assert_eq "$(ext_lock_field moving commit)" "$moving_2" "ext.lock records the new commit"
+assert_eq "$(ext_lock_field moving tree)" "$(roost_ext_tree_hash "$EXT_DATA/moving")" \
+  "...and the tree hash roost_ext_tree_hash computes for the directory that is now installed"
+assert_eq "$(ext_lock_field moving ref)" "HEAD" "...with the ref it was pinned by unchanged"
+assert_eq "$(ext_lock_field moving needs)" "none" "...and the authority the new manifest asks for"
+
+# THE REVOCATION, MEASURED THE ONLY WAY IT CAN BE: by dispatching. This is the
+# assertion the whole task turns on. `roost ext update` regenerating ext.index
+# in the same operation as ext.lock is what makes a `needs` that shrank stop
+# being granted; without it every assertion above still passes and the
+# extension keeps the run of the fleet.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" moving 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "the updated extension still dispatches"
+assert_eq "$(ext_field "$out" MARK)" "second" "...and it is the NEW commit's program that runs"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
+  "an authority that SHRANK is gone the moment update returns — ext.index was regenerated in the same operation"
+assert_eq "$(ext_index_col moving 4)" "" \
+  "...and the dispatch table's authority column is empty, which is where the dispatcher reads it"
+assert_eq "$(ext_list 2>&1 >/dev/null)" "" \
+  "...so ext.lock and ext.index agree — roost ext list raises no security warning"
+
+# The negative half of the pair. A build that printed the growth callout on
+# every update would satisfy the assertion below it and tell a user nothing,
+# which is the exact failure that makes a warning worthless.
+case "$out_u" in *"NEW AUTHORITY"*) shrink_shouted=1 ;; *) shrink_shouted=0 ;; esac
+assert_eq "$shrink_shouted" "0" "an authority that SHRANK is not announced as a new one"
+
+# --- a `needs` that GREW, on its own line immediately above the prompt ------
+# An extension quietly acquiring `fleet` on an update is the exact attack the
+# field exists to make visible.
+ext_src "$EXT_SRCS/grower" '{ "name": "grower", "contract": 1, "commands": ["grower"] }' grower
+ext_bin "$EXT_SRCS/grower" grower first
+ext_publish fix/grower "$EXT_SRCS/grower"
+ext_install fix/grower --yes >/dev/null 2>&1
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" grower 2>/dev/null)"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
+  "baseline: an extension that asked for nothing is granted nothing"
+printf '%s\n' '{ "name": "grower", "contract": 1, "needs": ["fleet"], "commands": ["grower"] }' \
+  > "$EXT_SRCS/grower/roost-ext.json"
+ext_bin "$EXT_SRCS/grower" grower second
+ext_publish fix/grower "$EXT_SRCS/grower"
+out_g="$(ext_update grower --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update accepts a manifest whose needs grew, once consented to"
+assert_contains "$out_g" "NEW AUTHORITY: this update asks for fleet" \
+  "an authority that GREW is called out in words"
+# IMMEDIATELY ABOVE THE PROMPT, not merely somewhere in the output. A callout
+# printed above the diff is a callout that scrolls away, and burying the
+# question is how a bad update gets approved. Anchored to the line before the
+# prompt itself rather than to a count of lines, so re-wording the block
+# cannot silently move it.
+grew_prev="$(printf '%s\n' "$out_g" | awk '/Update\? \[y\/N\]/{print prev; exit} {prev = $0}')"
+assert_contains "$grew_prev" "NEW AUTHORITY" \
+  "...on the line IMMEDIATELY above the prompt, where the eye passes it"
+assert_contains "$grew_prev" "read any pane and send prompts to any agent" \
+  "...saying what the new authority lets it DO, not the name of a manifest field"
+assert_eq "$(ext_index_col grower 4)" "fleet" "the granted authority is in ext.index after the update"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" grower 2>/dev/null)"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
+  "...and the extension that asked for it now has it"
+
+# --- THE INSTALLED CLONE'S .git/config IS THE ATTACKER'S FILE ---------------
+# `roost ext verify` deliberately does not cover `.git` (see the design's
+# "roost ext verify"), so a compromised extension can put anything in its own
+# config and verify still reports `ok`. `update` is the one command with any
+# reason to run git against that clone, and three config keys below were
+# MEASURED to execute a command on this machine with nothing but the clone's
+# own config -- the positive controls a few lines down run each of them and
+# assert the payload really fires, BEFORE the same fixture is handed to
+# `roost ext update`.
+#
+# Without those controls this whole block would be the shape AGENTS.md §9
+# warns about: a probe whose own setup is wrong prints exactly what a working
+# defence prints.
+ext_src "$EXT_SRCS/poison" '{ "name": "poison", "contract": 1, "commands": ["poison"] }' poison
+ext_bin "$EXT_SRCS/poison" poison first
+ext_publish fix/poison "$EXT_SRCS/poison"
+ext_install fix/poison --yes >/dev/null 2>&1
+
+pwned_origin="$TMP/pwned-remote-origin"
+pwned_instead="$TMP/pwned-insteadof"
+pwned_fsmon="$TMP/pwned-fsmonitor"
+pwned_pager="$TMP/pwned-pager"
+rm -f "$pwned_origin" "$pwned_instead" "$pwned_fsmon" "$pwned_pager"
+cat > "$TMP/fsmonitor-payload" <<SH
+#!/bin/sh
+touch "$pwned_fsmon"
+exit 1
+SH
+chmod +x "$TMP/fsmonitor-payload"
+
+# `% ` is git-remote-ext's escape for a space, and the trailing `% #` makes
+# the rest of the line a shell comment -- which matters for the insteadOf
+# case, where git appends whatever followed the matched prefix to the
+# rewritten URL. Without it the payload would `touch` a path with the rest of
+# the repository URL glued onto the end, and the marker this asserts on would
+# never appear at the name it is looked for under.
+#
+# protocol.ext.allow=always is in the same file as the payload, because it is
+# the same attacker: git refuses the `ext` transport by default, and a fixture
+# without this line would prove only that git's default is on.
+ext_fixture_git -C "$EXT_DATA/poison" config protocol.ext.allow always
+ext_fixture_git -C "$EXT_DATA/poison" config remote.origin.url "ext::sh -c touch% $pwned_origin% #"
+ext_fixture_git -C "$EXT_DATA/poison" config "url.ext::sh -c touch% $pwned_instead% #.insteadOf" "file://"
+ext_fixture_git -C "$EXT_DATA/poison" config core.fsmonitor "$TMP/fsmonitor-payload"
+# core.pager is the same shape as the two above and is set here so the fixture
+# carries the whole of what the design names -- but it only fires when git is
+# writing to a TERMINAL, which this suite never has, so no assertion below
+# claims to have provoked it. Saying that plainly beats an assertion that
+# could not fail.
+ext_fixture_git -C "$EXT_DATA/poison" config core.pager "sh -c 'touch $pwned_pager'"
+
+# THE POSITIVE CONTROLS. Each runs the naive thing an implementation of
+# `update` would do, against a COPY so the fixture itself is untouched, and
+# asserts the payload really executed. Run first, so that the assertions
+# underneath are about roost's behaviour rather than about a payload that
+# never worked.
+rm -rf "$TMP/poison-copy"
+cp -R "$EXT_DATA/poison" "$TMP/poison-copy"
+ext_fixture_git -C "$TMP/poison-copy" fetch origin >/dev/null 2>&1 || true
+[ -e "$pwned_origin" ]
+assert_true "$?" "the ext:: payload in remote.origin.url really executes under a naive fetch"
+rm -f "$pwned_origin"
+# THE ONE THAT DEFEATS THE OBVIOUS FIX: the URL is rebuilt from ext.lock and
+# passed on the command line, exactly as the design asks -- and the clone's
+# own insteadOf rewrites it back into the payload before git dials it.
+# Passing the URL is necessary and is not sufficient.
+ext_fixture_git -C "$TMP/poison-copy" fetch "file://$EXT_REMOTES/fix/poison" >/dev/null 2>&1 || true
+[ -e "$pwned_instead" ]
+assert_true "$?" "...and the clone's own insteadOf rewrites a URL passed on the COMMAND LINE"
+rm -f "$pwned_instead"
+ext_fixture_git -C "$TMP/poison-copy" status >/dev/null 2>&1 || true
+[ -e "$pwned_fsmon" ]
+assert_true "$?" "...and core.fsmonitor runs on any command that refreshes that clone's index"
+rm -f "$pwned_fsmon"
+rm -rf "$TMP/poison-copy"
+
+# Now the real thing, against the same poisoned clone.
+ext_bin "$EXT_SRCS/poison" poison second
+ext_publish fix/poison "$EXT_SRCS/poison"
+poison_2="$(ext_head fix/poison)"
+out_p="$(ext_update poison --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update succeeds against a clone whose .git/config is a payload"
+assert_file_absent "$pwned_origin" \
+  "update never dialled remote.origin.url out of the installed clone's config"
+assert_file_absent "$pwned_instead" \
+  "...and that clone's insteadOf never rewrote the URL update built from ext.lock"
+assert_file_absent "$pwned_fsmon" \
+  "...and core.fsmonitor never ran, because no git here has that clone as its repository"
+assert_eq "$(ext_lock_field poison commit)" "$poison_2" \
+  "...and the update still did its job: the pin moved to the new commit"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" poison 2>/dev/null)"
+assert_eq "$(ext_field "$out" MARK)" "second" "...and the new commit's program is what runs"
+# The replacement clone is a fresh one, so the payload is not merely unread --
+# it is gone. Asserted because "we did not honour it" and "it is still sitting
+# there for the next command" are different states to leave a user in.
+grep -q 'ext::' "$EXT_DATA/poison/.git/config"
+assert_eq "$?" "1" "the clone update left behind carries none of the poisoned config"
+
+# --- update with no NAME visits every installed extension -------------------
+out_all="$(ext_update --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update with no name exits 0 when everything is already current"
+assert_contains "$out_all" "moving: up to date" "...and reports on moving"
+assert_contains "$out_all" "grower: up to date" "...and on grower"
+assert_contains "$out_all" "poison: up to date" "...and on poison — one at a time, all of them"
+
+# --- a long diff is capped, and a diff cannot repaint the question ----------
+# Burying the prompt under a huge diff is how a bad update gets approved, and
+# an escape sequence in a changed line is the same attack the design's
+# Security section records against the consent block: it repainted the commit
+# row so the block displayed one commit while another was installed.
+ext_src "$EXT_SRCS/loud" '{ "name": "loud", "contract": 1, "commands": ["loud"] }' loud
+ext_bin "$EXT_SRCS/loud" loud first
+ext_publish fix/loud "$EXT_SRCS/loud"
+ext_install fix/loud --yes >/dev/null 2>&1
+i=1
+while [ "$i" -le 20 ]; do
+  printf 'file %s\n' "$i" > "$EXT_SRCS/loud/f$i.txt"
+  i=$((i + 1))
+done
+# Sorts first, so its BODY is inside the cap and the sanitising is actually
+# exercised rather than skipped along with the rest of the patch.
+printf 'BEGIN\033[2A\033[1GPWNED-REPAINT\nEND\n' > "$EXT_SRCS/loud/a-shouty.txt"
+ext_publish fix/loud "$EXT_SRCS/loud"
+out_l="$(ext_update loud --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "update accepts a commit with many changed files"
+assert_contains "$out_l" "more file(s) not shown" \
+  "a long diff is capped, and the number of files whose contents were not shown is named"
+assert_contains "$out_l" "added     f20.txt" \
+  "...while every changed file is still LISTED, capped bodies or not"
+assert_contains "$out_l" "Update? [y/N]" "...and the question survives the diff"
+case "$out_l" in *$'\033'*) loud_esc=1 ;; *) loud_esc=0 ;; esac
+assert_eq "$loud_esc" "0" "no ESC byte from a diff reaches the terminal"
+assert_contains "$out_l" "PWNED-REPAINT" \
+  "...the text is still shown — the control character is replaced, the line is not hidden"
+
+# --- update re-validates the manifest with every check install applies ------
+# A repository that turns bad between two commits is the whole reason this
+# command shows a diff; a repository whose MANIFEST turns bad has to be
+# refused by the same gate install used, or an extension could acquire a core
+# command on an update that install would never have allowed.
+ext_src "$EXT_SRCS/turncoat" '{ "name": "turncoat", "contract": 1, "commands": ["turncoat"] }' turncoat
+ext_bin "$EXT_SRCS/turncoat" turncoat first
+ext_publish fix/turncoat "$EXT_SRCS/turncoat"
+ext_install fix/turncoat --yes >/dev/null 2>&1
+printf '%s\n' '{ "name": "turncoat", "contract": 1, "commands": ["send"] }' \
+  > "$EXT_SRCS/turncoat/roost-ext.json"
+ext_bin "$EXT_SRCS/turncoat" send second
+ext_publish fix/turncoat "$EXT_SRCS/turncoat"
+lock_before="$(cat "$(roost_ext_lock)")"
+index_before="$(cat "$EXT_STATE_ROOT/ext.index")"
+out_t="$(ext_update turncoat --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "update refuses a manifest that claims a core command at the new commit"
+assert_contains "$(cat "$TMP/err")" "which is a roost command" "...naming the reason install would have named"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" "...and leaves ext.lock byte-identical"
+assert_eq "$(cat "$EXT_STATE_ROOT/ext.index")" "$index_before" "...and ext.index byte-identical"
+grep -q 'MARK=first' "$EXT_DATA/turncoat/bin/roost-turncoat"
+assert_true "$?" "...with the commit that was consented to still on disk"
+case "$out_t" in *"Update? [y/N]"*) t_late=1 ;; *) t_late=0 ;; esac
+assert_eq "$t_late" "0" "...refused BEFORE the prompt, not after it"
+
+# --- silence is never consent, here too -------------------------------------
+ext_src "$EXT_SRCS/shy" '{ "name": "shy", "contract": 1, "commands": ["shy"] }' shy
+ext_bin "$EXT_SRCS/shy" shy first
+ext_publish fix/shy "$EXT_SRCS/shy"
+ext_install fix/shy --yes >/dev/null 2>&1
+ext_bin "$EXT_SRCS/shy" shy second
+ext_publish fix/shy "$EXT_SRCS/shy"
+lock_before="$(cat "$(roost_ext_lock)")"
+out_s="$(ext_update shy </dev/null 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "a non-tty update without --yes refuses"
+assert_contains "$(cat "$TMP/err")" "not a terminal" "...saying why"
+assert_contains "$out_s" "Update? [y/N]" "...after printing the block it was asking about"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" "...and leaves ext.lock byte-identical"
+grep -q 'MARK=first' "$EXT_DATA/shy/bin/roost-shy"
+assert_true "$?" "...with the old commit still installed"
+
+# --- update: a name that is not installed, and one that is not a name -------
+out="$(ext_update nosuchext --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "update on an unknown name exits 1"
+assert_contains "$(cat "$TMP/err")" "no such extension: nosuchext" "...naming it"
+out="$(ext_update ../../../etc --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "update refuses a name that could not have been installed, before it builds a path"
+assert_contains "$(cat "$TMP/err")" "no such extension" "...as an unknown extension, not as a traversal that got somewhere"
+
+# --- update: a half-written ext.lock/ext.index pair is not an update --------
+# The same requirement install carries, on the command the design says will be
+# the one that misses it. Provoked the same way: a lockfile `roost ext list`
+# can read but which cannot be turned into a dispatch table -- an entry
+# claiming no commands at all.
+moving_tree="$(ext_lock_field moving tree)"
+cat > "$(roost_ext_lock)" <<JSON
+{
+  "moving": { "repo": "fix/moving", "ref": "HEAD", "commit": "$moving_2", "tree": "$moving_tree", "contract": 1, "needs": [], "commands": ["moving"], "installed": "2026-01-01T00:00:00Z" },
+  "wedged": { "repo": "o/wedged", "commands": [] }
+}
+JSON
+lock_before="$(cat "$(roost_ext_lock)")"
+ext_bin "$EXT_SRCS/moving" moving third
+ext_publish fix/moving "$EXT_SRCS/moving"
+out_w="$(ext_update moving --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "update fails when ext.index cannot be regenerated"
+assert_contains "$(cat "$TMP/err")" "could not be turned into a dispatch table" "...saying what failed"
+assert_contains "$(cat "$TMP/err")" "moving is unchanged" "...and that the update did not happen"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" \
+  "...with ext.lock put back exactly as it was, not left pinning a commit nothing dispatches"
+grep -q 'MARK=second' "$EXT_DATA/moving/bin/roost-moving"
+assert_true "$?" "...and the clone that was there before the update back on disk"
+
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/moving" "$EXT_DATA/grower" "$EXT_DATA/poison" "$EXT_DATA/turncoat" \
+       "$EXT_DATA/shy" "$EXT_DATA/loud"
+
+# --- roost ext remove -------------------------------------------------------
+# Two properties, and the second is the one that stops a mistake being a
+# disaster: the clone goes, and the extension's own DATA stays unless --purge
+# is given, with the retained path printed so a user who removed the wrong
+# thing can see their year of bookmarks is still there.
+ext_src "$EXT_SRCS/goner" '{
+  "name": "goner",
+  "contract": 1,
+  "needs": ["fleet"],
+  "commands": ["goner", "goners"]
+}' goner goners
+ext_bin "$EXT_SRCS/goner" goner first
+ext_publish fix/goner "$EXT_SRCS/goner"
+ext_install fix/goner --yes >/dev/null 2>"$TMP/err"
+assert_eq "$(cat "$TMP/err")" "" "the remove fixture installs cleanly"
+printf 'a year of bookmarks\n' > "$EXT_STATE_ROOT/ext/goner/data.txt"
+
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" goner 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "baseline: the extension about to be removed really does resolve"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" "...with the authority it declared"
+
+out_r="$(ext_remove goner 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "remove exits 0"
+assert_eq "$(cat "$TMP/err")" "" "...writing nothing to stderr"
+assert_file_absent "$EXT_DATA/goner" "remove deletes the clone"
+[ -f "$EXT_STATE_ROOT/ext/goner/data.txt" ]
+assert_true "$?" "...and KEEPS the state directory, contents and all"
+assert_contains "$out_r" "$EXT_STATE_ROOT/ext/goner" "...printing the retained path"
+assert_contains "$out_r" "kept" "...saying in a word that it was kept"
+assert_contains "$out_r" "--purge" "...and how to take it away too"
+
+# THE COMMAND STOPS RESOLVING, which is the half that needs ext.index to have
+# been regenerated in the same operation as ext.lock -- exactly the obligation
+# the design puts on every writer of that file.
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" goner 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "2" "a removed command stops resolving"
+assert_eq "$out" "" "...running nothing"
+assert_eq "$(cat "$TMP/err")" "$usage_ref" "...and giving the usual usage error, unchanged"
+assert_eq "$(ext_index_col goner 3)" "" "ext.index no longer claims the command"
+assert_eq "$(ext_index_col goners 3)" "" "...nor the second command the same extension held"
+"$HERE/scripts/roost-ext" info goner >/dev/null 2>&1
+assert_eq "$?" "1" "and roost ext info no longer knows the name"
+# The last entry out takes the file with it: an empty record is not a record,
+# and a machine with nothing installed should look exactly like one -- the
+# same call install's own rollback makes.
+assert_file_absent "$(roost_ext_lock)" "removing the last extension leaves no empty ext.lock behind"
+
+# --- remove --purge takes the state directory too ---------------------------
+ext_install fix/goner --yes >/dev/null 2>&1
+printf 'a year of bookmarks\n' > "$EXT_STATE_ROOT/ext/goner/data.txt"
+out_r="$(ext_remove goner --purge 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "remove --purge exits 0"
+assert_file_absent "$EXT_DATA/goner" "--purge deletes the clone"
+assert_file_absent "$EXT_STATE_ROOT/ext/goner" "...and the state directory with it"
+assert_contains "$out_r" "deleted — --purge" "...saying which flag did it"
+
+# --- remove refuses a name it does not know, and touches nothing ------------
+ext_src "$EXT_SRCS/second" '{ "name": "second", "contract": 1, "commands": ["second"] }' second
+ext_publish fix/second "$EXT_SRCS/second"
+ext_install fix/second --yes >/dev/null 2>&1
+lock_before="$(cat "$(roost_ext_lock)")"
+index_before="$(cat "$EXT_STATE_ROOT/ext.index")"
+out="$(ext_remove nosuchext 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "remove on an unknown name exits 1"
+assert_contains "$(cat "$TMP/err")" "no such extension: nosuchext" "...naming it"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" "...and leaves ext.lock byte-identical"
+assert_eq "$(cat "$EXT_STATE_ROOT/ext.index")" "$index_before" "...and ext.index byte-identical"
+[ -d "$EXT_DATA/second" ]
+assert_true "$?" "...with the extension that IS installed untouched"
+out="$(ext_remove ../../../etc 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "1" "remove refuses a name that could not have been installed, before it builds a path to delete"
+assert_contains "$(cat "$TMP/err")" "no such extension" "...as an unknown extension"
+ext_remove >"$TMP/out" 2>"$TMP/err"; rc=$?
+assert_eq "$rc" "2" "remove with no NAME is a usage error"
+assert_contains "$(cat "$TMP/err")" "usage: roost ext remove NAME [--purge]" "...showing the usage"
+
+# --- remove: a half-written ext.lock/ext.index pair is not a removal --------
+# The same obligation install and update carry. This is also where the ORDER
+# pays off: the record is written and the index regenerated BEFORE anything is
+# deleted, so a failure here leaves the extension exactly as it was rather
+# than leaving a lockfile entry pointing at a clone that is already gone.
+goner_commit="$(ext_lock_field second commit)"
+goner_tree="$(ext_lock_field second tree)"
+cat > "$(roost_ext_lock)" <<JSON
+{
+  "second": { "repo": "fix/second", "ref": "HEAD", "commit": "$goner_commit", "tree": "$goner_tree", "contract": 1, "needs": [], "commands": ["second"], "installed": "2026-01-01T00:00:00Z" },
+  "wedged": { "repo": "o/wedged", "commands": [] }
+}
+JSON
+lock_before="$(cat "$(roost_ext_lock)")"
+out="$(ext_remove second 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "remove fails when ext.index cannot be regenerated"
+assert_contains "$(cat "$TMP/err")" "could not be turned into a dispatch table" "...saying what failed"
+assert_contains "$(cat "$TMP/err")" "second has not been removed" "...and that the removal did not happen"
+assert_eq "$(cat "$(roost_ext_lock)")" "$lock_before" "...with ext.lock put back exactly as it was"
+[ -d "$EXT_DATA/second" ]
+assert_true "$?" "...and the clone still on disk — the record is written before anything is deleted"
+
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+rm -rf "$EXT_DATA/second" "$EXT_DATA/goner" "$EXT_STATE_ROOT/ext/second" "$EXT_STATE_ROOT/ext/goner"
+
+# --- remove's own engine pair: python3 and jq must agree --------------------
+# A FOURTH pair of JSON engines lands with this task -- _ext_lock_drop_py and
+# _ext_lock_drop_jq, which take one entry back out of ext.lock. Four separate
+# times on this branch a pair that was CLAIMED to agree did not, and each
+# divergence was silent and only wrong on a jq-only machine, so the parity
+# test lands with the engines rather than after them.
+#
+# It cannot call the two functions directly -- they live in scripts/roost-ext,
+# not in the sourced library -- so it proves the same thing the harnesses
+# above it do: run the WHOLE command twice against the same seeded lockfile,
+# once under the ambient PATH and once under a PATH carrying jq and no
+# python3, and compare everything that came out.
+#
+# Nothing is INSTALLED in either sandbox: `remove` works off the lockfile, not
+# off the clone, so a seeded ext.lock exercises both engines with no fetch at
+# all -- and "the clone was already gone" is itself a line both engines have
+# to word the same way.
+#
+# Skipped, not failed, where jq is absent: it is not a roost dependency.
+if command -v jq >/dev/null 2>&1; then
+  _ext_lock_drop_parity_case() {
+    local label="$1" seed="$2" target="$3" engine root rc
+    for engine in py jq; do
+      root="$TMP/drop-$engine"
+      rm -rf "$root"; mkdir -p "$root/state/roost" "$root/data"
+      printf '%s\n' "$seed" > "$root/state/roost/ext.lock"
+      if [ "$engine" = jq ]; then
+        XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" PATH="$TMP/install-jq-only" \
+          "$HERE/scripts/roost-ext" remove "$target" >"$TMP/dout-$engine" 2>"$TMP/derr-$engine"
+      else
+        XDG_STATE_HOME="$root/state" XDG_DATA_HOME="$root/data" \
+          "$HERE/scripts/roost-ext" remove "$target" >"$TMP/dout-$engine" 2>"$TMP/derr-$engine"
+      fi
+      rc=$?
+      # Through files rather than through two variables built by `eval`: the
+      # engine name is part of the variable name and an eval there is one
+      # quoting mistake away from comparing a variable with itself, which is
+      # the shape of a parity test that passes while proving nothing.
+      printf '%s\n' "$rc" > "$TMP/drc-$engine"
+      if [ -f "$root/state/roost/ext.lock" ]; then
+        cp "$root/state/roost/ext.lock" "$TMP/dlock-$engine"
+      else
+        # A REMOVED file and an EMPTY object are different outcomes, and both
+        # engines have to reach the same one.
+        printf '<no ext.lock>\n' > "$TMP/dlock-$engine"
+      fi
+      # The engine name is part of the sandbox path, and both engines quote
+      # paths back in their output -- so the two roots are normalised away
+      # before comparing. Without this the assertion compares ".../drop-py/..."
+      # with ".../drop-jq/..." and fails on two answers that agree in every
+      # word that matters.
+      sed "s|$root|<root>|g" "$TMP/derr-$engine" > "$TMP/derr-$engine.norm"
+      sed "s|$root|<root>|g" "$TMP/dout-$engine" > "$TMP/dout-$engine.norm"
+    done
+    assert_eq "$(cat "$TMP/drc-jq")" "$(cat "$TMP/drc-py")" \
+      "both engines agree on the exit status for $label"
+    assert_eq "$(cat "$TMP/dlock-jq")" "$(cat "$TMP/dlock-py")" \
+      "both engines leave a byte-identical ext.lock for $label"
+    assert_eq "$(cat "$TMP/dout-jq.norm")" "$(cat "$TMP/dout-py.norm")" \
+      "both engines print the same thing for $label"
+    assert_eq "$(cat "$TMP/derr-jq.norm")" "$(cat "$TMP/derr-py.norm")" \
+      "both engines agree on the stderr message for $label"
+  }
+  _ext_lock_drop_parity_case "one of two entries" \
+    '{ "parity": { "repo": "o/parity", "commands": ["parity"] }, "mark": { "repo": "o/mark", "commands": ["mark"] } }' parity
+  _ext_lock_drop_parity_case "the last entry, which leaves no record at all" \
+    '{ "parity": { "repo": "o/parity", "commands": ["parity"] } }' parity
+  _ext_lock_drop_parity_case "an entry carrying fields roost does not write, which must survive" \
+    '{ "parity": { "commands": ["parity"] }, "mark": { "commands": ["mark"], "future": { "b": 2, "a": [1, {"z": null, "y": true}] } } }' parity
+  _ext_lock_drop_parity_case "an entry with a non-ASCII description beside it" \
+    '{ "parity": { "commands": ["parity"] }, "mark": { "commands": ["mark"], "description": "caffè — ünïcode" } }' parity
+  _ext_lock_drop_parity_case "a name that is not in the lockfile" \
+    '{ "mark": { "repo": "o/mark", "commands": ["mark"] } }' parity
+  _ext_lock_drop_parity_case "a lockfile that is not an object" '[ "mark" ]' parity
+  rm -rf "$TMP/drop-py" "$TMP/drop-jq"
+fi
+
+unset -f ext_update ext_remove ext_list ext_bin ext_head
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
 # Leave the state this section built behind, so the conformance block below
 # starts from nothing. The clones go too: the block underneath copies its own
 # fixtures into this same directory.
