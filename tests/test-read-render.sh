@@ -215,6 +215,61 @@ case "$out" in
   *) assert_eq ok ok "the refusal does not leak tail's error" ;;
 esac
 
+# --- a renderer that SUCCEEDS but returns nothing must not eat the reply -----
+# The safety net added for a FAILING preen did not cover this, and it is the
+# more common shape: preen exits 0 and simply produces no output. Measured
+# against the real preen, `<ttyUSB0>` in, zero bytes out -- the whole reply
+# gone, exit 0, nothing on stderr. A renderer is allowed to change how text
+# LOOKS; it is not allowed to make it disappear.
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+cat >/dev/null
+SHIM
+chmod +x "$shimdir/preen"
+out="$(with_preen "$ROOST" read -r "$pane" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "a preen that returns nothing does not fail the read"
+assert_eq "$out" "$reply" \
+  "a preen that returns nothing still delivers the reply, unrendered"
+err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
+assert_contains "$err" "nothing" \
+  "a renderer that swallowed the text says so on stderr"
+
+# ...but an EMPTY input legitimately renders to nothing, and must not warn.
+as_pane "$ROOST" reply ""
+out="$(with_preen "$ROOST" read -r "$pane" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "an empty reply under --render still exits 0"
+err="$(with_preen "$ROOST" read -r "$pane" 2>&1 >/dev/null)"
+case "$err" in
+  *nothing*) assert_eq warned quiet \
+    "an empty reply does not trigger the swallowed-text warning" ;;
+  *) assert_eq ok ok "an empty reply does not trigger the swallowed-text warning" ;;
+esac
+as_pane "$ROOST" reply "$reply"
+cat > "$shimdir/preen" <<'SHIM'
+#!/bin/sh
+printf 'PREEN-IN[%s]\n' "$1"
+cat
+SHIM
+chmod +x "$shimdir/preen"
+
+# --- the flag guard covers EVERY slot, and still allows a negative count -----
+# The first version of the guard read only $3, so `roost read TGT 20 --render`
+# was swallowed exactly as `roost read TGT --render` had been -- the same bug
+# moved one word right. And it refused `roost read TGT -3`, which `tail -n -3`
+# has always accepted as "the last 3 lines". A guard has to know the difference
+# between a misplaced flag and a negative number.
+out="$(with_preen "$ROOST" read "$pane" 20 --render 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "a flag in the FOURTH slot is refused too"
+out="$(with_preen "$ROOST" read --renderr "$pane" 2>&1)"; rc=$?
+assert_true "$([ "$rc" -ne 0 ] && echo 0 || echo 1)" \
+  "an unknown flag before the target is a usage error, not an empty read"
+assert_contains "$out" "usage" \
+  "an unknown flag says what the right shape is"
+out="$(with_preen "$ROOST" read "$other" -3 2>&1)"; rc=$?
+assert_eq "$rc" "0" \
+  "a NEGATIVE line count still works (tail -n -3 means the last 3 lines)"
+
 # --- a missing target is still a usage error --------------------------------
 
 # The flag must not swallow the target check. `roost read --render` with nothing

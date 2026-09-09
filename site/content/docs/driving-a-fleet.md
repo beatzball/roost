@@ -65,7 +65,8 @@ Never treat a fallback result as an agent's answer. If the notice appeared, the 
 
 Agents answer in markdown. `roost read` prints it raw, because that is what a
 script wants. Add `--render` (or `-r`) when a **person** is reading it, and the
-text is piped through [preen](https://github.com/beatzball/preen) instead:
+reply is piped through [preen](https://github.com/beatzball/preen) instead —
+which renders diffs as well as markdown, and agents send a lot of diffs:
 
 ```sh
 roost read --render api

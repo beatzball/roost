@@ -23,7 +23,7 @@ stamped `blocked` by the `Notification` hook and **nothing ever unstamps it**.
 (or presses Esc).
 **Wrong output:** the dialog closes and the pane sits idle at an empty prompt,
 but `roost send` still refuses it with exit 3 and the message *"a permission
-dialog is open, and this text would be typed into it"* — when none is. The
+dialog is open, and this text would be pasted into it"* — when none is. The
 target is unreachable to every roost coordination command until something else
 stamps that pane.
 
