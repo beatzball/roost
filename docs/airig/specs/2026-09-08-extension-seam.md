@@ -324,6 +324,38 @@ The general rule this is an instance of: **decide a grant where a real parser
 is available, carry the decision forward, and never re-derive it somewhere
 cheaper.**
 
+### `ext.index` is the authority of record — and that has a cost
+
+Carrying the decision forward means the dispatcher no longer consults
+`ext.lock` at all. So between a lockfile write and the index regeneration,
+`ext.index` is authoritative and `ext.lock` is merely documentation. Measured
+on the implementation:
+
+| state | dispatch |
+|---|---|
+| lockfile grants `fleet`, index regenerated | granted — correct |
+| lockfile **deleted**, index not regenerated | **still granted** |
+| lockfile edited to `needs: []`, index not regenerated | **still granted** |
+| lockfile deleted, index regenerated | unknown subcommand — correct |
+
+Rows two and three are the whole risk: a user revokes an authority and the
+extension keeps it until something rewrites the index. So the rule for every
+command in this spec, stated as a requirement rather than a habit:
+
+> Every command that changes `ext.lock` must call `roost_ext_index_write` in
+> the same operation, after the lockfile write, and must not report success if
+> the regeneration failed. That is `install`, `remove`, `remove --purge`, and
+> **`update`**.
+
+`update` is the one that will be missed. Its treatment of `needs` is written
+around an authority that **grew**, because that is the visible attack. The
+unsafe direction is an authority that **shrank**: until the index is rewritten,
+the extension still holds what the user just took away.
+
+This also promotes `roost ext list`'s "warns when `ext.lock` and `ext.index`
+disagree" from a tidiness check to a **security** warning, and its wording
+should say which of the two is currently being obeyed.
+
 This is not duplication for its own sake. The dispatcher runs on **every
 unrecognised `roost` subcommand**, including every typo, and `roost-json.sh`
 opens by recording that neither `python3` nor `jq` is a runtime dependency of
