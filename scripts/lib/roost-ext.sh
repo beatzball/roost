@@ -1108,7 +1108,16 @@ else
     | if ($e | type) != "object" then {err: ("entry '" + $n + "' is not an object")}
       elif (($e.commands | type) != "array") or (($e.commands | length) == 0)
         then {err: ("entry '" + $n + "' lists no commands")}
-      elif ($n | test("\\s")) or ($n | contains("/"))
+      # `($n == "")` FIRST, and it is not decoration: python3 asks
+      # `name.split() != [name]`, and "".split() is the empty LIST, so python3
+      # refuses an empty name while `test("\\s")` on an empty string is false
+      # and jq accepted it. A machine with only jq then wrote an ext.index for
+      # a lockfile python3 refuses, with no SECURITY WARNING raised, while a
+      # machine with python3 refused the same file -- two machines disagreeing
+      # about whether to raise a warning this code itself calls a security
+      # control. The sibling check on `commands`, four lines down, has carried
+      # its own `(. == "")` from the start; this is the same guard on the name.
+      elif ($n == "") or ($n | test("\\s")) or ($n | contains("/"))
         then {err: ("entry name '" + $n + "' is not a plain word")}
       elif any($e.commands[]; (type != "string") or (. == "") or test("\\s") or contains("/"))
         then {err: ("entry '" + $n + "' claims a command that is not a plain word")}

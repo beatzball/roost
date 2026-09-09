@@ -54,6 +54,22 @@ set -euo pipefail
 # back as `a=x b=y c= d= e=`, not `a=x b= c= d=y e=`. Every field this reader
 # produces is therefore guaranteed non-empty, which is what actually defeats
 # the squeeze; a caller may still show `-` as "none" or "unknown" itself.
+#
+# THE ENTRY NAME IS ONE OF THOSE NINE FIELDS, and it was the one exception to
+# the sentence above until it was measured. It does not come from `scalar()`
+# -- it is the lockfile's own KEY, put into field 0 directly -- so an ext.lock
+# of `{"": {"repo": "o/x", "commands": ["x"], "needs": ["fleet"]}}` produced a
+# row beginning with an empty field, and every column shifted one to the left:
+# `roost ext list` printed the REPOSITORY in the name column, and the security
+# warning that names which extensions ext.lock and ext.index disagree about
+# named an empty list. Both engines did it, so no parity case could catch it;
+# the tab-in-the-key case covers a name that is REFUSED, not one that is
+# merely empty. The placeholder is applied to the key too, below.
+#
+# An empty key is not something `roost ext install` could have written -- and
+# `-` is not a name roost_ext_name_valid accepts (names start with a letter),
+# so every caller that turns a name into a path still refuses it and `list`
+# marks the row "(invalid name...)" rather than showing a plausible one.
 _ext_lock_rows_py() {
   cat <<'PY'
 import json
@@ -128,7 +144,11 @@ for name in sorted(data):
     if not isinstance(entry, dict):
         die("entry '%s' is not an object" % esc(name))
     fields = [
-        name,
+        # `or "-"` for the same reason scalar() carries it, and the header
+        # comment's "every field is non-empty" is only true because it is
+        # here: the KEY is a field of this row, and an empty one shifts all
+        # nine columns left in the caller's `read`.
+        name or "-",
         scalar(entry, "repo", name),
         scalar(entry, "ref", name),
         scalar(entry, "commit", name),
@@ -235,7 +255,12 @@ else
         # extra case to keep in sync.
         elif ($n | test("[\\x00-\\x1f\\x7f]")) then [{err: ("entry '" + esc($n) + "' has a field containing a control character")}]
         else
-          [ $n,
+          # The placeholder on the KEY, exactly where python3's engine puts
+          # its `name or "-"`: field 0 is the one field that never went
+          # through scalarv(), so an empty lockfile key shifted every column
+          # left in the caller's `read`. See the header comment on
+          # _ext_lock_rows_py for the row that produced.
+          [ (if $n == "" then "-" else $n end),
             scalarv($n; $e; "repo"),
             scalarv($n; $e; "ref"),
             scalarv($n; $e; "commit"),

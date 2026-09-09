@@ -693,6 +693,42 @@ if command -v jq >/dev/null 2>&1; then
     '{ "mark": { "commands": ["mark"], "needs": ["sudo"] } }'
   index_parity_case "the entry that steered the shell reader" \
     '{ "mark": { "description": "needs", "commands": ["fleet"], "needs": [] } }'
+  # EVERY case above is about `needs`, and that is how the divergence below
+  # survived: the engines disagreed about an entry NAME, which nothing here
+  # asked them. An empty key made the jq engine write an index and stay
+  # silent where python3 refused and raised the SECURITY WARNING -- because
+  # `test("\\s")` is false for the empty string and `"".split() != [""]` is
+  # true. The cases below ask the same question of the other two fields this
+  # function refuses on, so a one-engine regression in any of them is caught
+  # by the harness rather than by whoever happens to read both engines again.
+  index_parity_case "an empty entry name" \
+    '{ "": { "commands": ["mark"] } }'
+  index_parity_case "an entry name with whitespace in it" \
+    '{ "two words": { "commands": ["mark"] } }'
+  index_parity_case "an entry name containing a slash" \
+    '{ "../secret": { "commands": ["mark"] } }'
+  index_parity_case "an entry that is not an object" \
+    '{ "mark": "mark" }'
+  index_parity_case "an entry with no commands field at all" \
+    '{ "mark": { "repo": "o/mark" } }'
+  index_parity_case "an empty commands array" \
+    '{ "mark": { "commands": [] } }'
+  index_parity_case "a commands that is not an array" \
+    '{ "mark": { "commands": "mark" } }'
+  index_parity_case "an empty command" \
+    '{ "mark": { "commands": [""] } }'
+  index_parity_case "a command with whitespace in it" \
+    '{ "mark": { "commands": ["two words"] } }'
+  index_parity_case "a command containing a slash" \
+    '{ "mark": { "commands": ["../secret"] } }'
+  index_parity_case "a command that is not a string" \
+    '{ "mark": { "commands": [1] } }'
+  index_parity_case "two entries claiming one command" \
+    '{ "a": { "commands": ["x"] }, "b": { "commands": ["x"] } }'
+  index_parity_case "a top-level array" \
+    '[ "mark" ]'
+  index_parity_case "two well-formed entries, one of them claiming two commands" \
+    '{ "a": { "commands": ["a1", "a2"], "needs": ["fleet"] }, "b": { "commands": ["b1"] } }'
 fi
 
 rm -f "$(roost_ext_lock)"
@@ -1554,6 +1590,47 @@ rm -rf "$EXT_DATA/bare"
 rm -f "$(roost_ext_lock)"
 roost_ext_index_write
 
+# The OTHER half of `scalar()`'s `or "-"`, which the case above cannot reach:
+# a key that is PRESENT with the empty string, rather than absent. Deleting
+# `or "-"` leaves the absent half covered by the "bare" assertion above and
+# this half uncovered -- measured, and the suite stayed green -- so an empty
+# `ref` is asserted here as the rendered line. Without the placeholder the
+# row's later columns shift one to the left and the commands column prints
+# the placeholder instead of `x`.
+mkdir -p "$EXT_DATA/emptyref/bin"
+: > "$EXT_DATA/emptyref/bin/roost-x"; chmod +x "$EXT_DATA/emptyref/bin/roost-x"
+lock_install <<'JSON'
+{ "emptyref": { "repo": "o/a", "ref": "", "commands": ["x"] } }
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+emptyref_line="$(printf '%s\n' "$out" | grep '^emptyref ')"
+assert_eq "$emptyref_line" "emptyref  -  x" \
+  "a field recorded as the EMPTY STRING renders as '-' too, and shifts nothing after it"
+rm -rf "$EXT_DATA/emptyref"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# THE ENTRY NAME IS A FIELD OF THAT ROW TOO, and it is the one that never
+# passed through `scalar()`. An empty lockfile KEY shifted all nine columns
+# one to the left: `roost ext list` printed the REPOSITORY where the name
+# goes, and the disagreement warning below named an empty list of extensions.
+# Both engines did it, so the parity harness further down could not catch it
+# -- it compares the two engines with each other, and they agreed.
+#
+# The lockfile is written directly rather than through lock_install: an empty
+# key is exactly what roost_ext_index_write refuses, which is the second half
+# of what this case is about.
+cat > "$(roost_ext_lock)" <<'JSON'
+{ "": { "repo": "o/x", "commands": ["x"], "needs": ["fleet"] } }
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
+assert_eq "$out" "-  -  x (invalid name, not something roost ext install could have written)" \
+  "an EMPTY lockfile key renders as the placeholder in the name column, not as the repository"
+assert_contains "$(cat "$TMP/err")" "disagree: -" \
+  "...and the disagreement warning names that entry rather than an empty list"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
 # --- list / info: the jq engine must agree with python3 ---------------------
 # _ext_lock_rows_py and _ext_lock_rows_jq live in scripts/roost-ext, not in
 # the sourced library, so they cannot be called directly the way
@@ -1598,6 +1675,11 @@ if command -v jq >/dev/null 2>&1; then
   # python3 refused the file outright.
   _ext_lock_rows_parity_case "a lockfile key containing a tab" \
     '{ "a\tb": { "repo": "o/a", "commit": "abcdef0123456789", "commands": ["x", "y"] } }'
+  # The EMPTY key, next to the tab one: the tab case is about a name both
+  # engines refuse, this one about a name both engines have to render as the
+  # placeholder rather than as an empty field that shifts the row.
+  _ext_lock_rows_parity_case "an empty lockfile key" \
+    '{ "": { "repo": "o/x", "commit": "abcdef0123456789", "commands": ["x"] } }'
   _ext_lock_rows_parity_case "an explicit null ref" \
     '{ "a": { "repo": "o/a", "commands": ["x"], "ref": null } }'
   _ext_lock_rows_parity_case "an explicit null needs" \
