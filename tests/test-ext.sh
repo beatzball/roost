@@ -407,6 +407,28 @@ if command -v jq >/dev/null 2>&1; then
     '{ "name": "mark", "contract": 1.5, "commands": ["mark"] }'
   parity_case "a contract written in exponent form" \
     '{ "name": "mark", "contract": 1e2, "commands": ["mark"] }'
+  # THE EXPONENT LITERALS THE TWO ENGINES ACTUALLY DISAGREED ABOUT. `1e2` is
+  # the one exponent form they always agreed on -- decNumber prints it
+  # `1E+2`, which fails the pure-digits test on jq, and python3 refused the
+  # float -- so the case above could sit here green while `1e0` installed as
+  # contract 1 on a jq machine and was refused on a python3 one. Measured on
+  # jq-1.7.1-apple: all four of these print as `1`.
+  parity_case "a contract of 1e0" \
+    '{ "name": "mark", "contract": 1e0, "commands": ["mark"] }'
+  parity_case "a contract of 1E0" \
+    '{ "name": "mark", "contract": 1E0, "commands": ["mark"] }'
+  parity_case "a contract of 1e00" \
+    '{ "name": "mark", "contract": 1e00, "commands": ["mark"] }'
+  parity_case "a contract of 0.1e1" \
+    '{ "name": "mark", "contract": 0.1e1, "commands": ["mark"] }'
+  parity_case "a contract of 1.0" \
+    '{ "name": "mark", "contract": 1.0, "commands": ["mark"] }'
+  parity_case "a contract of 10e-1" \
+    '{ "name": "mark", "contract": 10e-1, "commands": ["mark"] }'
+  parity_case "a contract of negative zero" \
+    '{ "name": "mark", "contract": -0, "commands": ["mark"] }'
+  parity_case "a contract too big for a double" \
+    '{ "name": "mark", "contract": 123456789012345678901234567890, "commands": ["mark"] }'
   parity_case "a contract given as a string" \
     '{ "name": "mark", "contract": "1", "commands": ["mark"] }'
   parity_case "a boolean contract" \
@@ -729,6 +751,21 @@ if command -v jq >/dev/null 2>&1; then
     '[ "mark" ]'
   index_parity_case "two well-formed entries, one of them claiming two commands" \
     '{ "a": { "commands": ["a1", "a2"], "needs": ["fleet"] }, "b": { "commands": ["b1"] } }'
+  # The escaping and the cap on these engines' refusal messages, compared
+  # between the engines rather than only against a literal: both had to grow
+  # esc() at the same time, and a fix applied to one of them is exactly the
+  # kind of half-landing this harness exists to catch. The payload is written
+  # as a JSON \u001b escape, never as a literal byte, for the reason the
+  # consent-block section further down gives: a raw ESC in a source file is
+  # invisible in the diff of the change that adds it.
+  index_parity_case "an entry name carrying an escape sequence" \
+    '{ "a\u001b[2A\u001b[1G b": { "commands": ["x"] } }'
+  index_parity_case "a command carrying an escape sequence, in a collision" \
+    '{ "a": { "commands": ["x\u001bZ"] }, "b": { "commands": ["x\u001bZ"] } }'
+  idx_long_a=""
+  while [ "${#idx_long_a}" -lt 300 ]; do idx_long_a="${idx_long_a}A"; done
+  index_parity_case "an entry name past the message cap" \
+    "$(printf '{ "%s x": { "commands": ["x"] } }' "$idx_long_a")"
 fi
 
 rm -f "$(roost_ext_lock)"
@@ -1686,6 +1723,19 @@ if command -v jq >/dev/null 2>&1; then
     '{ "a": { "repo": "o/a", "commands": ["x"], "needs": null } }'
   _ext_lock_rows_parity_case "an explicit null commands" \
     '{ "a": { "repo": "o/a", "commands": null } }'
+  # `contract` is the one field of a lockfile row a JSON NUMBER can reach, so
+  # this engine pair has the same number-model question the manifest pair had:
+  # jq reads `1e0` as `1` and a python3 on floats read it as a float and
+  # refused the file. Both engines parse numbers with the same decimal model
+  # now; these are the literals that told the two apart.
+  _ext_lock_rows_parity_case "a contract of 1e0" \
+    '{ "a": { "repo": "o/a", "commands": ["x"], "contract": 1e0 } }'
+  _ext_lock_rows_parity_case "a contract of 0.1e1" \
+    '{ "a": { "repo": "o/a", "commands": ["x"], "contract": 0.1e1 } }'
+  _ext_lock_rows_parity_case "a fractional contract" \
+    '{ "a": { "repo": "o/a", "commands": ["x"], "contract": 1.5 } }'
+  _ext_lock_rows_parity_case "a contract in exponent form jq prints as 1E+2" \
+    '{ "a": { "repo": "o/a", "commands": ["x"], "contract": 1e2 } }'
   _ext_lock_rows_parity_case "a fully populated, well-formed entry" \
     '{ "mark": { "repo": "o/mark", "ref": "v1.0.0", "commit": "abcdef0123456789", "commands": ["mark", "marks"], "needs": ["fleet"] } }'
   _ext_lock_rows_parity_case "an entry with almost nothing recorded" \
@@ -2073,6 +2123,45 @@ case "$lockesc_all" in
   *) esc_leaked=0 ;;
 esac
 assert_eq "$esc_leaked" "0" "...and prints no ESC byte on either stream"
+printf '%s\n' "$lock_saved" > "$(roost_ext_lock)"
+roost_ext_index_write
+
+# THE THIRD ENGINE PAIR, and the one that decides a GRANT. The two engines
+# behind roost_ext_index_write name the lockfile's entry name and command
+# back to the reader in every refusal, and both interpolated them RAW while
+# the _ext_lock_rows pair above had carried esc() on every message since it
+# was written. Same class, same destination -- roost_ext__json_read prints
+# that message to stderr, and stderr is a terminal.
+#
+# Not a display path this time: this is the regeneration-failure path of
+# install, update and remove, since every command that writes ext.lock
+# regenerates ext.index in the same step.
+lock_saved="$(cat "$(roost_ext_lock)")"
+printf '%s\n' '{ "a\u001b[2A\u001b[1G b": { "commands": ["x"] } }' > "$(roost_ext_lock)"
+roost_ext_index_write 2>"$TMP/err"; rc=$?
+idx_esc_err="$(cat "$TMP/err")"
+assert_eq "$rc" "1" "index_write refuses an entry name carrying an escape sequence"
+case "$idx_esc_err" in
+  *"$esc"*) esc_leaked=1 ;;
+  *) esc_leaked=0 ;;
+esac
+assert_eq "$esc_leaked" "0" "...and no ESC byte from ext.lock reaches the terminal"
+assert_contains "$idx_esc_err" "a?[2A?[1G b" \
+  "...the offending name is still shown, with its control bytes replaced rather than dropped"
+
+# The length half of the same rule, which needs no control character at all:
+# 64 characters and then `...`, the cap roost_ext__manifest_py's CAPS table
+# already applies to `roost` and `description` for the same reason. Nothing
+# honest gets near it -- roost_ext_name_valid stops a real name at 32.
+idx_long_a=""
+while [ "${#idx_long_a}" -lt 300 ]; do idx_long_a="${idx_long_a}A"; done
+idx_want64=""
+while [ "${#idx_want64}" -lt 64 ]; do idx_want64="${idx_want64}A"; done
+printf '{ "%s x": { "commands": ["x"] } }\n' "$idx_long_a" > "$(roost_ext_lock)"
+roost_ext_index_write 2>"$TMP/err"; rc=$?
+assert_eq "$rc" "1" "index_write refuses a 300-character entry name with a space in it"
+assert_contains "$(cat "$TMP/err")" "entry name '$idx_want64...' is not a plain word" \
+  "...and the message it prints is truncated at 64 characters, not 300"
 printf '%s\n' "$lock_saved" > "$(roost_ext_lock)"
 roost_ext_index_write
 

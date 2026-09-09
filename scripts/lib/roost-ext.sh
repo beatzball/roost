@@ -407,6 +407,7 @@ roost_ext__json_read() {
 # would then read the pair as a successful parse.
 roost_ext__manifest_py() {
   cat <<'PY'
+import decimal
 import json
 import sys
 
@@ -426,13 +427,50 @@ def die(msg):
     raise SystemExit(0)
 
 
+# EVERY JSON NUMBER IS READ AS A decimal.Decimal, and that is what makes this
+# engine agree with jq about `contract` rather than merely claim to.
+#
+# jq has one number type, backed by decNumber, and it answers `tostring` with
+# that library's canonical form: coefficient and exponent, `1E+2` for 1e2 and
+# a plain `1` for 1e0. Python's float has neither, so this engine used to see
+# a float where jq saw a `1` and refused a manifest jq installed. MEASURED on
+# jq-1.7.1-apple: `1e0`, `1E0`, `1e00` and `0.1e1` all print as `1`, pass the
+# pure-digits test below, and install as contract 1 -- while python3 refused
+# all four. A comment here used to say the two forms "agree on every literal
+# jq preserves" and blame the residual on an older jq. That was wrong on the
+# shipped jq, and the one exponent literal the parity harness happened to
+# carry (`1e2`) is one of the ones they DO agree about.
+#
+# decimal.Decimal implements the same standard decNumber does, so handing
+# json the Decimal constructor for both parse_int and parse_float gives this
+# engine jq's own number model, digit for digit -- verified over 40+ literals,
+# including -0, 1e-2, a 30-digit integer and 1.000000000000000000001.
+# Converging on jq is the only direction available: jq cannot tell `1` from
+# `1e0` after parsing (both are coefficient 1, exponent 0), so the strictness
+# python3 had could not be given to it. Nothing is loosened that mattered --
+# `"contract": "1"` as a STRING was always accepted, so the gate was never a
+# defence against a manifest writing 1 in an unusual way.
+#
+# The residual, named rather than claimed away: jq's PARSER is more permissive
+# than python3's about a few malformed literals (`007` is read as 7 where
+# python3 refuses the document). That is upstream of this number model and
+# cannot be closed here; both engines still refuse the install, with different
+# messages.
 try:
-    data = json.load(sys.stdin)
+    data = json.load(sys.stdin, parse_int=decimal.Decimal, parse_float=decimal.Decimal)
 except Exception as exc:
     sys.stderr.write(str(exc) + "\n")
     raise SystemExit(1)
 if not isinstance(data, dict):
     die("top-level JSON value must be an object")
+
+
+def digits(text):
+    # `^-?[0-9]+$`, the same question jq's engine asks of its own `tostring`.
+    # Written out rather than imported from `re`, for the reason ctrl() gives
+    # below: one comparison per character says exactly what it means.
+    body = text[1:] if text[:1] == "-" else text
+    return bool(body) and all("0" <= ch <= "9" for ch in body)
 
 
 def scalar(key, required):
@@ -441,11 +479,20 @@ def scalar(key, required):
             die("missing required field '%s'" % key)
         return ""
     value = data[key]
-    # bool is an int subclass in python, and `"contract": true` is not a
-    # contract number — it is a manifest to refuse, not one to read as 1.
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
+    # `"contract": true` is not a contract number — it is a manifest to
+    # refuse, not one to read as 1. Belt and braces now that numbers arrive as
+    # Decimal rather than int (a bool is not a Decimal, so it would be refused
+    # by the type test alone), and kept because the intent is the point: bool
+    # is an int subclass in python, so anyone re-adding `int` to the tuple
+    # below would silently start reading `true` as 1 without this line.
+    if isinstance(value, bool) or not isinstance(value, (str, decimal.Decimal)):
         die("field '%s' must be a string or an integer" % key)
-    return value if isinstance(value, str) else "%d" % value
+    if isinstance(value, decimal.Decimal):
+        text = str(value)
+        if not digits(text):
+            die("field '%s' must be a string or an integer" % key)
+        return text
+    return value
 
 
 def strlist(key, required):
@@ -591,14 +638,19 @@ def scalar($k; $req):
     (.[$k] as $v
      | if ($v | type) == "string" then clean($k; $v)
        elif ($v | type) == "number" then
-         # python3 refuses any JSON number that is not an INTEGER literal --
-         # 1.5, 1.0 and 1e2 all arrive as floats there and die. jq has one
-         # number type, so the equivalent question is asked of the canonical
-         # string form: pure digits or nothing. That agrees with python3 on
-         # every literal jq preserves (1.0 -> "1.0", 1e2 -> "1E+2", both
-         # refused). Where an OLDER jq has already folded 1.0 to 1 there is
-         # nothing left in the document to tell the two apart, and reading it
-         # as contract 1 is the harmless side of that difference.
+         # Pure digits or nothing, asked of decNumber's canonical string
+         # form. python3's engine asks the identical question of the
+         # identical string: it parses every JSON number with
+         # decimal.Decimal, which implements the same standard, so `1.0` ->
+         # "1.0" and `1e2` -> "1E+2" are refused on both while `1e0` -> "1"
+         # is accepted on both.
+         #
+         # It did NOT used to be identical, and a comment here used to say it
+         # was. python3 saw a float wherever jq saw a number, so `1e0`, `1E0`,
+         # `1e00` and `0.1e1` installed on a jq machine as contract 1 and were
+         # refused on a python3 one. See the long comment above
+         # roost_ext__manifest_py's json.load for the measurement, and for why
+         # converging on jq was the only direction available.
          (if ($v | tostring | test("^-?[0-9]+$")) then ($v | tostring)
           else {err: ("field '" + $k + "' must be a string or an integer")} end)
        else {err: ("field '" + $k + "' must be a string or an integer")} end)
@@ -1007,6 +1059,33 @@ def die(msg):
     raise SystemExit(0)
 
 
+# esc TEXT -> TEXT with every C0 control character and DEL replaced by `?`,
+# truncated to 64 characters.
+#
+# Every message below names back a piece of the LOCKFILE -- an entry name, a
+# command -- and roost_ext__json_read prints that message to stderr, which is
+# a terminal. An ESC is not a character on a terminal: it is an instruction to
+# one, so an entry name of "a\x1b[2A\x1b[1G b" repaints the lines above the
+# refusal it is being complained about in. MEASURED: the raw ESC reached
+# stderr from both engines, on the regeneration-failure path of install,
+# update and remove.
+#
+# The sibling readers already close this: scripts/roost-ext's _ext_lock_rows
+# engines carry esc() on every message for exactly this reason, and
+# roost_ext__manifest_py's ctrl() asks the same question of a manifest's
+# free-text fields. This is that rule applied to the third pair, which is the
+# one deciding a GRANT.
+#
+# The truncation is the second half, and it is the lesson the `roost` field's
+# CAPS table records: a value with no control character in it at all, merely
+# long, pushes what matters off the screen. Nothing honest reaches 64 here --
+# roost_ext_name_valid stops a real name at 32 -- so the cap can only ever
+# fire on a lockfile edited by hand.
+def esc(text):
+    clean = "".join("?" if ord(ch) < 0x20 or ord(ch) == 0x7F else ch for ch in text)
+    return clean if len(clean) <= 64 else clean[:64] + "..."
+
+
 try:
     lock = json.load(sys.stdin)
 except Exception as exc:
@@ -1022,16 +1101,16 @@ claimed = {}
 for name in sorted(lock):
     entry = lock[name]
     if not isinstance(entry, dict):
-        die("entry '%s' is not an object" % name)
+        die("entry '%s' is not an object" % esc(name))
     commands = entry.get("commands")
     if not isinstance(commands, list) or not commands:
-        die("entry '%s' lists no commands" % name)
+        die("entry '%s' lists no commands" % esc(name))
     # Whitespace in a name or a command would write a line this file's own
     # reader could not read back. Refused rather than escaped: that reader is
     # a `while read` with no unescaping in it, and adding one would put a
     # parser back on the hot path.
     if name.split() != [name] or "/" in name:
-        die("entry name '%s' is not a plain word" % name)
+        die("entry name '%s' is not a plain word" % esc(name))
     # The authority column. Resolved HERE, where a real JSON parser is
     # reading the lockfile anyway, and carried forward to the dispatcher --
     # which must never re-derive it from ext.lock with something cheaper.
@@ -1050,7 +1129,7 @@ for name in sorted(lock):
     if "needs" in entry:
         needs = entry["needs"]
         if not isinstance(needs, list):
-            die("entry '%s' declares a needs that is not an array" % name)
+            die("entry '%s' declares a needs that is not an array" % esc(name))
     else:
         needs = []
     for need in needs:
@@ -1059,7 +1138,7 @@ for name in sorted(lock):
         # whoever read it back. Refused, for the same reason a command with a
         # space in it is.
         if not isinstance(need, str) or not need or need.split() != [need]:
-            die("entry '%s' declares an authority that is not a plain word" % name)
+            die("entry '%s' declares an authority that is not a plain word" % esc(name))
     # NOT validated against the authorities roost knows -- that is
     # roost_ext_needs_valid's job, and it happens in the dispatcher, on the
     # value it is actually about to act on. Writing the index is not the
@@ -1068,14 +1147,14 @@ for name in sorted(lock):
     for command in commands:
         if (not isinstance(command, str) or not command
                 or command.split() != [command] or "/" in command):
-            die("entry '%s' claims a command that is not a plain word" % name)
+            die("entry '%s' claims a command that is not a plain word" % esc(name))
         # An ambiguous dispatch table is worse than no dispatch table: which
         # extension ran would depend on the order the lockfile was written in.
         # Refused and named. `roost ext install` refuses the collision long
         # before this, so reaching it means the lockfile was edited by hand.
         if command in claimed:
             die("command '%s' is claimed by both '%s' and '%s'"
-                % (command, claimed[command], name))
+                % (esc(command), esc(claimed[command]), esc(name)))
         claimed[command] = name
         rows.append((command, name, needs_field))
 
@@ -1096,6 +1175,15 @@ PY
 # error.
 roost_ext__index_jq() {
   cat <<'JQ'
+# esc($s) -> $s with every C0 control character and DEL replaced by `?`, then
+# truncated to 64 characters. The python3 engine's esc() carries the reasons
+# at length: every message below names a piece of the LOCKFILE back to a
+# terminal, an ESC is an instruction to a terminal rather than a character in
+# it, and a merely LONG value pushes what matters off the screen without
+# using one. `length` counts codepoints here and python3's len() counts them
+# there, so the two truncate at the same character.
+def esc($s): ((($s | gsub("[\\x00-\\x1f\\x7f]"; "?"))) as $t
+              | if ($t | length) > 64 then (($t[0:64]) + "...") else $t end);
 if type != "object" then ["roost-ext-error=top-level JSON value must be an object"]
 else
   [ to_entries | sort_by(.key)[]
@@ -1105,9 +1193,9 @@ else
     # a lockfile saying something this cannot understand about authority, and
     # `//` would quietly read it as none. python3's engine refuses it too.
     | (if ($e | type) == "object" and ($e | has("needs")) then $e.needs else [] end) as $needs
-    | if ($e | type) != "object" then {err: ("entry '" + $n + "' is not an object")}
+    | if ($e | type) != "object" then {err: ("entry '" + esc($n) + "' is not an object")}
       elif (($e.commands | type) != "array") or (($e.commands | length) == 0)
-        then {err: ("entry '" + $n + "' lists no commands")}
+        then {err: ("entry '" + esc($n) + "' lists no commands")}
       # `($n == "")` FIRST, and it is not decoration: python3 asks
       # `name.split() != [name]`, and "".split() is the empty LIST, so python3
       # refuses an empty name while `test("\\s")` on an empty string is false
@@ -1118,13 +1206,13 @@ else
       # control. The sibling check on `commands`, four lines down, has carried
       # its own `(. == "")` from the start; this is the same guard on the name.
       elif ($n == "") or ($n | test("\\s")) or ($n | contains("/"))
-        then {err: ("entry name '" + $n + "' is not a plain word")}
+        then {err: ("entry name '" + esc($n) + "' is not a plain word")}
       elif any($e.commands[]; (type != "string") or (. == "") or test("\\s") or contains("/"))
-        then {err: ("entry '" + $n + "' claims a command that is not a plain word")}
+        then {err: ("entry '" + esc($n) + "' claims a command that is not a plain word")}
       elif ($needs | type) != "array"
-        then {err: ("entry '" + $n + "' declares a needs that is not an array")}
+        then {err: ("entry '" + esc($n) + "' declares a needs that is not an array")}
       elif any($needs[]; (type != "string") or (. == "") or test("\\s"))
-        then {err: ("entry '" + $n + "' declares an authority that is not a plain word")}
+        then {err: ("entry '" + esc($n) + "' declares an authority that is not a plain word")}
       else ($e.commands[] | [., $n, ($needs | join(" "))]) end ] as $rows
   | ([$rows[] | select(type == "object")] | first) as $bad
   | if $bad != null then ["roost-ext-error=" + $bad.err]
@@ -1132,8 +1220,8 @@ else
       | ([$sorted[] | .[0]] | group_by(.) | map(select(length > 1)) | first) as $dup
       | if $dup != null then
           ([$sorted[] | select(.[0] == $dup[0])]) as $both
-          | ["roost-ext-error=command '" + $dup[0] + "' is claimed by both '"
-             + $both[0][1] + "' and '" + $both[1][1] + "'"]
+          | ["roost-ext-error=command '" + esc($dup[0]) + "' is claimed by both '"
+             + esc($both[0][1]) + "' and '" + esc($both[1][1]) + "'"]
         else [$sorted[] | .[0] + "\t" + .[1] + "\t" + $arg + "/" + .[1] + "/bin/roost-" + .[0] + "\t" + .[2]]
         end
     end

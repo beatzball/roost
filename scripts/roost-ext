@@ -72,6 +72,7 @@ set -euo pipefail
 # marks the row "(invalid name...)" rather than showing a plausible one.
 _ext_lock_rows_py() {
   cat <<'PY'
+import decimal
 import json
 import sys
 
@@ -101,8 +102,16 @@ def esc(s):
     return "".join("?" if ord(ch) < 0x20 or ord(ch) == 0x7F else ch for ch in s)
 
 
+# parse_int/parse_float, for the reason roost_ext__manifest_py's own json.load
+# carries them: jq's number type is decNumber and its `tostring` is that
+# library's canonical form, so a python3 that reads JSON numbers as floats
+# disagrees with the jq engine below about `contract` -- `1e0` is `1` to jq
+# and a float to python3. decimal.Decimal implements the same standard, which
+# makes the two engines' answers identical rather than merely intended to be.
+# That comment is the long one; this is the same fix in the third engine pair,
+# where `contract` and `installed` are the fields a number can reach.
 try:
-    data = json.load(sys.stdin)
+    data = json.load(sys.stdin, parse_int=decimal.Decimal, parse_float=decimal.Decimal)
 except Exception as exc:
     sys.stderr.write(str(exc) + "\n")
     raise SystemExit(1)
@@ -110,18 +119,34 @@ if not isinstance(data, dict):
     die("top-level JSON value must be an object")
 
 
+def digits(text):
+    # `^-?[0-9]+$`, the same question _ext_lock_rows_jq's scalarv asks of its
+    # own `tostring`. Spelled out rather than imported from `re`, matching
+    # esc() above and roost_ext__manifest_py's ctrl().
+    body = text[1:] if text[:1] == "-" else text
+    return bool(body) and all("0" <= ch <= "9" for ch in body)
+
+
 def scalar(entry, key, name):
     if key not in entry:
         return "-"
     value = entry[key]
-    # bool is an int subclass in python -- "contract": true must not read as 1.
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
+    # "contract": true must not read as 1. Belt and braces now that numbers
+    # arrive as Decimal rather than int, and kept because bool IS an int
+    # subclass: anyone re-adding `int` to the tuple would otherwise start
+    # reading `true` as 1 with nothing to stop them.
+    if isinstance(value, bool) or not isinstance(value, (str, decimal.Decimal)):
         die("entry '%s' field '%s' must be a string or an integer" % (esc(name), key))
+    if isinstance(value, decimal.Decimal):
+        text = str(value)
+        if not digits(text):
+            die("entry '%s' field '%s' must be a string or an integer" % (esc(name), key))
+        return text
     # `or "-"` catches a JSON value that is the empty string, not only an
     # absent key -- both mean "nothing here" to this reader, and only the
     # placeholder keeps a field from ever being genuinely empty (see the
     # header comment on why that matters for `read` on the caller's side).
-    return (value if isinstance(value, str) else "%d" % value) or "-"
+    return value or "-"
 
 
 def strlist(entry, key, name):
