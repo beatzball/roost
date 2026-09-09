@@ -46,6 +46,17 @@ while [ -L "$SOURCE" ]; do
 done
 ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 
+# Two version numbers, deliberately kept apart. ROOST_VERSION is the product:
+# semver, read from the VERSION file at the repo root, reported by
+# `roost --version` and bumped on every release, however small. ROOST_CONTRACT
+# is the extension seam's own version: a single integer that moves only when
+# the SHAPE of extension wiring itself changes — a new required manifest
+# field, a different lookup path — never when roost merely gains a feature or
+# fixes a bug. Splitting them means an ordinary roost release, no matter how
+# large, never invalidates an extension that was written against contract 1.
+ROOST_VERSION="$(cat "$ROOST_HOME/VERSION")"
+ROOST_CONTRACT=1
+
 # Socket, in order: $ROOST_SOCKET (explicit seam — tests, a second server, a
 # `roost ssh` one) -> the roost server we are running inside -> the shared
 # production server by name. The same three steps scripts/roost-status,
@@ -1330,5 +1341,8 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  --version|-V|version)
+    printf '%s\n' "$ROOST_VERSION"
+    ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|--version|kill [SESSION]|help]" >&2; exit 2 ;;
 esac
