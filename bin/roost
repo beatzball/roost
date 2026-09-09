@@ -1484,19 +1484,6 @@ JSON
             echo "roost $1: remove it with 'roost ext remove $ext_name', or turn the seam off with ROOST_NO_EXT=1" >&2
             exit 1
           fi
-
-          # roost_ext_needs_valid REFUSES an authority it does not recognise
-          # rather than ignoring it, and that refusal has to be honoured here
-          # too: a roost that silently granted nothing would leave the
-          # extension believing it had everything, and that surfaces as
-          # corrupted behaviour instead of a clean stop. `roost ext install`
-          # refuses such a manifest, so a lockfile that says this was
-          # hand-edited or written by a newer roost than this one.
-          if ! roost_ext_needs_valid "$ext_needs"; then
-            echo "roost $1: extension '$ext_name' asks for an authority this roost does not know: $ROOST_EXT_NEEDS_UNKNOWN" >&2
-            echo "roost $1: refusing, rather than running it with less than it expects" >&2
-            exit 1
-          fi
           # Split, not a `*fleet*` substring test: a later contract adding an
           # authority whose name merely CONTAINS fleet would otherwise be
           # handed the fleet without asking for it. IFS is saved and put back

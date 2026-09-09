@@ -974,9 +974,53 @@ out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/e
 assert_eq "$rc" "1" "an unknown authority after a bracketed one is refused, not dropped"
 assert_eq "$out" "" "...and nothing is exec'd"
 
-# No lockfile is no dispatch table. `roost ext remove` writes both files in the
-# same step, so the index does not outlive the record it came from -- and the
-# index going empty is what turns the command back into an unknown one.
+# --- ext.index outlives ext.lock, and that is the whole obligation ----------
+# The grant is now carried in the index, so the index IS the dispatcher's
+# record and ext.lock is only where that record was derived from. That moves a
+# burden onto every writer of ext.lock -- install, update, remove -- and these
+# four assertions are the burden written down. The two in the middle pin
+# behaviour that is DANGEROUS, not behaviour that is safe: they assert the
+# authority is STILL THERE. Anyone reading this section has to come away
+# knowing that, rather than believing a stale index fails closed. It does not.
+#
+# The rule, and task 5 and task 7 both depend on it: whatever writes ext.lock
+# regenerates ext.index in the SAME operation. `roost ext list` warning when
+# the two disagree is the backstop, not the mechanism.
+lock_fleet
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
+  "stale-index baseline: written together, the grant is there"
+
+# A user deletes the extension from ext.lock by hand and nothing regenerates
+# the index. The extension KEEPS the fleet until something does. Asserted as
+# the grant being present, because that is what happens.
+rm -f "$EXT_STATE_ROOT/ext.lock"
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "7" "lockfile deleted, index NOT regenerated: the extension still runs"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
+  "lockfile deleted, index NOT regenerated: it STILL HAS FLEET -- the index is the record now"
+
+# The sharper version of the same window: the user does not remove the
+# extension, they REVOKE its authority -- edits `needs` down to `[]` -- and
+# again nothing regenerates the index. The revocation does not take effect.
+cat > "$EXT_STATE_ROOT/ext.lock" <<'JSON'
+{
+  "probe": { "repo": "o/probe", "commands": ["probe"], "needs": [] }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "7" "authority revoked in ext.lock, index NOT regenerated: the extension still runs"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "$ROOST_TEST_SOCK" \
+  "authority revoked in ext.lock, index NOT regenerated: the revocation has NOT taken effect"
+# ...and it takes effect the moment anything rewrites the index, which is what
+# every ext.lock writer is required to do.
+roost_ext_index_write
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"
+assert_eq "$(ext_field "$out" ROOST_SOCKET)" "<unset>" \
+  "regenerating the index is what makes a revocation in ext.lock real"
+
+# And removing the extension the supported way -- both files written in the
+# same step -- turns the command back into an unknown one.
 rm -f "$EXT_STATE_ROOT/ext.lock"
 roost_ext_index_write
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" PATH="$EXT_PATH" "$ROOST" probe 2>"$TMP/err")"; rc=$?
