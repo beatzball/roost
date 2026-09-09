@@ -421,6 +421,14 @@ if command -v jq >/dev/null 2>&1; then
     '{ "name": "mark", "contract": 1, "commands": ["mark"], "needs": [1] }'
   parity_case "a description carrying a newline" \
     '{ "name": "mark", "contract": 1, "commands": ["mark"], "description": "one\\ntwo" }'
+  parity_case "a roost range past its length cap" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark"], "roost": ">=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }'
+  parity_case "a roost range exactly at its length cap" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark"], "roost": ">=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }'
+  parity_case "a description past its length cap" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark"], "description": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }'
+  parity_case "a field that is both too long and carries a control character" \
+    '{ "name": "mark", "contract": 1, "commands": ["mark"], "roost": ">=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u001bZ" }'
   parity_case "a top-level array" '[ "mark" ]'
   # The refusal a user actually reads has to be the same sentence too, not
   # just the same exit status.
@@ -1978,6 +1986,87 @@ esac
 assert_eq "$esc_leaked" "0" "...and prints no ESC byte on either stream"
 printf '%s\n' "$lock_saved" > "$(roost_ext_lock)"
 roost_ext_index_write
+
+# --- a field long enough to scroll the pin off the screen -------------------
+# The same attack as the escape payloads above, by OMISSION rather than by
+# forgery, and it needs no control character at all -- no ESC, no C1, no bidi.
+# `roost` is printed verbatim in the plan block, and a 1349-character value
+# pushes the `commit ...  (pinned)` row off an 80x24 terminal by the time the
+# prompt is drawn. Measured at the moment the user answers: the prompt is
+# visible and the pinned row is not. The block never states anything false; it
+# stops stating the pin at all, and a user asked to approve a commit that is
+# no longer on screen has consented to nothing.
+#
+# Every other free-text-adjacent value here was already bounded -- a ref at
+# 255, a name and every command at 32 -- and this one was not.
+ext_repeat() {
+  # ext_repeat CHAR N -> N copies of CHAR. Doubling rather than appending one
+  # at a time: 1349 iterations of string concatenation in bash is slow enough
+  # to notice in a suite that runs on every change.
+  local c="$1" n="$2" out="$1"
+  while [ "${#out}" -lt "$n" ]; do out="$out$out"; done
+  printf '%s' "${out:0:$n}"
+}
+scroll_range="*$(ext_repeat a 1348)"
+assert_eq "${#scroll_range}" "1349" "the scroll payload really is 1349 characters"
+ext_src "$EXT_SRCS/scroll" "{ \"name\": \"scroll\", \"contract\": 1, \"roost\": \"$scroll_range\", \"commands\": [\"scroll\"] }" scroll
+ext_publish fix/scroll "$EXT_SRCS/scroll"
+out_scroll="$(ext_install fix/scroll --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses a roost range long enough to scroll the pin off the screen"
+assert_contains "$(cat "$TMP/err")" "is longer than 64 characters" "...naming the rule and the cap"
+# Refused where the manifest is READ, so the plan block is never drawn at all
+# -- there is no prompt to scroll anything away from.
+case "$out_scroll" in
+  *"Install? [y/N]"*) scroll_prompted=1 ;;
+  *) scroll_prompted=0 ;;
+esac
+assert_eq "$scroll_prompted" "0" "...before any prompt is printed"
+case "$out_scroll" in
+  *"(pinned)"*) scroll_block=1 ;;
+  *) scroll_block=0 ;;
+esac
+assert_eq "$scroll_block" "0" "...and before any plan block is printed"
+assert_file_absent "$EXT_DATA/scroll" "...and nothing is installed"
+
+# The cap is INCLUSIVE at 64, and a value at the cap still behaves the way an
+# unreadable range is supposed to: warn, and install. Asserting only the
+# refusal would pass on a build that refused every range there is.
+cap_ok=">=$(ext_repeat a 62)"
+assert_eq "${#cap_ok}" "64" "the boundary fixture is exactly at the cap"
+ext_src "$EXT_SRCS/cap64" "{ \"name\": \"capok\", \"contract\": 1, \"roost\": \"$cap_ok\", \"commands\": [\"capok\"] }" capok
+ext_publish fix/cap64 "$EXT_SRCS/cap64"
+out_cap="$(ext_install fix/cap64 --yes 2>"$TMP/err")"; rc=$?
+assert_eq "$rc" "0" "a roost range exactly at the cap still installs"
+assert_contains "$out_cap" "cannot read" "...warning that the range is unreadable, as an unparsable range must"
+# THE `Note:` LINE IS LOAD-BEARING, and this assertion is here so that nobody
+# later simplifies it away as decoration. A value long enough to scroll is
+# ALWAYS an unparsable range, so the Note re-prints the same payload at a
+# different column offset and garbles whatever wrap alignment an attacker
+# chose -- a width-aligned 80-column forged block comes out as obvious mangled
+# junk. That is why the length cap closes an omission and never had to close a
+# forgery: the Note was already in the way.
+assert_contains "$out_cap" "  Note: " "...on the Note line, which re-prints the range at a second column offset"
+
+cap_over=">=$(ext_repeat a 63)"
+assert_eq "${#cap_over}" "65" "the over-cap fixture is one character past it"
+ext_src "$EXT_SRCS/cap65" "{ \"name\": \"capover\", \"contract\": 1, \"roost\": \"$cap_over\", \"commands\": [\"capover\"] }" capover
+ext_publish fix/cap65 "$EXT_SRCS/cap65"
+out_capover="$(ext_install fix/cap65 --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "one character past the cap is refused"
+assert_contains "$(cat "$TMP/err")" "is longer than 64 characters" "...naming the same rule"
+
+# `description` is capped too: `roost ext list` and `roost ext info` print it,
+# and the design calls it one line.
+long_desc="$(ext_repeat d 201)"
+ext_src "$EXT_SRCS/longdesc" "{ \"name\": \"longdesc\", \"contract\": 1, \"commands\": [\"longdesc\"], \"description\": \"$long_desc\" }" longdesc
+ext_publish fix/longdesc "$EXT_SRCS/longdesc"
+out_longdesc="$(ext_install fix/longdesc --yes 2>"$TMP/err")"; rc=$?
+[ "$rc" -ne 0 ]
+assert_true "$?" "install refuses a description past its own cap"
+assert_contains "$(cat "$TMP/err")" "field 'description' is longer than 200 characters" "...naming that field and its cap"
+assert_file_absent "$EXT_DATA/longdesc" "...and nothing is installed"
 
 # --- every refusal in step 4 of the design, each with its own fixture -------
 # `assert_contains` on the REASON, not merely on a non-zero exit: a command

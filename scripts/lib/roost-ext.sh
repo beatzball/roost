@@ -513,10 +513,41 @@ def ctrl(value):
     return False
 
 
+# How long a field this reader will hand back, per field. Only the two
+# free-text ones are here; the rest are bounded by the grammars that validate
+# them (roost_ext_name_valid at 32, roost_ext_needs_valid to one known word,
+# each command through roost_ext_name_valid again).
+#
+# THE CAP IS ABOUT THE SCREEN, not about parsing. `roost ext install` prints
+# the `roost` range verbatim in the consent block, and a 1349-character value
+# with no control character in it at all -- no ESC, no C1, no bidi -- pushes
+# the `commit ... (pinned)` row off an 80x24 terminal by the time the prompt
+# is drawn. Measured at that moment: prompt visible, pinned row not. The block
+# never states anything false; it stops stating the pin at all, and the user
+# approves a commit that is no longer on screen. Omission gets the same
+# outcome as a forgery.
+#
+# 64 for a grammar whose longest legal form is about 26 characters
+# (">=100.100.100 <200.200.200"), so the cap cannot be reached by anything
+# honest. 200 for a description the design calls "one line".
+#
+# WHY THIS COULD NOT BE ESCALATED INTO A REAL FORGERY, and it is structural
+# rather than lucky -- worth keeping if anyone is ever tempted to simplify the
+# consent block: a value long enough to scroll is always an UNPARSABLE range,
+# so `install` prints the mandatory `Note:` line, which re-prints the same
+# payload at a different column offset and garbles whatever wrap alignment an
+# attacker chose. A width-aligned 80-column forged block comes out as obvious
+# mangled junk. The Note is load-bearing; it is not decoration.
+CAPS = {"roost": 64, "description": 200}
+
 out = []
 for key, value in fields:
     if ctrl(value):
         die("field '%s' contains a control character" % key)
+    # After ctrl(), so a field that is both wins on the control character --
+    # the jq engine folds its cap outside `clean` for exactly this ordering.
+    if key in CAPS and len(value) > CAPS[key]:
+        die("field '%s' is longer than %d characters" % (key, CAPS[key]))
     out.append("%s=%s" % (key, value))
 w("\n".join(out) + "\n")
 PY
@@ -542,6 +573,19 @@ roost_ext__manifest_jq() {
 # substitute: it matches whitespace, and ESC is not whitespace.
 def clean($k; $v):
   if ($v | test("[\\x00-\\x1f\\x7f]")) then {err: ("field '" + $k + "' contains a control character")} else $v end;
+# The same caps python3's CAPS table holds, and the same ordering: an OBJECT
+# is an error already found -- by `clean`, inside scalar() -- and passes
+# straight through, so a field that is both too long and carries a control
+# character is reported as the control character on both engines.
+#
+# `length` on a jq string counts codepoints, which is what python3's len()
+# counts too. Applied OUTSIDE scalar() rather than inside it, because scalar()
+# is shared with fields that have no cap.
+def cap($k; $v; $max):
+  if ($v | type) == "object" then $v
+  elif ($v | length) > $max
+    then {err: ("field '" + $k + "' is longer than " + ($max | tostring) + " characters")}
+  else $v end;
 def scalar($k; $req):
   if has($k) then
     (.[$k] as $v
@@ -577,10 +621,10 @@ if type != "object" then ["roost-ext-error=top-level JSON value must be an objec
 else
   [ ["name",        scalar("name"; true)],
     ["contract",    scalar("contract"; true)],
-    ["roost",       scalar("roost"; false)],
+    ["roost",       cap("roost"; scalar("roost"; false); 64)],
     ["needs",       strlist("needs"; false)],
     ["commands",    strlist("commands"; true)],
-    ["description", scalar("description"; false)] ] as $f
+    ["description", cap("description"; scalar("description"; false); 200)] ] as $f
   | ([$f[] | select((.[1] | type) == "object")] | first) as $bad
   | if $bad != null then ["roost-ext-error=" + $bad[1].err]
     else [$f[] | .[0] + "=" + .[1]] end
