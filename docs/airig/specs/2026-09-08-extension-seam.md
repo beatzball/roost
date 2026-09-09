@@ -495,6 +495,34 @@ Re-computes the tree hash of each installed extension and compares it with
 `ext.lock`. Prints `ok` or names every file that differs, and exits non-zero if
 any do.
 
+`verify` deliberately does **not** cover the clone's own `.git` directory. That
+exclusion is correct and it has a cost, and both halves have to be written down:
+
+- **Why it is excluded.** An installed extension keeps a full `.git`. Ref state
+  changes on every fetch, and without the exclusion `.git` would be recorded as
+  a gitlink, so every ordinary git operation inside an extension would make
+  `verify` cry wolf. Measured: `git checkout -b` and `git gc` inside an
+  installed clone leave `verify` reporting `ok`, which is the behaviour we want.
+- **What that costs.** A payload written to `.git/hooks/post-checkout` or
+  `.git/payload.sh` inside an installed extension is invisible to `verify`,
+  which reports `ok`. That is honest — `ok` means "matches what was recorded",
+  and install recorded with the same exclusion — but it is a region of the tree
+  integrity does not cover.
+
+Nothing roost does today executes from there: the dispatcher execs only
+`bin/roost-<cmd>`, every roost git call sets `GIT_DIR` to a throwaway object
+database so the clone's own `config` is never read, and the wrapper forces
+`core.hooksPath=/dev/null` with an empty `init.templateDir`.
+
+**`update` is where that stops being free.** It is the one command that runs
+`fetch` and `checkout` against the *installed* clone, whose `.git/config` is
+attacker-writable and outside `verify`'s coverage. Neutralising hooks is not
+enough there: `remote.origin.url = ext::sh -c ...` is remote-code execution
+through a config value, and `core.fsmonitor` and `core.pager` are the same
+shape. So `update` must pass the remote URL **on the command line**, rebuilt
+from the lockfile's `repo` field, and must never trust the clone's stored
+config for anything.
+
 This is what makes the pin mean something **on disk** rather than only at fetch
 time. Without it, "pinned to a commit" describes what was downloaded once, not
 what will run tonight. Cheap enough to suggest in the `list` output whenever
