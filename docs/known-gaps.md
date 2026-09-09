@@ -614,9 +614,9 @@ report, and that is the commit that actually closed it.
 **And the mirror of it, in the very next commit.** Sweeping a phrase without
 reading each site produced the opposite error: `394f314` changed four comments
 in `tests/live/*-smoke.sh` to say "delivered" when those scripts use raw
-`tmux send-keys`, not `roost send`. "Typed" was
-correct there, and load-bearing — the race those comments explain exists
-*because* keystrokes reach a TUI that has not rendered. Reverted in `fbb805f`.
+`tmux send-keys`, not `roost send`. "Typed" was correct there, and
+load-bearing — the race those comments explain exists *because* keystrokes
+reach a TUI that has not rendered. Reverted in `fbb805f`.
 
 Neither half is reading the code: taking a list on trust, or taking a phrase on
 trust. A sweep finds the candidates; only the surrounding code says which are
