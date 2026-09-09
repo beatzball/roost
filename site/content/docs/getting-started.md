@@ -22,6 +22,7 @@ State comes from **each agent's own lifecycle events** — Claude Code hooks, th
 - A powerline/Nerd Font for the tab separators — or run `roost init` and pick the plain-separator fallback
 - An agent that can report its state, for the badges — Claude Code, opencode, GitHub Copilot CLI, pi and OpenAI Codex CLI all have adapters in this repo, and the installer wires whichever of them you have; anything else calls `roost state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
+- Optional: [`preen`](https://github.com/beatzball/preen) (renders an agent's markdown for `roost read --render`; without it that flag prints the raw text)
 
 ## Install
 

@@ -19,7 +19,15 @@
 #   ROOST_PROBE_DELAY     seconds between attempts (default 3)
 set -eu
 
-BASE="${1:?usage: verify-site.sh BASE_URL}"
+# Not `${1:?...}`: bash renders that as `/abs/path/verify-site.sh: line 22: 1:
+# usage: ...`, printing the checkout's absolute path and an internal line
+# number at someone who simply typed the command wrong. bin/roost's seven
+# usage errors were fixed the same way; this was the eighth.
+if [ -z "${1:-}" ]; then
+  echo "usage: verify-site.sh BASE_URL" >&2
+  exit 1
+fi
+BASE="$1"
 BASE="${BASE%/}"
 retries="${ROOST_PROBE_RETRIES:-10}"
 delay="${ROOST_PROBE_DELAY:-3}"

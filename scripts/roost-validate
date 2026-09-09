@@ -2052,9 +2052,9 @@ here rather than left to be assumed."
   # full run of this script — pi's tool-turn timeline was three seconds long
   # for exactly this reason.
   if wait_reply "$pane" "$token2" "$TMO_TURN"; then
-    record PASS 5 "$h: the agent answered what roost send typed" "$token2 came back through roost read"
+    record PASS 5 "$h: the agent answered what roost send pasted" "$token2 came back through roost read"
   else
-    record TIME 5 "$h: the agent answered what roost send typed" "no reply containing $token2 within ${TMO_TURN}s; the reply that was there is in §5"
+    record TIME 5 "$h: the agent answered what roost send pasted" "no reply containing $token2 within ${TMO_TURN}s; the reply that was there is in §5"
   fi
   # Best effort, so the dialog turn below starts from a settled pane.
   wait_state "$pane" done 120
@@ -2135,7 +2135,7 @@ drive_dialog() {
     fi
   fi
 
-  # --- roost send must refuse, and must type nothing -------------------------
+  # --- roost send must refuse, and must paste nothing ------------------------
   before="$(T capture-pane -p -t "$pane")"
   out="$(R send "$pane" "ROOST-VALIDATE-MUST-NOT-ARRIVE" 2>&1)"; rc=$?
   after="$(T capture-pane -p -t "$pane")"
@@ -2143,16 +2143,16 @@ drive_dialog() {
   if [ "$rc" -eq 3 ]; then
     record PASS 5 "$h: roost send refuses a blocked pane with exit 3" "3 is distinct from 2 (wrong target) and 1 (submit failed), so a caller can retry later"
   else
-    record FAIL 5 "$h: roost send refuses a blocked pane with exit 3" "exit $rc — one agent could type into another's permission dialog"
+    record FAIL 5 "$h: roost send refuses a blocked pane with exit 3" "exit $rc — one agent could paste into another's permission dialog"
   fi
   # The precise claim is that the TEXT did not arrive, so that is what is
   # checked. Byte-equality of the whole screen is reported alongside it but is
   # not the assertion: a TUI that animates anything at all would fail it while
   # having delivered nothing.
   if printf '%s' "$after" | grep -qF "ROOST-VALIDATE-MUST-NOT-ARRIVE"; then
-    record FAIL 5 "$h: the refused text was not typed into the dialog" "the message is visible on the pane — it went into the dialog"
+    record FAIL 5 "$h: the refused text was not pasted into the dialog" "the message is visible on the pane — it went into the dialog"
   else
-    record PASS 5 "$h: the refused text was not typed into the dialog" "the message appears nowhere on the pane"
+    record PASS 5 "$h: the refused text was not pasted into the dialog" "the message appears nowhere on the pane"
   fi
   if [ "$before" = "$after" ]; then
     record INFO 5 "$h: the screen was byte-identical across the refused send" "nothing was drawn at all"

@@ -17,8 +17,9 @@
 #   roost whoami             print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
-#                            type TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
-#   roost read TGT [N]       print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
+#   roost read [-r|--render] TGT [N]
+#                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown)
 #   roost screen TGT [N]     print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
 #   roost reply TEXT...      record TEXT as this pane's reply, for another agent's `roost read`
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
@@ -140,12 +141,116 @@ screen_dump() {
   t capture-pane -p -t "$1" | grep -v '^[[:space:]]*$' | tail -n "$2"
 }
 
+# need_arg VALUE USAGE -> print USAGE and exit 1 when VALUE is empty.
+#
+# `${2:?usage: ...}` was the old spelling, and bash renders that as
+# `/abs/path/to/bin/roost: line 905: 2: usage: ...` -- the checkout's absolute
+# path and an internal line number, in front of a user who typed a command
+# wrong. The path is noise at best and the author's home directory at worst,
+# and the line number is meaningless to a reader. Found by review.
+need_arg() {
+  if [ -z "${1:-}" ]; then
+    printf '%s\n' "$2" >&2
+    exit 1
+  fi
+}
+
+# The `--render` half of `roost read`: hand the text to preen
+# (https://github.com/beatzball/preen), which renders markdown read on stdin.
+#
+# Opt-in, and nothing reaches this function unless --render was passed. The
+# default path must stay byte-identical: callers pipe `roost read` into grep
+# (tests/test-coordination.sh, tests/test-panes.sh) and one compares its whole
+# output against the recorded reply (tests/test-reply-channel.sh), so a
+# renderer in the default path would break every one of them.
+#
+# A renderer that is not installed must NOT fail the read. What the agent said
+# is the payload; the colour is a convenience, and a `roost read --render` that
+# exited non-zero on a machine without preen would strand a caller who only
+# wanted the text. So print the text unchanged and say why on stderr — stderr
+# for the same reason the screen-fallback notice below uses it: stdout is the
+# caller's pipe.
+#
+# The text is BUFFERED first rather than streamed straight into preen, and
+# that costs one variable to buy the property that matters: a renderer which
+# fails must cost the caller the colour, never the text. Streaming spends the
+# input before the exit status is known, leaving nothing to fall back to --
+# and under `set -euo pipefail` (line 37) a preen that exits 3 took the whole
+# command's status with it, so `roost read -r X || die` died on a read that
+# had printed the reply perfectly. Found by review, with a stub renderer.
+#
+# `|| true` on the capture and an explicit status check rather than letting
+# pipefail speak: the point here is to SWALLOW the renderer's failure after
+# reporting it, which is the one place in this file that is the right thing to
+# do. printf '%s\n', not echo, because a reply beginning with -n or -e is text.
+render_stdin() {
+  local text rendered rc visible
+  text="$(cat)"
+  if command -v preen >/dev/null 2>&1; then
+    # preen's own stderr is NOT discarded. It is the only diagnosis available
+    # when a renderer misbehaves, and swallowing it was the first version's
+    # mistake: "preen exited 3" with no reason is barely better than silence.
+    rendered="$(printf '%s\n' "$text" | preen -)" && rc=0 || rc=$?
+    # A renderer that SUCCEEDS and returns nothing is the more common failure,
+    # and the exit-status net does not catch it. Measured against the real
+    # preen: `<ttyUSB0>` in, 2 bytes out (both newlines), exit 0, nothing on
+    # stderr -- the whole reply gone. A renderer may change how text LOOKS; it
+    # may not make it disappear.
+    #
+    # WHAT IS TESTED IS WHAT SURVIVES, NOT THE BYTE COUNT, and the first
+    # version of this check got that wrong. preen pads every line to the
+    # terminal width and wraps it in colour codes, so `$rendered` is never the
+    # empty string: `&nbsp;` came back as 1754 bytes with NOTHING visible in
+    # them -- the only non-padding bytes were a non-breaking space, which this
+    # check deletes as whitespace like any other. A `[ -z "$rendered" ]` test
+    # stepped aside for exactly the input it existed to catch. Escape
+    # sequences and whitespace are stripped first, and what is left is the
+    # question. Found by both reviewers, separately.
+    #
+    # `tr -d` rather than a shell glob: this runs on bash 3.2 with no regex
+    # dependency, and the sed handles the CSI sequences preen actually emits.
+    # Two strips, not one: SGR colour (CSI ... m) and OSC-8 hyperlinks
+    # (ESC ] 8 ; ... BEL), whose URL is not text the reply ever contained. A
+    # render carrying only a hyperlink is visually empty, and without the
+    # second strip its URL counted as visible: the guard stepped aside and the
+    # reply was lost, exit 0, silently. Both reviewers proved that end to end.
+    #
+    # THE ESCAPES ARE $'...' , NOT '\x07' INSIDE A BRACKET EXPRESSION, and the
+    # first version of this line got that wrong in a way that read as correct.
+    # BSD sed does not honour \x escapes inside `[...]`: `[^\x07]` means "not
+    # one of \ x 0 7", so the expression matched nothing and the strip was a
+    # no-op on macOS -- which CI also runs. Proved with `printf 'x07\ Q' | sed
+    # 's/[^\x07]//g'` returning `x07\`. bash expands the escapes before sed
+    # ever sees them, which works on both BSD and GNU.
+    visible="$(printf '%s' "$rendered" \
+      | sed $'s/\033\\[[0-9;]*m//g' \
+      | sed $'s/\033\\]8;[^\a]*\a//g' \
+      | tr -d '[:space:]')"
+    if [ "${rc:-0}" -eq 0 ] && [ -n "$text" ] && [ -z "$visible" ]; then
+      echo "roost read: preen returned nothing for a non-empty reply — printing the raw text instead." >&2
+      printf '%s\n' "$text"
+      return 0
+    fi
+    if [ "${rc:-0}" -eq 0 ]; then
+      printf '%s\n' "$rendered"
+      return 0
+    fi
+    echo "roost read: preen exited $rc — printing the raw text instead." >&2
+    printf '%s\n' "$text"
+    return 0
+  fi
+  echo "roost read: --render needs 'preen' on PATH — printing the raw text instead." >&2
+  echo "roost read: (install it from https://github.com/beatzball/preen)" >&2
+  printf '%s\n' "$text"
+  return 0
+}
+
 case "${1:-up}" in
   up|start|"")
     attach_session "$DEFAULT_SESSION"
     ;;
   session|s)
-    sess="${2:?usage: roost session NAME}"
+    need_arg "${2:-}" "usage: roost session NAME"; sess="$2"
     attach_session "$sess"
     ;;
   new)
@@ -226,7 +331,7 @@ case "${1:-up}" in
     printf '%s\n' "$me"
     ;;
   spawn)
-    name="${2:?usage: roost spawn NAME [CMD...]}"; shift 2
+    need_arg "${2:-}" "usage: roost spawn NAME [CMD...]"; name="$2"; shift 2
     reject_bad_name "$name" spawn
     # Helper lands in the caller's own session when inside roost, else the default.
     if [ -n "${TMUX_PANE:-}" ]; then
@@ -361,7 +466,7 @@ JSON
     roost_hooks_claude
     ;;
   ssh)
-    host="${2:?usage: roost ssh HOST [ARGS...]}"; shift 2
+    need_arg "${2:-}" "usage: roost ssh HOST [ARGS...]"; host="$2"; shift 2
     # Run roost on the remote (must be installed there); agents run remote,
     # you drive them from this terminal. Just SSH + a remote roost — no daemon.
     exec ssh -t "$host" roost "$@"
@@ -378,7 +483,7 @@ JSON
       shift 2
       set -- send "$@"
     fi
-    raw="${2:?usage: roost send [--force] [SESSION:]WINDOW TEXT...}"; shift 2
+    need_arg "${2:-}" "usage: roost send [--force] [SESSION:]WINDOW TEXT..."; raw="$2"; shift 2
     tgt="$(target "$raw")"
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
     # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
@@ -401,7 +506,7 @@ JSON
     # this split actually breaks on.
     #
     # @agent_state joins the same snapshot for the same reason: the blocked
-    # check below must describe the pane that is about to be typed into, not
+    # check below must describe the pane that is about to be pasted into, not
     # a pane re-resolved a moment later. With a WINDOW target, display-message
     # and send-keys both resolve to that window's active pane, so the guard
     # covers exactly the pane that would receive the keys.
@@ -426,7 +531,7 @@ JSON
       echo "roost send: target '$raw' is a dead pane (its command has exited); nothing would be delivered" >&2
       exit 2
     fi
-    # A blocked pane is showing a permission dialog. send types the text and
+    # A blocked pane is showing a permission dialog. send pastes the text and
     # then presses Enter; against a dialog the text goes into the dialog and
     # the Enter activates whatever option is highlighted. One agent driving
     # another would then ANSWER a prompt that existed to ask a human — with
@@ -442,7 +547,7 @@ JSON
     # target is right and retrying later is the correct response, once the
     # human has answered. A caller can tell those three apart.
     if [ "$state" = "blocked" ] && [ "$force" -eq 0 ]; then
-      echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be typed into it" >&2
+      echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be pasted into it" >&2
       echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
       exit 3
     fi
@@ -450,7 +555,7 @@ JSON
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
     delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null)"
     # Fall back to 0.3 for unset / non-numeric / multi-dot values, AND guard the
-    # sleep itself, so NO value can ever abort after the text is typed but before
+    # sleep itself, so NO value can ever abort after the text is pasted but before
     # Enter is sent (which would leave the prompt half-delivered in the input box).
     case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
 
@@ -656,7 +761,7 @@ JSON
           echo "roost send: tmux refused a $bytes-byte message — nothing was delivered: $senderr" >&2
           ;;
         *)
-          echo "roost send: failed to type text into '$raw' (pane may have died): $senderr" >&2
+          echo "roost send: failed to paste text into '$raw' (pane may have died): $senderr" >&2
           ;;
       esac
       exit 1
@@ -756,12 +861,90 @@ JSON
     done
 
     if [ "$retries" -gt 0 ] && pending "$*"; then
-      echo "roost send: text typed into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
+      echo "roost send: text pasted into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
       exit 1
     fi
     ;;
   read)
-    raw="${2:?usage: roost read [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    # --render (-r) is accepted only in front of the target, matching send's
+    # --force above — but for a different reason. Here the flag is unambiguous
+    # wherever it appears, because read's positionals are a target and a line
+    # count and neither can look like it; the rule is kept anyway so the two
+    # commands are learned once, and so LINES stays the third word it has
+    # always been rather than moving when a flag is added after the target.
+    render=0
+    case "${2:-}" in
+      # An unknown flag in the flag slot used to fall through and be treated as
+      # the TARGET, which failed later with an empty read and exit 1 -- a typo
+      # like `--renderr` came back as tmux's "can't find session" instead.
+      # Refused by name here, so the message names the typo rather than the
+      # session it was mistaken for.
+      # No `-[0-9]*` exemption: slot 2 is the flag-or-TARGET slot, and no
+      # target begins with a dash. `roost read -5` used to take `-5` as the
+      # target and fall through to the screen fallback for it, while
+      # `roost read -r -5` refused the same word -- two slots disagreeing
+      # about the same input. Found by review.
+      --render|-r) ;;
+      -*)
+        echo "roost read: unknown flag '$2'." >&2
+        echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+        exit 1 ;;
+    esac
+    # Consumed once, and a SECOND one is refused rather than absorbed. The
+    # first version checked for an unknown flag once, before the shift, so a
+    # repeated `-r` landed in the target slot, was never looked at again, and
+    # became the target -- an empty read at exit 1 that surfaced as tmux's
+    # "can't find session". Found by review.
+    #
+    # A loop that consumed flags until they ran out was tried and removed: it
+    # was dead code, because the second flag is an error rather than something
+    # to consume. A mutation that made the loop run only once turned nothing
+    # red, which is what exposed it.
+    case "${2:-}" in
+      --render|-r)
+        render=1
+        # Drop "read" and the flag, then put the subcommand back so every
+        # positional reference below keeps its original number.
+        shift 2
+        set -- read "$@"
+        # The word after a consumed flag is a flag slot too. A second --render,
+        # or a typo following a good flag, must not fall through to the target.
+        # No `-[0-9]*` exemption here, unlike the LINES sweep below: a line
+        # count comes AFTER the target, never before it, so `roost read -r -3
+        # TGT` is malformed and used to make `-3` the target.
+        case "${2:-}" in
+          -*)
+            echo "roost read: '$2' is not valid here — --render/-r may be given once, before the target." >&2
+            echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+            exit 1 ;;
+        esac
+        ;;
+    esac
+    need_arg "${2:-}" "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
+    # A flag AFTER the target is refused rather than swallowed. It used to land
+    # in $lines: with a recorded reply that printed the raw text at exit 0 with
+    # no warning (the flag looked like it worked and did nothing), and on the
+    # fallback path it reached `tail -n --render` and produced `tail: illegal
+    # offset` with no output at all. Both were found by review.
+    #
+    # EVERY remaining word is checked, not just the LINES slot. The first
+    # version read $3 alone, so `roost read TGT 20 --render` was swallowed
+    # exactly as `roost read TGT --render` had been -- the same bug moved one
+    # word right. Found by both reviewers, separately.
+    #
+    # A NEGATIVE INTEGER IS NOT A FLAG. `tail -n -3` has always meant "the last
+    # 3 lines", so `roost read TGT -3` worked before this guard existed and the
+    # first version broke it. The test is therefore "starts with a dash and is
+    # not a number", not "starts with a dash".
+    for _arg in "${@:3}"; do
+      case "$_arg" in
+        -[0-9]*) continue ;;          # a negative line count, which tail takes
+        -*)
+          echo "roost read: '$_arg' looks like a flag, and flags go BEFORE the target." >&2
+          echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+          exit 1 ;;
+      esac
+    done
     tgt="$(target "$raw")"
     # Prefer what the agent SAID over what its pane is DRAWING. An adapter
     # (the Claude Stop hook, adapters/opencode/roost.js) stamps @roost-reply
@@ -805,7 +988,14 @@ JSON
       # `tail -n` on it would chop the BEGINNING off a long answer, and
       # skills/roost/SKILL.md passes 40 today, which would silently truncate
       # anything longer. N describes the screen, and only the screen.
-      printf '%s\n' "$reply"
+      # Branch rather than always piping: with --render absent the reply must
+      # leave this command by exactly the printf it always has, unchanged down
+      # to the byte, because that is what callers diff against.
+      if [ "$render" -eq 1 ]; then
+        printf '%s\n' "$reply" | render_stdin
+      else
+        printf '%s\n' "$reply"
+      fi
       exit 0
     fi
     # Never return nothing. An empty result would be a worse failure than the
@@ -822,6 +1012,28 @@ JSON
     # prepended to every single read.
     echo "roost read: no recorded reply for '$raw' — showing the pane's screen instead." >&2
     echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
+    # THE FALLBACK IS NOT RENDERED, and this is a deliberate reversal of the
+    # obvious reading of the flag. A recorded reply is markdown because an
+    # agent wrote it. A pane's SCREEN is not: it is terminal output, and a
+    # markdown renderer DELETES the characters in it that look like syntax.
+    # Measured against the real preen:
+    #
+    #   CANARY <ttyUSB0> port  ->  CANARY  port    (an HTML-ish tag, gone)
+    #   2*3*4 = 24             ->  234 = 24        (*3* read as emphasis)
+    #   rate _low_ now         ->  rate low now    (underscores eaten)
+    #
+    # Silently dropping bytes out of the one output a human reads to work out
+    # what a pane is doing is a worse trade than leaving it uncoloured -- and
+    # it is the exact class of quiet loss this command exists to stop, since
+    # the caller cannot tell a deleted token from one the pane never printed.
+    #
+    # Said on stderr rather than done silently, for the reason the previous
+    # version of this comment gave: a flag that appears to stop working looks
+    # like a broken renderer. So it is stated, on the stream that is not the
+    # caller's pipe.
+    if [ "$render" -eq 1 ]; then
+      echo "roost read: the screen is not markdown, so it is not rendered — a renderer would delete <tags>, *stars* and _underscores_ that are the pane's own output." >&2
+    fi
     screen_dump "$tgt" "$lines"
     ;;
   screen)
@@ -831,7 +1043,32 @@ JSON
     # half. skills/roost/SKILL.md's "roost read it to see what's stuck"
     # guidance points here, because a stuck TUI is exactly the case where the
     # rendering IS the thing you want, chrome included.
-    raw="${2:?usage: roost screen [SESSION:]WINDOW [LINES]}"; lines="${3:-40}"
+    need_arg "${2:-}" "usage: roost screen [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
+    # No target begins with a dash, so a word that does is a flag or a typo.
+    # `roost read` refuses it; without this, `roost screen -5` took `-5` as a
+    # target and read a pane for it, so the two commands disagreed about the
+    # same input. Found by review.
+    # Both slots, not just the target. Fixing slot 2 alone left
+    # `roost screen TGT --render` reaching `tail -n --render` and printing
+    # `tail: illegal offset` -- the exact leak that was removed from `read`,
+    # still live here under a commit claiming the two commands agreed. A
+    # negative LINES is allowed in the count slot for the reason read's is:
+    # `tail -n -3` means "the last 3 lines".
+    case "$raw" in
+      -*)
+        echo "roost screen: '$raw' is not a target — roost screen takes no flags." >&2
+        echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
+        exit 1 ;;
+    esac
+    for _arg in "${@:3}"; do
+      case "$_arg" in
+        -[0-9]*) continue ;;
+        -*)
+          echo "roost screen: '$_arg' is not valid — roost screen takes no flags." >&2
+          echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
+          exit 1 ;;
+      esac
+    done
     screen_dump "$(target "$raw")" "$lines"
     ;;
   reply)
@@ -874,7 +1111,7 @@ JSON
     t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
     ;;
   wait-done|wait)
-    raw="${2:?usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]}"; timeout="${3:-0}"; waited=0
+    need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout="${3:-0}"; waited=0
     tgt="$(target "$raw")"
     # A %N target is pane-precise; anything else aggregates the window's agent
     # panes. The two cases MUST branch on the target form: `list-panes -t %N`
@@ -962,5 +1199,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac

@@ -23,7 +23,7 @@ stamped `blocked` by the `Notification` hook and **nothing ever unstamps it**.
 (or presses Esc).
 **Wrong output:** the dialog closes and the pane sits idle at an empty prompt,
 but `roost send` still refuses it with exit 3 and the message *"a permission
-dialog is open, and this text would be typed into it"* — when none is. The
+dialog is open, and this text would be pasted into it"* — when none is. The
 target is unreachable to every roost coordination command until something else
 stamps that pane.
 
@@ -63,7 +63,7 @@ it gets tells it to wait for a human who has already answered. Declining a
 permission prompt is an everyday action, not an edge case.
 
 **Why it is not worse than that.** It fails closed, never open: nothing is
-typed into anything, the exit code is distinct, and the message it prints names
+pasted into anything, the exit code is distinct, and the message it prints names
 the escape hatch (`roost send --force`) in its own second line. A human typing
 anything into the pane clears it on the next `UserPromptSubmit`.
 
@@ -171,7 +171,7 @@ lives.
 
 **What that costs, precisely.** The same as the copilot entry below: an
 unbadged pane is not `blocked`, so `roost send`'s exit-3 refusal never fires,
-and a `send` aimed at a codex pane sitting at a permission dialog types into
+and a `send` aimed at a codex pane sitting at a permission dialog pastes into
 that dialog and presses Enter on whatever is highlighted.
 
 **Why it shipped anyway.** The gate is codex's and cannot be answered from this
@@ -211,7 +211,7 @@ skipped anything. The pane simply stays unstamped, which roost renders exactly
 like a shell.
 
 **What that costs, precisely.** It is not only a missing badge. `roost send`
-refuses a `blocked` target with exit 3 so that one agent cannot type into
+refuses a `blocked` target with exit 3 so that one agent cannot paste into
 another's permission dialog — and an unbadged pane is not blocked, so the
 refusal never fires. A copilot pane whose extension never loaded, sitting at a
 permission prompt, will take a `roost send` straight into that dialog and press
@@ -246,7 +246,7 @@ crash and no error. The badge simply never appears again.
 of their own are exposed, because a stock pi has no dialogs at all. For them the
 failure is the "silently stuck" one the adapter contract's §3 names: the pane
 reads `working` while a human stares at a prompt, `roost next-blocked` does not
-find it, and `roost send` types into the dialog and presses Enter on whatever is
+find it, and `roost send` pastes into the dialog and presses Enter on whatever is
 highlighted.
 
 **Why it shipped anyway.** The alternative is not to offer `blocked` for pi at
@@ -406,6 +406,30 @@ It is inert today because every live caller passes the argument explicitly, so
 the default is never taken. Recorded because "inert today" is a property of
 the callers, not of the code.
 
+
+### A reply ending in `;` loses that character
+
+**Input:** an agent whose turn ends with a line like `return 0;` — ordinary in
+any answer that quotes code.
+**Wrong output:** `roost read` gives back `return 0`. The semicolon is gone,
+silently, with nothing on stderr and exit 0.
+
+The cause is tmux, not roost's own parsing: `set-option -p @roost-reply "..."`
+goes through tmux's command parser, and a **trailing** `;` there is a command
+separator rather than text. Reproduced on tmux 3.6 against a throwaway socket —
+`return 0;` in, `return 0` out, confirmed with `od -c`. Only a trailing one is
+affected; `a;b` survives intact, and so does `case x;;` minus its last
+character.
+
+It reaches every reply, so it hits `bin/roost`'s `reply` arm and
+`scripts/roost-agent-state`, and it predates the `--render` work — both
+reviewers of PR #29 found it independently while testing something else.
+
+**Why it is still here:** the fix is an escaping layer around every option
+write, and the write path is shared with `@agent_state`, which is what badges
+every pane. That is a change worth making on its own, with its own tests,
+rather than folded into an unrelated branch. The loss is one character at the
+very end of a reply, and the reply is still delivered.
 
 ## Behaviour changes
 
@@ -575,6 +599,47 @@ has already produced a real bug here.
   branches are editing collides for no benefit.
 
 ## Process lessons
+
+### A sweep done from a review's list is not a sweep
+
+PR #29 changed one phrase across the repo after #31 replaced typing with
+pasting. Three review rounds running, a reviewer returned with more sites:
+five, then about fifteen — two of them in the very file whose section had just
+been rewritten — then five more, plus two the author found alongside them. Each
+round the listed sites were fixed and the job called done.
+
+Only `fc6c30c` ran a `grep` over the whole tree instead of working from the
+report, and that is the commit that actually closed it.
+
+**And the mirror of it, in the very next commit.** Sweeping a phrase without
+reading each site produced the opposite error: `394f314` changed four comments
+in `tests/live/*-smoke.sh` to say "delivered" when those scripts use raw
+`tmux send-keys`, not `roost send`. "Typed" was correct there, and
+load-bearing — the race those comments explain exists *because* keystrokes
+reach a TUI that has not rendered. Reverted in `fbb805f`.
+
+Neither half is reading the code: taking a list on trust, or taking a phrase on
+trust. A sweep finds the candidates; only the surrounding code says which are
+real.
+
+**Commits, not round numbers.** This entry named ordinals twice and had them
+wrong both times — which is the failure it is about. A SHA cannot drift.
+
+### A mutation that fails to apply reports the fix as unnecessary
+
+Six mutations across PR #29 earned their keep. A seventh lied: its anchor
+string did not match, so nothing was mutated, the suite stayed green, and the
+result read exactly like "this fix was not needed". Every mutation since
+asserts its own anchor before running.
+
+Two of the six found what the tests could not. One showed a flag-consuming
+loop was dead code, because removing it turned nothing red. One showed an
+assertion passing for the wrong reason — it checked only that the exit code was
+non-zero, and the command failed for an unrelated cause. Three assertions in
+that file were checking status where they meant to check the message.
+
+**A test that cannot fail and a fix that is not needed look identical from
+here.** Only a mutation proven to have been applied tells them apart.
 
 ### Blast radius enumerated from memory misses consumers
 

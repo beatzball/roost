@@ -89,7 +89,7 @@ as_pane "$ROOST" send "$pane" "printf 'SENT-MARKER\\n'" >/dev/null 2>&1
 rc=$?
 assert_eq "$rc" "0" "roost send exits 0 against the caller's own server"
 assert_contains "$(tmux -S "$s" capture-pane -p -t "$pane")" "SENT-MARKER" \
-  "roost send types into the caller's own server with no ROOST_SOCKET"
+  "roost send pastes into the caller's own server with no ROOST_SOCKET"
 
 # --- wait-done reads state from the same server ------------------------------
 # An errored pane must be reported as errored. Pointed at the wrong (empty)

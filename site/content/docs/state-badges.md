@@ -151,7 +151,7 @@ The directory name is yours; the file name is not — copilot looks for `extensi
 
 2. **Copilot asks once per directory** to approve the extension — *"wants to: handle permission requests"*. Answer **Yes**. Denying it stops the extension loading; there is no global pre-approval, so a new worktree asks again. **This is one of the two steps no installer can do for you**: it is a prompt in copilot's own TUI, and nothing on disk records the answer.
 
-That second dialog is the price of the 🛑 badge, and it is worth being clear about why. Copilot only tells an extension a permission dialog has opened if that extension registers a permission handler — so without one, a pane sits on ⏳ working while you stare at a prompt, and `roost send` will happily type into it. roost registers the handler and returns the SDK's observe-only result: it sees the dialog and badges the pane, and **your dialog still opens and you still choose**. roost never answers a permission prompt.
+That second dialog is the price of the 🛑 badge, and it is worth being clear about why. Copilot only tells an extension a permission dialog has opened if that extension registers a permission handler — so without one, a pane sits on ⏳ working while you stare at a prompt, and `roost send` will happily paste into it. roost registers the handler and returns the SDK's observe-only result: it sees the dialog and badges the pane, and **your dialog still opens and you still choose**. roost never answers a permission prompt.
 
 | copilot signal | state |
 |----------------|-------|
@@ -195,7 +195,7 @@ The file name is yours; the `.ts` is not — pi discovers `*.ts` (and `*/index.t
 So nothing on a stock pi install ever asks you a question mid-turn, and a pi pane never goes 🛑. What that costs you, precisely:
 
 - **`roost next-blocked` will never find a pi pane.** Nothing is waiting for you, so there is nothing to jump to.
-- **`roost send` will never refuse a pi pane with exit 3.** That refusal exists so one agent cannot type into another's permission dialog. A pi pane has no dialog to type into, so a pi pane is always safe to send to — the refusal is not missing, it is not needed.
+- **`roost send` will never refuse a pi pane with exit 3.** That refusal exists so one agent cannot paste into another's permission dialog. A pi pane has no dialog to paste into, so a pi pane is always safe to send to — the refusal is not missing, it is not needed.
 
 If you install a permission gate of your own — pi ships `examples/extensions/permission-gate.ts` as the pattern — roost sees its dialog and badges the pane 🛑 for as long as it is open. That works because pi hands every extension the same `ctx.ui` object, so roost can watch a dialog it did not raise. **roost never answers one.** It calls your gate's dialog and returns exactly what your gate returned; you still choose.
 

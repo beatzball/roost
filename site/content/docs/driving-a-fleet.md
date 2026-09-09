@@ -10,7 +10,7 @@ sidebar:
 roost exposes tmux's scripting as small agent-shaped commands, so you (or a script, or one agent) can drive the others:
 
 ```sh
-roost send api "run the tests"   # type a prompt + Enter into the "api" agent
+roost send api "run the tests"   # paste a prompt + Enter into the "api" agent
 roost read api                   # print the reply that agent just gave
 roost screen api 20              # print what is ON its screen: last 20 non-blank lines
 roost wait-done api              # block until "api" is done/idle
@@ -34,7 +34,7 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 - `roost whoami` — this agent's own target (its `%N`)
 - `roost spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
 - `roost split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
-- `roost send TARGET "…"` — reliably type a prompt into an agent and submit it (refuses a 🛑 blocked target; see below)
+- `roost send TARGET "…"` — reliably paste a prompt into an agent and submit it (refuses a 🛑 blocked target; see below)
 - `roost wait-done TARGET` / `roost read TARGET` — wait for it to finish, then read the reply
 - `roost screen TARGET` — what is on that pane's screen, chrome and all
 - `roost reply "…"` — record what *you* just said, so another agent's `read` gets it
@@ -53,7 +53,7 @@ When nothing has been recorded, `read` falls back to scraping the screen and **s
 roost read: no recorded reply for 'api' — showing the pane's screen instead.
 ```
 
-The notice goes to stderr, so `roost read api | grep …` and loops over several agents stay clean. Two things cause it:
+The notice goes to stderr, so `roost read api | grep …` and loops over several agents stay clean. Three things cause it:
 
 - **The target is not an agent** — a shell, a log tail, a pager. Nothing is wrong; use `roost screen` for those.
 - **The target is an agent that cannot record.** Its harness has no roost adapter, or its Claude `Stop` hook predates this feature. Run `roost doctor` on that machine — it names the exact fix.
@@ -61,6 +61,44 @@ The notice goes to stderr, so `roost read api | grep …` and loops over several
 
 Never treat a fallback result as an agent's answer. If the notice appeared, the reply was not collected.
 
+### Render the markdown: `roost read --render`
+
+Agents answer in markdown. `roost read` prints it raw, because that is what a
+script wants. Add `--render` (or `-r`) when a **person** is reading it, and the
+reply is piped through [preen](https://github.com/beatzball/preen) instead —
+which renders diffs as well as markdown, and agents send a lot of diffs:
+
+```sh
+roost read --render api
+roost read -r %12
+roost read -r api 20        # the line count still describes the screen
+```
+
+The flag goes in front of the target, and **only** in front of it. A flag in
+the line-count slot is refused with a usage line rather than quietly read as a
+number — `roost read api --render` used to print unrendered text at exit 0 and
+say nothing.
+
+It is opt-in and changes nothing else: plain `roost read` still emits the reply
+byte for byte, so existing pipelines and `grep`s are unaffected.
+
+**A screen fallback is never rendered.** A recorded reply is markdown because
+an agent wrote it; a pane's screen is terminal output, and a markdown renderer
+deletes the characters in it that look like syntax — `<ttyUSB0>` disappears,
+`2*3*4` becomes `234`, `_low_` becomes `low`. Losing bytes out of the one
+output you read to work out what a pane is doing is worse than not colouring
+it, so the screen goes through untouched and `--render` says why on stderr.
+
+**`--render` is for eyes, never for a parser.** Rendering is lossy by design:
+`use Vec<T> here` comes back as `use Vec here`, because a renderer reads `<T>`
+as markup. roost catches the case where a render comes back visually empty and
+prints the raw text instead, but it cannot catch a render that merely lost
+*some* of its characters. Anything that reads the output — a script, a `grep`,
+another agent — should use plain `roost read`.
+
+Neither a missing nor a failing `preen` costs you the text. In both cases the
+raw text is printed, the reason goes to stderr, and the exit status is still
+zero — the reply is the payload, the rendering is a convenience.
 ### A reply is never served as fresher than it is
 
 A recorded reply stays on the pane until the next turn replaces it, which is
@@ -151,7 +189,7 @@ buffers: a send should add nothing to it.
 
 ### Why a blocked target is refused
 
-`send` types your text, waits a beat, then presses Enter. If a permission
+`send` pastes your text, waits a beat, then presses Enter. If a permission
 dialog is open at that moment, the text goes **into the dialog** and the Enter
 activates whatever option is highlighted. One agent driving another could
 therefore answer a prompt that existed to ask *you* — silently, because the

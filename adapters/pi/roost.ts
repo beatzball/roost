@@ -170,7 +170,7 @@ export const RoostState = () => {
     // The await is deliberate, and it costs the human up to one process spawn
     // before their dialog draws. It buys the ordering that makes `blocked`
     // worth having: `roost send` refuses a blocked target with exit 3 so that
-    // one agent cannot type into another's dialog, and a badge written AFTER
+    // one agent cannot paste into another's dialog, and a badge written AFTER
     // the dialog opens leaves a window where the refusal does not fire.
   }
 

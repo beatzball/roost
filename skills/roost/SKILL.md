@@ -80,12 +80,12 @@ are real and cost tokens — only spawn what you need.
 
 ## Message an agent
 
-`roost send TARGET "text"` types the text and submits it reliably. Until roost
+`roost send TARGET "text"` pastes the text and submits it reliably. Until roost
 adds sender attribution, prefix who you are so the receiver can reply (as
 above). Exit codes tell you WHAT to do next, so branch on `$?`:
 
 - **exit 3** — the target's badge says BLOCKED: a permission dialog is open on
-  it. Your text would be typed into that dialog and the Enter would activate
+  it. Your text would be pasted into that dialog and the Enter would activate
   whatever option is highlighted, so you would be answering a prompt meant for
   the human. Do NOT re-resolve and do NOT force. Sleep and retry the SAME
   target until a human answers it. `roost send --force TARGET "text"` overrides
@@ -101,8 +101,8 @@ above). Exit codes tell you WHAT to do next, so branch on `$?`:
 - **exit 2** — the target itself is bad (doesn't exist, or its pane is dead).
   Re-resolve it: check `roost status` or the id you captured.
 - **exit 1** — delivery to a valid target failed: either the text never
-  reached the pane (typing itself failed, e.g. the pane died mid-send) or it
-  was typed but never left the input line even after retrying extra Enters
+  reached the pane (the paste itself failed, e.g. the pane died mid-send) or it
+  was pasted but never left the input line even after retrying extra Enters
   (a cold TUI swallowed the submit). Do NOT re-resolve the target — `roost
   send` the same target again, or `roost screen` it to see what's stuck
   (`screen`, not `read`: a stuck pane's problem is on its screen, and its
