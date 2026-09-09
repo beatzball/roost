@@ -19,6 +19,35 @@
 # character-counted cap of 12288 could hand tmux 49152 bytes and be refused.
 ROOST_REPLY_MAX="${ROOST_REPLY_MAX:-12288}"
 
+# roost_reply_escape TEXT — print TEXT with a trailing `;` made safe for tmux.
+#
+# `set-option -p @roost-reply "<value>"` goes through tmux's COMMAND parser,
+# where a trailing `;` is a command separator rather than text. So a reply
+# ending `return 0;` -- ordinary in any answer that quotes code -- was stored
+# as `return 0`, one character short, silently, at exit 0. Measured on tmux 3.6
+# against an isolated -S socket, confirmed with od -c.
+#
+# EXACTLY ONE trailing semicolon is eaten, and nothing else is. Measured across
+# `a;b`, `case x;;`, `trail ;`, a trailing backslash, quotes, braces, `$` and
+# `#`: only the final `;` of a value that ends in one is lost, and `case x;;`
+# comes back as `case x;` rather than `case x`. So escaping that single
+# character is the whole fix, and it is why this is a `case` on the tail rather
+# than a substitution over the string -- rewriting every `;` would corrupt the
+# far commoner reply that merely contains one.
+#
+# NO DECODE SIDE. tmux's parser turns `\;` back into `;` before storing, so the
+# value that comes out of `show-options` is the original and every reader is
+# untouched. That is a property of the parser rather than of this file, which
+# is why tests/test-reply-channel.sh asserts it through a REAL round trip
+# rather than against this function: a tmux that behaved differently would fail
+# CI on macOS and Linux instead of quietly corrupting a reply in the field.
+roost_reply_escape() {
+  case "$1" in
+    *\;) printf '%s' "${1%;}\\;" ;;
+    *)    printf '%s' "$1" ;;
+  esac
+}
+
 # roost_reply_encode TEXT — print the value to store, truncating if needed.
 #
 # Truncation keeps the HEAD and marks itself. A reply cut from the front reads
@@ -34,7 +63,7 @@ roost_reply_encode() {
   local text="$1" n head
 
   n=${#text}
-  [ "$n" -le "$ROOST_REPLY_MAX" ] && { printf '%s' "$text"; return 0; }
+  [ "$n" -le "$ROOST_REPLY_MAX" ] && { roost_reply_escape "$text"; return 0; }
 
   head="${text:0:$ROOST_REPLY_MAX}"
   # Cut back to the last newline in the slice. A newline is a single ASCII byte
@@ -52,7 +81,12 @@ roost_reply_encode() {
     *$'\n'*) head="${head%$'\n'*}" ;;
   esac
 
-  printf '%s\n[roost: reply truncated — %s of %s bytes]' "$head" "$ROOST_REPLY_MAX" "$n"
+  # Escaped at the END, on the value that is actually handed to tmux. The
+  # truncation marker ends in `]` so it can never trigger the escape today --
+  # but a marker reworded later must not silently reintroduce the bug, and the
+  # cheapest way to guarantee that is to make the escape the last thing that
+  # happens on every path out of here.
+  roost_reply_escape "$(printf '%s\n[roost: reply truncated — %s of %s bytes]' "$head" "$ROOST_REPLY_MAX" "$n")"
 }
 
 # Only the encoding lives here, not the tmux call. The two callers reach their

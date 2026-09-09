@@ -178,6 +178,13 @@ esac
 # window without overwriting each other's badge. Glyphs are NOT stamped: the
 # status bar derives them from @roost-glyph-<state> at render time, so a theme
 # change is live everywhere with nothing left to go stale.
+# NEITHER of these needs the trailing-semicolon escape @roost-reply carries.
+# tmux's command parser eats a trailing `;` from any option value, but $state
+# has been normalised to one of five fixed words by the `case` above and
+# @agent_since is `date +%s`, so neither can end in one. Said here because the
+# obvious next move on reading roost_reply_escape is to apply it to every
+# option write, and escaping a value that cannot need it only adds a way to be
+# wrong later.
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
 

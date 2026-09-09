@@ -51,6 +51,31 @@ as_pane "$ROOST" reply "$hostile"
 assert_eq "$("$ROOST" read "$pane")" "$hostile" \
   "a reply containing tmux format and style syntax survives unexpanded"
 
+# --- a trailing semicolon survives ------------------------------------------
+# `set-option -p @roost-reply "..."` goes through tmux's COMMAND parser, and a
+# trailing `;` there is a command separator rather than text. So a reply ending
+# in `return 0;` -- ordinary in any answer that quotes code -- came back as
+# `return 0`, one character short, silently, at exit 0. Both reviewers of #29
+# found it independently while testing something else.
+#
+# Asserted through the real round trip rather than against the encoder alone:
+# the fix relies on tmux turning `\;` back into `;`, and only a live tmux can
+# say whether it does. CI runs this on macOS and Linux, so a tmux that behaves
+# differently fails here rather than corrupting a reply in the field.
+for _v in 'return 0;' 'case x;;' ';' 'trail ;' 'a;b' 'x\' 'a\;' 'no semi'; do
+  as_pane "$ROOST" reply "$_v"
+  assert_eq "$("$ROOST" read "$pane")" "$_v" \
+    "a reply of [$(printf '%s' "$_v" | cat -v)] survives the round trip byte for byte"
+done
+
+# The negative control for the same mechanism: a semicolon in the MIDDLE was
+# never at risk, and a test that only checked trailing ones could pass while
+# the fix mangled everything else.
+_multi=$'first;\nsecond;;\nthird ;'
+as_pane "$ROOST" reply "$_multi"
+assert_eq "$("$ROOST" read "$pane")" "$_multi" \
+  "a reply whose every line ends in a semicolon survives whole"
+
 # --- N describes the screen, never the reply --------------------------------
 
 # `tail -n N` on a recorded reply would chop off its BEGINNING, and
@@ -201,6 +226,17 @@ assert_eq "$(stored)" $'HOOK line 1\nHOOK "quoted" line 2' \
   "the Stop hook records last_assistant_message as the reply"
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @agent_state)" "done" \
   "the Stop hook still badges the pane done"
+
+# ...and the trailing semicolon through the HOOK path specifically. Both
+# writers share roost_reply_encode, so one fix covers both -- but "shares a
+# helper" is a claim about the source, and this asserts it about the behaviour.
+# A hook that stopped calling the encoder would leave the `roost reply` cases
+# above green while every real agent reply lost its last character.
+payload='{"session_id":"x","hook_event_name":"Stop","last_assistant_message":"int main() { return 0; }\nexit;"}'
+tmux -S "$s" set-option -p -t "$pane" @agent_state working
+printf '%s' "$payload" | env TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/scripts/roost-agent-state" done --stop-hook
+assert_eq "$(stored)" $'int main() { return 0; }\nexit;' \
+  "a Stop-hook reply ending in a semicolon keeps it"
 
 # The reply write sits ABOVE the unchanged-state early bail. A Stop arriving
 # when the pane already reads done — a turn with no UserPromptSubmit, a
