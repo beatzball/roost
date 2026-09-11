@@ -225,12 +225,25 @@ work, and escalating is never held against you.
 under it, read **[site/AGENTS.md](site/AGENTS.md)** — it covers the page
 format, the sidebar, and how to verify a change.
 
-Two audiences, two files, no duplication:
+Three audiences, no duplication. Each fact is written once, in the file whose
+reader needs it, and linked to from the others:
 
-- `site/content/docs/` is for **users** — install, setup, keys, driving a fleet,
-  badges, troubleshooting.
-- `README.md` is for **contributors** — repo layout, how it works, running the
-  tests, working on the site.
+- **Users** — people who install and run roost: `site/content/docs/`. Install,
+  setup, keys, driving a fleet, badges, troubleshooting, and what installing an
+  extension does and does not check.
+- **Extension authors** — people who build something roost dispatches to:
+  `site/content/docs/` as well, on its own page. The manifest schema, the
+  environment an extension is handed, and how to test one before publishing.
+- **Contributors** — people who change roost itself: `README.md`. Repo layout,
+  how it works, running the tests, working on the site, and where a seam lives
+  in the code.
 
-Put a fact in one and link from the other. `docs/known-gaps.md` is
-maintainer-facing and never goes on the site.
+An extension author is **not** a contributor, and this is the distinction that
+has already been got wrong once. They never open this repository: they read a
+schema and write against it, the way you read anyone's API docs. So author
+material goes on the site, not in `README.md` — nobody browses a contributor
+README to learn an API, and a schema sitting under "how to work on roost" is
+filed where its reader will not look. When a fact serves two of the three,
+pick the reader who cannot do their job without it, put it there, and link.
+
+`docs/known-gaps.md` is maintainer-facing and never goes on the site.

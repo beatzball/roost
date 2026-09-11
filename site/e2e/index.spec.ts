@@ -8,6 +8,7 @@ const PRERENDERED_ROUTES = [
   '/docs/using-roost',
   '/docs/driving-a-fleet',
   '/docs/extensions',
+  '/docs/writing-an-extension',
   '/docs/how-it-works',
   '/docs/troubleshooting',
 ];

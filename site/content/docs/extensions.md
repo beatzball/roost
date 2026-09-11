@@ -82,7 +82,7 @@ An extension's manifest can declare `needs`. There is one value in this contract
 | the manifest declares | what roost hands the extension |
 |---|---|
 | `needs` absent, or `[]` | Nothing to reach your agents with: no socket, and roost's own scripts are not put on its `PATH`. The consent block says *does not ask for access to your agents*. |
-| `"needs": ["fleet"]` | The socket to your agents, and roost's scripts on its `PATH` — which is enough to read any pane's screen and send a prompt to any agent, the same as you can from your own shell. The variables that carries are named in the [README](https://github.com/beatzball/roost#the-extension-seam). |
+| `"needs": ["fleet"]` | The socket to your agents, and roost's scripts on its `PATH` — which is enough to read any pane's screen and send a prompt to any agent, the same as you can from your own shell. The variables that carries are named in [Writing an Extension](/docs/writing-an-extension). |
 
 That second row is the whole point of the field. Reading a pane's screen means whatever has scrolled past in it: keys, tokens, `.env` contents, source. Sending a prompt means an agent that writes files and runs commands does what the extension asked it to.
 
@@ -150,4 +150,4 @@ The seam itself can also be taken out of roost altogether. That is a contributor
 
 ## Writing one
 
-Writing one is an author's job rather than a user's, and all of it — the repository layout, every manifest field, and the environment your command is handed — is on one page: [The extension seam](https://github.com/beatzball/roost#the-extension-seam) in the README.
+Writing one is an author's job rather than a user's, and all of it — the repository layout, every manifest field, the environment your command is handed, and how to install your own work from a directory on your disk before you publish it — is on one page: [Writing an Extension](/docs/writing-an-extension).

@@ -327,12 +327,22 @@ switcher (it degrades to a hint if missing).
 
 ## The extension seam
 
-`roost ext` installs subcommands from a git repository. Everything a **user**
-needs — what installing one does and does not check, what `needs` declares,
-where the files go, and the three ways to turn the seam off — is on
-[roosting.dev/docs/extensions](https://roosting.dev/docs/extensions). This
-section is the author-and-maintainer half: where the code is, and what an
-extension has to look like.
+`roost ext` installs subcommands from a git repository. Two of its three
+audiences are documented on the site, and neither of them is reading this file:
+
+- **Installing and running one** — what installing does and does not check,
+  what `needs` declares, where the files go, and the three ways to turn the
+  seam off: [roosting.dev/docs/extensions](https://roosting.dev/docs/extensions).
+- **Writing one** — the repository layout, every manifest field, the
+  environment a command is handed, the socket idiom, and how to install your
+  own work from a bare repository on your disk before you publish it:
+  [roosting.dev/docs/writing-an-extension](https://roosting.dev/docs/writing-an-extension).
+  An extension author never touches this repository, so the manifest schema
+  and the environment contract live on that page rather than in this one. If
+  you change either, change it there — see AGENTS.md §11.
+
+This section is the third audience, and only the third: where the seam lives
+in roost's own code.
 
 Three files, and nothing else in the tree changes shape:
 
@@ -361,78 +371,22 @@ an extension adds subcommands and nothing else. Agent-state events are contract
 2 and have no consumer yet — the integer is what lets them arrive later without
 breaking a contract-1 extension.
 
-### Writing an extension
+### Working on the seam
 
-A repository with a manifest at its root and one executable per command:
+A manifest field is read in three places, so a change to one is usually a
+change to three: `_ext_manifest_gate` in `scripts/roost-ext` validates it,
+the `install` and `update` arms of the same file render it in the block a user
+is asked to approve, and `roost_ext_index_write` in `scripts/lib/roost-ext.sh`
+turns the result into the dispatch table `bin/roost` obeys. Every JSON read
+here has **two** engines, python3 and jq, and `tests/test-ext.sh` asserts them
+against each other — a field taught to one and not the other passes every test
+on the machine you happen to be on.
 
-```
-roost-mark/
-├── roost-ext.json
-├── bin/
-│   ├── roost-mark        # executable; runs as `roost mark`
-│   └── roost-marks
-└── README.md
-```
-
-```json
-{
-  "name": "mark",
-  "contract": 1,
-  "roost": ">=0.1.0 <0.2.0",
-  "needs": ["fleet"],
-  "commands": ["mark", "marks"],
-  "description": "Bookmark a spot in an agent pane, with a note."
-}
-```
-
-This table is the syntax. What each field *does* at install time — which are
-hard gates and which are advisory, which values are refused and which command
-names are already taken — is written once, for the person being asked to
-install your extension, on the
-[docs page](https://roosting.dev/docs/extensions).
-
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | yes | Install directory name. `[a-z][a-z0-9-]*`, max 32 chars. |
-| `contract` | yes | Seam version this extension speaks. |
-| `roost` | no | Version range: `>=A.B.C <D.E.F`, `*`, or absent; anything else warns and is skipped. |
-| `needs` | no | Authority requested. `["fleet"]` or nothing. |
-| `commands` | yes | Each needs an executable `bin/roost-<cmd>`. |
-| `description` | no | One line, shown by `roost ext info`. It is not printed by `roost ext list`, and not in the consent block. |
-
-Your command is `exec`'d with the remaining arguments, and its exit status and
-output pass through untouched. It is handed:
-
-```sh
-ROOST_HOME        # the roost checkout
-ROOST_VERSION     # product version
-ROOST_CONTRACT    # seam version
-ROOST_EXT_DIR     # your install directory (read-only by convention)
-ROOST_EXT_STATE   # your private state directory, created before exec
-```
-
-and, **only** if the manifest declared `"needs": ["fleet"]`:
-
-```sh
-ROOST_SOCKET      # which tmux server
-ROOST_SOCKET_FLAG # "-L" if that is a socket NAME, "-S" if it is a PATH
-PATH              # with $ROOST_HOME/scripts prepended
-```
-
-Address the fleet as `tmux "$ROOST_SOCKET_FLAG" "$ROOST_SOCKET" list-panes -a`.
-Never hardcode `-L`: tmux takes `-L` for a socket *name* and `-S` for a *path*,
-so `tmux -L "$ROOST_SOCKET"` works against the production socket (the name
-`roost`) and silently addresses a **different server** everywhere else. Without
-`fleet`, `ROOST_SOCKET` is unset rather than empty, so reading it fails loudly
-instead of falling through to the user's own ordinary tmux.
-
-Write your data under `ROOST_EXT_STATE`. Anything you write elsewhere is not
-covered by `roost ext remove --purge`, and your README should say so.
-
-`needs` is a declaration that makes intent visible at consent time, not a
-boundary — see the [docs page](https://roosting.dev/docs/extensions) and
-`docs/known-gaps.md`. Nothing in this repository, and nothing you write, should
-describe an extension as checked, screened, or vouched for.
+Nothing in this repository, in its output, or on the site should describe an
+extension as checked, screened, or vouched for. There is no scanner here and
+there is no verdict to print; see the Security section of
+[the spec](docs/airig/specs/2026-09-08-extension-seam.md) for why that is a
+design decision rather than a gap waiting to be filled.
 
 ## Running the tests
 
