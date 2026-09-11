@@ -49,7 +49,7 @@ alone. See `AGENTS.md`; in particular, never run `tmux kill-server` without
 
 ## Targets are stable ids
 
-`spawn`, `split`, and `whoami` each print a stable id (e.g. `%7`) for the
+`spawn`, `split`, `view`, and `whoami` each print a stable id (e.g. `%7`) for the
 thing they just created or for you — capture it in a variable and use it for
 every later command. Ids don't drift if windows get renamed or reordered.
 Friendly `session:index` forms (e.g. `main:2`) or window names still work
@@ -187,6 +187,52 @@ with its own tab and badge. `split` opens a *pane* beside you, in your
 current window. Both are real agents: each has its own state, its own
 border badge, and is addressable by `%N` — including `wait-done %N`, which
 waits on that one pane whether it came from `spawn` or `split`.
+
+## Show the human something: `roost view`
+
+`spawn` and `split` open things *you* will talk to. `roost view` opens a thing
+a *person* will read — a diff, a plan, a log tail, a build watcher:
+
+```sh
+roost view git diff main...HEAD
+roost view -n tests 'npm test -- --watch'
+roost view -n logs tail -f /tmp/build.log
+```
+
+It names no command of its own. Whatever you hand it is what runs, so the
+choice of renderer or pager stays yours. What it decides for you is the part
+that is about the terminal rather than about the content:
+
+- **Pane or window.** At least `ROOST_VIEW_MIN_COLS` columns wide (default 180,
+  so both halves still clear 80) and it splits in beside you; narrower and it
+  opens a window instead.
+- **No focus stealing.** The human keeps looking at whatever they were looking
+  at, and gets the directions for reaching the view instead.
+- **Replace, not stack.** A second `view` under the same `NAME` (default
+  `view`) kills the previous one first, anywhere on the server. Panes under
+  another name, and panes a human opened by hand, are never touched.
+- **The right key.** The prefix is read live, so the printed directions are
+  right for someone who rebound it.
+
+The pane id goes to stdout, so `v="$(roost view …)"` captures one id and
+nothing else. The directions go to stderr:
+
+```
+roost view: open in the pane to the right (%14).
+roost view: press ctrl-s then l to go there; ctrl-s then h comes back.
+```
+
+**Boundary — `view` vs `spawn`/`split`:** `spawn` and `split` are for *agents
+and helpers you will drive* — you keep their `%N`, you `send` to them, you
+`wait-done` on them. `view` is for a *human to read once*: nothing is sent to
+it, nothing is read back from it, and it is not an agent (it gets no badge and
+never appears as one). Reach for it at the moment you hand work over — "I
+updated the plan, here it is" — not on a timer and not at the end of every
+turn. If there is nothing new for the human to look at, do not call it.
+
+When several agents are working at once, only the one coordinating them should
+call `view`. Five reviewers each opening a view means five viewers at a human
+who asked for one result.
 
 ## Reporting your own state
 

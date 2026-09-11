@@ -250,10 +250,10 @@ Everything below is for people working **on** roost.
 ## Repo layout
 
 ```
-bin/roost                   # launcher / CLI (up, session, new, spawn, split, whoami,
-                            #   ssh, send, read, screen, reply, wait-done, state,
-                            #   hooks, doctor, validate, install, update, init,
-                            #   settings, status, kill)
+bin/roost                   # launcher / CLI (up, session, new, spawn, split, view,
+                            #   whoami, ssh, send, read, screen, reply, wait-done,
+                            #   state, hooks, doctor, validate, install, update,
+                            #   init, settings, status, kill)
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the

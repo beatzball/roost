@@ -29,17 +29,45 @@ echo "all three agents finished"
 
 ## From inside roost
 
-An agent (or you) can coordinate the fleet from inside roost. Targets are stable ids (for example `%12`) captured from `spawn` / `split` / `whoami` — capture them in a variable and reuse them. Friendly `session:index` and name forms still work too.
+An agent (or you) can coordinate the fleet from inside roost. Targets are stable ids (for example `%12`) captured from `spawn` / `split` / `view` / `whoami` — capture them in a variable and reuse them. Friendly `session:index` and name forms still work too.
 
 - `roost whoami` — this agent's own target (its `%N`)
 - `roost spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
 - `roost split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
+- `roost view [-n NAME] cmd…` — show `cmd` to the **human**: a pane beside you if your pane is wide enough, a window if it is not. Never steals focus, and a second call with the same `NAME` replaces the first view instead of adding another. See below
 - `roost send TARGET "…"` — reliably paste a prompt into an agent and submit it (refuses a 🛑 blocked target; see below)
 - `roost wait-done TARGET` / `roost read TARGET` — wait for it to finish, then read the reply
 - `roost screen TARGET` — what is on that pane's screen, chrome and all
 - `roost reply "…"` — record what *you* just said, so another agent's `read` gets it
 
-`spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place. State is **per-pane**, so `wait-done %N` waits on that one pane whichever way it was created; give it a window target instead and it waits for every agent pane in that window.
+`spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place. `view` is for neither — it is for a **human**, and it picks pane or window for you. State is **per-pane**, so `wait-done %N` waits on that one pane whichever way it was created; give it a window target instead and it waits for every agent pane in that window.
+
+## Show a human something: `roost view`
+
+`spawn` and `split` open things you will talk to. `view` opens a thing a person will *read* — a diff, a plan, a log tail, a build watcher:
+
+```sh
+roost view git diff main...HEAD
+roost view -n tests 'npm test -- --watch'
+roost view -n logs tail -f /tmp/build.log
+```
+
+It names no command of its own: whatever you hand it is what runs, so a pager, a renderer and `tail -f` all reach a human the same way. Four things it decides for you:
+
+- **Pane or window.** If your own pane is at least `ROOST_VIEW_MIN_COLS` columns wide (default 180, so both halves still clear 80) the view splits in beside you. Narrower than that and it opens a window instead, rather than squeezing two unreadable columns out of one pane.
+- **No focus stealing.** The human keeps looking at whatever they were looking at. The directions for reaching the view are printed instead.
+- **Replace, not stack.** A second `roost view` with the same `NAME` (default `view`) kills the previous one first, anywhere on the server. That is what makes the next handover *current* rather than the fifth tab in a row. Panes under another name, and panes a human opened by hand, are never touched.
+- **The right key to press.** The prefix is read live, so the printed directions are right even for someone who rebound it.
+
+```
+%14
+roost view: open in the pane to the right (%14).
+roost view: press ctrl-s then l to go there; ctrl-s then h comes back.
+```
+
+The pane id goes to **stdout** — so `v="$(roost view …)"` captures one id and nothing else — and the directions go to **stderr**, where the human reads them.
+
+A view is a handover, not a dashboard: most commands read their subject once, at startup, so what is on screen is the moment it opened. Call `view` again when there is something new to show.
 
 ## `read` returns the reply, not the screen
 
