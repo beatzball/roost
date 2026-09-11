@@ -2355,6 +2355,19 @@ case "${1:-}" in
     printf 'commands:  %s\n' "$ext_disp_claims"
     printf 'clone:     %s\n' "$ext_dest"
     printf 'state:     %s\n' "$ext_state_par/$ext_name"
+    # THE NAME EVERY OTHER VERB TAKES, printed as something to type rather
+    # than left to be inferred. It comes from the manifest, and it is under no
+    # obligation to match the repository the user just typed: someone who
+    # installed `demo/pin` and then reasonably tried `roost ext update pin`
+    # was told "no such extension: pin" -- true, unhelpful, and the answer was
+    # the first word of the line above, sitting in the middle of a sentence
+    # where nobody looks for a command to copy.
+    #
+    # The second line names the repository as well, because the two being
+    # different is exactly the thing that surprised someone, and a user who
+    # remembers only the repository has to be able to get from it to the name.
+    printf 'manage:    roost ext info|update|remove %s\n' "$ext_name"
+    printf '           that name comes from the manifest, not from %s\n' "$spec"
     ;;
 
   list)
@@ -2392,6 +2405,33 @@ case "${1:-}" in
       exit 0
     fi
 
+    # --- the column header, and the width the name column needs -------------
+    # THE COLUMNS ARE name / commit / commands, and without a header the
+    # common case does not say so: a single-command extension named after its
+    # command renders as `mark  e87807c  mark`, and a reader has taken those
+    # two identical words for a duplicated row rather than for two different
+    # questions answered the same way. The header is the whole fix, and it
+    # only works if what is under it lines up -- so the name column is
+    # measured first, in a pass of its own, rather than left ragged.
+    #
+    # Only the name column varies: the commit is the 7 characters of
+    # ${commit:0:7} or the 1-character placeholder, and commands is last and
+    # therefore pads to nothing.
+    list_name_w=4                       # NAME, the header's own width
+    while IFS=$'\t' read -r w_name w_rest || [ -n "$w_name" ]; do
+      [ -n "$w_name" ] || continue
+      if [ "${#w_name}" -gt "$list_name_w" ]; then list_name_w="${#w_name}"; fi
+    done <<EOF
+$rows
+EOF
+    # Capped at 32, the longest name `roost ext install` can write (see
+    # roost_ext_name_valid). A longer one can only have come from a lockfile
+    # edited by hand, and it overflows its own column rather than pushing
+    # every other row off an 80-column terminal: 32 + 2 + 7 + 2 leaves 37 for
+    # the commands of the widest name this feature can itself produce.
+    if [ "$list_name_w" -gt 32 ]; then list_name_w=32; fi
+    printf '%-*s  %-7s  %s\n' "$list_name_w" NAME COMMIT COMMANDS
+
     # IFS pinned to TAB alone, the same reason roost_ext_index_lookup pins it:
     # an install path or a description can legitimately contain a space.
     # `|| [ -n "$name" ]` reads a final row with no trailing newline, which is
@@ -2404,7 +2444,10 @@ case "${1:-}" in
       # separate "was it recorded at all" check is needed.
       short="${commit:0:7}"
       disp_commands="${commands//,/, }"
-      line="$name  $short  $disp_commands"
+      # Built with the same conversions as the header above, so the two
+      # cannot drift apart -- a header that stopped lining up with its rows
+      # would be worse than the ragged output it replaced.
+      line="$(printf '%-*s  %-7s  %s' "$list_name_w" "$name" "$short" "$disp_commands")"
       # roost_ext_name_valid is the SAME grammar `roost ext install` enforces
       # on the directory name before anything is written to disk -- a name
       # that fails it could never have come from this feature's own writer,

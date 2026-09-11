@@ -1508,6 +1508,35 @@ case "$out" in
 esac
 assert_eq "$commit_not_shortened" "0" "the full 40-character commit never appears -- only the shortened form does"
 
+# --- list: THE COLUMN HEADER -------------------------------------------------
+# The columns are name, commit and commands, and for the commonest extension
+# there is -- one command, named after itself -- the first and the third are
+# the same word: `mark  e87807c  mark`. A reader took that for one row printed
+# twice, which is a fair reading of three unlabelled columns. The header is
+# what says which question each column answers.
+#
+# It is asserted to LINE UP as well as to exist. A header that drifted out of
+# alignment with the rows under it would be the same defect wearing a label,
+# so the offsets are compared rather than eyeballed: where COMMIT begins in
+# the header is where a row's commit has to begin.
+list_head="$(printf '%s\n' "$out" | head -1)"
+assert_contains "$list_head" "NAME" "roost ext list prints a column header"
+assert_contains "$list_head" "COMMIT" "...naming the commit column"
+assert_contains "$list_head" "COMMANDS" "...and the commands column"
+
+alpha_row="$(printf '%s\n' "$out" | grep '^alpha ')"
+beta_row="$(printf '%s\n' "$out" | grep '^beta ')"
+head_commit_pre="${list_head%%COMMIT*}"
+alpha_commit_pre="${alpha_row%%1111111*}"
+assert_eq "${#alpha_commit_pre}" "${#head_commit_pre}" \
+  "a row's commit starts in the column COMMIT names"
+head_cmds_pre="${list_head%%COMMANDS*}"
+beta_cmds_pre="${beta_row%%beta, beta2*}"
+assert_eq "${#beta_cmds_pre}" "${#head_cmds_pre}" \
+  "a row's commands start in the column COMMANDS names"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^NAME ')" "1" \
+  "the header is printed once, not once per row"
+
 # --- list: a deleted clone is marked missing --------------------------------
 rm -rf "$EXT_DATA/alpha"
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
@@ -1739,7 +1768,7 @@ lock_install <<'JSON'
 JSON
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
 bare_line="$(printf '%s\n' "$out" | grep '^bare ')"
-assert_eq "$bare_line" "bare  -  bare" "list renders a genuinely absent commit as the literal placeholder '-', not an empty or shifted field"
+assert_eq "$bare_line" "bare  -        bare" "list renders a genuinely absent commit as the literal placeholder '-', not an empty or shifted field"
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext info bare 2>"$TMP/err")"
 assert_contains "$out" "  repo       -" "info renders a genuinely absent repo as '-'"
 assert_contains "$out" "  ref        -" "...ref too"
@@ -1763,7 +1792,7 @@ lock_install <<'JSON'
 JSON
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
 emptyref_line="$(printf '%s\n' "$out" | grep '^emptyref ')"
-assert_eq "$emptyref_line" "emptyref  -  x" \
+assert_eq "$emptyref_line" "emptyref  -        x" \
   "a field recorded as the EMPTY STRING renders as '-' too, and shifts nothing after it"
 rm -rf "$EXT_DATA/emptyref"
 rm -f "$(roost_ext_lock)"
@@ -1783,10 +1812,43 @@ cat > "$(roost_ext_lock)" <<'JSON'
 { "": { "repo": "o/x", "commands": ["x"], "needs": ["fleet"] } }
 JSON
 out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>"$TMP/err")"
-assert_eq "$out" "-  -  x (invalid name, not something roost ext install could have written)" \
+assert_eq "$out" "$(printf 'NAME  COMMIT   COMMANDS\n-     -        x (invalid name, not something roost ext install could have written)')" \
   "an EMPTY lockfile key renders as the placeholder in the name column, not as the repository"
 assert_contains "$(cat "$TMP/err")" "disagree: -" \
   "...and the disagreement warning names that entry rather than an empty list"
+rm -f "$(roost_ext_lock)"
+roost_ext_index_write
+
+# --- list: the header keeps the table inside 80 columns ---------------------
+# The name column is measured from the widest name, so a single absurd name
+# could otherwise pad EVERY other row out past a terminal's width. It is
+# capped at 32 -- the longest name `roost ext install` can write -- and a
+# longer one, which can only have come from a lockfile edited by hand,
+# overflows its own row instead of the whole table.
+#
+# 32 + 2 + 7 + 2 puts the commands column at 43, which is what this asserts:
+# the worst case this feature can produce leaves 37 columns for commands on
+# an 80-column terminal.
+mkdir -p "$EXT_DATA/short/bin"
+: > "$EXT_DATA/short/bin/roost-shortcmd"; chmod +x "$EXT_DATA/short/bin/roost-shortcmd"
+cat > "$(roost_ext_lock)" <<'JSON'
+{
+  "short": { "repo": "o/s", "commit": "3333333333333333333333333333333333333333", "commands": ["shortcmd"] },
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": { "repo": "o/l", "commands": ["long"] }
+}
+JSON
+out="$(ROOST_SOCKET="$ROOST_TEST_SOCK" "$ROOST" ext list 2>/dev/null)"
+list_head="$(printf '%s\n' "$out" | head -1)"
+head_cmds_pre="${list_head%%COMMANDS*}"
+assert_eq "${#head_cmds_pre}" "43" \
+  "a name longer than install could write pads the header no further than 32 columns"
+short_row="$(printf '%s\n' "$out" | grep '^short ')"
+# Stripped on the COMMANDS value, which is deliberately not the name here:
+# `${row%%short*}` would cut at the name in column one and measure nothing.
+short_cmds_pre="${short_row%%shortcmd*}"
+assert_eq "${#short_cmds_pre}" "43" "...and an ordinary row still lines up under it"
+assert_eq "${#list_head}" "51" "...so the header itself is well inside 80 columns"
+rm -rf "$EXT_DATA/short"
 rm -f "$(roost_ext_lock)"
 roost_ext_index_write
 
@@ -2037,6 +2099,18 @@ assert_contains "$good_out" "  contract 1                       (roost speaks 1)
   "the contract row sits where the design's block puts it"
 assert_contains "$good_out" "  claims   roost demo, roost demos" \
   "the plan names every command the extension would claim"
+
+# THE NAME TO TYPE NEXT. `fix/good` installs as `demo`: the name comes from
+# the manifest and is under no obligation to match the repository the user
+# typed. Someone who installed one repository and then reasonably typed the
+# repository's own name back at `roost ext update` was told "no such
+# extension" -- true, useless, and the name they needed was sitting mid
+# sentence in the first line of this output, which is not where anyone looks
+# for something to copy. So it is printed as a line to type.
+assert_contains "$good_out" "manage:    roost ext info|update|remove demo" \
+  "the install prints, as a line to type, the name every other verb takes"
+assert_contains "$good_out" "that name comes from the manifest, not from fix/good" \
+  "...and says that name is the manifest's, not the repository that was typed"
 
 # THE PIN. A full 40-character commit id, and the one the remote really
 # resolves that tag to -- not the ref, not an abbreviation.
