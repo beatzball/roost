@@ -14,6 +14,7 @@
 #   roost new NAME [SESSION] open a new agent window and attach (default session "main")
 #   roost spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
 #   roost split [-h|-v] [-t P] [-n NAME] [CMD]  open a helper pane in the current window; prints its %N
+#   roost view [-n NAME] CMD...  show CMD to the human: a pane beside you if there is room, a window if not. No focus steal; a second call with the same NAME replaces the first
 #   roost whoami             print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
@@ -378,6 +379,136 @@ case "${1:-up}" in
     # the command and swallow the id we already have.
     [ -n "$name" ] && { t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true; }
     printf '%s\n' "$new"
+    ;;
+  view)
+    # Put something a HUMAN has to look at where they can see it, without
+    # taking their focus and without stacking a fresh copy beside the last one.
+    #
+    # This is the third shape of "open something", and the three are not
+    # interchangeable:
+    #
+    #   spawn  a co-agent, in its own window, that you wait-done on
+    #   split  a helper pane you keep addressing by %N
+    #   view   a thing a human reads once — a diff, a log tail, a build watcher
+    #
+    # `view` names no command of its own. Whatever you hand it is what runs, so
+    # a renderer, a pager and `tail -f` all reach a human the same way. What it
+    # decides for you is pane-or-window, because that decision is about the
+    # terminal's width and not about what you are showing.
+    #
+    # It is deliberately NOT a dashboard: calling it again with the same NAME
+    # replaces the previous view rather than adding another. That replacement
+    # is the whole reason NAME exists.
+    shift
+    name="view"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -n) [ "$#" -ge 2 ] || { echo "roost view: -n needs a name" >&2; exit 2; }
+            name="$2"; reject_bad_name "$name" view; shift 2 ;;
+        --) shift; break ;;
+        -*) echo "roost view: unknown flag '$1'" >&2; exit 2 ;;
+        *)  break ;;
+      esac
+    done
+    # An EMPTY name is rejected rather than defaulted, and this guard is not
+    # cosmetic: the replace step below compares NAME against every pane's
+    # @roost-name, and an option that was never set reads back as the empty
+    # string. With name="" that comparison is true for every pane a human
+    # opened by hand, so `roost view -n '' less foo` would kill the whole
+    # server's worth of unnamed panes. Fail loudly instead.
+    [ -n "$name" ] || { echo "roost view: -n needs a non-empty name" >&2; exit 2; }
+    [ "$#" -gt 0 ] || { echo "usage: roost view [-n NAME] CMD..." >&2; exit 1; }
+
+    # Same guard as `roost split`, for the same reason: outside a roost session
+    # there is no pane to measure, nothing to split beside, and no human
+    # watching this server.
+    me="${TMUX_PANE:-}"
+    [ -n "$me" ] || { echo "roost view: not inside a roost session" >&2; exit 1; }
+    # $TMUX_PANE alone is not proof, and here that matters more than it does in
+    # `split`: the user's ordinary tmux sets it too, and a %N from THAT server
+    # is a perfectly valid id belonging to a stranger's pane over here — which
+    # this command would then use both as a width source and as the one pane
+    # the kill below spares. Resolve it on the roost socket first, the same
+    # question `roost whoami` asks.
+    me="$(t display-message -p -t "$me" '#{pane_id}' 2>/dev/null || true)"
+    [ -n "$me" ] || { echo "roost view: not inside a roost session" >&2; exit 1; }
+
+    # Replace, don't stack. Only panes roost itself named, and never this pane.
+    # A window left empty by the kill closes itself, so the window case needs
+    # no separate cleanup. A pane a human opened by hand carries no
+    # @roost-name and is not touched.
+    #
+    # `read -r p pname` puts the REST of the line in pname, so a name
+    # containing spaces ("code reviewer") still compares whole. A tab or a
+    # newline cannot get this far — reject_bad_name refuses both above.
+    while read -r p pname; do
+      [ "$pname" = "$name" ] || continue
+      [ "$p" = "$me" ] && continue
+      t kill-pane -t "$p" 2>/dev/null || true
+    done < <(t list-panes -a -F '#{pane_id} #{@roost-name}' 2>/dev/null || true)
+
+    # Measured AFTER that kill, never before. A leftover view is still holding
+    # half the columns at this point, so reading the width first makes every
+    # call after the first one believe the pane is too narrow to split — and
+    # the view then walks off into a window when it should have shared. This
+    # was a real bug in the script this command replaces; the ORDER here is
+    # the fix, so do not hoist the measurement above the loop.
+    width="$(t display-message -p -t "$me" '#{pane_width}' 2>/dev/null || true)"
+    case "$width" in ''|*[!0-9]*) width=0 ;; esac
+
+    # 180 columns, so both halves of the split still clear 80 — the width most
+    # terminal output is still written for. Below that, a window keeps the view
+    # readable instead of squeezing two unreadable columns out of one pane.
+    min="${ROOST_VIEW_MIN_COLS:-180}"
+    case "$min" in
+      ''|*[!0-9]*)
+        echo "roost view: ROOST_VIEW_MIN_COLS must be a number, got '$min'" >&2; exit 2 ;;
+    esac
+
+    # `split` and `spawn` are re-entered rather than re-implemented: they own
+    # -d (no focus steal), the `=$sess:` session-targeting quirk, the
+    # best-effort @roost-name write and the pane-id contract, and a second copy
+    # of any of that here would drift the first time one of them changed.
+    #
+    # $ROOST_SOCKET is passed explicitly so the child resolves the SAME socket
+    # this process did. A child inheriting nothing would fall through to the
+    # production `-L roost` server — the exact failure the socket comment at
+    # the top of this file describes — and this keeps the promise that no call
+    # site spells a socket flag of its own.
+    if [ "$width" -ge "$min" ]; then
+      new="$(ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" split -h -t "$me" -n "$name" "$@")" \
+        || { echo "roost view: split failed" >&2; exit 1; }
+      where=pane
+    else
+      new="$(ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" spawn "$name" "$@")" \
+        || { echo "roost view: spawn failed" >&2; exit 1; }
+      where=window
+    fi
+
+    # The prefix is a user setting — tmux/roost.conf binds C-s, and the user
+    # config sourced after it may rebind. Read the live one rather than
+    # printing C-s and being confidently wrong for anyone who changed it.
+    prefix="$(t show-options -gv prefix 2>/dev/null || true)"
+    [ -n "$prefix" ] || prefix="C-s"
+    # tmux spells it C-s; a human presses ctrl. Only the C- form is rewritten:
+    # M-a and F1 are already how someone would say them out loud.
+    prefix="${prefix/#C-/ctrl-}"
+
+    # The pane id goes to stdout, because that is the contract every other
+    # opening command keeps: a caller writes `v="$(roost view ...)"` and gets
+    # one id and nothing else. The directions are for the human at the
+    # terminal, so they go to stderr — the same division `roost read` makes
+    # when it explains a fallback without putting the explanation in the
+    # caller's pipe. `l`/`h` and `a` are the bindings in tmux/roost.conf
+    # (select-pane -R / -L, and the switcher popup).
+    printf '%s\n' "$new"
+    if [ "$where" = pane ]; then
+      printf 'roost view: open in the pane to the right (%s).\n' "$new" >&2
+      printf 'roost view: press %s then l to go there; %s then h comes back.\n' "$prefix" "$prefix" >&2
+    else
+      printf 'roost view: open in a new window named %s (%s).\n' "$name" "$new" >&2
+      printf 'roost view: press %s then a to switch to it.\n' "$prefix" >&2
+    fi
     ;;
   hooks)
     # `roost hooks` with no argument keeps printing the CLAUDE config, and must.
@@ -1199,5 +1330,5 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
 esac
