@@ -23,6 +23,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   when you install one (that it is the exact commit you agreed to, and what the
   extension declared it wants to reach) and what it does not check (whether the
   code is honest, and what it does once you run it).
+- Docs: [Writing an Extension](https://roosting.dev/docs/writing-an-extension) —
+  the manifest schema, the environment a command is handed, the socket idiom,
+  what declaring `fleet` costs your users, and how to install your own work from
+  a bare repository on your disk before you publish it.
 
 ## [0.1.0] - 2026-09-08
 
