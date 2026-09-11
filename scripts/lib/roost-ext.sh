@@ -323,6 +323,7 @@ roost_ext_core_commands() {
     whoami \
     spawn \
     split \
+    view \
     hooks \
     ssh \
     send \
