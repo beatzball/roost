@@ -55,10 +55,13 @@ Read this before changing anything in `site/`.
 - **Internal links are absolute paths**: `/docs/setup`, not `setup.md`.
 - **Do not edit `routes.generated.ts` or `server/stubs/page-manifest.ts`.**
   Both are regenerated on every build and are gitignored.
-- **This site is for users. The repo `README.md` is for contributors.**
-  Install and usage instructions belong here; build, test and layout notes for
-  people hacking on roost belong in the README. Do not duplicate one into
-  the other — link instead.
+- **This site serves two audiences; the repo `README.md` serves the third.**
+  Install and usage instructions belong here, and so does anything an
+  *extension author* needs — a manifest schema or an environment contract is
+  API documentation for someone who never opens the repository. Build, test and
+  layout notes for people hacking on roost belong in the README. Do not
+  duplicate one into the other — link instead. `AGENTS.md` §11 is the rule
+  this bullet points at.
 - **Keep `docs/known-gaps.md` out of this site.** It is a maintainer-facing
   record of shipped risks, not user documentation.
 
