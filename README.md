@@ -388,6 +388,25 @@ there is no verdict to print; see the Security section of
 [the spec](docs/airig/specs/2026-09-08-extension-seam.md) for why that is a
 design decision rather than a gap waiting to be filled.
 
+## Cutting a release
+
+`VERSION` is the release number and the single source of truth — `bin/roost`
+reads it at startup. Bumping it is what declares a release, so:
+
+1. Bump `VERSION`.
+2. Write the matching `## [X.Y.Z]` section in `CHANGELOG.md`, by hand.
+3. Open a PR. CI fails it if the two disagree.
+4. On merge to `main`, CI tags `vX.Y.Z` and cuts a GitHub Release whose body is
+   that changelog section. It is idempotent — a merge that did not bump
+   `VERSION` does nothing.
+
+The mechanics live in `scripts/roost-release-gate`, not inline in the workflow,
+so `tests/test-release-gate.sh` can exercise them. That script's header records
+why this is not release-please or semantic-release: both derive the changelog
+from commit subjects, and this project writes prose subjects rather than
+Conventional Commits. Adopting either would mean rewording every commit and
+replacing a written changelog with a generated one.
+
 ## Running the tests
 
 ```sh

@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# roost-release-gate — the two mechanical halves of cutting a release, in a
+# script rather than inline in a workflow, so tests/test-release-gate.sh can
+# exercise them. A workflow step is not testable; this is.
+#
+#   roost-release-gate check [DIR]   VERSION must have a matching CHANGELOG
+#                                    section. Exit 1, with the reason, if not.
+#   roost-release-gate notes [DIR]   print that section, heading dropped, for
+#                                    use as a release body.
+#
+# VERSION is the single source of truth for the release number — bin/roost
+# reads it at startup — so a bump to it is what declares a release.
+#
+# Deliberately NOT release-please or semantic-release. Both derive the
+# changelog from commit subjects, and this project writes prose subjects, not
+# Conventional Commits. Adopting either would mean rewording every commit AND
+# replacing a hand-written changelog with a worse generated one. The prose
+# stays human; only the bookkeeping is automated.
+set -euo pipefail
+
+usage() { echo "usage: roost-release-gate check|notes|version [DIR]" >&2; exit 2; }
+
+cmd="${1:-}"; dir="${2:-.}"
+[ -n "$cmd" ] || usage
+
+ver_file="$dir/VERSION"
+log_file="$dir/CHANGELOG.md"
+
+[ -f "$ver_file" ] || { echo "roost-release-gate: no $ver_file" >&2; exit 1; }
+[ -f "$log_file" ] || { echo "roost-release-gate: no $log_file" >&2; exit 1; }
+
+# tr rather than $(cat): a trailing newline is normal, anything else is not.
+v="$(tr -d '[:space:]' < "$ver_file")"
+
+case "$cmd" in
+  version)
+    printf '%s\n' "$v"
+    ;;
+  check)
+    # A loose glob would accept "1.2.3.4" or "v1.2.3"; be exact about it.
+    case "$v" in
+      *[!0-9.]*|.*|*.|*..*) echo "roost-release-gate: VERSION is '$v', which is not X.Y.Z" >&2; exit 1 ;;
+    esac
+    [ "$(printf '%s' "$v" | tr -cd . | wc -c | tr -d ' ')" = 2 ] || {
+      echo "roost-release-gate: VERSION is '$v', which is not X.Y.Z" >&2; exit 1; }
+
+    # grep -F, not a regex: the brackets in "## [0.1.0]" are literal, and the
+    # dots in a version are not wildcards.
+    if ! grep -qF "## [$v]" "$log_file"; then
+      echo "roost-release-gate: VERSION is $v but CHANGELOG.md has no '## [$v]' section." >&2
+      echo "  The tag job publishes that section as the release body, so an" >&2
+      echo "  unwritten section would ship an empty release." >&2
+      exit 1
+    fi
+    printf 'VERSION %s has a CHANGELOG section.\n' "$v"
+    ;;
+  notes)
+    # From the heading to the next `## ` at the same level, heading dropped.
+    # An exact `$0 ==` match, not a prefix: "## [0.1.0]" must not be found by
+    # a search for "## [0.1.0" and must not match "## [0.1.0-rc1]".
+    out="$(awk -v v="## [$v]" '
+      $0 == v { inside = 1; next }
+      inside && /^## / { exit }
+      inside { print }
+    ' "$log_file")"
+    if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+      echo "roost-release-gate: the '## [$v]' section is empty — refusing to" >&2
+      echo "  publish a release with no body." >&2
+      exit 1
+    fi
+    printf '%s\n' "$out"
+    ;;
+  *) usage ;;
+esac

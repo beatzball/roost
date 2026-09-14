@@ -31,6 +31,65 @@ jobs:
       - name: Contrast validator
         run: python3 tests/test-contrast.py
 
+  # Release bookkeeping. The logic lives in scripts/roost-release-gate, not
+  # inline here, because a workflow step cannot be tested and this project does
+  # not ship logic nobody has watched fail — tests/test-release-gate.sh covers
+  # it. See that script's header for why this is not release-please.
+  version-changelog:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: A VERSION bump needs a matching CHANGELOG section
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          # Only a CHANGED VERSION is this job's business. A PR that leaves it
+          # alone should not be blocked by a section someone else owes.
+          if git show "$base:VERSION" > /tmp/base-version 2>/dev/null \
+             && [ -f VERSION ] && cmp -s /tmp/base-version VERSION; then
+            echo "VERSION unchanged — nothing to check."; exit 0
+          fi
+          [ -f VERSION ] || { echo "No VERSION file — this repo does not cut versioned releases yet."; exit 0; }
+          scripts/roost-release-gate check
+
+  # Cut the tag once VERSION lands on main with no tag behind it. Idempotent:
+  # a merge that did not bump VERSION finds the tag already there and stops, so
+  # this runs harmlessly on every push to main.
+  #
+  # `needs: [test]` because a tag is the one thing here that is awkward to take
+  # back once anyone has fetched it.
+  tag:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Tag and release, if VERSION moved ahead of the tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # main predates VERSION until the release machinery lands. That is a
+          # valid state, not a failure — found by running the gate's own tests
+          # on a checkout without it.
+          [ -f VERSION ] || { echo "No VERSION file — nothing to tag."; exit 0; }
+          v="$(scripts/roost-release-gate version)"
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v is already tagged — nothing to do."; exit 0
+          fi
+          # The pull_request check enforces this too, but a direct push to main
+          # never sees that check, and a release with an empty body is worse
+          # than a failed job.
+          scripts/roost-release-gate check
+          scripts/roost-release-gate notes > /tmp/notes.md
+          git tag -a "v$v" -m "v$v"
+          git push origin "v$v"
+          gh release create "v$v" --title "v$v" --notes-file /tmp/notes.md
+          echo "Tagged and released v$v."
+
   # Build the exact image Coolify deploys, run it, and probe it the same way
   # verify-prod probes production. Catches "the site builds" vs "the container
   # actually serves it" -- two different claims.
