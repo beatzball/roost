@@ -242,7 +242,7 @@ One thing `roost install` will *not* do here: if `~/.codex/hooks.json` already p
 
 **Three things this adapter cannot do, and you should know them before you trust the badge.**
 
-1. **Some dead turns still show ✅ done.** A turn that dies *after* the model has started answering has a reply — the part it got out — so it looks finished. So does every turn on a machine with no working `python3` or `jq`, where roost cannot read the payload and will not guess. If a codex pane goes ✅ suspiciously fast, look at it.
+1. **Some dead turns still show ✅ done.** A turn that dies *after* the model has started answering has a reply — the part it got out — so it looks finished. So does every turn where roost cannot read the payload, and it will not guess: a machine with neither `python3` nor `jq`, or one whose `python3` is on `PATH` but does not run — the macOS `/usr/bin/python3` stub before the Command Line Tools are installed — because roost does not fall back to `jq` once it has found a `python3`. If a codex pane goes ✅ suspiciously fast, look at it.
 2. **A turn that ends with nothing to say reads 💥 error**, even if nothing went wrong. Nobody has seen codex do this on a healthy turn, and pressing Esc at a codex permission dialog fires no `Stop` at all, so it is not caught by this. But an interrupt while codex is still answering has not been measured, and roost cannot tell the two apart. A false 💥 is the safer mistake: it makes you look.
 3. **A codex pane never shows 💤 idle.** That is deliberate: an unbadged pane already renders as idle, and codex's `SessionEnd` fires within milliseconds of `Stop` under `codex exec`, so reporting it would erase the ✅ that turn just earned.
 

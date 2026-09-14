@@ -231,6 +231,38 @@ assert_eq "$(tmux -S "$outside/plain" show-options -pqv -t "$opane" @agent_state
 printf '%s' "$UPS_PAYLOAD" | env -u TMUX -u TMUX_PANE "$HOOK" UserPromptSubmit
 assert_eq "$?" "0" "outside tmux entirely, the shim exits 0 and does nothing"
 tmux -S "$outside/plain" kill-server 2>/dev/null
+
+# "Does nothing" includes spending nothing. Since #39 the shim reads and parses
+# the Stop payload itself, and ~/.codex/hooks.json is GLOBAL, so a parse ahead
+# of the tmux guard would spawn an interpreter on every codex turn anywhere on
+# the machine — including, on a Mac without the Command Line Tools, the
+# /usr/bin/python3 stub. Counted with a python3 on PATH that logs each call.
+# A real file that execs the real one, never a symlink: a `>` through a
+# symlink in a shim directory overwrites the binary it points at.
+if command -v python3 >/dev/null 2>&1; then
+  pylog="$outside/python3.log"
+  mkdir -p "$outside/pybin"
+  cat > "$outside/pybin/python3" <<EOF
+#!/bin/sh
+printf 'x\n' >> "$pylog"
+exec "$(command -v python3)" "\$@"
+EOF
+  chmod +x "$outside/pybin/python3"
+  : > "$pylog"
+  printf '%s' "$STOP_PAYLOAD" | env -u TMUX -u TMUX_PANE PATH="$outside/pybin:$PATH" "$HOOK" Stop
+  assert_eq "$(grep -c x "$pylog")" "0" "outside tmux, a Stop spawns no JSON reader at all"
+  : > "$pylog"
+  printf '%s' "$STOP_PAYLOAD" | env -u TMUX_PANE TMUX="$s,0,0" PATH="$outside/pybin:$PATH" "$HOOK" Stop
+  assert_eq "$(grep -c x "$pylog")" "0" "...nor with TMUX set but no TMUX_PANE"
+  # Detector honesty: inside roost the same Stop MUST reach the logger, or both
+  # zeros above only prove the wrapper was never on PATH.
+  : > "$pylog"
+  printf '%s' "$STOP_PAYLOAD" | env TMUX="$s,0,0" TMUX_PANE="$pane" PATH="$outside/pybin:$PATH" "$HOOK" Stop
+  [ "$(grep -c x "$pylog")" -ge 1 ]
+  assert_true $? "...while inside roost the logging python3 really is the one called"
+else
+  echo "  SKIP: python3 not found — the no-spawn-outside-roost check needs it to count"
+fi
 rm -rf "$outside"
 
 # --- 9. the registration is frozen -------------------------------------------
@@ -360,6 +392,10 @@ case "$rerr" in
   *"no roost adapter"*) assert_eq guessed named "...instead of guessing the pane has no adapter" ;;
   *) assert_eq ok ok "...instead of guessing the pane has no adapter" ;;
 esac
+# The replaced line also carried the way out of this notice, and an errored
+# pane needs that pointer as much as any other: the caller is about to look at
+# a screen, and `roost screen` is how to do that without the notice.
+assert_contains "$rerr" "roost screen" "...and still points at roost screen"
 
 # The next healthy turn recovers completely: the reason goes with the error, so
 # it can never be printed about a later turn it does not describe.

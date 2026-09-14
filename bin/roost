@@ -1206,7 +1206,7 @@ JSON
     # Pane scope only (-p), for the reason given at the @roost-reply read above.
     why="$(t show-options -p -t "$tgt" -qv @roost-error-reason 2>/dev/null || true)"
     if [ -n "$why" ] && [ "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" = "error" ]; then
-      echo "roost read: ('$raw' is in error state: $why)" >&2
+      echo "roost read: ('$raw' is in error state: $why; roost screen reads the screen without this notice)" >&2
     else
       echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
     fi

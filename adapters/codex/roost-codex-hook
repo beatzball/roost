@@ -171,9 +171,17 @@ esac
 # human running this by hand) it is not read at all — `cat` would wait for ^D —
 # and the sink is called exactly as before, which skips its own read the same
 # way.
+#
+# Not outside tmux, either. ~/.codex/hooks.json is GLOBAL, so this runs on every
+# codex turn on the machine, and the sink's own guard — no $TMUX or no
+# $TMUX_PANE, exit 0 — only fires after this block. Parsing first spent a
+# python3 spawn per turn on codex runs that roost will never badge (on a Mac
+# without the Command Line Tools, the /usr/bin/python3 stub). The same two
+# tests the sink makes, so this costs no process; the finer roost-socket check
+# stays in the sink, where lib/roost-socket.sh keeps the one copy of that rule.
 payload=""
 reason=""
-if [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
+if [ "$stop_hook" = 1 ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   payload="$(cat 2>/dev/null || true)"
   verdict=""
   # The same reader preference as roost-agent-state, for the same reason: a
