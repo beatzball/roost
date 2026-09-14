@@ -1,0 +1,7 @@
+{
+  "name": "argv-ext",
+  "contract": 1,
+  "roost": "*",
+  "commands": ["argv-ext"],
+  "description": "Prints its own argv, one argument per line."
+}

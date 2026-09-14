@@ -1,0 +1,27 @@
+#!/bin/sh
+# roost-argv-ext — print this extension's own argv, one argument per line.
+#
+# A TEST FIXTURE. `roost status` takes no arguments, so the conformance
+# fixture beside this one proves nothing about argument fidelity — and a seam
+# that hands one process's arguments to another breaks on QUOTING far more
+# often than on logic. The dispatcher's job here is small and exact: drop the
+# subcommand and pass the rest through unchanged, so `roost argv-ext %200`
+# reaches this program as `%200`, the argument it would have had if the user
+# had run this binary directly.
+#
+# The four arguments the suite sends are each chosen against a way that
+# breaks: `%200` for a shell that globs or expands it, `sess:win` for a
+# splitter that treats a colon as a field separator, `--force` for anything
+# upstream that tries to parse options out of an extension's arguments, and
+# an argument containing spaces for the one that gets lost every time — a
+# `$*` or an unquoted `$@` anywhere on the path would deliver it as four.
+#
+# `printf '%s\n' "$@"`, not `echo`: an argument of `-n` or `-e` is data here,
+# and echo would eat it. One line per argument rather than a single joined
+# line for the same reason the arguments were chosen — a joined line cannot
+# tell "a b" apart from "a" "b", which is precisely the failure being tested.
+#
+# /bin/sh, not bash: nothing here needs more, and an extension is any
+# executable the author chose to write. That the seam runs one is part of
+# what is being asserted.
+printf '%s\n' "$@"

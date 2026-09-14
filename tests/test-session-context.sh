@@ -23,6 +23,12 @@ SC="$HERE/scripts/roost-session-context"
 # Short dirs — the ~104-char unix socket limit silently corrupts long paths.
 tmpdir="$(mktemp -d /tmp/amx.XXXX)"
 export TMUX_TMPDIR="$tmpdir"
+# ...and refuse to go on if that did not take. This file starts a `-L NAME`
+# server, which without the line above would land in the REAL /tmp/tmux-<uid>/
+# beside the author's live agents (AGENTS.md §2). The guard exits 1 rather
+# than warning, so tests/run.sh reports this file as died-mid-run instead of
+# letting a green count hide it. See tests/lib.sh for what it refuses.
+roost_test_tmux_named_guard
 
 # The socket path ENDS IN /roost on purpose: that suffix is the rule
 # scripts/lib/roost-socket.sh applies to answer "am I inside a roost server",

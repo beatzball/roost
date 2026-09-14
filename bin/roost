@@ -28,6 +28,7 @@
 #   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
+#   roost ext SUBCOMMAND     add subcommands from a git repository: install, list, info, verify, update, remove
 #   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout
 #   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
@@ -35,6 +36,7 @@
 #   roost status             list running sessions + agents
 #   roost kill [SESSION]     kill one session, or the whole server if none given
 #   roost help               show this text
+#   roost --version          print roost's version (-V, or `roost version`)
 set -euo pipefail
 
 # Resolve the repo root even when invoked via a symlink on PATH.
@@ -45,6 +47,32 @@ while [ -L "$SOURCE" ]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+# Two version numbers, deliberately kept apart. ROOST_VERSION is the product:
+# semver, read from the VERSION file at the repo root, reported by
+# `roost --version` and bumped on every release, however small. ROOST_CONTRACT
+# is the extension seam's own version: a single integer that moves only when
+# the SHAPE of extension wiring itself changes — a new required manifest
+# field, a different lookup path — never when roost merely gains a feature or
+# fixes a bug. Splitting them means an ordinary roost release, no matter how
+# large, never invalidates an extension that was written against contract 1.
+#
+# `read` rather than `cat` under `set -e`: a missing or unreadable VERSION
+# (a half-copied checkout, a stray permissions change) must not take EVERY
+# roost command down with it, because this line runs before the subcommand
+# case even sees what was asked for. `roost state` sits on that path and
+# fires on every tool call of every live agent (AGENTS.md §2) — a damaged
+# checkout breaking that would freeze real agents mid-session — and `roost
+# doctor`, the tool a user reaches for to diagnose a damaged checkout, cannot
+# be the thing a damaged checkout takes out first. So a read failure falls
+# back to the literal string "unknown" instead of aborting.
+# 2>/dev/null precedes the `<`: bash applies simple-command redirections
+# left to right, and a MISSING file fails at the `<` step itself, before a
+# trailing `2>/dev/null` would take effect — so that order still prints
+# "No such file or directory" straight past this line. Put here first, the
+# redirect is already in place when the open fails.
+read -r ROOST_VERSION 2>/dev/null < "$ROOST_HOME/VERSION" || ROOST_VERSION=unknown
+ROOST_CONTRACT=1
 
 # Socket, in order: $ROOST_SOCKET (explicit seam — tests, a second server, a
 # `roost ssh` one) -> the roost server we are running inside -> the shared
@@ -80,6 +108,22 @@ roost_self_socket
 # tests/fixtures/hooks-codex.txt, which is why the detail lives in the lib
 # rather than being added to it.
 . "$ROOST_HOME/scripts/lib/roost-hooks.sh"
+# The extension seam's helpers: the index lookup the `*)` fallback at the very
+# bottom of this file dispatches through, and the two path roots it builds
+# ROOST_EXT_DIR and ROOST_EXT_STATE from.
+#
+# Sourced up here with the other libraries rather than lazily inside that
+# branch. A `.` buried in a case arm is the kind of line that gets moved
+# during a refactor and then silently stops running, and what would break is
+# a lookup that quietly finds nothing — an installed extension turning back
+# into "unknown subcommand" with no error anywhere to explain it.
+#
+# This is read on EVERY roost invocation, `roost state` included, which fires
+# on every tool call of every live agent (AGENTS.md §2). That cost is exactly
+# why scripts/lib/roost-ext.sh does one path expansion at source time and
+# nothing else, and why it defers roost-json.sh to the two functions that
+# actually parse JSON. See its header before adding work to it.
+. "$ROOST_HOME/scripts/lib/roost-ext.sh"
 SOCKET="${ROOST_SOCKET:-${ROOST_SELF_SOCK:-roost}}"
 case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
 DEFAULT_SESSION="main"
@@ -303,6 +347,16 @@ case "${1:-up}" in
     # explicit checks. It writes one file and prints its path.
     shift
     exec "$ROOST_HOME/scripts/roost-validate" "$@"
+    ;;
+  ext)
+    # `roost ext <verb>` -- the extension seam's own subcommand, kept in its
+    # own file (scripts/roost-ext) rather than folded into this case, the
+    # same shape `install`/`update` (scripts/roost-install) and `validate`
+    # (scripts/roost-validate) already use. All six verbs live there --
+    # `install`, `list`, `info`, `verify`, `update` and `remove`. See
+    # docs/airig/specs/2026-09-08-extension-seam.md.
+    shift
+    exec "$ROOST_HOME/scripts/roost-ext" "$@"
     ;;
   install|update)
     # `update` is an ALIAS, not a second arm: one shift, one exec, so the two
@@ -1330,5 +1384,236 @@ JSON
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
     ;;
-  *) echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|install|update|init|settings|status|kill [SESSION]|help]" >&2; exit 2 ;;
+  --version|-V|version)
+    printf '%s\n' "$ROOST_VERSION"
+    exit 0
+    ;;
+  *)
+    # --- the extension seam -------------------------------------------------
+    #
+    # THE FALLBACK *IS* THE SEAM, and where it sits is the security control.
+    # An installed extension is looked for here and nowhere else, so `send`,
+    # `spawn`, `read`, `status` and every other label above have already
+    # matched by the time control reaches this line: shadowing a core command
+    # is structurally impossible, not merely refused. `roost ext install` does
+    # refuse a manifest claiming a core name, and that refusal is what makes
+    # the rule comprehensible to an extension author -- but it is a list
+    # (roost_ext_core_commands) and lists go stale, whereas this branch
+    # cannot. An extension able to intercept `roost send` would sit between
+    # every message the user's agents exchange, reading and rewriting prompts
+    # on their way past.
+    #
+    # Nothing above this line was touched to add the seam, and nothing inside
+    # it changes what an unknown subcommand does: on a miss it still falls
+    # through to the usage error at the bottom, on the same stream, with the
+    # same exit status it had before extensions existed. The BYTES of that
+    # line did change -- it gained `ext` when this arm landed, and `--version`
+    # with the version flag -- so what is pinned is the line itself, written
+    # out literally in tests/test-ext.sh, and it has to move in lockstep with
+    # the usage string here. Ripping the whole feature out is deleting this
+    # body back to that one line, which is a constraint on the implementation
+    # rather than a hope -- so keep new work inside this branch.
+    #
+    # ROOST_NO_EXT is the cheapest rung of the design's "ripping it out"
+    # ladder: with it set the seam is inert and roost behaves exactly as it
+    # did before extensions existed. Non-EMPTY rather than merely set, because
+    # `export ROOST_NO_EXT=` in a profile, or a launcher that exports every
+    # name it knows whether or not it has a value, is not a request to turn
+    # anything off -- the same distinction scripts/lib/roost-ext.sh draws over
+    # an empty XDG variable.
+    if [ -z "${ROOST_NO_EXT:-}" ]; then
+      # Called inside an `if`, NEVER as a bare statement. This file runs under
+      # `set -e` and a lookup MISS is the ORDINARY case here -- every mistyped
+      # subcommand lands in this branch -- so a bare
+      # `roost_ext_index_lookup "$1"` would exit the shell on the failing
+      # lookup and `roost stauts` would print nothing at all where it used to
+      # print the usage error.
+      #
+      # stdout is discarded and the answer read back out of the two variables
+      # the lookup sets. A `$(...)` would put a fork on the one path that
+      # function exists to keep fork-free, and would throw those variables
+      # away with the subshell that set them.
+      if roost_ext_index_lookup "$1" >/dev/null; then
+        ext_name="$ROOST_EXT_LOOKUP_NAME"
+        ext_exe="$ROOST_EXT_LOOKUP_PATH"
+        # The second kill switch, `set -g @roost-ext-enabled off` in
+        # roost.conf. Asked AFTER the lookup, where the design lists it
+        # before: the observable behaviour is identical either way -- a miss
+        # is the usage error whatever the option says -- and this order keeps
+        # tmux, a fork and a round trip to a server, off the path every typo
+        # takes.
+        #
+        # `|| true` because there may be no server running at all, and `set
+        # -e` would otherwise take an ordinary mistyped command down with it.
+        if [ "$(t show-options -gqv @roost-ext-enabled 2>/dev/null || true)" != "off" ]; then
+          # This extension's two directories. roost_ext__roots SETS the roots
+          # rather than printing them, which is the documented no-fork way to
+          # build these paths; `$(roost_ext_data_dir)` would be a subshell for
+          # a string the lookup has already resolved once.
+          roost_ext__roots
+          ext_dir="$ROOST_EXT_DATA_ROOT/ext/$ext_name"
+          ext_state="$ROOST_EXT_STATE_ROOT/ext/$ext_name"
+
+          # What authority the user consented to. It arrives in the fourth
+          # column of the line the lookup has already read, and NOTHING here
+          # reads ext.lock. roost_ext_index_write resolved it out of the
+          # lockfile with a real JSON parser, once, at install and removal
+          # time, and wrote the answer down.
+          #
+          # That indirection is the fix for a real bypass, not a convenience.
+          # This branch used to parse ext.lock itself with shell string
+          # operations, because neither python3 nor jq may be a runtime
+          # dependency of roost (scripts/lib/roost-json.sh opens by saying
+          # so). It matched the bytes `"needs"` anywhere in an entry and took
+          # the next `[`, so an entry declaring `"needs": []` was handed the
+          # fleet by two ordinary strings a manifest author controls --
+          # `"description": "needs"` beside `"commands": ["fleet"]`. The user
+          # read "asks for no access to your agents" at the consent prompt and
+          # the extension got the run of the fleet.
+          #
+          # The rule that came out of it, and it is in the design now: decide
+          # a grant where a real parser is available, carry the decision
+          # forward, and never re-derive it somewhere cheaper. So no JSON is
+          # parsed on this path, there is no assumption about the lockfile's
+          # layout, and a typo costs one `while read` over a small text file.
+          # Both files sit in the same 0600 state directory, so nothing about
+          # the trust boundary moved when the decision did.
+          ext_needs="$ROOST_EXT_LOOKUP_NEEDS"
+
+          # roost_ext_needs_valid REFUSES an authority it does not recognise
+          # rather than ignoring it, and that refusal has to be honoured here
+          # too: a roost that silently granted nothing would leave the
+          # extension believing it had everything, and that surfaces as
+          # corrupted behaviour instead of a clean stop. `roost ext install`
+          # refuses such a manifest and roost_ext_index_write will not write
+          # an authority with whitespace in it, so a column that says this was
+          # hand-edited or written by a newer roost than this one.
+          if ! roost_ext_needs_valid "$ext_needs"; then
+            echo "roost $1: extension '$ext_name' asks for an authority this roost does not know: $ROOST_EXT_NEEDS_UNKNOWN" >&2
+            echo "roost $1: refusing, rather than running it with less than it expects" >&2
+            # The way out, because a refusal a user cannot act on is a dead
+            # end. Both of these are things they can type right now: one
+            # takes the extension off the machine, the other turns the whole
+            # seam off and gets every other roost command working again.
+            echo "roost $1: remove it with 'roost ext remove $ext_name', or turn the seam off with ROOST_NO_EXT=1" >&2
+            exit 1
+          fi
+          # Split, not a `*fleet*` substring test: a later contract adding an
+          # authority whose name merely CONTAINS fleet would otherwise be
+          # handed the fleet without asking for it. IFS is saved and put back
+          # by hand because this is not inside a function and `local` is not
+          # available here -- the same reason roost_ext_needs_valid restores
+          # `set -f` itself. The same three separators, too: a split here that
+          # disagreed with the one that VALIDATED is where an unknown value
+          # gets dropped on the floor.
+          #
+          # No `set -f` around this unquoted expansion, unlike the split
+          # inside roost_ext_needs_valid, because that call has already run:
+          # every token left is the literal word `fleet`, and anything with a
+          # glob character in it was refused above and never reached here.
+          ext_fleet=0
+          ext_saved_ifs="${IFS-}"
+          IFS=$', \t\n'
+          for ext_need in $ext_needs; do
+            # An `if`, not `[ ... ] && ext_fleet=1`: under `set -e` a false
+            # test on the LAST iteration would make the whole `for` return 1
+            # and take roost down where it meant "this one is not fleet".
+            if [ "$ext_need" = fleet ]; then ext_fleet=1; fi
+          done
+          IFS="$ext_saved_ifs"
+
+          # Always on, whatever the extension declared.
+          export ROOST_HOME ROOST_VERSION ROOST_CONTRACT
+          export ROOST_EXT_DIR="$ext_dir"
+          export ROOST_EXT_STATE="$ext_state"
+          # Created before the exec, so an extension's first run already has
+          # somewhere to write and no extension author has to repeat this. It
+          # is also the ONLY path `roost ext remove --purge` knows to delete,
+          # which is why an extension writing anywhere else has to say so in
+          # its README. No `|| true`: handing an extension a ROOST_EXT_STATE
+          # that is not there is the corrupted-behaviour shape this branch
+          # keeps refusing, and mkdir has already said why on stderr.
+          mkdir -p -- "$ext_state"
+
+          if [ "$ext_fleet" -eq 1 ]; then
+            # The grant, in the pieces a pane already gets: WHICH server to
+            # talk to, HOW to address it, and roost's own scripts ahead of
+            # PATH so that `roost read %N` and `roost send %N` resolve at all.
+            export ROOST_SOCKET="$SOCKET"
+            # The flag is handed over, not left for the extension to work out,
+            # and that is a correction rather than a convenience. tmux needs
+            # -L for a socket NAME and -S for a socket PATH; the line at the
+            # top of this file that computes _SOCKET_FLAG makes exactly that
+            # distinction, and scripts/roost-status, roost-switch and
+            # roost-notify each make it again. An extension handed only the
+            # value writes the obvious `tmux -L "$ROOST_SOCKET"`, which works
+            # against the production server -- whose socket is the NAME
+            # `roost` -- and silently addresses a different server everywhere
+            # else, because every other one is a path: a `roost ssh` server,
+            # a second server, every server the test suite builds.
+            #
+            # Silently talking to the wrong tmux is the failure this project
+            # has already had once, and scripts/lib/roost-socket.sh's header
+            # records it: roost-agent-state took the socket from $TMUX while
+            # this file fell through to `-L roost`, and the result was that
+            # "badges landed and replies vanished, exit 0, nothing printed."
+            # Handing over the bare value would be asking every extension
+            # author to rediscover that outage on their own users. It is
+            # reused from _SOCKET_FLAG rather than re-derived here, so there
+            # is one rule in this file and not two that can drift.
+            export ROOST_SOCKET_FLAG="$_SOCKET_FLAG"
+            export PATH="$ROOST_HOME/scripts:$PATH"
+          else
+            # UNSET, not empty, and doing it HERE is the whole point. An
+            # extension that read an empty ROOST_SOCKET would address the
+            # DEFAULT tmux server -- the user's own everyday tmux, the one
+            # thing roost exists to leave alone -- and would do it silently.
+            # Absent, the same read fails loudly instead.
+            #
+            # Withheld at exec time rather than checked, because a check the
+            # extension runs is a check the extension can skip. There is
+            # nothing here to pass and then bypass: the variable is simply not
+            # in its environment.
+            #
+            # BOTH are withheld, together. Leaving ROOST_SOCKET_FLAG in
+            # the environment would be handing out half a capability and a
+            # misleading signal with it: an extension that found a flag and no
+            # socket would be reading the leftovers of a grant it was refused.
+            # They are one grant and they leave together.
+            #
+            # What this does NOT do is make the fleet unreachable, and
+            # reading it that way is the mistake. `needs` governs what roost
+            # HANDS OUT. It is not confinement, and the design says so in
+            # "Non-goals" and in "Declared authority" -- read those before
+            # relying on this line for anything.
+            #
+            # Two ways past it, neither of them exotic. An extension started
+            # from inside a roost pane inherits that pane's $TMUX and its
+            # PATH, and reaches the fleet through those. And outside a pane,
+            # `tmux` is an ordinary binary that an extension may run itself:
+            # the production server's socket is `-L roost`, a guessable
+            # string, so withholding ROOST_SOCKET withholds a convenience and
+            # a signal of intent, not access.
+            #
+            # What it does buy is still worth having: the accident above
+            # cannot happen, and an extension that reaches the fleet anyway
+            # has to contain the code that does it, in a repository the user
+            # can read at the commit they pinned.
+            unset ROOST_SOCKET ROOST_SOCKET_FLAG
+          fi
+
+          # The subcommand itself is dropped, so `roost mark %200` reaches
+          # bin/roost-mark as `%200` -- the arguments it would have had if the
+          # user had run that binary directly.
+          shift
+          # exec, not a call: the extension REPLACES roost in this process, so
+          # its exit status is the user's unwrapped, its stdout and stderr are
+          # the terminal's with nothing of roost's around them, and a signal
+          # reaches it rather than a shell that would have to forward one.
+          exec "$ext_exe" "$@"
+        fi
+      fi
+    fi
+    echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|ext|install|update|init|settings|status|kill [SESSION]|--version|help]" >&2; exit 2
+    ;;
 esac

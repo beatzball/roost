@@ -44,7 +44,36 @@ A live `tmux -L roost` server usually holds the author's real working agents.
 - **Never** run `tmux kill-server` without `-S` or `-L` naming a *test* socket
 - Never kill or restart the live server to "get a clean state"
 - Tests create their own servers via `mktemp -d` in `tests/lib.sh`. Use that.
-  Every test drives `tmux -S "$ROOST_TEST_SOCK"`, never a bare `tmux`
+  Almost every test drives `tmux -S "$ROOST_TEST_SOCK"`, never a bare `tmux`
+
+**The one exception, and the rule that comes with it.** Three test files must
+address a socket by NAME — `tmux -L <name>` — rather than by path:
+`tests/test-session-context.sh` and `tests/test-reply-socket.sh`, because the
+bug each pins is roost falling through to the production `-L roost` server, and
+`tests/test-ext.sh`, because tmux takes `-L` for a socket *name* and `-S` for a
+socket *path*: an extension that hardcoded `-S` would be green against every
+path-addressed server in the suite and wrong for every real user, whose socket
+is the name `roost`. A `-L` path has to be exercised somewhere or that mistake
+ships.
+
+A `-L <name>` socket lands in `$TMUX_TMPDIR/tmux-<uid>/<name>`, and with
+`TMUX_TMPDIR` unset that is `/tmp/tmux-<uid>/` — the directory holding the live
+agents. So, before the first `-L` in any test file:
+
+```sh
+tmpdir="$(mktemp -d /tmp/amx.XXXX)"   # short: the ~104-char socket limit
+export TMUX_TMPDIR="$tmpdir"
+roost_test_tmux_named_guard           # MANDATORY, from tests/lib.sh
+```
+
+`roost_test_tmux_named_guard` **refuses** — it exits 1, so `tests/run.sh`
+reports the file as died-mid-run — unless `TMUX_TMPDIR` is set, exists, and is
+a subdirectory under a temp root. All three checks earn their place: tmux
+silently falls back to the real directory when `TMUX_TMPDIR` names a directory
+that does not exist, and `TMUX_TMPDIR=/tmp` is set and existing and still
+resolves `-L` to the real `/tmp/tmux-<uid>/`. Export it once at the top rather
+than prefixing individual commands, so later lines are safe by construction
+instead of by an author remembering.
 
 `scripts/roost-agent-state` is wired into
 `~/.claude/settings.json` by **absolute path** — that is the entry
@@ -196,12 +225,25 @@ work, and escalating is never held against you.
 under it, read **[site/AGENTS.md](site/AGENTS.md)** — it covers the page
 format, the sidebar, and how to verify a change.
 
-Two audiences, two files, no duplication:
+Three audiences, no duplication. Each fact is written once, in the file whose
+reader needs it, and linked to from the others:
 
-- `site/content/docs/` is for **users** — install, setup, keys, driving a fleet,
-  badges, troubleshooting.
-- `README.md` is for **contributors** — repo layout, how it works, running the
-  tests, working on the site.
+- **Users** — people who install and run roost: `site/content/docs/`. Install,
+  setup, keys, driving a fleet, badges, troubleshooting, and what installing an
+  extension does and does not check.
+- **Extension authors** — people who build something roost dispatches to:
+  `site/content/docs/` as well, on its own page. The manifest schema, the
+  environment an extension is handed, and how to test one before publishing.
+- **Contributors** — people who change roost itself: `README.md`. Repo layout,
+  how it works, running the tests, working on the site, and where a seam lives
+  in the code.
 
-Put a fact in one and link from the other. `docs/known-gaps.md` is
-maintainer-facing and never goes on the site.
+An extension author is **not** a contributor, and this is the distinction that
+has already been got wrong once. They never open this repository: they read a
+schema and write against it, the way you read anyone's API docs. So author
+material goes on the site, not in `README.md` — nobody browses a contributor
+README to learn an API, and a schema sitting under "how to work on roost" is
+filed where its reader will not look. When a fact serves two of the three,
+pick the reader who cannot do their job without it, put it there, and link.
+
+`docs/known-gaps.md` is maintainer-facing and never goes on the site.

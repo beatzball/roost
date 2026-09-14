@@ -1,0 +1,8 @@
+{
+  "name": "status-ext",
+  "contract": 1,
+  "roost": "*",
+  "needs": ["fleet"],
+  "commands": ["status-ext"],
+  "description": "roost status, rebuilt on contract 1 — a conformance fixture, never a published extension."
+}

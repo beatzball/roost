@@ -37,6 +37,66 @@ roost_test_teardown() {
 
 T() { tmux -S "$ROOST_TEST_SOCK" "$@"; }
 
+roost_test_tmux_named_guard() {
+  # Call this ONCE, before the first `tmux -L NAME` in a test file. It REFUSES
+  # rather than warns: it exits 1, which makes tests/run.sh report the file as
+  # died-mid-run and fails the whole suite.
+  #
+  # Most files here address a socket PATH under mktemp -d and never need this.
+  # Three do need a NAME -- test-session-context.sh and test-reply-socket.sh
+  # because the bug they pin is roost falling through to the production `-L
+  # roost` server, and test-ext.sh because tmux takes -L for a NAME and -S for
+  # a PATH, so an extension that hardcoded -S would be green against every
+  # path-addressed server in the suite and wrong for every real user.
+  #
+  # A `-L NAME` socket lands in $TMUX_TMPDIR/tmux-<uid>/<name>, and with
+  # TMUX_TMPDIR unset that is /tmp/tmux-<uid>/ -- the directory holding the
+  # author's LIVE agents (AGENTS.md §2). Every one of those three files sets
+  # TMUX_TMPDIR to a throwaway directory first. This function is what stops
+  # that from being a thing an author has to remember: drop the export in a
+  # future edit, or copy one of those blocks into a fourth file without it,
+  # and the run stops here instead of writing next to real work.
+  #
+  # Three ways it can be wrong, and all three are refused:
+  #
+  #   unset      - the default, and the dangerous one
+  #   missing    - MEASURED, not assumed: tmux silently falls back to the real
+  #                directory when TMUX_TMPDIR names a directory that does not
+  #                exist, so "set" is not enough on its own
+  #   /tmp       - set, existing, and still resolving `-L NAME` to the REAL
+  #                /tmp/tmux-<uid>/. Any bare temp ROOT is refused for this
+  #                reason; only a subdirectory under one is accepted
+  #
+  # The path is resolved with `cd -P` before it is judged, because macOS
+  # /tmp is a symlink to /private/tmp and a literal match would accept one
+  # spelling and refuse the other.
+  local d real
+  d="${TMUX_TMPDIR-}"
+  if [ -z "$d" ]; then
+    printf '  FAIL: TMUX_TMPDIR is unset before a `tmux -L NAME` — that socket would land in the REAL /tmp/tmux-%s/, beside live agents
+' "$(id -u)" >&2
+    printf '        set it to a throwaway directory first: tmpdir="$(mktemp -d /tmp/amx.XXXX)"; export TMUX_TMPDIR="$tmpdir"
+' >&2
+    exit 1
+  fi
+  if [ ! -d "$d" ]; then
+    printf '  FAIL: TMUX_TMPDIR=%s does not exist — tmux falls back to the REAL /tmp/tmux-%s/ when it names a missing directory
+' "$d" "$(id -u)" >&2
+    exit 1
+  fi
+  real="$(cd -P "$d" 2>/dev/null && pwd)"
+  case "$real" in
+    # A subdirectory UNDER a temp root, never a temp root itself.
+    /tmp/?*|/private/tmp/?*|/var/tmp/?*|/private/var/tmp/?*|/var/folders/?*|/private/var/folders/?*) ;;
+    *)
+      printf '  FAIL: TMUX_TMPDIR=%s (resolved: %s) is not a throwaway directory under a temp root — refusing to run `tmux -L NAME`
+' "$d" "$real" >&2
+      printf '        if this is a legitimate temp root on a platform this list does not cover, add it HERE rather than skipping the guard
+' >&2
+      exit 1 ;;
+  esac
+}
+
 assert_eq() {
   if [ "$1" = "$2" ]; then
     ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "$3"

@@ -1,0 +1,7 @@
+{
+  "name": "status-noneed-ext",
+  "contract": 1,
+  "roost": "*",
+  "commands": ["status-noneed-ext"],
+  "description": "The ext-status program with no declared authority — it must fail, not fall back."
+}

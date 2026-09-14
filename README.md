@@ -252,8 +252,9 @@ Everything below is for people working **on** roost.
 ```
 bin/roost                   # launcher / CLI (up, session, new, spawn, split, view,
                             #   whoami, ssh, send, read, screen, reply, wait-done,
-                            #   state, hooks, doctor, validate, install, update,
-                            #   init, settings, status, kill)
+                            #   state, hooks, doctor, validate, ext, install, update,
+                            #   init, settings, status, kill). Its `*)` fallback is the
+                            #   extension dispatcher — see "The extension seam"
 tmux/roost.conf             # the isolated agent-view config
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the
@@ -270,6 +271,7 @@ scripts/roost-install       # `roost install` / `roost update`: wire every insta
                             #   Refuses rather than replace a file that is not roost's
 scripts/roost-settings      # live settings TUI (prefix S)
 scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
+scripts/roost-ext           # `roost ext`: install, list, info, verify, update, remove
 scripts/roost-themes.sh     # built-in theme palettes
 scripts/lib/roost-adapters.sh   # the one table of where each adapter goes, so an
                             #   install plan and a doctor report cannot disagree
@@ -284,6 +286,9 @@ scripts/lib/roost-reply.sh  # the one place that decides how a reply is
                             #   truncated to fit tmux's command-length limit
 scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
                             #   in?", for bin/roost and roost-agent-state alike
+scripts/lib/roost-ext.sh    # the extension seam's helpers: XDG paths, manifest
+                            #   reading, the tiny semver range check, and the
+                            #   fork-free ext.index lookup bin/roost dispatches on
 adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 adapters/pi/roost.ts        # pi extension, same two jobs (.ts: pi loads it
@@ -319,6 +324,69 @@ switcher (it degrades to a hint if missing).
   lets two agents share one window — `roost split` puts a second agent beside
   the first without either clobbering the other's badge. A pane is an agent only
   if it has been stamped, so a plain shell or a `tail -f` never badges anything.
+
+## The extension seam
+
+`roost ext` installs subcommands from a git repository. Two of its three
+audiences are documented on the site, and neither of them is reading this file:
+
+- **Installing and running one** — what installing does and does not check,
+  what `needs` declares, where the files go, and the three ways to turn the
+  seam off: [roosting.dev/docs/extensions](https://roosting.dev/docs/extensions).
+- **Writing one** — the repository layout, every manifest field, the
+  environment a command is handed, the socket idiom, and how to install your
+  own work from a bare repository on your disk before you publish it:
+  [roosting.dev/docs/writing-an-extension](https://roosting.dev/docs/writing-an-extension).
+  An extension author never touches this repository, so the manifest schema
+  and the environment contract live on that page rather than in this one. If
+  you change either, change it there — see AGENTS.md §11.
+
+This section is the third audience, and only the third: where the seam lives
+in roost's own code.
+
+Three files, and nothing else in the tree changes shape:
+
+- **`bin/roost`** — the dispatcher lives in the `*)` fallback of the subcommand
+  `case`, the branch that used to only print usage. A core subcommand never
+  reaches that branch, which is the mechanism behind the guarantee the
+  [docs page](https://roosting.dev/docs/extensions) gives users. It is also what
+  keeps the feature revertible: the seam is that one branch plus the two files
+  below, one docs page and one test file, so taking it out is a single clean
+  revert with no core behaviour to rewrite. Keep new work inside that branch.
+- **`scripts/roost-ext`** — the six verbs, the consent block, and the clone
+  flags that keep git from executing anything on the way in.
+- **`scripts/lib/roost-ext.sh`** — paths, manifest reading, the semver range
+  check, and `roost_ext_index_lookup`, which the dispatcher calls on every
+  mistyped subcommand and which therefore forks nothing.
+
+The design, including why each control is where it is, is in
+[`docs/airig/specs/2026-09-08-extension-seam.md`](docs/airig/specs/2026-09-08-extension-seam.md).
+`tests/test-ext.sh` is the suite; its fixtures are under `tests/fixtures/ext-*`.
+
+### Contract 1
+
+`ROOST_CONTRACT` in `bin/roost` is the version of the *seam*, separate from
+`VERSION`, which is the version of the product. Contract 1 is **commands only**:
+an extension adds subcommands and nothing else. Agent-state events are contract
+2 and have no consumer yet — the integer is what lets them arrive later without
+breaking a contract-1 extension.
+
+### Working on the seam
+
+A manifest field is read in three places, so a change to one is usually a
+change to three: `_ext_manifest_gate` in `scripts/roost-ext` validates it,
+the `install` and `update` arms of the same file render it in the block a user
+is asked to approve, and `roost_ext_index_write` in `scripts/lib/roost-ext.sh`
+turns the result into the dispatch table `bin/roost` obeys. Every JSON read
+here has **two** engines, python3 and jq, and `tests/test-ext.sh` asserts them
+against each other — a field taught to one and not the other passes every test
+on the machine you happen to be on.
+
+Nothing in this repository, in its output, or on the site should describe an
+extension as checked, screened, or vouched for. There is no scanner here and
+there is no verdict to print; see the Security section of
+[the spec](docs/airig/specs/2026-09-08-extension-seam.md) for why that is a
+design decision rather than a gap waiting to be filled.
 
 ## Running the tests
 
