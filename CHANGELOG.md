@@ -5,6 +5,55 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.0]
+
+Two fixes to how roost reports an agent's state. Both change behaviour, and
+one needs a step from you after you upgrade.
+
+### Upgrade steps
+
+- **codex:** codex asks "Hooks need review" once more, for a new `Interrupt`
+  hook. Answer "Trust all and continue". Until you do, a declined permission
+  dialog still leaves 🛑 blocked, and `roost doctor` says so.
+- **Claude Code:** re-run `roost install`. It adds `--notification-hook` to the
+  `Notification` hook. Without it, a Claude pane does not recover from a
+  declined dialog.
+
+### Fixed
+
+- **A declined or dismissed permission dialog no longer leaves a pane 🛑
+  blocked forever** (#62). Before, `roost send` refused the pane with exit 3,
+  `roost wait-done` ran to its timeout, and `roost read` called a current reply
+  stale.
+  - codex: the new `Interrupt` hook moves the pane to 💤 idle.
+  - Claude Code fires no hook at all when you answer No or press Esc. roost now
+    reads Claude's own transcript when a command needs to know, and clears the
+    badge only when the newest records are Claude's decline records for that
+    same turn. It never reads the screen.
+  - copilot 1.0.83 already recovers on Esc by itself.
+- **A codex turn that ends with no reply now shows 💥 error, not ✅ done**
+  (#53). `roost wait-done` exits 1 and names the reason, and `roost read`
+  prints it.
+
+### Added
+
+- `roost doctor` names panes that have been 🛑 blocked for 10 minutes or more
+  with no dialog on screen, as "may be stuck". It only reports. It never
+  changes a badge.
+
+### Known limits
+
+- The codex 💥 error is inferred from a `Stop` with an empty reply. A real dead
+  turn has not yet been captured live.
+- Claude's transcript format is not a public contract. If a Claude upgrade
+  changes its decline records, recovery quietly stops and the pane stays 🛑, as
+  it did before this release. `tests/live/claude-decline-smoke.sh` catches that
+  change when it is run.
+- A Claude dialog answered in under about 6 seconds is never badged 🛑, because
+  Claude's `Notification` hook arrives about 6 seconds after the dialog opens.
+- `roost wait-done` exits 0 on an interrupted turn.
+- The full list is in `docs/known-gaps.md`.
+
 ## [0.1.0]
 
 The first numbered version. There is no earlier versioned history to

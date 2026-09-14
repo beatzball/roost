@@ -40,6 +40,15 @@ state="${1:-idle}"
 # would hang forever on a `cat` that never sees EOF.
 stop_hook=0
 [ "${2:-}" = "--stop-hook" ] && stop_hook=1
+# Only Claude Code's Notification hook passes this, and it means "stdin is that
+# hook's payload". With `blocked` it records the payload's transcript_path
+# beside the stamp, which is what lets bin/roost clear a 🛑 that a declined or
+# dismissed dialog left behind (#38, scripts/lib/roost-unblock.sh). A flag, not
+# a stdin read on every `blocked`, for the reason --stop-hook is one: codex's
+# adapter and `roost state blocked` reach this script too, and a `cat` on a
+# stdin nobody closes would hang the agent.
+notification_hook=0
+[ "${2:-}" = "--notification-hook" ] && notification_hook=1
 
 # Must be inside tmux, in a known pane.
 [ -n "${TMUX:-}" ] || exit 0
@@ -159,6 +168,40 @@ elif [ "$stop_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
   # Only adapters/codex/roost-codex-hook passes `error --stop-hook` today: codex
   # has no error event, so its adapter decides from the Stop payload (#39).
   tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
+elif [ "$stop_hook" = 1 ] && [ "$state" = "idle" ] && [ ! -t 0 ]; then
+  # A turn that ended because the human INTERRUPTED it — declined a dialog,
+  # pressed Esc — has no answer either, and no Stop fires to replace the stored
+  # one, so it is the previous turn's. Cleared for the same reasons as the error
+  # arm above. Only adapters/codex/roost-codex-hook passes `idle --stop-hook`,
+  # on codex's Interrupt event (#38).
+  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
+fi
+
+# The Notification hook's transcript path (#38). Read here, before the
+# unchanged-state bail, only because stdin must be drained where it is read;
+# it is WRITTEN below, with the stamp. Gated on the flag, on `blocked` and on a
+# non-tty stdin, so no other call path ever reads stdin here.
+#
+# The path is recorded only if it is absolute, and carries no tab or newline
+# (it becomes one tmux option value, read back by splitting on the first
+# space) and no trailing `;` (tmux's parser would eat it). Anything else
+# records nothing, and a pane with no record simply keeps the pre-#38
+# behaviour: nothing ever clears its 🛑 but a new event.
+transcript=""
+if [ "$notification_hook" = 1 ] && [ "$state" = "blocked" ] && [ ! -t 0 ]; then
+  payload="$(cat 2>/dev/null || true)"
+  if command -v python3 >/dev/null 2>&1; then
+    transcript="$(printf '%s' "$payload" | python3 -c \
+      'import sys,json; d=json.load(sys.stdin); p=d.get("transcript_path") if isinstance(d,dict) else None; sys.stdout.write(p if isinstance(p,str) else "")' \
+      2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    transcript="$(printf '%s' "$payload" | jq -r 'if type=="object" and (.transcript_path|type)=="string" then .transcript_path else "" end' 2>/dev/null || true)"
+  fi
+  case "$transcript" in
+    /*) : ;;
+    *) transcript="" ;;
+  esac
+  case "$transcript" in *$'\t'*|*$'\n'*|*';') transcript="" ;; esac
 fi
 
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
@@ -186,7 +229,30 @@ case "$raw" in
   *X) prev="${raw%X}"; has_name=1 ;;
   *)  prev="$raw";      has_name=0 ;;
 esac
-[ "$state" = "$prev" ] && exit 0
+if [ "$state" = "$prev" ]; then
+  # The one repeat that is NOT a no-op: a Notification for a NEW dialog on a
+  # pane that still reads blocked (flock round 1 on #38, reproduced). The first
+  # dialog was declined, so its recorded transcript ends in the decline
+  # records; if the new dialog's records live in a different file, keeping the
+  # old stamp and the old path lets scripts/lib/roost-unblock.sh judge the new,
+  # OPEN dialog by the old file — and clear it, so `send` pastes into it.
+  #
+  # So the stamp moves to now, and the record either names the new file or is
+  # removed. The record is written BEFORE the stamp: a reader landing between
+  # the two sees a record and a stamp that disagree, and clears nothing. No
+  # label and no notification here — the state did not change, and this path
+  # must stay as cheap as the bail it replaces for every other repeat.
+  if [ "$notification_hook" = 1 ] && [ "$state" = "blocked" ] && [ ! -t 0 ]; then
+    now="$(date +%s)"
+    if [ -n "$transcript" ]; then
+      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript" 2>/dev/null || true
+    else
+      tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true
+    fi
+    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
+  fi
+  exit 0
+fi
 
 # Stamp the PANE, not the window. Pane scope is what lets two agents share one
 # window without overwriting each other's badge. Glyphs are NOT stamped: the
@@ -223,8 +289,24 @@ if [ "$state" = "error" ] && [ -n "${ROOST_ERROR_REASON:-}" ]; then
 elif [ "$prev" = "error" ]; then
   tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-error-reason 2>/dev/null || true
 fi
+#
+# @roost-transcript is "<stamp> <path>", written BEFORE the state and stamp for
+# the reply's reason, and with the stamp it will carry: `now` is taken once, so
+# the record and @agent_since are the same number. scripts/lib/roost-unblock.sh
+# trusts a record only when its first word equals @agent_since, so a reader
+# that lands between these writes sees a record and a stamp that disagree, and
+# clears nothing.
+now="$(date +%s)"
+if [ -n "$transcript" ]; then
+  tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript" 2>/dev/null || true
+elif [ "$notification_hook" = 1 ] && [ "$state" = "blocked" ]; then
+  # A Notification whose path could not be recorded. An older record may still
+  # sit on the pane, and if it was written in this same second its stamp would
+  # match the one written below — so remove it rather than trust the clock.
+  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true
+fi
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
-tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
+tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
 
 # Label the pane, but only to fill a gap: a name a human chose (`split -n`,
 # `spawn NAME`) always wins, so this never runs when $has_name is 1. Without

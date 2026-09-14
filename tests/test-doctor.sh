@@ -566,9 +566,11 @@ assert_contains "$out" "Trust all and continue" "doctor prints the exact answer 
   printf 'trusted_hash = "sha256:0000"\n'
 } > "$cxhome/config.toml"
 out="$(rdoctor)"
-assert_contains "$out" "only 1 of the four" "doctor counts partially-granted trust instead of calling it done"
+assert_contains "$out" "only 1 of the five" "doctor counts partially-granted trust instead of calling it done"
 
-# 6. fully trusted
+# 5b. the four handlers roost registered before #38, and not Interrupt. This is
+# every machine that trusted roost's hooks before Interrupt was added, and its
+# fix is one more "Trust all and continue", not a hand-edit hunt.
 {
   for ev in user_prompt_submit post_tool_use permission_request stop; do
     printf '[hooks.state."%s:%s:0:0"]\n' "$cxhome/hooks.json" "$ev"
@@ -576,7 +578,18 @@ assert_contains "$out" "only 1 of the four" "doctor counts partially-granted tru
   done
 } > "$cxhome/config.toml"
 out="$(rdoctor)"
-assert_contains "$out" "trusted all four" "doctor confirms a fully trusted codex install"
+assert_contains "$out" "but not Interrupt" "doctor names the one new handler a pre-#38 trust is missing"
+assert_contains "$out" "once more" "...and says the fix is to trust once more"
+
+# 6. fully trusted
+{
+  for ev in user_prompt_submit post_tool_use permission_request stop interrupt; do
+    printf '[hooks.state."%s:%s:0:0"]\n' "$cxhome/hooks.json" "$ev"
+    printf 'trusted_hash = "sha256:0000"\n'
+  done
+} > "$cxhome/config.toml"
+out="$(rdoctor)"
+assert_contains "$out" "trusted all five" "doctor confirms a fully trusted codex install"
 
 # ...and none of it is ever a hard failure: most users do not have codex, and a
 # missing adapter for a harness you do not run is not a broken roost.

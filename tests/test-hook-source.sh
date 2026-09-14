@@ -42,14 +42,23 @@ assert_eq "$claude_out" "$bare_out" \
 # error and the old prose told users it could not. Only prose moved. The four
 # handler objects — the bytes codex hashes — are untouched, and
 # tests/test-codex-hook.sh section 9 holds them separately.
+#
+# Two deliberate edits for #38, both re-captured from bin/roost rather than
+# typed. codex: a FIFTH handler object, Interrupt, appended after the four,
+# plus prose; the four existing objects are byte-for-byte what they were,
+# because appending an event is measured-safe and editing one is not. claude:
+# the Notification command gained --notification-hook, plus prose. Claude does
+# not hash its hooks, and `roost install` recognises the older command as
+# roost's own and replaces it (tests/test-adapter-install.sh, the customised
+# Notification entry).
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
-  "'roost hooks claude' is byte-identical to what d58ba14 printed"
+  "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"
 
 codex_out="$("$HERE/bin/roost" hooks codex)"
 expected_codex="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-codex.txt")"
 assert_eq "$codex_out" "$expected_codex" \
-  "'roost hooks codex' is byte-identical to what d58ba14 printed, plus #39's comment edit"
+  "'roost hooks codex' is byte-identical to the fixture (d58ba14, plus #39's comment edit and #38's re-capture)"
 
 # --- one copy of the bytes, not two -----------------------------------------
 # A test that only compared printed output cannot tell "sourced from the
@@ -90,11 +99,12 @@ bin_claude_copies="$(grep -c 'roost-agent-state working"' "$HERE/bin/roost" 2>/d
 assert_eq "${bin_claude_copies:-0}" "0" \
   "bin/roost no longer carries its own copy of the claude hook JSON body"
 
-# --- the four frozen codex handler objects, individually --------------------
+# --- the frozen codex handler objects, individually -------------------------
 # Checked on each handler separately, and for both facts named in the task
 # (the path and the timeout), so a regression in either survives being caught
-# even if it only hits one of the four.
-for ev in UserPromptSubmit PostToolUse PermissionRequest Stop; do
+# even if it only hits one of them. Interrupt joined the four in #38 and is
+# held the same way.
+for ev in UserPromptSubmit PostToolUse PermissionRequest Stop Interrupt; do
   line="$(printf '%s\n' "$codex_out" | grep "\"$ev\"" -A 1 | tail -n 1)"
   assert_contains "$line" "adapters/codex/roost-codex-hook" \
     "the $ev codex handler still names roost-codex-hook"

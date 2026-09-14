@@ -246,14 +246,14 @@ wait_screen "$trustpane" "Ask Codex" 90 || {
   die "the TUI never reached its prompt after trusting — see $L/trust-err.txt"
 }
 trusted=0
-for ev in user_prompt_submit post_tool_use permission_request stop; do
+for ev in user_prompt_submit post_tool_use permission_request stop interrupt; do
   grep -qF "$CODEX_HOME/hooks.json:$ev:0:0" "$CODEX_HOME/config.toml" 2>/dev/null \
     && trusted=$((trusted + 1))
 done
-if [ "$trusted" -eq 4 ]; then
-  ok "all four handlers got a trust entry in config.toml"
+if [ "$trusted" -eq 5 ]; then
+  ok "all five handlers got a trust entry in config.toml"
 else
-  no "only $trusted of 4 handlers were trusted — the rest will be skipped in silence"
+  no "only $trusted of 5 handlers were trusted — the rest will be skipped in silence"
 fi
 
 printf '\n== case 1: a plain TUI turn badges working then done, and records its reply ==\n'

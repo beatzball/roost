@@ -293,7 +293,7 @@ adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 adapters/pi/roost.ts        # pi extension, same two jobs (.ts: pi loads it
                             #   through jiti, so there is no build step)
-adapters/codex/roost-codex-hook # OpenAI Codex hook shim: maps four codex hook
+adapters/codex/roost-codex-hook # OpenAI Codex hook shim: maps five codex hook
                             #   events onto roost-agent-state. Exists because
                             #   codex HASHES what you register and skips a
                             #   handler that changes, so the registration is

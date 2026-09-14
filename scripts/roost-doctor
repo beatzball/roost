@@ -404,14 +404,32 @@ if command -v codex >/dev/null 2>&1; then
     # separates "never trusted" (0) from "trusted, then hooks.json was edited by
     # hand and re-prompted for only some" (1-3), which are different problems
     # with different fixes.
+    #
+    # Five since #38 added Interrupt. A machine that trusted the first four
+    # before Interrupt existed has exactly the other four and not that one, and
+    # its fix is not "something was hand-edited": codex simply has a new handler
+    # to ask about. So that case gets its own words.
+    #
+    # The key `interrupt` is measured, not guessed from the other four's
+    # snake_case: codex-cli 0.154.0, trusting a hooks.json that registered all
+    # twelve events, wrote `<hooks.json>:interrupt:0:0` into config.toml.
     trusted=0
-    for _ev in user_prompt_submit post_tool_use permission_request stop; do
-      grep -qF "$cxhooks:$_ev:0:0" "$cxconfig" 2>/dev/null && trusted=$((trusted + 1))
+    interrupt_trusted=0
+    for _ev in user_prompt_submit post_tool_use permission_request stop interrupt; do
+      if grep -qF "$cxhooks:$_ev:0:0" "$cxconfig" 2>/dev/null; then
+        trusted=$((trusted + 1))
+        [ "$_ev" = interrupt ] && interrupt_trusted=1
+      fi
     done
     case "$trusted" in
-      4) ok "codex has trusted all four roost hooks" ;;
-      0) warn "codex has trusted NONE of the four roost hooks, so every badge is silently skipped — run: codex, then answer \"Trust all and continue\" at \"Hooks need review\"" ;;
-      *) warn "codex has trusted only $trusted of the four roost hooks — the rest are silently skipped; a trust entry records a HASH of the handler, so hand-editing $cxhooks after trusting it invalidates that entry. Run: codex, then /hooks, and trust the remainder" ;;
+      5) ok "codex has trusted all five roost hooks" ;;
+      0) warn "codex has trusted NONE of the five roost hooks, so every badge is silently skipped — run: codex, then answer \"Trust all and continue\" at \"Hooks need review\"" ;;
+      4) if [ "$interrupt_trusted" = 0 ]; then
+           warn "codex has trusted four of the five roost hooks, but not Interrupt, which is new — until it is trusted, a dialog answered No or Esc leaves the pane blocked. Run: codex, then answer \"Trust all and continue\" at \"Hooks need review\" once more"
+         else
+           warn "codex has trusted only $trusted of the five roost hooks — the rest are silently skipped; a trust entry records a HASH of the handler, so hand-editing $cxhooks after trusting it invalidates that entry. Run: codex, then /hooks, and trust the remainder"
+         fi ;;
+      *) warn "codex has trusted only $trusted of the five roost hooks — the rest are silently skipped; a trust entry records a HASH of the handler, so hand-editing $cxhooks after trusting it invalidates that entry. Run: codex, then /hooks, and trust the remainder" ;;
     esac
     # What this check CANNOT see, recorded here rather than printed on every
     # healthy run. The stored value is a hash of the normalised handler, and
@@ -478,6 +496,37 @@ if [ -f "$cfgfile" ]; then
     fi
   fi
 fi
+
+# --- a pane that may be stuck on blocked (#38) ---
+# Read-only, like every check in this file: it names panes and changes nothing.
+#
+# A pane stamped 🛑 for a long time with no permission dialog on its screen is
+# probably one whose dialog was declined or dismissed and never cleared: a
+# Claude hook wired before #38 records no transcript, a codex install whose
+# Interrupt hook is not trusted yet fires nothing, and any other harness may
+# have the same hole. `send`, `read` and `wait-done` clear the Claude case on
+# their own when they can prove it from Claude's transcript. This is the line
+# for everything they cannot prove.
+#
+# The screen is read ONLY to leave a pane out of this report. It is a guess and
+# is worded as one ("may be stuck"), and nothing is ever set or cleared on it.
+# roost_cfg_tmux addresses $ROOST_CONFIG_SOCK or the roost server by name, the
+# same server the glyph check above reads.
+stuck_after=600
+now="$(date +%s)"
+panes="$(roost_cfg_tmux list-panes -a -F '#{@agent_state} #{@agent_since} #{pane_id} #{session_name}:#{window_index}' 2>/dev/null || true)"
+while read -r _st _since _id _where; do
+  [ "$_st" = "blocked" ] || continue
+  case "$_since" in ''|*[!0-9]*) continue ;; esac
+  case "$_id" in %[0-9]*) : ;; *) continue ;; esac
+  _age=$((now - 10#$_since))
+  [ "$_age" -ge "$stuck_after" ] || continue
+  if roost_cfg_tmux capture-pane -p -t "$_id" 2>/dev/null \
+      | grep -qiE 'do you want|would you like to run|esc to cancel|enter to (select|confirm)|allow (once|always)'; then
+    continue
+  fi
+  warn "$_id ($_where) has read blocked for ${_age}s with no permission dialog on screen — it may be stuck. If nothing is waiting there, type into it, or run: roost send --force $_id \"...\""
+done <<< "$panes"
 
 printf '\n  notify backend: %s\n' \
   "$("$(dirname "$0")/roost-notify" --which 2>/dev/null || echo 'auto (run roost init to choose)')"
