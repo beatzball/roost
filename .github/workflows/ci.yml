@@ -85,6 +85,18 @@ jobs:
           # than a failed job.
           scripts/roost-release-gate check
           scripts/roost-release-gate notes > /tmp/notes.md
+          # An annotated tag needs a tagger and the runner has none — the first
+          # real run of this job died on `fatal: empty ident name`. The gate's
+          # own tests cannot catch that: it is the workflow environment, not
+          # the script's logic, and this job only ever runs on a push to main.
+          #
+          # github-actions[bot] rather than the repository owner, deliberately.
+          # CI cut this tag, and saying so is more honest than signing it with
+          # a human's name. AGENTS.md's identity rule is about commits, and it
+          # exists to keep real names and addresses out of a public history —
+          # this address is a GitHub noreply and leaks nothing.
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git tag -a "v$v" -m "v$v"
           git push origin "v$v"
           gh release create "v$v" --title "v$v" --notes-file /tmp/notes.md
