@@ -180,6 +180,20 @@ covered, most serious first:
   Command Line Tools — because the adapter, like `roost-agent-state`, does not
   fall back to `jq` once it has found a `python3`. Nothing is known about any
   turn there, and badging every one of them error would notify on every turn.
+- **The reason is not always shown.** Two small holes, both on stderr only; the
+  badge and every exit code are right in both. `roost read` checks for a reason
+  on the pane its target resolves to, and a WINDOW target resolves to that
+  window's active pane: when the dead codex pane is not the active one, `read`
+  prints its old guess (*"no roost adapter, or its turn has not finished"*).
+  `wait-done` does not have this hole, because it names the errored pane itself.
+  And a pane that already reads `error` with no reason — a hand-typed
+  `roost state error` — gets none from a following dead codex `Stop`: the
+  unchanged-state bail in `scripts/roost-agent-state` returns before the reason
+  is written, so `wait-done` prints only its one-line refusal.
+- **No test runs the `jq` reader.** Every machine the suite has run on has
+  `python3`, so the adapter's `jq` branch has been checked by hand only: against
+  a string, `""`, `null`, an absent field, an array, a number, non-JSON and empty
+  input, it agrees with the `python3` branch on every one.
 
 The rejected alternative stays rejected: an unmatched `PreToolUse` (a live turn
 whose tool call failed showed five `PreToolUse` against four `PostToolUse`)
