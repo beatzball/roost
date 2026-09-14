@@ -89,7 +89,7 @@ roost_hooks_claude() {
     ],
     "Notification": [
       { "matcher": "permission_prompt",
-        "hooks": [ { "type": "command", "command": "$target blocked" } ] }
+        "hooks": [ { "type": "command", "command": "$target blocked --notification-hook" } ] }
     ],
     "PostToolUse": [
       { "hooks": [ { "type": "command", "command": "$target working" } ] }
@@ -122,6 +122,9 @@ roost_hooks_codex() {
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "$target Stop", "timeout": 10 } ] }
+    ],
+    "Interrupt": [
+      { "hooks": [ { "type": "command", "command": "$target Interrupt", "timeout": 10 } ] }
     ]
   }
 }

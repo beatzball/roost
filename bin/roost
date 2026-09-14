@@ -124,6 +124,13 @@ roost_self_socket
 # nothing else, and why it defers roost-json.sh to the two functions that
 # actually parse JSON. See its header before adding work to it.
 . "$ROOST_HOME/scripts/lib/roost-ext.sh"
+# roost_unblock_pane: the one place a Claude `blocked` badge left by a declined
+# or dismissed permission dialog may be cleared (#38), and only cleared, from
+# Claude's own transcript rather than the screen. `send`, `read` and
+# `wait-done` all ask it before believing `blocked`, so the three cannot
+# disagree about a pane. It defines functions and one constant and runs
+# nothing at source time, so `roost state` on the hot path pays one file read.
+. "$ROOST_HOME/scripts/lib/roost-unblock.sh"
 SOCKET="${ROOST_SOCKET:-${ROOST_SELF_SOCK:-roost}}"
 case "$SOCKET" in */*) _SOCKET_FLAG="-S" ;; *) _SOCKET_FLAG="-L" ;; esac
 DEFAULT_SESSION="main"
@@ -589,10 +596,18 @@ case "${1:-up}" in
 # | PermissionRequest   | blocked                              |
 # | Stop                | done, plus the turn's reply          |
 # | Stop, with no reply | error                                |
+# | Interrupt           | idle (clears 🛑 after No or Esc)      |
 #
-# PostToolUse is what clears 🛑. No hook fires when you answer a permission
-# dialog, so it is the first observable event afterwards — measured on
-# codex-cli 0.151.0, one second after "1. Yes, proceed".
+# PostToolUse is what clears 🛑 after "Yes". No hook fires when you answer a
+# permission dialog, so it is the first observable event afterwards — measured
+# on codex-cli 0.151.0, one second after "1. Yes, proceed". After "No", or Esc,
+# the tool never runs and Interrupt is what fires instead — measured on
+# codex-cli 0.154.0, within 100ms, with no Stop after it.
+#
+# Interrupt was added in a later roost release than the other four. If you
+# trusted roost's hooks before it was there, codex asks at "Hooks need review"
+# again for that one handler: answer "Trust all and continue" once more. Until
+# you do, a declined dialog leaves 🛑 stamped, and \`roost doctor\` says so.
 #
 # There is no error EVENT. Codex has twelve hook events and none of them reports
 # an error, so 💥 is inferred: a Stop that carries no reply means the turn most
@@ -600,7 +615,7 @@ case "${1:-up}" in
 # docs/known-gaps.md, which lists which ones, and the Codex section of
 # site/content/docs/state-badges.md, which says it to users.
 #
-# THESE FOUR HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
+# THESE HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
 # stores a hash of each normalised handler in \$CODEX_HOME/config.toml and
 # SKIPS any handler whose hash no longer matches — with nothing printed on
 # stdout, on stderr, or in the TUI. Measured on codex-cli 0.150.1: appending one
@@ -630,6 +645,11 @@ JSON
 # fires for idle_prompt/auth_success, which would paint a finished agent red.
 # PostToolUse is what clears the red: no hook fires when you answer a permission
 # dialog, so without it the window stays blocked until the whole turn ends.
+# --notification-hook on the Notification entry is what clears it after "No" or
+# Esc, when no hook fires at all: it records the payload's transcript_path, and
+# \`roost send\`, \`read\` and \`wait-done\` read Claude's own transcript to prove
+# the dialog was declined. Leave it off and a declined dialog keeps its red
+# until your next prompt.
 # --stop-hook on the Stop entry is what powers \`roost read\`: it lets the hook
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — \`roost
@@ -733,7 +753,16 @@ JSON
     # Exit 3, distinct from 2 (wrong target) and 1 (submit failed): the
     # target is right and retrying later is the correct response, once the
     # human has answered. A caller can tell those three apart.
-    if [ "$state" = "blocked" ] && [ "$force" -eq 0 ]; then
+    #
+    # The one exception: a Claude dialog that was DECLINED or dismissed fires
+    # no event, so the badge outlives it and this refusal would last forever
+    # (#38). roost_unblock_pane clears such a badge only when Claude's own
+    # transcript proves the decline is the newest thing that happened since the
+    # stamp, and it only ever unsets. When it cannot prove it, it returns 1 and
+    # the refusal stands. Still no screen: the evidence is the harness's own
+    # record. It resolves $tgt the way send-keys will, so it judges the same
+    # pane this guard protects.
+    if [ "$state" = "blocked" ] && [ "$force" -eq 0 ] && ! roost_unblock_pane "$tgt"; then
       echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be pasted into it" >&2
       echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
       exit 3
@@ -1149,6 +1178,15 @@ JSON
     # `#{pane_id}`, `#[fg=red]` and a literal `%` comes back byte-identical
     # under od -c. tmux does not re-expand a substituted option value, so an
     # agent reply containing tmux format syntax is safe here.
+    #
+    # A `blocked` left behind by a declined Claude dialog (#38) is offered to
+    # the helper `send` and `wait-done` use BEFORE the reply is read, so read
+    # agrees with them whether or not a reply is stored. A clear also unsets
+    # @roost-reply — a declined turn fired no Stop, so what was stored is the
+    # previous turn's — and read then falls back to the screen and says so.
+    if [ "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" = "blocked" ]; then
+      roost_unblock_pane "$tgt" || true
+    fi
     reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
     if [ -n "$reply" ]; then
       # A reply recorded at the end of turn N is still on the pane during turn
@@ -1318,15 +1356,32 @@ JSON
     # pane scope). `show-options -wqv` exits 0 with EMPTY output for a pane
     # option, so a `|| echo idle` fallback never fires and the empty string
     # matches neither done nor idle — the wait loop would hang until timeout.
+    #
+    # Every `blocked` pane is offered to roost_unblock_pane first, on every
+    # pass. A declined Claude dialog fires no event, so without this a waiter
+    # on that pane would burn its whole timeout (#38). It is the helper `send`
+    # and `read` use, so all three agree, and it costs nothing on a pane that
+    # does not read `blocked`.
     busy() {
       case "$tgt" in
         %*)
-          case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
+          st="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+          if [ "$st" = "blocked" ] && roost_unblock_pane "$tgt"; then
+            st="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+          fi
+          case "$st" in
             working|blocked) return 0 ;;
             *) return 1 ;;
           esac
           ;;
         *)
+          # Offer each blocked pane in the window to the helper before the
+          # states are read below. The format prints a pane's id only when that
+          # pane reads `blocked`, and nothing otherwise, so the word-split
+          # yields exactly the blocked panes; a pane id never contains a space.
+          for _bp in $(t list-panes -t "$tgt" -F '#{?#{==:#{@agent_state},blocked},#{pane_id},}' 2>/dev/null || true); do
+            roost_unblock_pane "$_bp" || true
+          done
           # Command substitution, NOT a pipe into `grep -q`: bin/roost runs under
           # `set -o pipefail`, and grep exiting early can SIGPIPE list-panes, so
           # the pipeline would report failure even when a pane IS busy — and

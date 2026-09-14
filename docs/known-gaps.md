@@ -13,112 +13,78 @@ Keep it short. When an entry is fixed, delete it.
 
 ## Live risks
 
-### A turn that ends at a permission dialog leaves `blocked` stamped forever
+### A declined permission dialog: fixed for Claude Code and codex, with holes left
 
-Answering **No** to a Claude Code permission dialog, or pressing Esc at one,
-ends the turn without firing `PostToolUse` or `Stop`. `@agent_state` was
-stamped `blocked` by the `Notification` hook and **nothing ever unstamps it**.
+**Fixed by #38, for two harnesses, from harness records rather than the
+screen.** Before it, answering **No** at a permission dialog, or pressing Esc,
+ended the turn with `@agent_state` stamped `blocked` and nothing to unstamp it:
+`roost send` refused the pane with exit 3 forever, `roost wait-done` burned its
+whole timeout, and `roost read` called a current reply stale.
 
-**Input:** a Claude Code pane at a permission dialog; the human answers `4. No`
-(or presses Esc).
-**Wrong output:** the dialog closes and the pane sits idle at an empty prompt,
-but `roost send` still refuses it with exit 3 and the message *"a permission
-dialog is open, and this text would be pasted into it"* — when none is. The
-target is unreachable to every roost coordination command until something else
-stamps that pane.
+**What was measured** (one logger on every hook event, throwaway `-S` servers,
+raw logs kept with the #38 work):
 
-Measured on Claude Code 2.1.251, on a throwaway `-S <tmpdir>/roost` server,
-badge and screen captured in the same second:
+| harness | No | Esc | Yes |
+|---|---|---|---|
+| Claude Code 2.1.270, all 32 events | **no event at all** | **no event at all** | PostToolUse, then Stop |
+| codex-cli 0.154.0, all 12 events | Interrupt (+42 ms), no Stop | Interrupt (+84 ms), no Stop | PostToolUse (+132 ms), no Interrupt |
+| Copilot CLI 1.0.83 | **not measured** (see below) | `permission.completed {kind: cancelled}`, `abort`, `session.idle {aborted: true}` | `permission.completed {kind: approved}` |
 
-```
-t0=1788043147 t1=1788043147 span=0s  badge=[blocked]
-grep 'Do you want'   -> 0
-grep 'Esc to cancel' -> 0
-  ⎿  Interrupted · What should Claude do instead?
-❯
-```
+On Claude Code, `PostToolUseFailure`, `PermissionDenied` and `StopFailure` were
+all wired and all silent. codex's Esc while the model is still streaming, with
+no dialog, also fires Interrupt and no Stop.
 
-`@agent_since` stays frozen at the instant the `Notification` hook fired, which
-is how a stale badge is told apart from a live one. Both triggers were re-run:
-Esc held `blocked` for 97 s, `4. No` for 46 s, neither self-healing. Answering
-**Yes** does clear it — the tool runs, `PostToolUse` fires, the pane goes
-`working` then `done` — so the surviving hole is exactly *decline* and
-*interrupt*, which the `roost hooks` comment in `bin/roost:339-340` and
-`site/content/docs/state-badges.md` both describe only for the approve path.
+**What is wired.**
 
-**Three consumers read that badge, and all three are wrong on a stale one:**
+- **codex** registers a fifth hook, `Interrupt`, which badges `idle` and clears
+  the previous turn's reply. It is an event, so it sets state.
+- **Claude Code** has no event to wire. It does write the decline into its own
+  transcript — `tool_result` "The user doesn't want to proceed with this tool
+  use…" with `toolDenialKind: "user-rejected"`, then
+  `[Request interrupted by user for tool use]`, then `system turn_duration` —
+  so the Notification hook now records `transcript_path` beside its stamp
+  (`--notification-hook`), and `send`, `read` and `wait-done` call
+  `scripts/lib/roost-unblock.sh` before believing `blocked`. It clears only when
+  those three records are the newest conversation records in the transcript
+  and none is older than the stamp; it only ever UNSETS, and records
+  `@roost-unblocked`. An old decline under a newer prompt — the screen-based
+  first attempt's fatal case — stays blocked, and is a test.
+- **copilot** needed nothing for Esc: 1.0.83 fires `permission.completed` with
+  `cancelled`, which the adapter already clears on.
+- **`roost doctor`** names any pane that has read `blocked` for 10 minutes
+  with no dialog text on its screen, as "may be stuck". Read-only.
 
-- `roost send` — exit 3, forever (`bin/roost:429-433`).
-- `roost wait-done` — `busy()` counts `blocked` as busy (`bin/roost:676-696`),
-  so it blocks to its timeout and exits 1. The retry loop published at
-  `site/content/docs/driving-a-fleet.md:111-117` retries **only** on exit 3, so
-  it spins for as long as the script runs.
-- `roost read` — prints *"is blocked — this reply is from its previous turn"*
-  (`bin/roost:589-592`) about a reply that is in fact the current one.
+**What is still not covered, most serious first.**
 
-**Why it is a live risk and not a note.** It needs a human keystroke to create,
-but it bites later and unattended: an orchestrating agent that hands work to a
-pane whose last dialog was declined never reaches it again, and the error text
-it gets tells it to wait for a human who has already answered. Declining a
-permission prompt is an everyday action, not an edge case.
+- **Claude's transcript format is not a contract.** If an upgrade renames a
+  record, recovery stops silently and panes stay blocked, as before #38. It
+  fails closed, never open. `tests/live/claude-decline-smoke.sh` is the guard
+  and fails loudly on a shape change — but only if someone runs it after an
+  upgrade.
+- **Existing installs need one step each.** codex: the `Interrupt` handler is
+  new, so codex asks at "Hooks need review" again and nothing works until
+  someone answers "Trust all and continue" once more (`roost doctor` names
+  exactly this). Claude: a `settings.json` wired before #38 has no
+  `--notification-hook`, records no transcript, and never recovers until
+  `roost install` is re-run.
+- **copilot `No` is not measured.** On 1.0.83, `3` moved the cursor and neither
+  Enter nor `C-m` sent through `tmux send-keys` closed the dialog, three tries.
+  Esc recovers; whether No does is unknown.
+- **copilot's aborted turn ends `done`.** The adapter maps `session.idle` to
+  done, and an Esc turn's `session.idle` carries `aborted: true`. So a
+  `wait-done` on an interrupted copilot turn reports success. Small, and not
+  changed here.
+- **Claude with no python3 and no jq** cannot read a transcript, so it never
+  recovers there. Same fail-closed shape.
+- **A Claude dialog answered within about 6 s is never badged at all.**
+  Measured: the `permission_prompt` Notification arrives ~6 s after the dialog
+  opens, and a faster answer skips it. That is the old, narrow version of the
+  unbadged-dialog hazard, not a stuck badge.
+- **Anything the transcript reader does not know stays blocked.** A background
+  task finishing after the decline appends a `queue-operation` record, and so
+  does a message queued mid-turn; either makes the tail unrecognisable. That is
+  the intended answer to "cannot tell", and a new prompt clears it anyway.
 
-**Why it is not worse than that.** It fails closed, never open: nothing is
-pasted into anything, the exit code is distinct, and the message it prints names
-the escape hatch (`roost send --force`) in its own second line. A human typing
-anything into the pane clears it on the next `UserPromptSubmit`.
-
-**The same shape is now measured on codex and on copilot**, which widens this
-from a Claude Code entry to a cross-harness one. Both adapters clear `blocked`
-only on the harness's post-tool event, and declining fires no such event —
-so nothing unstamps the pane, exactly as above. Measured by `roost validate`
-on a throwaway `-S <tmpdir>/roost` server, codex-cli 0.151.0 and Copilot CLI
-1.0.81, Esc at a real dialog:
-
-```
-codex    +58s badge=[blocked] since=1788058642
-         +122s badge=[blocked] since=1788058642   age=64s, frozen
-         screen: "✗ You canceled the request to run echo roost-validate-escalate"
-                 "■ Conversation interrupted"      -- no dialog on screen
-         roost send -> exit 3
-copilot  +5s  badge=[blocked] since=1788058761
-         +60s badge=[blocked] since=1788058761    age=59s, frozen
-         roost send -> exit 3
-```
-
-**Re-measured on codex against its REAL provider**, not the local rig: an
-OpenAI account signed in with ChatGPT, `gpt-5.6-luna`, no tool-stripping proxy
-in the loop, hooks installed from `roost hooks codex` and trusted through
-codex's own prompt. It reproduces identically, so this is not an artefact of a
-small local model or of the rig that drives one:
-
-```
-+5s   badge=[blocked] since=1788078805
-+68s  badge=[blocked] since=1788078805   age=63s, frozen
-screen: "✗ You canceled the request to run echo roost-validate-escalate"
-        "■ Conversation interrupted"     -- no dialog on screen
-roost send -> exit 3
-```
-
-opencode does **not** have it, and that has now been measured twice: once
-against local ollama and once against an opencode free cloud model over the
-network. Both left `blocked` 1s after Esc, and `roost send` then exited 0. So
-the hole is per adapter and tracks the event the adapter clears on, not
-something general to roost and not something about the provider — which is what
-makes the first candidate below (confirm the badge against the pane) the fix for
-all three at once rather than three separate ones.
-
-**Not fixed here, because the fix is a behaviour change to the guard**, and
-that is its own task. Two candidates, neither implemented:
-
-- Have the `send` guard confirm the badge against the pane before refusing —
-  `capture-pane` and look for the dialog — and downgrade to a warning when the
-  screen disagrees. That trades the guard's current "exact, no scraping"
-  property (`bin/roost:422-424`) for freshness, so it needs deciding, not
-  assuming.
-- Have `roost doctor` report it. It reads no live pane state today, so this
-  would be a new kind of check: list panes stamped `blocked` whose visible
-  screen carries no dialog marker, and name them. Cheap, read-only, and it
-  turns an invisible deadlock into a line of output.
 ### A codex pane's 💥 error is inferred, and some dead turns still read ✅ done
 
 Codex has exactly twelve hook events — `PreToolUse`, `PermissionRequest`,
@@ -168,12 +134,11 @@ covered, most serious first:
   routes are measured on *Claude Code's* `Stop`, whose payload codex matches
   field for field (`scripts/roost-agent-state`, the reply-clearing comment):
   the field present but empty on a turn that ended on a tool call, and the
-  field absent on an interrupted turn. Neither is measured on codex. The one
-  codex interrupt that was measured — Esc at a permission dialog, in the
-  `blocked` entry above — fired no `Stop` at all: the badge stayed `blocked`,
-  frozen. An Esc while the model is still streaming is not measured, and codex
-  has a separate `Interrupt` event that roost does not register. Those are the
-  cases to capture first. It is the cheaper wrong badge — it makes you look.
+  field absent on an interrupted turn. Neither is measured on codex. Both
+  codex interrupts ARE now measured (#38, 0.154.0): Esc at a permission dialog
+  and Esc while the model is still streaming each fire `Interrupt` and NO
+  `Stop`, so neither reaches this inference; `Interrupt` badges `idle`. It is
+  the cheaper wrong badge — it makes you look.
 - **A machine where no JSON reader works gets the old behaviour**, a dead turn
   badged ✅ done. That is no `python3` and no `jq`, and also a `python3` that is
   on `PATH` but cannot run — the macOS `/usr/bin/python3` stub without the

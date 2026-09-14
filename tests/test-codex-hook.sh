@@ -120,7 +120,10 @@ assert_eq "$(preply)" "charlie" "...and does not disturb the recorded reply"
 # which is why Stop cannot be a subagent's (spec §5 T1). If codex ever routed a
 # child's end through Stop instead, this file would go on passing and the badge
 # would go `done` mid-turn — so the live smoke test drives a real subagent turn.
-for ev in SubagentStart SubagentStop PreCompact PostCompact SessionStart Interrupt; do
+#
+# Interrupt left this list in #38: it is now registered, and section 11 holds
+# what it does.
+for ev in SubagentStart SubagentStop PreCompact PostCompact SessionStart; do
   hook "$ev" "{}"
   assert_eq "$(pstate)" "done" "$ev leaves the badge alone"
 done
@@ -291,13 +294,17 @@ hooks_out="$("$HERE/bin/roost" hooks codex)"
 # a user edits and re-prints at will; this one is hashed, so every word in it is
 # a word roost can never take back. Which events want a reply is the shim's
 # business.
-for ev in UserPromptSubmit PostToolUse PermissionRequest Stop; do
+#
+# #38 grew the registration by one, Interrupt, in exactly the shape of the other
+# four: the event name as the only argument, timeout 10. The four already
+# trusted are asserted unchanged below, which is what keeps their trust.
+for ev in UserPromptSubmit PostToolUse PermissionRequest Stop Interrupt; do
   assert_contains "$hooks_out" \
     "{ \"type\": \"command\", \"command\": \"$HERE/adapters/codex/roost-codex-hook $ev\", \"timeout\": 10 }" \
     "the frozen $ev handler object is byte-for-byte what it always was"
 done
-assert_eq "$(printf '%s' "$hooks_out" | grep -c '"timeout"')" "4" \
-  "exactly four handlers are registered"
+assert_eq "$(printf '%s' "$hooks_out" | grep -c '"timeout"')" "5" \
+  "exactly five handlers are registered"
 # The comment block above the JSON is prose for the human, so the JSON has to be
 # extractable on its own. `roost hooks codex > ~/.codex/hooks.json` would write
 # the comments too, which is why the printed instructions say to copy the object.
@@ -417,5 +424,60 @@ dhook UserPromptSubmit "$UPS_PAYLOAD"
 dhook Stop 'not json at all'
 assert_eq "$(pstate "$dead")" "done" "an unreadable Stop payload is not guessed to be a dead turn"
 assert_eq "$(reason)" "" "...and records no error reason"
+
+# --- 11. a declined or interrupted turn leaves blocked (#38) ------------------
+#
+# Measured on codex-cli 0.154.0 with a logger on all twelve events, local
+# ollama granite4.2:8b, `codex -a on-request -s read-only`:
+#
+#   answer at the dialog   events after the answer
+#   3. No                  Interrupt (+42ms), then nothing — no Stop
+#   Esc                    Interrupt (+84ms), then nothing — no Stop
+#   1. Yes                 PostToolUse (+132ms), no Interrupt, later Stop
+#   Esc while streaming    Interrupt (+124ms), no Stop
+#
+# So Interrupt is the one event that ends a declined turn, and until it was
+# registered nothing unstamped 🛑. The payload below is the REAL one from the
+# `No` capture, verbatim: its paths are under a scratch /private/tmp directory,
+# not a home directory, so nothing needed rewriting.
+INTERRUPT_PAYLOAD='{"session_id":"00000000-f246-4fbf-8dab-9e9d161b6d8d","turn_id":"00000000-f972-4701-86d5-4df4890ded59","transcript_path":"/private/tmp/amx.Guig/cx/codexhome/sessions/2026/09/14/rollout-2026-09-14T10-19-34-00000000-f246-4fbf-8dab-9e9d161b6d8d.jsonl","cwd":"/private/tmp/amx.Guig/cx/proj","hook_event_name":"Interrupt","model":"granite4.2:8b","permission_mode":"default"}'
+ip="$(tmux -S "$s" split-window -d -P -F '#{pane_id}' -t "$pane")"
+require_pane "$ip" "interrupt"
+ihook() { printf '%s' "$2" | env TMUX="$s,0,0" TMUX_PANE="$ip" "$HOOK" "$1"; }
+
+ihook UserPromptSubmit "$UPS_PAYLOAD"
+ihook Stop "$STOP_PAYLOAD"
+assert_eq "$(preply "$ip")" "charlie" "setup: a previous turn left its reply"
+ihook UserPromptSubmit "$UPS_PAYLOAD"
+ihook PermissionRequest "$PERM_PAYLOAD"
+assert_eq "$(pstate "$ip")" "blocked" "setup: the next turn is at a dialog"
+ihook Interrupt "$INTERRUPT_PAYLOAD"
+assert_eq "$?" "0" "Interrupt exits 0"
+assert_eq "$(pstate "$ip")" "idle" "Interrupt after a declined dialog leaves blocked, for idle"
+assert_eq "$(preply "$ip")" "" "...and clears the previous turn's reply, which is not this turn's"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$ip" @roost-error-reason)" "" \
+  "...and is not an error: no reason is recorded"
+ROOST_SOCKET="$s" "$HERE/bin/roost" send "$ip" "true" >/dev/null 2>&1
+assert_eq "$?" "0" "send reaches the pane once Interrupt has fired"
+
+# An interrupt while the model is still streaming, with no dialog: the same
+# event, the same answer. Measured with no Stop after it.
+ihook UserPromptSubmit "$UPS_PAYLOAD"
+ihook Interrupt "$INTERRUPT_PAYLOAD"
+assert_eq "$(pstate "$ip")" "idle" "Interrupt while working leaves working, for idle"
+
+# It must not fight #39/#53's empty-Stop -> error path. Interrupt never reads
+# the Stop verdict, and a later Stop still decides its own turn.
+ihook UserPromptSubmit "$UPS_PAYLOAD"
+ihook Stop "$STOP2_PAYLOAD"
+assert_eq "$(pstate "$ip")" "done" "a healthy turn after an interrupt still reaches done"
+assert_eq "$(preply "$ip")" "foxtrot" "...with its own reply"
+ihook UserPromptSubmit "$UPS_PAYLOAD"
+ihook Stop "$STOP_DEAD_EMPTY"
+assert_eq "$(pstate "$ip")" "error" "an empty Stop after an interrupt is still #39's error"
+ihook Interrupt "$INTERRUPT_PAYLOAD"
+assert_eq "$(pstate "$ip")" "idle" "an Interrupt after an error moves on to idle"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$ip" @roost-error-reason)" "" \
+  "...and takes the error's reason with it"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

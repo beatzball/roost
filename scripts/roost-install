@@ -666,7 +666,7 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
         json_probe_mode=hooks
         json_want="$CODEX_TARGET"
         json_patch="$(roost_hooks_codex "$CODEX_TARGET")"
-        json_label="roost's four codex handlers" ;;
+        json_label="roost's five codex handlers" ;;
       # Not a hook file: one boolean, and no target script to compare against.
       # The question is only whether it is already true, and it is asked of
       # the PARSED document -- scripts/roost-doctor:233 greps for the flag's

@@ -85,7 +85,14 @@ is submitted; only the on-screen rendering is a placeholder.
 
 `roost send` exits 3 and says a permission dialog is open, but the pane is sitting at an empty prompt.
 
-The badge is stale. A Claude Code turn that ends **at** a permission dialog — you answered `No`, or pressed Esc — fires no `PostToolUse` and no `Stop`, so the 🛑 that the `Notification` hook stamped is never cleared. Answering **Yes** does clear it, because the tool then runs and `PostToolUse` fires.
+The badge is stale. A turn that ends **at** a permission dialog — you answered `No`, or pressed Esc — fires no `PostToolUse`, so nothing that clears 🛑 after **Yes** runs.
+
+Usually roost now clears it for you:
+
+- **codex** fires an `Interrupt` event on No and Esc, and roost's hook badges the pane 💤 idle. It only works once codex trusts that hook: if you trusted roost's hooks before it was added, answer "Trust all and continue" at codex's "Hooks need review" once more.
+- **Claude Code** fires no event at all, but it writes the decline into its own transcript. `roost send`, `read` and `wait-done` read that transcript and clear the badge when the decline is the newest thing in it. This needs the hooks from a current `roost install` (the Notification hook carries `--notification-hook`), and python3 or jq.
+
+If the badge is still red, one of those did not hold — or it is a harness roost cannot check.
 
 Check it rather than assuming, and read the badge and the screen in the *same* moment — a badge you read seconds before a screen tells you nothing:
 
@@ -100,7 +107,7 @@ If there is no dialog on the screen, any of these clears it:
 - `roost send --force %12 "…"` — safe *once you have looked* and seen no dialog
 - `roost state working` from inside that pane
 
-`roost wait-done` will not rescue you here: it counts `blocked` as busy, so it waits out its timeout. This is a known gap, recorded in `docs/known-gaps.md` in the repo.
+`roost wait-done` will not rescue you from a badge it cannot prove stale: it counts `blocked` as busy, so it waits out its timeout. `roost doctor` names every pane that has read blocked for ten minutes with no dialog on screen, as "may be stuck", and changes nothing. What is still not covered is recorded in `docs/known-gaps.md` in the repo.
 
 ## `roost wait-done` exits non-zero
 

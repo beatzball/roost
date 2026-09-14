@@ -67,6 +67,7 @@ Two of those are subtler than they look:
 
 - **`Notification` must be scoped to `permission_prompt`.** Unmatched, it also fires for `idle_prompt` and `auth_success` — so a *finished* agent would go red.
 - **`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission dialog, so it is the first observable event after you approve. Without it a window stays red from your approval until the whole turn ends.
+- **After No or Esc, Claude fires no hook at all.** `--notification-hook` records the path of Claude's own transcript beside the 🛑, and `roost send`, `read` and `wait-done` read that transcript before believing the badge. When the newest records in it are Claude's own "request interrupted" records, written after the badge, they clear it. They never set a state, and anything they cannot prove leaves the badge red.
 
 `scripts/roost-agent-state` is a **no-op unless it runs inside a roost pane**, so it is safe in your global Claude settings — running `claude` elsewhere does nothing. It also returns early when the state is already correct, which keeps it cheap on `PostToolUse` (that fires on every single tool call, and Claude waits for the hook to exit).
 
@@ -222,7 +223,7 @@ roost hooks codex
 
 Write the JSON object it prints (not the comment lines — `hooks.json` is strict JSON) into `~/.codex/hooks.json`. Then, either way, start `codex` once and answer **"Trust all and continue"** at its `Hooks need review` prompt.
 
-**That second step is not optional, it is the other step no installer can do for you, and skipping it looks exactly like success.** Until you answer it, codex skips every hook and says nothing about having done so — your turns run normally and the pane simply never badges. `roost doctor` reads the trust entries and tells you which of the four are missing.
+**That second step is not optional, it is the other step no installer can do for you, and skipping it looks exactly like success.** Until you answer it, codex skips every hook and says nothing about having done so — your turns run normally and the pane simply never badges. `roost doctor` reads the trust entries and tells you which of the five are missing.
 
 One thing `roost install` will *not* do here: if `~/.codex/hooks.json` already points at a **different** roost checkout, it refuses and says so rather than rewriting it. That is deliberate, for the reason in the next paragraph but one — rewriting the command string re-hashes the handler, and codex then silently skips a hook a machine had already trusted.
 
@@ -233,8 +234,11 @@ One thing `roost install` will *not* do here: if `~/.codex/hooks.json` already p
 | `PermissionRequest` | 🛑 blocked |
 | `Stop`, with a reply | ✅ done, plus the turn's reply |
 | `Stop`, with **no** reply | 💥 error |
+| `Interrupt` (No or Esc, or Esc mid-answer) | 💤 idle, previous reply dropped |
 
 **`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission dialog, so it is the first observable event afterwards — the same mechanism as Claude Code's.
+
+**`Interrupt` clears it after No or Esc**, when the tool never runs. It badges 💤 idle and drops the previous turn's reply, because no `Stop` follows it. It was added after the other four hooks, so a machine that trusted roost's hooks earlier must answer "Trust all and continue" at codex's "Hooks need review" once more. `roost doctor` says when that one is missing.
 
 `roost read` returns the agent's own last answer rather than a scrape of its screen: codex's `Stop` payload carries `last_assistant_message`, spelled exactly as Claude Code spells it.
 

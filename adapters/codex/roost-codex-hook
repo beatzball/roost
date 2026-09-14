@@ -134,11 +134,29 @@ event="${1:-}"
 # codex never invokes this with another name — but a user is free to add one to
 # their own hooks.json, and a badge from a signal nobody measured is worse than
 # no badge.
+#
+#   Interrupt         the human stopped the turn           -> idle, reply cleared (#38)
+#
+# Interrupt is the only event that ends a DECLINED turn. Measured on 0.154.0
+# with a logger on all twelve events: `3. No` at a dialog fired Interrupt 42ms
+# later and nothing after it, Esc fired Interrupt 84ms later and nothing after
+# it, `1. Yes` fired PostToolUse and no Interrupt, and Esc while the model was
+# still streaming fired Interrupt and no Stop. Before it was registered a
+# declined dialog left 🛑 stamped forever.
+#
+# `idle`, not done or error. done would tell `roost wait-done` the turn
+# succeeded; error would notify and say something broke. The honest report is
+# "the turn is over, and nobody is working" — and because no Stop follows, the
+# stored reply is the previous turn's, so `--stop-hook` clears it. Interrupt
+# does not read the Stop verdict below, so it cannot reach #39's error path; a
+# later Stop still decides its own turn.
 stop_hook=0
+interrupt=0
 case "$event" in
   UserPromptSubmit|PostToolUse) state="working" ;;
   PermissionRequest)            state="blocked" ;;
   Stop)                         state="done"; stop_hook=1 ;;
+  Interrupt)                    state="idle"; interrupt=1 ;;
   *) exit 0 ;;
 esac
 
@@ -265,7 +283,11 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # --stop-hook` makes the sink clear the previous turn's reply rather than record
 # one; ROOST_ERROR_REASON is the sentence `roost wait-done` prints.
 sink="$SELF_DIR/../../scripts/roost-agent-state"
-if [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
+# Interrupt: `idle --stop-hook` with stdin from /dev/null, which is not a tty,
+# so the sink's reply-clearing arm runs and nothing waits on codex's pipe.
+if [ "$interrupt" = 1 ]; then
+  ROOST_AGENT_NAME=codex "$sink" idle --stop-hook < /dev/null || true
+elif [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
   printf '%s' "$payload" \
     | ROOST_AGENT_NAME=codex ROOST_ERROR_REASON="$reason" "$sink" "$state" --stop-hook || true
 elif [ "$stop_hook" = 1 ]; then

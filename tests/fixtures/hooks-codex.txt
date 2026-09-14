@@ -13,10 +13,18 @@
 # | PermissionRequest   | blocked                              |
 # | Stop                | done, plus the turn's reply          |
 # | Stop, with no reply | error                                |
+# | Interrupt           | idle (clears 🛑 after No or Esc)      |
 #
-# PostToolUse is what clears 🛑. No hook fires when you answer a permission
-# dialog, so it is the first observable event afterwards — measured on
-# codex-cli 0.151.0, one second after "1. Yes, proceed".
+# PostToolUse is what clears 🛑 after "Yes". No hook fires when you answer a
+# permission dialog, so it is the first observable event afterwards — measured
+# on codex-cli 0.151.0, one second after "1. Yes, proceed". After "No", or Esc,
+# the tool never runs and Interrupt is what fires instead — measured on
+# codex-cli 0.154.0, within 100ms, with no Stop after it.
+#
+# Interrupt was added in a later roost release than the other four. If you
+# trusted roost's hooks before it was there, codex asks at "Hooks need review"
+# again for that one handler: answer "Trust all and continue" once more. Until
+# you do, a declined dialog leaves 🛑 stamped, and `roost doctor` says so.
 #
 # There is no error EVENT. Codex has twelve hook events and none of them reports
 # an error, so 💥 is inferred: a Stop that carries no reply means the turn most
@@ -24,7 +32,7 @@
 # docs/known-gaps.md, which lists which ones, and the Codex section of
 # site/content/docs/state-badges.md, which says it to users.
 #
-# THESE FOUR HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
+# THESE HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
 # stores a hash of each normalised handler in $CODEX_HOME/config.toml and
 # SKIPS any handler whose hash no longer matches — with nothing printed on
 # stdout, on stderr, or in the TUI. Measured on codex-cli 0.150.1: appending one
@@ -53,6 +61,9 @@
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
+    ],
+    "Interrupt": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook Interrupt", "timeout": 10 } ] }
     ]
   }
 }

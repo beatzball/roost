@@ -42,6 +42,15 @@ assert_eq "$claude_out" "$bare_out" \
 # error and the old prose told users it could not. Only prose moved. The four
 # handler objects — the bytes codex hashes — are untouched, and
 # tests/test-codex-hook.sh section 9 holds them separately.
+#
+# Two deliberate edits for #38, both re-captured from bin/roost rather than
+# typed. codex: a FIFTH handler object, Interrupt, appended after the four,
+# plus prose; the four existing objects are byte-for-byte what they were,
+# because appending an event is measured-safe and editing one is not. claude:
+# the Notification command gained --notification-hook, plus prose. Claude does
+# not hash its hooks, and `roost install` recognises the older command as
+# roost's own and replaces it (tests/test-adapter-install.sh, the customised
+# Notification entry).
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to what d58ba14 printed"

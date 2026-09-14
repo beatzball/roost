@@ -5,6 +5,11 @@
 # fires for idle_prompt/auth_success, which would paint a finished agent red.
 # PostToolUse is what clears the red: no hook fires when you answer a permission
 # dialog, so without it the window stays blocked until the whole turn ends.
+# --notification-hook on the Notification entry is what clears it after "No" or
+# Esc, when no hook fires at all: it records the payload's transcript_path, and
+# `roost send`, `read` and `wait-done` read Claude's own transcript to prove
+# the dialog was declined. Leave it off and a declined dialog keeps its red
+# until your next prompt.
 # --stop-hook on the Stop entry is what powers `roost read`: it lets the hook
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — `roost
@@ -35,7 +40,7 @@
     ],
     "Notification": [
       { "matcher": "permission_prompt",
-        "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state blocked" } ] }
+        "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state blocked --notification-hook" } ] }
     ],
     "PostToolUse": [
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working" } ] }
