@@ -12,12 +12,19 @@
 #
 # --- why this file exists at all ---------------------------------------------
 #
-# It maps four codex hook events onto four `roost state` calls and does nothing
-# else. scripts/roost-agent-state — Claude Code's hook — already does every hard
-# part, unchanged: codex's Stop payload spells the reply field
-# `last_assistant_message`, exactly as Claude Code spells it (verified live on
-# codex-cli 0.150.1 and again on 0.151.0), so that script's JSON reader parses a
-# codex payload with no change at all.
+# It maps four codex hook events onto `roost state` calls, and it makes ONE
+# decision of its own: whether a Stop is `done` or `error`. Codex has no error
+# event, so this file reads the Stop payload itself and badges a Stop that
+# carries no reply `error` (#39) — see "Stop: a finished turn, or a dead one"
+# below, which is where that logic lives and where to change it.
+#
+# scripts/roost-agent-state — Claude Code's hook — does every other hard part:
+# codex's Stop payload spells the reply field `last_assistant_message`, exactly
+# as Claude Code spells it (verified live on codex-cli 0.150.1 and again on
+# 0.151.0), so that script's JSON reader parses a codex payload with no change
+# at all. What it gained for codex is small and named where it sits: an
+# `error --stop-hook` arm that clears the previous reply, and
+# @roost-error-reason.
 #
 # The obvious question is then why there is a file here instead of four
 # hooks.json commands pointing straight at scripts/roost-agent-state. The answer
@@ -65,15 +72,24 @@
 #
 # --- what is NOT here --------------------------------------------------------
 #
-# `error`. Codex has exactly twelve hook events — PreToolUse PermissionRequest
-# PostToolUse PreCompact PostCompact SessionStart SessionEnd UserPromptSubmit
-# SubagentStart SubagentStop Stop Interrupt — and none of them reports an error.
-# A turn that dies on the provider still fires Stop, so a codex pane badges a
-# dead turn ✅ done. That is recorded as a Live risk in docs/known-gaps.md and
-# named in the user-facing install stanza, rather than papered over with a
-# heuristic: the only candidate signal is an unmatched PreToolUse, and a
-# heuristic that mislabels a healthy turn `error` pings the human's desktop for
-# nothing (spec §1).
+# An error EVENT. Codex has exactly twelve hook events — PreToolUse
+# PermissionRequest PostToolUse PreCompact PostCompact SessionStart SessionEnd
+# UserPromptSubmit SubagentStart SubagentStop Stop Interrupt — and none of them
+# reports an error. A turn that dies on the provider still fires Stop, and until
+# #39 a codex pane badged that dead turn ✅ done.
+#
+# `error` is now reached anyway, by an INFERENCE from a field codex really
+# sends, and the inference is announced rather than hidden: docs/known-gaps.md
+# and the Codex section of site/content/docs/state-badges.md both name it and
+# its limits. A dead turn's Stop carries no `last_assistant_message`, so a Stop
+# whose payload parses and holds no reply text badges 💥 error — see the Stop
+# arm below for what that does and does not catch.
+#
+# The heuristic that was rejected is still rejected: an unmatched PreToolUse.
+# A live turn whose tool call failed showed five PreToolUse against four
+# PostToolUse, so it mislabels a healthy turn `error` and pings the human's
+# desktop for nothing (spec §1). "No reply at all" has no such healthy case
+# that anyone has measured — which is exactly the claim known-gaps keeps open.
 #
 # `idle`, and this one is a measured trap rather than a missing feature. Mapping
 # SessionEnd -> idle reads correctly in a TUI, where SessionEnd fires only when
@@ -100,6 +116,7 @@ event="${1:-}"
 #   PostToolUse       a tool returned, so the turn is live -> working
 #   PermissionRequest a human is being waited on          -> blocked
 #   Stop              the turn ended                      -> done + the reply
+#   Stop, no reply    the turn ended with nothing to say  -> error + why (#39)
 #
 # PostToolUse is doing two jobs, and the second is the important one: it is what
 # CLEARS 🛑. No hook fires when the human answers a permission dialog, so
@@ -125,6 +142,77 @@ case "$event" in
   *) exit 0 ;;
 esac
 
+# --- Stop: a finished turn, or a dead one (#39) -------------------------------
+#
+# A turn that never reached its model still fires Stop, and what gives it away
+# is what that Stop does NOT carry: known-gaps records `last_assistant_message`
+# as empty for a dead turn. So Stop is split three ways on that one field:
+#
+#   parses, and the field is a non-empty string  -> done   (a turn that answered)
+#   parses, and the field is "", null or absent  -> error  (a turn that said nothing)
+#   does not parse, or nothing here can parse it -> done   (we cannot tell)
+#
+# All three spellings of "nothing" are treated alike because only "empty" was
+# ever recorded, not the raw bytes, and a reader keyed on one spelling would
+# pass its own test and miss the other two.
+#
+# The third arm is the honest limit, not an oversight. On a machine with neither
+# python3 nor jq nothing is known about ANY turn, and badging every one of them
+# error would fire a desktop notification per turn — the "no badge beats a
+# wrong badge" rule applied to the whole machine. It keeps the pre-#39
+# behaviour, and docs/known-gaps.md names it as still uncovered.
+#
+# This is an inference, and it is announced as one: known-gaps and the Codex
+# section of site/content/docs/state-badges.md both say a codex 💥 means "the
+# turn ended with no reply", not "codex reported an error".
+#
+# The payload is read HERE, once, and handed on to roost-agent-state on its
+# stdin, because both need it and a pipe can only be read once. Under a tty (a
+# human running this by hand) it is not read at all — `cat` would wait for ^D —
+# and the sink is called exactly as before, which skips its own read the same
+# way.
+#
+# Not outside tmux, either. ~/.codex/hooks.json is GLOBAL, so this runs on every
+# codex turn on the machine, and the sink's own guard — no $TMUX or no
+# $TMUX_PANE, exit 0 — only fires after this block. Parsing first spent a
+# python3 spawn per turn on codex runs that roost will never badge (on a Mac
+# without the Command Line Tools, the /usr/bin/python3 stub). The same two
+# tests the sink makes, so this costs no process; the finer roost-socket check
+# stays in the sink, where lib/roost-socket.sh keeps the one copy of that rule.
+payload=""
+reason=""
+if [ "$stop_hook" = 1 ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+  payload="$(cat 2>/dev/null || true)"
+  verdict=""
+  # The same reader preference as roost-agent-state, for the same reason: a
+  # hand-rolled JSON parse in shell fails subtly, and neither reader may be
+  # required. `isinstance(d, dict)` because a payload that is valid JSON but
+  # not an object is as unreadable as one that is not JSON at all.
+  if command -v python3 >/dev/null 2>&1; then
+    verdict="$(printf '%s' "$payload" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+if isinstance(d, dict):
+    m = d.get("last_assistant_message")
+    sys.stdout.write("done" if isinstance(m, str) and m else "error")
+' 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    verdict="$(printf '%s' "$payload" | jq -r '
+      if type == "object" then
+        (if (.last_assistant_message | type) == "string" and .last_assistant_message != ""
+         then "done" else "error" end)
+      else empty end' 2>/dev/null || true)"
+  fi
+  if [ "$verdict" = "error" ]; then
+    state="error"
+    # A fixed sentence, not payload text: `roost wait-done` prints it verbatim,
+    # and it must say what roost inferred and from what, so nobody reads it as
+    # codex's own diagnosis. "no reply" is the phrase tests/test-codex-hook.sh
+    # holds it to.
+    reason="codex ended the turn with no reply (its Stop hook carried no last_assistant_message), which most often means the turn never reached the model — look at the pane"
+  fi
+fi
+
 # Resolve this script's own directory even when invoked via a symlink — the same
 # readlink loop as bin/roost and scripts/roost-agent-state. hooks.json holds an
 # ABSOLUTE path to this file, and that path can perfectly well be a symlink (a
@@ -145,11 +233,12 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # honest built-in value is "claude" because that script IS Claude Code's hook
 # (spec §5 T9). A name the human chose still outranks this.
 #
-# --stop-hook only on Stop, and only Stop carries a reply. It makes
-# roost-agent-state read the payload on stdin — which codex has already written
-# there — and stamp @roost-reply BEFORE @agent_state, so a caller following the
-# documented `roost wait-done` then `roost read` idiom cannot land in the gap
-# between the two (spec §2).
+# --stop-hook only on Stop, and only Stop carries a reply. With `done` it makes
+# roost-agent-state read the payload on stdin — the copy this script read from
+# codex and re-feeds below — and stamp @roost-reply BEFORE @agent_state, so a
+# caller following the documented `roost wait-done` then `roost read` idiom
+# cannot land in the gap between the two (spec §2). With `error` it reads
+# nothing and clears @roost-reply instead, because a dead turn has no answer.
 #
 # `|| true` and the bare `exit 0` are the same rule stated twice, and it is not
 # defensive padding here the way it would be in a plugin. Codex READS this
@@ -169,8 +258,17 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # real fault (a missing file, an unreadable script) — and it is the only
 # diagnostic a user will ever get, since codex only acts on a hook's stderr when
 # the exit code is 2, which this never returns.
+#
+# On Stop the payload was already read above, so it is re-fed with printf
+# rather than inherited — except under a tty, where nothing was read and the
+# sink inherits the tty and skips its own read, as it always has. `error
+# --stop-hook` makes the sink clear the previous turn's reply rather than record
+# one; ROOST_ERROR_REASON is the sentence `roost wait-done` prints.
 sink="$SELF_DIR/../../scripts/roost-agent-state"
-if [ "$stop_hook" = 1 ]; then
+if [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
+  printf '%s' "$payload" \
+    | ROOST_AGENT_NAME=codex ROOST_ERROR_REASON="$reason" "$sink" "$state" --stop-hook || true
+elif [ "$stop_hook" = 1 ]; then
   ROOST_AGENT_NAME=codex "$sink" "$state" --stop-hook || true
 else
   ROOST_AGENT_NAME=codex "$sink" "$state" || true

@@ -197,6 +197,8 @@ ending to `done`. **The pane then reports a dead turn as finished.** That is the
 `#13` bug, shipped deliberately instead of by accident, and this project has now
 fixed a false `done` twice (`#13`, `#14`).
 
+> **Superseded for codex by #39:** a codex `Stop` with an empty, null or missing `last_assistant_message` now badges `error` — an inference not yet measured live; see `docs/known-gaps.md`.
+
 So the rule is not "skip `error` quietly":
 
 - **Say it in `docs/known-gaps.md`**, in that file's own shape — which severity

@@ -119,7 +119,7 @@ One thing to check before you rely on it: the plugin runs **inside the opencode 
 
 ### What 💥 error means for `roost wait-done`
 
-`roost wait-done` does not treat an errored pane as finished. It prints `roost: '<target>' is in error state, not done` and exits 1, rather than reporting success on a turn that produced nothing.
+`roost wait-done` does not treat an errored pane as finished. It prints `roost: '<target>' is in error state, not done` and exits 1, rather than reporting success on a turn that produced nothing. When the adapter recorded why — codex does, because its 💥 is inferred — a second line names the pane and the reason.
 
 That matters most in a script. If you loop `roost wait-done` over several agents, a non-zero exit now means **error *or* timeout**, and the message tells you which. Under `set -e` a script will stop on a dead agent rather than carrying on, which is the intended behaviour but a change in flow if you had assumed non-zero meant "still busy, try again".
 
@@ -231,16 +231,20 @@ One thing `roost install` will *not* do here: if `~/.codex/hooks.json` already p
 | `UserPromptSubmit` | ⏳ working |
 | `PostToolUse` | ⏳ working |
 | `PermissionRequest` | 🛑 blocked |
-| `Stop` | ✅ done, plus the turn's reply |
+| `Stop`, with a reply | ✅ done, plus the turn's reply |
+| `Stop`, with **no** reply | 💥 error |
 
 **`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission dialog, so it is the first observable event afterwards — the same mechanism as Claude Code's.
 
 `roost read` returns the agent's own last answer rather than a scrape of its screen: codex's `Stop` payload carries `last_assistant_message`, spelled exactly as Claude Code spells it.
 
-**Two things this adapter cannot do, and you should know both before you trust the badge.**
+**A codex 💥 error is roost's guess, not codex's report.** Codex has twelve hook events and none of them reports an error, so a turn that cannot reach its model still ends with `Stop`. What gives it away is that its `Stop` carries no reply. roost badges that 💥 error, and `roost wait-done` exits 1 with two lines: `roost: '<target>' is in error state, not done`, then the pane and the reason — *codex ended the turn with no reply*.
 
-1. **A dead turn shows as ✅ done, not 💥 error.** Codex has twelve hook events and none of them reports an error, so a turn that cannot reach its model ends looking finished. If a codex pane goes ✅ suspiciously fast, look at it.
-2. **A codex pane never shows 💤 idle.** That is deliberate: an unbadged pane already renders as idle, and codex's `SessionEnd` fires within milliseconds of `Stop` under `codex exec`, so reporting it would erase the ✅ that turn just earned.
+**Three things this adapter cannot do, and you should know them before you trust the badge.**
+
+1. **Some dead turns still show ✅ done.** A turn that dies *after* the model has started answering has a reply — the part it got out — so it looks finished. So does every turn where roost cannot read the payload, and it will not guess: a machine with neither `python3` nor `jq`, or one whose `python3` is on `PATH` but does not run — the macOS `/usr/bin/python3` stub before the Command Line Tools are installed — because roost does not fall back to `jq` once it has found a `python3`. If a codex pane goes ✅ suspiciously fast, look at it.
+2. **A turn that ends with nothing to say reads 💥 error**, even if nothing went wrong. Nobody has seen codex do this on a healthy turn, and pressing Esc at a codex permission dialog fires no `Stop` at all, so it is not caught by this. But an interrupt while codex is still answering has not been measured, and roost cannot tell the two apart. A false 💥 is the safer mistake: it makes you look.
+3. **A codex pane never shows 💤 idle.** That is deliberate: an unbadged pane already renders as idle, and codex's `SessionEnd` fires within milliseconds of `Stop` under `codex exec`, so reporting it would erase the ✅ that turn just earned.
 
 **Changing the config yourself will switch the badges off.** Codex stores a hash of each hook entry when you trust it and silently skips any entry that no longer matches — a changed command, or even a changed `timeout`. If you edit `hooks.json`, run `codex` and re-trust through `/hooks`. For the same reason, what `roost hooks codex` prints will not change between roost releases; roost changes `adapters/codex/roost-codex-hook` instead, which codex re-reads every run.
 

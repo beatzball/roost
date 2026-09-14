@@ -588,15 +588,17 @@ case "${1:-up}" in
 # | PostToolUse         | working (and it is what clears 🛑)    |
 # | PermissionRequest   | blocked                              |
 # | Stop                | done, plus the turn's reply          |
+# | Stop, with no reply | error                                |
 #
 # PostToolUse is what clears 🛑. No hook fires when you answer a permission
 # dialog, so it is the first observable event afterwards — measured on
 # codex-cli 0.151.0, one second after "1. Yes, proceed".
 #
-# There is deliberately no error entry. Codex has twelve hook events and none of
-# them reports an error, so a turn that dies on the provider ends ✅ done rather
-# than 💥. See docs/known-gaps.md, which says so plainly, and the Codex section
-# of site/content/docs/state-badges.md, which says it to users.
+# There is no error EVENT. Codex has twelve hook events and none of them reports
+# an error, so 💥 is inferred: a Stop that carries no reply means the turn most
+# likely never reached the model. Some dead turns still end ✅ done. See
+# docs/known-gaps.md, which lists which ones, and the Codex section of
+# site/content/docs/state-badges.md, which says it to users.
 #
 # THESE FOUR HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
 # stores a hash of each normalised handler in \$CODEX_HOME/config.toml and
@@ -1196,7 +1198,18 @@ JSON
     # legitimately has no reply channel at all — would otherwise have this
     # prepended to every single read.
     echo "roost read: no recorded reply for '$raw' — showing the pane's screen instead." >&2
-    echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
+    # The second line is a GUESS at why, and on an errored pane with a recorded
+    # reason the guess is wrong twice: the pane has an adapter, and its turn
+    # finished. A codex dead turn (#39) lands exactly here, because it clears
+    # its reply — so say the reason the adapter recorded, which is what a
+    # caller that just got exit 1 from `wait-done` needs to see again here.
+    # Pane scope only (-p), for the reason given at the @roost-reply read above.
+    why="$(t show-options -p -t "$tgt" -qv @roost-error-reason 2>/dev/null || true)"
+    if [ -n "$why" ] && [ "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" = "error" ]; then
+      echo "roost read: ('$raw' is in error state: $why; roost screen reads the screen without this notice)" >&2
+    else
+      echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
+    fi
     # THE FALLBACK IS NOT RENDERED, and this is a deliberate reversal of the
     # obvious reading of the flag. A recorded reply is markdown because an
     # agent wrote it. A pane's SCREEN is not: it is terminal output, and a
@@ -1331,26 +1344,41 @@ JSON
     # working|blocked's absence used to) would report a dead agent as
     # successfully finished — the one wrong answer a coordinating agent
     # cannot recover from. Check and stop explicitly instead.
+    #
+    # It also leaves the errored pane's id in $err_pane, so the refusal can say
+    # WHY: an adapter that inferred `error` rather than being told it (codex,
+    # #39) records its reason in @roost-error-reason, and "error" alone does not
+    # tell a coordinator whether to retry, re-prompt or go and look.
+    err_pane=""
     errored() {
       case "$tgt" in
         %*)
           case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
-            error) return 0 ;;
+            error) err_pane="$tgt"; return 0 ;;
             *) return 1 ;;
           esac
           ;;
         *)
-          states="$(t list-panes -t "$tgt" -F '#{@agent_state}' 2>/dev/null || true)"
-          case "$states" in
-            *error*) return 0 ;;
-            *) return 1 ;;
-          esac
+          # A read loop over a captured string, not `| awk ... exit`: the same
+          # pipefail/SIGPIPE hazard the busy() comment above describes.
+          states="$(t list-panes -t "$tgt" -F '#{@agent_state} #{pane_id}' 2>/dev/null || true)"
+          while read -r _st _id; do
+            [ "$_st" = "error" ] && { err_pane="$_id"; return 0; }
+          done <<< "$states"
+          return 1
           ;;
       esac
     }
     while :; do
       if errored; then
-        echo "roost: '$raw' is in error state, not done" >&2; exit 1
+        echo "roost: '$raw' is in error state, not done" >&2
+        # show-options -p, as `read` does for @roost-reply: pane scope only, so
+        # a stray window- or global-scope value is never reported as this
+        # pane's reason. A pane with none (every adapter that has a real error
+        # event) prints the one line it always has.
+        why="$(t show-options -p -t "$err_pane" -qv @roost-error-reason 2>/dev/null || true)"
+        [ -n "$why" ] && echo "roost: $err_pane: $why" >&2
+        exit 1
       fi
       busy || break
       sleep 1; waited=$((waited + 1))

@@ -12,6 +12,8 @@
 #
 # --stop-hook additionally reads Claude Code's Stop payload from stdin and
 # records that turn's reply on the pane, which is what `roost read` returns.
+# With `error` instead of `done` it reads nothing and clears that reply: the
+# codex adapter uses it for a turn that ended with no reply (#39).
 set -euo pipefail
 
 # Resolve this script's own directory even when invoked via a symlink — same
@@ -145,6 +147,18 @@ if [ "$stop_hook" = 1 ] && [ "$state" = "done" ]; then
       tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
     fi
   fi
+elif [ "$stop_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
+  # A turn that ended as an ERROR has no answer to record, and whatever reply
+  # is stored is the previous turn's. Cleared for the same reason the empty
+  # `done` branch above clears it, and above the unchanged-state bail for the
+  # same reason as that one: a second dead turn in a row must not leave turn
+  # N-1's answer behind either. The stdin is not read — nothing in an error
+  # turn's payload is published — so there is no `cat` to hang on, but the tty
+  # guard stays so a human typing the flag by hand can never wipe a reply.
+  #
+  # Only adapters/codex/roost-codex-hook passes `error --stop-hook` today: codex
+  # has no error event, so its adapter decides from the Stop payload (#39).
+  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
 fi
 
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
@@ -185,6 +199,30 @@ esac
 # obvious next move on reading roost_reply_escape is to apply it to every
 # option write, and escaping a value that cannot need it only adds a way to be
 # wrong later.
+#
+# @roost-error-reason says WHY a pane is error, and `roost wait-done` prints it.
+# It is written BEFORE @agent_state for the reply's reason: wait-done reads it
+# the instant it sees `error`, so stamping the state first opens a window where
+# the reason is missing. It is cleared when a pane LEAVES error, so a reason
+# can never be printed about a later turn it does not describe.
+#
+# The clear is keyed on $prev, not run on every transition. A reason is only
+# ever written together with `error`, so a pane whose previous state was not
+# error has none to clear — and this script is the hook every live Claude agent
+# runs, so an unconditional unset was one more tmux call on every transition of
+# every agent, spent clearing nothing. $prev is already in hand from the one
+# read above. An error -> error write (a hand-typed `roost state error` after a
+# codex dead turn) cannot reach here at all: the unchanged-state bail catches
+# it, and the reason it leaves describes the turn that is still showing.
+#
+# ROOST_ERROR_REASON is set only by adapters/codex/roost-codex-hook, as a fixed
+# sentence. Like @agent_state it needs no trailing-semicolon escape; a caller
+# who exported one ending in `;` would lose that character, not the write.
+if [ "$state" = "error" ] && [ -n "${ROOST_ERROR_REASON:-}" ]; then
+  tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-error-reason "$ROOST_ERROR_REASON" 2>/dev/null || true
+elif [ "$prev" = "error" ]; then
+  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-error-reason 2>/dev/null || true
+fi
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$(date +%s)" 2>/dev/null || true
 

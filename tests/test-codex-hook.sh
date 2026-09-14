@@ -176,6 +176,12 @@ printf '%s' "$STOP2_PAYLOAD" | env PATH="$shimdir:$PATH" TMUX="$s,0,0" TMUX_PANE
 # would make this assertion pass no matter which order the writes happened in.
 order="$(grep 'set-option' "$tmuxlog" | grep -oE '@roost-reply|@agent_state' | paste -sd, -)"
 assert_eq "$order" "@roost-reply,@agent_state" "Stop writes the reply BEFORE the state"
+# The same log, read for what must NOT be there. A healthy working -> done
+# transition on a pane that was never error has no @roost-error-reason to
+# clear, and roost-agent-state is the hook every live Claude agent runs, so a
+# tmux call spent clearing nothing is paid on every transition of every agent.
+assert_eq "$(grep -c 'roost-error-reason' "$tmuxlog")" "0" \
+  "a healthy Stop on a pane that was not error spends no tmux call on @roost-error-reason"
 assert_eq "$(preply)" "foxtrot" "the second turn's reply replaces the first"
 
 # --- 6. a re-entrant Stop still records its reply ----------------------------
@@ -225,6 +231,38 @@ assert_eq "$(tmux -S "$outside/plain" show-options -pqv -t "$opane" @agent_state
 printf '%s' "$UPS_PAYLOAD" | env -u TMUX -u TMUX_PANE "$HOOK" UserPromptSubmit
 assert_eq "$?" "0" "outside tmux entirely, the shim exits 0 and does nothing"
 tmux -S "$outside/plain" kill-server 2>/dev/null
+
+# "Does nothing" includes spending nothing. Since #39 the shim reads and parses
+# the Stop payload itself, and ~/.codex/hooks.json is GLOBAL, so a parse ahead
+# of the tmux guard would spawn an interpreter on every codex turn anywhere on
+# the machine — including, on a Mac without the Command Line Tools, the
+# /usr/bin/python3 stub. Counted with a python3 on PATH that logs each call.
+# A real file that execs the real one, never a symlink: a `>` through a
+# symlink in a shim directory overwrites the binary it points at.
+if command -v python3 >/dev/null 2>&1; then
+  pylog="$outside/python3.log"
+  mkdir -p "$outside/pybin"
+  cat > "$outside/pybin/python3" <<EOF
+#!/bin/sh
+printf 'x\n' >> "$pylog"
+exec "$(command -v python3)" "\$@"
+EOF
+  chmod +x "$outside/pybin/python3"
+  : > "$pylog"
+  printf '%s' "$STOP_PAYLOAD" | env -u TMUX -u TMUX_PANE PATH="$outside/pybin:$PATH" "$HOOK" Stop
+  assert_eq "$(grep -c x "$pylog")" "0" "outside tmux, a Stop spawns no JSON reader at all"
+  : > "$pylog"
+  printf '%s' "$STOP_PAYLOAD" | env -u TMUX_PANE TMUX="$s,0,0" PATH="$outside/pybin:$PATH" "$HOOK" Stop
+  assert_eq "$(grep -c x "$pylog")" "0" "...nor with TMUX set but no TMUX_PANE"
+  # Detector honesty: inside roost the same Stop MUST reach the logger, or both
+  # zeros above only prove the wrapper was never on PATH.
+  : > "$pylog"
+  printf '%s' "$STOP_PAYLOAD" | env TMUX="$s,0,0" TMUX_PANE="$pane" PATH="$outside/pybin:$PATH" "$HOOK" Stop
+  [ "$(grep -c x "$pylog")" -ge 1 ]
+  assert_true $? "...while inside roost the logging python3 really is the one called"
+else
+  echo "  SKIP: python3 not found — the no-spawn-outside-roost check needs it to count"
+fi
 rm -rf "$outside"
 
 # --- 9. the registration is frozen -------------------------------------------
@@ -278,5 +316,106 @@ fi
 claude_out="$("$HERE/bin/roost" hooks)"
 assert_contains "$claude_out" "roost-agent-state working" "bare 'roost hooks' still prints the Claude config"
 assert_contains "$claude_out" "permission_prompt" "...including the Notification matcher"
+
+# --- 10. a dead turn is not done (#39) ---------------------------------------
+#
+# Codex has no error event, and a turn that never reaches its model still fires
+# Stop. What that Stop does NOT carry is a reply: known-gaps records that for a
+# dead turn `last_assistant_message` is empty. That is a field codex genuinely
+# emits, so it is the signal — an inference, announced in docs/known-gaps.md
+# and in site/content/docs/state-badges.md, not a screen scrape.
+#
+# These three payloads are NOT captures. Each is the real STOP_PAYLOAD above
+# with only `last_assistant_message` changed — to "", to null, and removed —
+# because the shape a dead turn arrives in was recorded as "empty" without the
+# raw bytes, and a reader that only handled one spelling would pass a test
+# written in that spelling and miss the other two.
+STOP_DEAD_EMPTY="${STOP_PAYLOAD%\"last_assistant_message\":\"charlie\"\}}\"last_assistant_message\":\"\"}"
+STOP_DEAD_NULL="${STOP_PAYLOAD%\"last_assistant_message\":\"charlie\"\}}\"last_assistant_message\":null}"
+STOP_DEAD_ABSENT="${STOP_PAYLOAD%,\"last_assistant_message\":\"charlie\"\}}}"
+# Detector honesty: if the suffix strip above ever misses, all three variables
+# are STOP_PAYLOAD unchanged, and every "is not done" assertion below would be
+# testing a healthy turn — which fails loudly, but for a reason that reads as a
+# broken fix instead of a broken fixture.
+assert_contains "$STOP_DEAD_EMPTY" '"last_assistant_message":""}' "the empty-reply fixture really is empty"
+assert_contains "$STOP_DEAD_NULL" '"last_assistant_message":null}' "the null-reply fixture really is null"
+case "$STOP_DEAD_ABSENT" in
+  *last_assistant_message*) assert_eq present absent "the absent-reply fixture really has no reply field" ;;
+  *) assert_eq ok ok "the absent-reply fixture really has no reply field" ;;
+esac
+
+# A pane in a window of its own, so the window-target wait-done below sees this
+# pane and nothing the earlier sections left working.
+dead="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+require_pane "$dead" dead
+deadwin="$(tmux -S "$s" display -p -t "$dead" '#{window_id}')"
+dhook() { printf '%s' "$2" | env TMUX="$s,0,0" TMUX_PANE="$dead" "$HOOK" "$1"; }
+reason() { tmux -S "$s" show-options -pqv -t "$dead" @roost-error-reason; }
+
+# Turn 1 answers, so there is a real reply on the pane for the dead turn to
+# leave behind if it forgets to clear it.
+dhook UserPromptSubmit "$UPS_PAYLOAD"
+dhook Stop "$STOP_PAYLOAD"
+assert_eq "$(pstate "$dead")" "done" "a healthy codex turn still reaches done"
+assert_eq "$(preply "$dead")" "charlie" "...with its reply"
+
+for p in "$STOP_DEAD_EMPTY" "$STOP_DEAD_NULL" "$STOP_DEAD_ABSENT"; do
+  dhook UserPromptSubmit "$UPS_PAYLOAD"
+  dhook Stop "$p"; rc=$?
+  assert_eq "$rc" "0" "a dead turn's Stop still exits 0 [$p]"
+  assert_eq "$(pstate "$dead")" "error" "a codex turn that ends with no reply badges error, not done [$p]"
+  # read keys its "from its previous turn" notice on error too, but a notice on
+  # a reply that should not be there is weaker than the reply not being there.
+  assert_eq "$(preply "$dead")" "" "...and turn 1's reply is not left on the pane as this turn's [$p]"
+  assert_contains "$(reason)" "no reply" "...and the pane records why it is error [$p]"
+done
+
+# `roost wait-done` against the dead pane: non-zero, and a message that says
+# why, by pane and by window. Before this fix it exited 0 — success on a corpse.
+werr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$dead" 2 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" "1" "wait-done on a dead codex pane exits non-zero"
+assert_contains "$werr" "error state" "...naming the state"
+assert_contains "$werr" "no reply" "...and naming the reason"
+werr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$deadwin" 2 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" "1" "wait-done on a window holding a dead codex pane exits non-zero"
+assert_contains "$werr" "no reply" "...and names the reason too"
+
+# `roost read`, the other half of the wait-done-then-read idiom. The dead turn
+# cleared its reply, so read falls back to the screen — correctly — but its
+# notice used to guess "no roost adapter, or its turn has not finished", both
+# false here: the pane has an adapter and its turn finished, badly. The reason
+# is on the pane, so read says that instead.
+rerr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" read "$dead" 5 2>&1 >/dev/null)"
+assert_contains "$rerr" "no recorded reply" "read on a dead codex pane still announces its screen fallback"
+assert_contains "$rerr" "no reply" "...and names the reason the turn has none"
+case "$rerr" in
+  *"no roost adapter"*) assert_eq guessed named "...instead of guessing the pane has no adapter" ;;
+  *) assert_eq ok ok "...instead of guessing the pane has no adapter" ;;
+esac
+# The replaced line also carried the way out of this notice, and an errored
+# pane needs that pointer as much as any other: the caller is about to look at
+# a screen, and `roost screen` is how to do that without the notice.
+assert_contains "$rerr" "roost screen" "...and still points at roost screen"
+
+# The next healthy turn recovers completely: the reason goes with the error, so
+# it can never be printed about a later turn it does not describe.
+dhook UserPromptSubmit "$UPS_PAYLOAD"
+assert_eq "$(pstate "$dead")" "working" "the turn after a dead one starts working"
+assert_eq "$(reason)" "" "...and the dead turn's reason is cleared"
+dhook Stop "$STOP2_PAYLOAD"
+assert_eq "$(pstate "$dead")" "done" "...and a healthy turn after a dead one reaches done"
+assert_eq "$(preply "$dead")" "foxtrot" "...with its own reply"
+ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$dead" 2 >/dev/null 2>&1
+assert_eq "$?" "0" "wait-done on the recovered pane exits 0"
+
+# A payload nobody could read is "we cannot tell", not "it died". Badging it
+# error would turn every turn on a machine with neither python3 nor jq into a
+# desktop notification, so it keeps the old behaviour — done, with the reply
+# cleared so `roost read` announces its screen fallback. docs/known-gaps.md
+# names this as the part still not covered.
+dhook UserPromptSubmit "$UPS_PAYLOAD"
+dhook Stop 'not json at all'
+assert_eq "$(pstate "$dead")" "done" "an unreadable Stop payload is not guessed to be a dead turn"
+assert_eq "$(reason)" "" "...and records no error reason"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
