@@ -12,6 +12,8 @@
 #
 # --stop-hook additionally reads Claude Code's Stop payload from stdin and
 # records that turn's reply on the pane, which is what `roost read` returns.
+# With `error` instead of `done` it reads nothing and clears that reply: the
+# codex adapter uses it for a turn that ended with no reply (#39).
 set -euo pipefail
 
 # Resolve this script's own directory even when invoked via a symlink — same
@@ -201,17 +203,24 @@ esac
 # @roost-error-reason says WHY a pane is error, and `roost wait-done` prints it.
 # It is written BEFORE @agent_state for the reply's reason: wait-done reads it
 # the instant it sees `error`, so stamping the state first opens a window where
-# the reason is missing. It is cleared on every OTHER transition, so a reason
-# can never be printed about a later turn it does not describe. That clear is
-# one more tmux call, but only past the unchanged-state bail above — once per
-# transition, never on the PostToolUse hot path.
+# the reason is missing. It is cleared when a pane LEAVES error, so a reason
+# can never be printed about a later turn it does not describe.
+#
+# The clear is keyed on $prev, not run on every transition. A reason is only
+# ever written together with `error`, so a pane whose previous state was not
+# error has none to clear — and this script is the hook every live Claude agent
+# runs, so an unconditional unset was one more tmux call on every transition of
+# every agent, spent clearing nothing. $prev is already in hand from the one
+# read above. An error -> error write (a hand-typed `roost state error` after a
+# codex dead turn) cannot reach here at all: the unchanged-state bail catches
+# it, and the reason it leaves describes the turn that is still showing.
 #
 # ROOST_ERROR_REASON is set only by adapters/codex/roost-codex-hook, as a fixed
 # sentence. Like @agent_state it needs no trailing-semicolon escape; a caller
 # who exported one ending in `;` would lose that character, not the write.
 if [ "$state" = "error" ] && [ -n "${ROOST_ERROR_REASON:-}" ]; then
   tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-error-reason "$ROOST_ERROR_REASON" 2>/dev/null || true
-else
+elif [ "$prev" = "error" ]; then
   tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-error-reason 2>/dev/null || true
 fi
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true

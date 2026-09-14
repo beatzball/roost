@@ -176,6 +176,12 @@ printf '%s' "$STOP2_PAYLOAD" | env PATH="$shimdir:$PATH" TMUX="$s,0,0" TMUX_PANE
 # would make this assertion pass no matter which order the writes happened in.
 order="$(grep 'set-option' "$tmuxlog" | grep -oE '@roost-reply|@agent_state' | paste -sd, -)"
 assert_eq "$order" "@roost-reply,@agent_state" "Stop writes the reply BEFORE the state"
+# The same log, read for what must NOT be there. A healthy working -> done
+# transition on a pane that was never error has no @roost-error-reason to
+# clear, and roost-agent-state is the hook every live Claude agent runs, so a
+# tmux call spent clearing nothing is paid on every transition of every agent.
+assert_eq "$(grep -c 'roost-error-reason' "$tmuxlog")" "0" \
+  "a healthy Stop on a pane that was not error spends no tmux call on @roost-error-reason"
 assert_eq "$(preply)" "foxtrot" "the second turn's reply replaces the first"
 
 # --- 6. a re-entrant Stop still records its reply ----------------------------
@@ -341,6 +347,19 @@ assert_contains "$werr" "no reply" "...and naming the reason"
 werr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$deadwin" 2 2>&1 >/dev/null)"; rc=$?
 assert_eq "$rc" "1" "wait-done on a window holding a dead codex pane exits non-zero"
 assert_contains "$werr" "no reply" "...and names the reason too"
+
+# `roost read`, the other half of the wait-done-then-read idiom. The dead turn
+# cleared its reply, so read falls back to the screen — correctly — but its
+# notice used to guess "no roost adapter, or its turn has not finished", both
+# false here: the pane has an adapter and its turn finished, badly. The reason
+# is on the pane, so read says that instead.
+rerr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" read "$dead" 5 2>&1 >/dev/null)"
+assert_contains "$rerr" "no recorded reply" "read on a dead codex pane still announces its screen fallback"
+assert_contains "$rerr" "no reply" "...and names the reason the turn has none"
+case "$rerr" in
+  *"no roost adapter"*) assert_eq guessed named "...instead of guessing the pane has no adapter" ;;
+  *) assert_eq ok ok "...instead of guessing the pane has no adapter" ;;
+esac
 
 # The next healthy turn recovers completely: the reason goes with the error, so
 # it can never be printed about a later turn it does not describe.

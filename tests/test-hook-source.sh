@@ -49,7 +49,7 @@ assert_eq "$claude_out" "$expected_claude" \
 codex_out="$("$HERE/bin/roost" hooks codex)"
 expected_codex="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-codex.txt")"
 assert_eq "$codex_out" "$expected_codex" \
-  "'roost hooks codex' is byte-identical to what d58ba14 printed"
+  "'roost hooks codex' is byte-identical to what d58ba14 printed, plus #39's comment edit"
 
 # --- one copy of the bytes, not two -----------------------------------------
 # A test that only compared printed output cannot tell "sourced from the

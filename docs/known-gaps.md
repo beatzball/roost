@@ -163,13 +163,23 @@ covered, most serious first:
   stream dies after the model has produced text, that partial text is the
   `last_assistant_message`, and nothing in the payload says the turn was cut
   short.
-- **A healthy turn with an empty final message would read 💥 error**, with a
-  desktop notification if its window is off screen. Nobody has seen codex end
-  a real turn that way; that is a gap in the measurements, not a proof. It is
-  the cheaper wrong badge — it makes you look.
-- **A machine with neither `python3` nor `jq` gets the old behaviour**, a dead
-  turn badged ✅ done. Nothing is known about any turn there, and badging every
-  one of them error would notify on every turn.
+- **A turn that ends with no reply for a reason other than dying would read 💥
+  error**, with a desktop notification if its window is off screen. Two such
+  routes are measured on *Claude Code's* `Stop`, whose payload codex matches
+  field for field (`scripts/roost-agent-state`, the reply-clearing comment):
+  the field present but empty on a turn that ended on a tool call, and the
+  field absent on an interrupted turn. Neither is measured on codex. The one
+  codex interrupt that was measured — Esc at a permission dialog, in the
+  `blocked` entry above — fired no `Stop` at all: the badge stayed `blocked`,
+  frozen. An Esc while the model is still streaming is not measured, and codex
+  has a separate `Interrupt` event that roost does not register. Those are the
+  cases to capture first. It is the cheaper wrong badge — it makes you look.
+- **A machine where no JSON reader works gets the old behaviour**, a dead turn
+  badged ✅ done. That is no `python3` and no `jq`, and also a `python3` that is
+  on `PATH` but cannot run — the macOS `/usr/bin/python3` stub without the
+  Command Line Tools — because the adapter, like `roost-agent-state`, does not
+  fall back to `jq` once it has found a `python3`. Nothing is known about any
+  turn there, and badging every one of them error would notify on every turn.
 
 The rejected alternative stays rejected: an unmatched `PreToolUse` (a live turn
 whose tool call failed showed five `PreToolUse` against four `PostToolUse`)

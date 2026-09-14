@@ -12,12 +12,19 @@
 #
 # --- why this file exists at all ---------------------------------------------
 #
-# It maps four codex hook events onto four `roost state` calls and does nothing
-# else. scripts/roost-agent-state — Claude Code's hook — already does every hard
-# part, unchanged: codex's Stop payload spells the reply field
-# `last_assistant_message`, exactly as Claude Code spells it (verified live on
-# codex-cli 0.150.1 and again on 0.151.0), so that script's JSON reader parses a
-# codex payload with no change at all.
+# It maps four codex hook events onto `roost state` calls, and it makes ONE
+# decision of its own: whether a Stop is `done` or `error`. Codex has no error
+# event, so this file reads the Stop payload itself and badges a Stop that
+# carries no reply `error` (#39) — see "Stop: a finished turn, or a dead one"
+# below, which is where that logic lives and where to change it.
+#
+# scripts/roost-agent-state — Claude Code's hook — does every other hard part:
+# codex's Stop payload spells the reply field `last_assistant_message`, exactly
+# as Claude Code spells it (verified live on codex-cli 0.150.1 and again on
+# 0.151.0), so that script's JSON reader parses a codex payload with no change
+# at all. What it gained for codex is small and named where it sits: an
+# `error --stop-hook` arm that clears the previous reply, and
+# @roost-error-reason.
 #
 # The obvious question is then why there is a file here instead of four
 # hooks.json commands pointing straight at scripts/roost-agent-state. The answer
@@ -218,11 +225,12 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # honest built-in value is "claude" because that script IS Claude Code's hook
 # (spec §5 T9). A name the human chose still outranks this.
 #
-# --stop-hook only on Stop, and only Stop carries a reply. It makes
-# roost-agent-state read the payload on stdin — which codex has already written
-# there — and stamp @roost-reply BEFORE @agent_state, so a caller following the
-# documented `roost wait-done` then `roost read` idiom cannot land in the gap
-# between the two (spec §2).
+# --stop-hook only on Stop, and only Stop carries a reply. With `done` it makes
+# roost-agent-state read the payload on stdin — the copy this script read from
+# codex and re-feeds below — and stamp @roost-reply BEFORE @agent_state, so a
+# caller following the documented `roost wait-done` then `roost read` idiom
+# cannot land in the gap between the two (spec §2). With `error` it reads
+# nothing and clears @roost-reply instead, because a dead turn has no answer.
 #
 # `|| true` and the bare `exit 0` are the same rule stated twice, and it is not
 # defensive padding here the way it would be in a plugin. Codex READS this

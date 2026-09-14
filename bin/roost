@@ -1198,7 +1198,18 @@ JSON
     # legitimately has no reply channel at all — would otherwise have this
     # prepended to every single read.
     echo "roost read: no recorded reply for '$raw' — showing the pane's screen instead." >&2
-    echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
+    # The second line is a GUESS at why, and on an errored pane with a recorded
+    # reason the guess is wrong twice: the pane has an adapter, and its turn
+    # finished. A codex dead turn (#39) lands exactly here, because it clears
+    # its reply — so say the reason the adapter recorded, which is what a
+    # caller that just got exit 1 from `wait-done` needs to see again here.
+    # Pane scope only (-p), for the reason given at the @roost-reply read above.
+    why="$(t show-options -p -t "$tgt" -qv @roost-error-reason 2>/dev/null || true)"
+    if [ -n "$why" ] && [ "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" = "error" ]; then
+      echo "roost read: ('$raw' is in error state: $why)" >&2
+    else
+      echo "roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)" >&2
+    fi
     # THE FALLBACK IS NOT RENDERED, and this is a deliberate reversal of the
     # obvious reading of the flag. A recorded reply is markdown because an
     # agent wrote it. A pane's SCREEN is not: it is terminal output, and a
