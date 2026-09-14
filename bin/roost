@@ -1331,26 +1331,41 @@ JSON
     # working|blocked's absence used to) would report a dead agent as
     # successfully finished — the one wrong answer a coordinating agent
     # cannot recover from. Check and stop explicitly instead.
+    #
+    # It also leaves the errored pane's id in $err_pane, so the refusal can say
+    # WHY: an adapter that inferred `error` rather than being told it (codex,
+    # #39) records its reason in @roost-error-reason, and "error" alone does not
+    # tell a coordinator whether to retry, re-prompt or go and look.
+    err_pane=""
     errored() {
       case "$tgt" in
         %*)
           case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null)" in
-            error) return 0 ;;
+            error) err_pane="$tgt"; return 0 ;;
             *) return 1 ;;
           esac
           ;;
         *)
-          states="$(t list-panes -t "$tgt" -F '#{@agent_state}' 2>/dev/null || true)"
-          case "$states" in
-            *error*) return 0 ;;
-            *) return 1 ;;
-          esac
+          # A read loop over a captured string, not `| awk ... exit`: the same
+          # pipefail/SIGPIPE hazard the busy() comment above describes.
+          states="$(t list-panes -t "$tgt" -F '#{@agent_state} #{pane_id}' 2>/dev/null || true)"
+          while read -r _st _id; do
+            [ "$_st" = "error" ] && { err_pane="$_id"; return 0; }
+          done <<< "$states"
+          return 1
           ;;
       esac
     }
     while :; do
       if errored; then
-        echo "roost: '$raw' is in error state, not done" >&2; exit 1
+        echo "roost: '$raw' is in error state, not done" >&2
+        # show-options -p, as `read` does for @roost-reply: pane scope only, so
+        # a stray window- or global-scope value is never reported as this
+        # pane's reason. A pane with none (every adapter that has a real error
+        # event) prints the one line it always has.
+        why="$(t show-options -p -t "$err_pane" -qv @roost-error-reason 2>/dev/null || true)"
+        [ -n "$why" ] && echo "roost: $err_pane: $why" >&2
+        exit 1
       fi
       busy || break
       sleep 1; waited=$((waited + 1))

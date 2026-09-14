@@ -279,4 +279,88 @@ claude_out="$("$HERE/bin/roost" hooks)"
 assert_contains "$claude_out" "roost-agent-state working" "bare 'roost hooks' still prints the Claude config"
 assert_contains "$claude_out" "permission_prompt" "...including the Notification matcher"
 
+# --- 10. a dead turn is not done (#39) ---------------------------------------
+#
+# Codex has no error event, and a turn that never reaches its model still fires
+# Stop. What that Stop does NOT carry is a reply: known-gaps records that for a
+# dead turn `last_assistant_message` is empty. That is a field codex genuinely
+# emits, so it is the signal — an inference, announced in docs/known-gaps.md
+# and in site/content/docs/state-badges.md, not a screen scrape.
+#
+# These three payloads are NOT captures. Each is the real STOP_PAYLOAD above
+# with only `last_assistant_message` changed — to "", to null, and removed —
+# because the shape a dead turn arrives in was recorded as "empty" without the
+# raw bytes, and a reader that only handled one spelling would pass a test
+# written in that spelling and miss the other two.
+STOP_DEAD_EMPTY="${STOP_PAYLOAD%\"last_assistant_message\":\"charlie\"\}}\"last_assistant_message\":\"\"}"
+STOP_DEAD_NULL="${STOP_PAYLOAD%\"last_assistant_message\":\"charlie\"\}}\"last_assistant_message\":null}"
+STOP_DEAD_ABSENT="${STOP_PAYLOAD%,\"last_assistant_message\":\"charlie\"\}}}"
+# Detector honesty: if the suffix strip above ever misses, all three variables
+# are STOP_PAYLOAD unchanged, and every "is not done" assertion below would be
+# testing a healthy turn — which fails loudly, but for a reason that reads as a
+# broken fix instead of a broken fixture.
+assert_contains "$STOP_DEAD_EMPTY" '"last_assistant_message":""}' "the empty-reply fixture really is empty"
+assert_contains "$STOP_DEAD_NULL" '"last_assistant_message":null}' "the null-reply fixture really is null"
+case "$STOP_DEAD_ABSENT" in
+  *last_assistant_message*) assert_eq present absent "the absent-reply fixture really has no reply field" ;;
+  *) assert_eq ok ok "the absent-reply fixture really has no reply field" ;;
+esac
+
+# A pane in a window of its own, so the window-target wait-done below sees this
+# pane and nothing the earlier sections left working.
+dead="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+require_pane "$dead" dead
+deadwin="$(tmux -S "$s" display -p -t "$dead" '#{window_id}')"
+dhook() { printf '%s' "$2" | env TMUX="$s,0,0" TMUX_PANE="$dead" "$HOOK" "$1"; }
+reason() { tmux -S "$s" show-options -pqv -t "$dead" @roost-error-reason; }
+
+# Turn 1 answers, so there is a real reply on the pane for the dead turn to
+# leave behind if it forgets to clear it.
+dhook UserPromptSubmit "$UPS_PAYLOAD"
+dhook Stop "$STOP_PAYLOAD"
+assert_eq "$(pstate "$dead")" "done" "a healthy codex turn still reaches done"
+assert_eq "$(preply "$dead")" "charlie" "...with its reply"
+
+for p in "$STOP_DEAD_EMPTY" "$STOP_DEAD_NULL" "$STOP_DEAD_ABSENT"; do
+  dhook UserPromptSubmit "$UPS_PAYLOAD"
+  dhook Stop "$p"; rc=$?
+  assert_eq "$rc" "0" "a dead turn's Stop still exits 0 [$p]"
+  assert_eq "$(pstate "$dead")" "error" "a codex turn that ends with no reply badges error, not done [$p]"
+  # read keys its "from its previous turn" notice on error too, but a notice on
+  # a reply that should not be there is weaker than the reply not being there.
+  assert_eq "$(preply "$dead")" "" "...and turn 1's reply is not left on the pane as this turn's [$p]"
+  assert_contains "$(reason)" "no reply" "...and the pane records why it is error [$p]"
+done
+
+# `roost wait-done` against the dead pane: non-zero, and a message that says
+# why, by pane and by window. Before this fix it exited 0 — success on a corpse.
+werr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$dead" 2 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" "1" "wait-done on a dead codex pane exits non-zero"
+assert_contains "$werr" "error state" "...naming the state"
+assert_contains "$werr" "no reply" "...and naming the reason"
+werr="$(ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$deadwin" 2 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" "1" "wait-done on a window holding a dead codex pane exits non-zero"
+assert_contains "$werr" "no reply" "...and names the reason too"
+
+# The next healthy turn recovers completely: the reason goes with the error, so
+# it can never be printed about a later turn it does not describe.
+dhook UserPromptSubmit "$UPS_PAYLOAD"
+assert_eq "$(pstate "$dead")" "working" "the turn after a dead one starts working"
+assert_eq "$(reason)" "" "...and the dead turn's reason is cleared"
+dhook Stop "$STOP2_PAYLOAD"
+assert_eq "$(pstate "$dead")" "done" "...and a healthy turn after a dead one reaches done"
+assert_eq "$(preply "$dead")" "foxtrot" "...with its own reply"
+ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$dead" 2 >/dev/null 2>&1
+assert_eq "$?" "0" "wait-done on the recovered pane exits 0"
+
+# A payload nobody could read is "we cannot tell", not "it died". Badging it
+# error would turn every turn on a machine with neither python3 nor jq into a
+# desktop notification, so it keeps the old behaviour — done, with the reply
+# cleared so `roost read` announces its screen fallback. docs/known-gaps.md
+# names this as the part still not covered.
+dhook UserPromptSubmit "$UPS_PAYLOAD"
+dhook Stop 'not json at all'
+assert_eq "$(pstate "$dead")" "done" "an unreadable Stop payload is not guessed to be a dead turn"
+assert_eq "$(reason)" "" "...and records no error reason"
+
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
