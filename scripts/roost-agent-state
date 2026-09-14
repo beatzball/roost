@@ -229,7 +229,30 @@ case "$raw" in
   *X) prev="${raw%X}"; has_name=1 ;;
   *)  prev="$raw";      has_name=0 ;;
 esac
-[ "$state" = "$prev" ] && exit 0
+if [ "$state" = "$prev" ]; then
+  # The one repeat that is NOT a no-op: a Notification for a NEW dialog on a
+  # pane that still reads blocked (flock round 1 on #38, reproduced). The first
+  # dialog was declined, so its recorded transcript ends in the decline
+  # records; if the new dialog's records live in a different file, keeping the
+  # old stamp and the old path lets scripts/lib/roost-unblock.sh judge the new,
+  # OPEN dialog by the old file — and clear it, so `send` pastes into it.
+  #
+  # So the stamp moves to now, and the record either names the new file or is
+  # removed. The record is written BEFORE the stamp: a reader landing between
+  # the two sees a record and a stamp that disagree, and clears nothing. No
+  # label and no notification here — the state did not change, and this path
+  # must stay as cheap as the bail it replaces for every other repeat.
+  if [ "$notification_hook" = 1 ] && [ "$state" = "blocked" ] && [ ! -t 0 ]; then
+    now="$(date +%s)"
+    if [ -n "$transcript" ]; then
+      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript" 2>/dev/null || true
+    else
+      tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true
+    fi
+    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
+  fi
+  exit 0
+fi
 
 # Stamp the PANE, not the window. Pane scope is what lets two agents share one
 # window without overwriting each other's badge. Glyphs are NOT stamped: the
@@ -276,6 +299,11 @@ fi
 now="$(date +%s)"
 if [ -n "$transcript" ]; then
   tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript" 2>/dev/null || true
+elif [ "$notification_hook" = 1 ] && [ "$state" = "blocked" ]; then
+  # A Notification whose path could not be recorded. An older record may still
+  # sit on the pane, and if it was written in this same second its stamp would
+  # match the one written below — so remove it rather than trust the clock.
+  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true
 fi
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
 tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true

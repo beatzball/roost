@@ -409,6 +409,10 @@ if command -v codex >/dev/null 2>&1; then
     # before Interrupt existed has exactly the other four and not that one, and
     # its fix is not "something was hand-edited": codex simply has a new handler
     # to ask about. So that case gets its own words.
+    #
+    # The key `interrupt` is measured, not guessed from the other four's
+    # snake_case: codex-cli 0.154.0, trusting a hooks.json that registered all
+    # twelve events, wrote `<hooks.json>:interrupt:0:0` into config.toml.
     trusted=0
     interrupt_trusted=0
     for _ev in user_prompt_submit post_tool_use permission_request stop interrupt; do

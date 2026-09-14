@@ -144,9 +144,12 @@ event="${1:-}"
 # still streaming fired Interrupt and no Stop. Before it was registered a
 # declined dialog left 🛑 stamped forever.
 #
-# `idle`, not done or error. done would tell `roost wait-done` the turn
-# succeeded; error would notify and say something broke. The honest report is
-# "the turn is over, and nobody is working" — and because no Stop follows, the
+# `idle`, not done or error. done would badge ✅ "this turn finished its work";
+# error would notify and say something broke. The honest report is "the turn
+# is over, and nobody is working". Note what idle does NOT change: `roost
+# wait-done` counts only working and blocked as busy, so it exits 0 on an
+# interrupted turn exactly as it would on done — docs/known-gaps.md records
+# that for every harness. And because no Stop follows, the
 # stored reply is the previous turn's, so `--stop-hook` clears it. Interrupt
 # does not read the Stop verdict below, so it cannot reach #39's error path; a
 # later Stop still decides its own turn.

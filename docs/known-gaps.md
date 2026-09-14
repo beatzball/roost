@@ -70,10 +70,14 @@ no dialog, also fires Interrupt and no Stop.
 - **copilot `No` is not measured.** On 1.0.83, `3` moved the cursor and neither
   Enter nor `C-m` sent through `tmux send-keys` closed the dialog, three tries.
   Esc recovers; whether No does is unknown.
-- **copilot's aborted turn ends `done`.** The adapter maps `session.idle` to
-  done, and an Esc turn's `session.idle` carries `aborted: true`. So a
-  `wait-done` on an interrupted copilot turn reports success. Small, and not
-  changed here.
+- **`wait-done` exits 0 on an interrupted turn, on every harness.** It counts
+  only `working` and `blocked` as busy. A codex Interrupt leaves `idle`, a
+  Claude recovery leaves the badge unset, and copilot's adapter maps the
+  aborted turn's `session.idle {aborted: true}` to ✅ `done` — so a coordinator
+  waiting on any of them is told the wait succeeded, for a turn the human
+  stopped. copilot is the worst of the three, because its badge also says done.
+  Found by review (flock round 1); telling "interrupted" from "finished" in
+  `wait-done` is a behaviour change left for its own task.
 - **Claude with no python3 and no jq** cannot read a transcript, so it never
   recovers there. Same fail-closed shape.
 - **A Claude dialog answered within about 6 s is never badged at all.**

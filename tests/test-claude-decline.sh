@@ -234,6 +234,31 @@ env TMUX="$s,0,0" TMUX_PANE="$p" "$STATE" working
 printf '%s' "$payload" | env TMUX="$s,0,0" TMUX_PANE="$p" "$STATE" working --notification-hook
 pane_has "$p" @roost-transcript; assert_eq "$?" "1" "--notification-hook records only with blocked"
 
+# A SECOND Notification on a pane that still reads blocked (flock round 1,
+# reproduced by the reviewer). The first dialog was declined, so its recorded
+# transcript ends in the decline records; before anyone types, a new dialog
+# opens whose records are in a DIFFERENT file. The unchanged-state bail used to
+# drop that Notification whole: the old stamp and the old path survived, the
+# new dialog was judged by the old file, and send pasted into it.
+p="$(newpane)"; require_pane "$p" "repeat notification"
+stamp "$p" "$work/no.jsonl" "$NO_SINCE"
+cp "$work/round3-running.jsonl" "$work/second.jsonl"
+payload2='{"session_id":"00000000-1aea-4f41-85d6-9893b49b6ad7","transcript_path":"'"$work/second.jsonl"'","cwd":"'"$work"'","hook_event_name":"Notification","message":"Claude needs your permission","notification_type":"permission_prompt"}'
+printf '%s' "$payload2" | env TMUX="$s,0,0" TMUX_PANE="$p" "$STATE" blocked --notification-hook
+newsince="$(opt "$p" @agent_since)"
+[ "$newsince" != "$NO_SINCE" ]; assert_true $? "a repeat Notification re-stamps @agent_since"
+assert_eq "$(opt "$p" @roost-transcript)" "$newsince $work/second.jsonl" \
+  "a repeat Notification records the NEW dialog's transcript"
+refused "$p" "a new dialog in another file, over an old declined one"
+
+# ...and a repeat Notification whose path cannot be recorded must not leave the
+# old record standing either.
+p="$(newpane)"
+stamp "$p" "$work/no.jsonl" "$NO_SINCE"
+printf '%s' '{"transcript_path":"relative/t.jsonl"}' | env TMUX="$s,0,0" TMUX_PANE="$p" "$STATE" blocked --notification-hook
+pane_has "$p" @roost-transcript; assert_eq "$?" "1" "a repeat Notification with a bad path drops the old record"
+refused "$p" "a repeat Notification with no usable transcript"
+
 # --- 6. roost doctor names a long-stuck pane, and changes nothing -----------
 now="$(date +%s)"
 p_old="$(newpane)"; stamp "$p_old" "$work/yes.jsonl" $((now - 4000))
