@@ -588,15 +588,17 @@ case "${1:-up}" in
 # | PostToolUse         | working (and it is what clears 🛑)    |
 # | PermissionRequest   | blocked                              |
 # | Stop                | done, plus the turn's reply          |
+# | Stop, with no reply | error                                |
 #
 # PostToolUse is what clears 🛑. No hook fires when you answer a permission
 # dialog, so it is the first observable event afterwards — measured on
 # codex-cli 0.151.0, one second after "1. Yes, proceed".
 #
-# There is deliberately no error entry. Codex has twelve hook events and none of
-# them reports an error, so a turn that dies on the provider ends ✅ done rather
-# than 💥. See docs/known-gaps.md, which says so plainly, and the Codex section
-# of site/content/docs/state-badges.md, which says it to users.
+# There is no error EVENT. Codex has twelve hook events and none of them reports
+# an error, so 💥 is inferred: a Stop that carries no reply means the turn most
+# likely never reached the model. Some dead turns still end ✅ done. See
+# docs/known-gaps.md, which lists which ones, and the Codex section of
+# site/content/docs/state-badges.md, which says it to users.
 #
 # THESE FOUR HANDLER OBJECTS ARE FROZEN, and that is not a style note. Codex
 # stores a hash of each normalised handler in \$CODEX_HOME/config.toml and

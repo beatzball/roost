@@ -119,35 +119,61 @@ that is its own task. Two candidates, neither implemented:
   would be a new kind of check: list panes stamped `blocked` whose visible
   screen carries no dialog marker, and name them. Cheap, read-only, and it
   turns an invisible deadlock into a line of output.
-### A codex pane reports a dead turn as ✅ done
+### A codex pane's 💥 error is inferred, and some dead turns still read ✅ done
 
 Codex has exactly twelve hook events — `PreToolUse`, `PermissionRequest`,
 `PostToolUse`, `PreCompact`, `PostCompact`, `SessionStart`, `SessionEnd`,
 `UserPromptSubmit`, `SubagentStart`, `SubagentStop`, `Stop`, `Interrupt` —
 enumerated out of the shipped binary and confirmed against live runs on 0.150.1
-and 0.151.0. **None of them reports an error.**
+and 0.151.0. **None of them reports an error.** A turn that never reaches the
+model still ends, and codex still fires `Stop`.
 
-A turn that never reaches the model still ends, and codex still fires `Stop`.
-So `adapters/codex/roost-codex-hook` maps that ending to `done`, and the pane
-says *"finished, go look"* about a turn that produced nothing. `roost read`
-then serves whatever `last_assistant_message` the payload carried, which for a
-dead turn is empty — so the reader falls back to scraping the screen and gets
-the error text as chrome rather than as a state.
+Until #39 that `Stop` badged ✅ done, and `roost wait-done` reported success on
+a corpse. **A wrong `done` is the worst wrong badge there is: every other one
+makes you look, and this one makes you stop looking.**
 
-This is the `#13` bug shipped deliberately rather than by accident, and **a
-wrong `done` is the worst wrong badge there is: every other one makes you look,
-and this one makes you stop looking.** `roost wait-done` will report success on
-a corpse, and `roost next-blocked` has nothing to jump to.
+**What shipped (#39).** The adapter now reads the `Stop` payload itself and
+splits it on `last_assistant_message`, a field codex genuinely sends:
 
-**Why it shipped anyway.** There is no signal to build it on. The only
-candidate is an unmatched `PreToolUse` — a live turn whose tool call failed
-showed five `PreToolUse` against four `PostToolUse` — and a heuristic built on
-that mislabels a healthy turn `error`, which fires a desktop notification for
-nothing. The adapter contract's §1 rules that out explicitly: do not invent a
-state from a signal nobody has seen behave. Every other harness roost adapts
-has a real failure declaration; codex does not, and inventing one is worse than
-naming the gap. The Codex section of `site/content/docs/state-badges.md` states
-it before a user trusts the badge.
+| `Stop` payload | badge |
+|---|---|
+| parses, field is a non-empty string | ✅ done, plus the reply |
+| parses, field is `""`, `null` or absent | 💥 error, previous reply cleared |
+| does not parse, or no `python3` and no `jq` | ✅ done, as before |
+
+The pane also carries `@roost-error-reason`, a fixed sentence saying the turn
+ended with no reply. `roost wait-done` prints it under its usual
+`is in error state, not done` line and exits 1. `tests/test-codex-hook.sh`
+section 10 holds both directions: a dead turn is not `done`, a healthy turn and
+the healthy turn after a dead one still are.
+
+**This is an inference, not a report**, and it is named as one here and in the
+Codex section of `site/content/docs/state-badges.md`. A codex 💥 means "the
+turn ended with nothing to say", not "codex said it failed". What is still not
+covered, most serious first:
+
+- **Not re-measured live for this change.** The one fact the inference rests
+  on — a dead turn's `Stop` carries an empty `last_assistant_message` — is the
+  observation this entry recorded before #39, on 0.150.1/0.151.0. Its raw bytes
+  were not kept, which is why all three spellings of "empty" are treated alike.
+  The fixtures in section 10 are the real healthy capture with that one field
+  edited, not captures of a dead turn. Re-capture on the current codex
+  (isolated `CODEX_HOME`) before trusting the badge further than that.
+- **A dead turn that had already said something still reads ✅ done.** If the
+  stream dies after the model has produced text, that partial text is the
+  `last_assistant_message`, and nothing in the payload says the turn was cut
+  short.
+- **A healthy turn with an empty final message would read 💥 error**, with a
+  desktop notification if its window is off screen. Nobody has seen codex end
+  a real turn that way; that is a gap in the measurements, not a proof. It is
+  the cheaper wrong badge — it makes you look.
+- **A machine with neither `python3` nor `jq` gets the old behaviour**, a dead
+  turn badged ✅ done. Nothing is known about any turn there, and badging every
+  one of them error would notify on every turn.
+
+The rejected alternative stays rejected: an unmatched `PreToolUse` (a live turn
+whose tool call failed showed five `PreToolUse` against four `PostToolUse`)
+mislabels a healthy turn, which the adapter contract's §1 rules out.
 
 ### A codex adapter can be installed, correct, and silently switched off
 

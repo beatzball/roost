@@ -36,6 +36,12 @@ assert_eq "$claude_out" "$bare_out" \
 # placeholder for this checkout's own absolute path, the only thing that can
 # differ between a fixture and a live run; AGENTS.md §1 forbids committing an
 # absolute home path, which is why the fixture carries a token instead of one.
+#
+# One deliberate edit since that capture: #39 rewrote the COMMENT lines of the
+# codex fixture that described Stop, because a Stop with no reply now badges
+# error and the old prose told users it could not. Only prose moved. The four
+# handler objects — the bytes codex hashes — are untouched, and
+# tests/test-codex-hook.sh section 9 holds them separately.
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to what d58ba14 printed"
