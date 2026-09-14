@@ -12,7 +12,7 @@
 #
 # --- why this file exists at all ---------------------------------------------
 #
-# It maps four codex hook events onto `roost state` calls, and it makes ONE
+# It maps five codex hook events onto `roost state` calls, and it makes ONE
 # decision of its own: whether a Stop is `done` or `error`. Codex has no error
 # event, so this file reads the Stop payload itself and badges a Stop that
 # carries no reply `error` (#39) — see "Stop: a finished turn, or a dead one"
@@ -26,7 +26,7 @@
 # `error --stop-hook` arm that clears the previous reply, and
 # @roost-error-reason.
 #
-# The obvious question is then why there is a file here instead of four
+# The obvious question is then why there is a file here instead of five
 # hooks.json commands pointing straight at scripts/roost-agent-state. The answer
 # is codex's registration model, and it is the whole design (spec §4):
 #
@@ -40,7 +40,7 @@
 # command points at changed nothing — all four kept firing, running the new
 # code, with no re-prompt.
 #
-# So the four command strings roost emits are frozen forever, and this file is
+# So the command strings roost emits are frozen forever, and this file is
 # where roost is allowed to change its mind. Wiring hooks.json directly at
 # roost-agent-state would have spent that one-shot budget on an argument list
 # ("done --stop-hook") that could then never be revised.
@@ -130,7 +130,7 @@ event="${1:-}"
 # then, so it would spend a process spawn per tool call to report a state the
 # pane is already in.
 #
-# Anything else exits 0 having done nothing. roost registers four events, so
+# Anything else exits 0 having done nothing. roost registers five events, so
 # codex never invokes this with another name — but a user is free to add one to
 # their own hooks.json, and a badge from a signal nobody measured is worse than
 # no badge.

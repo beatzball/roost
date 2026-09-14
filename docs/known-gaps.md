@@ -84,6 +84,25 @@ no dialog, also fires Interrupt and no Stop.
   Measured: the `permission_prompt` Notification arrives ~6 s after the dialog
   opens, and a faster answer skips it. That is the old, narrow version of the
   unbadged-dialog hazard, not a stuck badge.
+- **A Claude subagent's dialog, in its first ~6 s, over a declined main
+  dialog, is not measured — and could be cleared.** Found by review (flock
+  round 2), not reproduced. Input: the main turn's dialog is declined, so the
+  recorded transcript ends in the decline records; a background subagent
+  started earlier in that turn then opens its own dialog; a `roost send`
+  arrives before that dialog's Notification (~6 s). The reader sees only the
+  MAIN transcript — a subagent writes its records to a separate file — so the
+  decline still looks newest, the badge is cleared, and the text is pasted
+  into the subagent's dialog. Once the subagent's Notification fires, the
+  repeat-Notification path moves the stamp and it fails closed again. Before
+  #38 the stale 🛑 accidentally protected this window. It is the same class
+  as the unbadged first ~6 s of ANY Claude dialog (bullet above), but it is a
+  wrong clear, not a missing badge. To measure: one background Agent that
+  needs permission after a declined main dialog, and a `send` inside 6 s.
+- **A codex subagent's Interrupt is not measured.** If codex fires
+  `Interrupt` for a child while the parent turn continues, the parent pane
+  would read 💤 idle mid-turn. Measured and ruled out: Esc at an idle codex
+  prompt, fresh or right after a finished turn, fires no `Interrupt` (0.154.0,
+  three presses), so a stray Esc does not drop a ✅ done pane or its reply.
 - **Anything the transcript reader does not know stays blocked.** A background
   task finishing after the decline appends a `queue-operation` record, and so
   does a message queued mid-turn; either makes the tail unrecognisable. That is
