@@ -833,6 +833,21 @@ closed, and read the 0 as success, now stops. That 0 was the bug. The live
 risk above, *"`wait-done` sees a dead agent only through tmux facts"*, lists
 what is still not caught.
 
+### `roost doctor` names the roost version, and only the release (#47)
+
+doctor's first line is `roost version: X`, asked of the same checkout's
+`bin/roost version`, so the two cannot disagree. A missing or unreadable
+`VERSION` prints `roost version: unknown (could not read <path>/VERSION)`. No
+answer at all — `bin/roost` missing, or dying before it dispatches — prints
+`roost version: unknown (<path>/bin/roost gave no version)`. It is a line of context, not a check: doctor's exit code is the
+same either way, and `tests/test-doctor.sh` pins that for a passing and a
+failing run.
+
+**Not covered:** it names the release in `VERSION`, not the commit. A checkout
+on a branch, or on `main` between releases, reports the last release number
+while running code that release never had. A bug report from such a checkout
+still needs `git rev-parse HEAD` asked for by hand.
+
 ### opencode counts retries too, and we still count our own
 
 `adapters/opencode/roost.js` hand-rolls a consecutive-`retry` counter.
