@@ -889,6 +889,38 @@ has already produced a real bug here.
 
 ## Small deferred items
 
+- **`--json` (#41): what shipped and what did not.** Shipped: `status`, `read`,
+  `screen`, `whoami`, and `state STATE --json`, schema 1, specified in
+  `docs/airig/specs/2026-09-15-json-output-design.md`. Not covered:
+  - **`wait-done --json`.** Left out while #47/#66 and #65 change its argument
+    parsing and exit codes. The design says what its document will be.
+  - **A blank screen: the two modes disagree on the exit status.** `screen
+    --json` and `read --json` exit 0 with `"text":""`, as the design chose.
+    Plain `roost screen` and `roost read` exit 1 there, because `screen_dump`'s
+    `grep -v` selects nothing under `pipefail`. That exit 1 is a bug of its own,
+    to be filed separately; until it is fixed, the modes differ in this one case.
+  - **gawk was never run.** The encoder was fuzzed with BSD awk, mawk and BusyBox
+    awk. It sets `LC_ALL=C` for awk, which is what gawk needs to walk bytes, but
+    CI runs mawk and BSD awk, which walk bytes in any locale — so a change that
+    dropped that `LC_ALL=C` would stay green in CI and break on a gawk machine.
+  - **tmux 3.4's byte behaviour was not measured.** Names were measured on 3.6
+    only. `status --json` does not rely on it: it checks tabs and line counts
+    rather than trusting tmux to escape names.
+  - **`state STATE --json` can say `recorded:false` for a badge that shows.**
+    When `@agent_state` is set at WINDOW or global scope (only a hand-typed
+    `tmux set -w`/`-g` does that; roost writes pane scope), roost-agent-state's
+    unchanged-state early exit reads the state through a format, sees the outer
+    value, and writes nothing to the pane. `status --json` and the status bar
+    show the outer value; `state --json` reads pane scope only and reports that
+    nothing landed there. Measured on a throwaway socket. The root cause is that
+    early exit in scripts/roost-agent-state -- the PostToolUse hot path -- so it
+    was left for its own change rather than widened into this one.
+  - **A trailing newline in an option value is lost**, in `--json` and in the
+    plain commands alike, because `$(...)` strips it.
+  - **Invalid UTF-8 is replaced, not preserved.** JSON strings cannot carry raw
+    bytes. `"lossy": true` says it happened; a lossless extra field (base64)
+    could be added later without a schema bump.
+
 - **No signature verification of an extension.** Pinning to a full commit SHA,
   and recording the tree hash `roost ext verify` re-checks, is the substitute:
   it proves what runs is what was agreed to, and says nothing about who wrote
