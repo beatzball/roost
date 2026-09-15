@@ -27,39 +27,68 @@ SINK="$HERE/scripts/roost-agent-state"
 # built here rather than through roost_test_server, as tests/test-agent-state.sh
 # does. The short mktemp path keeps under the ~104-char socket limit.
 sdir="$(mktemp -d /tmp/amx.XXXX)"; sock="$sdir/roost"
-trap 'tmux -S "$sock" kill-server 2>/dev/null; rm -rf "$sdir"' EXIT
+work="$sdir/w"; mkdir -p "$work"
+# Every stand-in job this file starts writes its process group to $work/jobs,
+# and cleanup kills exactly those groups — never a kill by name. Two copies of
+# this file can run at once (two worktrees, a reviewer beside a developer), and
+# a name match would kill the other run's live stand-ins, which that run then
+# reports as died. A group is killed only while it still holds one of THIS
+# run's stand-ins (a command naming $work), so a group id reused by an
+# unrelated process after ours ended is left alone.
+cleanup() {
+  local g
+  if [ -f "$work/jobs" ]; then
+    while read -r g; do
+      case "$g" in ''|*[!0-9]*) continue ;; esac
+      ps -A -o pgid=,command= | awk -v g="$g" -v w="$work/" '$1 == g && index($0, w)' | grep -q . \
+        && kill -9 -- "-$g" 2>/dev/null
+    done < "$work/jobs"
+  fi
+  tmux -S "$sock" kill-server 2>/dev/null
+  rm -rf "$sdir"
+}
+trap cleanup EXIT
 tmux -S "$sock" -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
 T() { tmux -S "$sock" "$@"; }
 export ROOST_SOCKET="$sock"   # bin/roost talks to the isolated test server
 unset TMUX TMUX_PANE
-work="$sdir/w"; mkdir -p "$work"
 
 # --- stand-in agents ----------------------------------------------------------
 # agent: stamps working through the sink, then works. `exec sleep` keeps the
 #   script's pid, so the job is exactly one process.
 cat > "$work/agent" <<EOF
 #!/bin/sh
+ps -o pgid= -p \$\$ | tr -d ' ' >> "$work/jobs"
 "$SINK" working </dev/null
 echo "\$\$" > "$work/agent.pid"
-exec sleep 6464
+exec "$work/idle"
 EOF
 # outliver: a wrapper that runs the agent as a child and keeps running after it
 #   dies — one of the two cases the design says it misses.
 cat > "$work/outliver" <<EOF
 #!/bin/sh
 "$work/agent"
-exec sleep 6464
+exec "$work/idle"
 EOF
 # restarter: stamps, starts its replacement as a child, and exits — a stand-in
 #   for a harness that restarts itself. The job lives on in the child.
 cat > "$work/restarter" <<EOF
 #!/bin/sh
+ps -o pgid= -p \$\$ | tr -d ' ' >> "$work/jobs"
 "$SINK" working </dev/null
-sleep 6464 &
+"$work/idle" &
 sleep 1
 exit 0
 EOF
-chmod +x "$work/agent" "$work/outliver" "$work/restarter"
+# idle: the stand-ins' long-running work. A script under $work, not a bare
+# `sleep`, so its command line (`/bin/sh <dir>/w/idle`) names this run and
+# cleanup can tell it is ours. A loop of short sleeps rather than one `exec
+# sleep`, which would replace that command line with sleep's own.
+cat > "$work/idle" <<'EOF'
+#!/bin/sh
+while :; do sleep 1; done
+EOF
+chmod +x "$work/agent" "$work/outliver" "$work/restarter" "$work/idle"
 
 # shell_pane: a new window running an INTERACTIVE shell, which has job control.
 shell_pane() {
@@ -186,7 +215,7 @@ T kill-window -t "$(win_of "$p")"
 p="$(shell_pane)"; type_cmd "$p" "$work/agent"; wait_record "$p"
 old="$(record "$p")"
 kill -9 -- "-$(pgid_of_record "$p")"; wait_shell_fg "$p"
-type_cmd "$p" "sleep 6464"
+type_cmd "$p" "$work/idle"
 n=50; while [ "$(fg_job "$p")" = "$(pane_pid "$p")" ] && [ "$n" -gt 0 ]; do sleep 0.1; n=$((n - 1)); done
 assert_eq "$(record "$p")" "$old" "stale: control — the old record is still in place"
 expect_timeout "$p" "a stale record while a newer job holds the terminal"
@@ -233,5 +262,4 @@ p="$(shell_pane)"; T set-option -p -t "$p" @agent_state working
 expect_timeout "$p" "a busy pane with no record"
 T kill-window -t "$(win_of "$p")"
 
-pkill -f "sleep 6464" 2>/dev/null
 true

@@ -165,7 +165,9 @@ settings changes.
 
 On a transition into `working` or `blocked` (after the unchanged-state bail):
 
-1. Read `#{pane_pid}`, in a tmux call that path already makes.
+1. Read `#{pane_pid}` with one `tmux display-message`. It is a new call on
+   the busy-transition path only (about 4 ms of the measured +5 to +7 ms); the
+   hot-path read above the bail is deliberately left as it was.
 2. Run `ps -o tpgid= -p PANE_PID`: the pane terminal's foreground job.
 3. If it is non-empty and differs from `PANE_PID`, set the pane option
    `@roost-agent-job` to `"PGID:PANE_PID"` (no space, so `wait-done` can read it as one field). Otherwise unset it: the agent is
