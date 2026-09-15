@@ -35,6 +35,14 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOST="$HERE/bin/roost"
 HOOK="$HERE/scripts/roost-agent-state"
 
+# The payloads below are built and edited with python3. Without it several
+# assertions would pass on empty payloads, so skip loudly instead (found by
+# review). The hook's own no-python3 paths are covered in docs/known-gaps.md.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  SKIP: python3 not available (this file builds its payloads with it)"
+  exit 0
+fi
+
 # roost-agent-state only acts on a socket path ending in /roost.
 sdir="$(mktemp -d /tmp/amx.XXXX)"; s="$sdir/roost"
 trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$sdir"' EXIT
@@ -141,9 +149,21 @@ done
 odd() { python3 -c 'import json,sys
 d=json.loads(sys.argv[1])
 if sys.argv[2] == "drop": del d["error"]
+elif sys.argv[2] == "newline": d["error"]="rate_limit"+chr(10)
+elif sys.argv[2] == "nul": d["error"]="x"+chr(0)+"y"
 else: d["error"]=json.loads(sys.argv[2])
 print(json.dumps(d))' "$RATE_LIMIT" "$1"; }
-for payload in "$(odd 429)" "$(odd '{}')" "$(odd drop)" '["rate_limit"]' 'not json at all' ''; do
+# Also two strings the shell would clean before it could check them: $(...)
+# strips a trailing newline and bash drops a NUL, so without a check in the
+# reader these came back as "rate_limit" and "xy" (found by review).
+# The two values are built inside python with chr(), never written here as
+# escape text: an editor can turn that text into the real byte, and then the
+# shell drops it before the test runs. The detectors prove each one arrives.
+nulesc="$(printf 'x\\u%sy' 0000)"; nlesc="$(printf 'rate_limit\\%s' n)"
+assert_contains "$(odd nul)" "$nulesc" "the NUL fixture really carries an escaped NUL"
+assert_contains "$(odd newline)" "$nlesc" "the newline fixture really carries an escaped newline"
+for payload in "$(odd 429)" "$(odd '{}')" "$(odd drop)" "$(odd newline)" "$(odd nul)" \
+               '["rate_limit"]' 'not json at all' ''; do
   hook working <<< "$UPS"
   hook error --stop-failure-hook <<< "$payload"
   assert_eq "$(pstate)" "error" "a StopFailure whose payload cannot be read still badges error [${payload:0:40}]"

@@ -39,7 +39,9 @@ demand, never a real rate limit):
 `Stop`. The only later event was an `idle_prompt` Notification ~60 s on, which
 the `permission_prompt` matcher already ignores. The payload carries the usual
 fields plus `error` and `last_assistant_message`, which is Claude's error
-banner, not a reply. Raw logs were kept with the #55 work, not committed.
+banner, not a reply. Claude's schema also has an optional `error_details`; it
+was absent in all seven captures, and roost does not read it. Raw logs were
+kept with the #55 work, not committed.
 
 **What is wired.** A sixth Claude hook, `StopFailure` with no matcher, runs
 `roost-agent-state error --stop-failure-hook`. It badges 💥 error, clears the
@@ -53,6 +55,11 @@ the healthy turn after a failed one, still reach `done`.
 
 **What is still not covered, most serious first.**
 
+- **Esc while the model is still answering leaves ⏳ `working`, and #55 does
+  not change that.** The same measurement shows it fires no hook at all — not
+  `Stop`, not `StopFailure` — so nothing moves the badge, and `wait-done`
+  waits out its timeout on an idle pane. It was true before #55. Unlike a
+  declined dialog, no transcript record is read to recover it.
 - **Existing installs need `roost install` again.** A `settings.json` wired
   before #55 has no `StopFailure` entry, so a failed turn still reads
   `working` there. `roost doctor` warns about exactly this, and the installer

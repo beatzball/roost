@@ -536,7 +536,7 @@ assert_contains "$out" "--symlinks-only" "--help: the flags are documented"
 assert_eq "$(tree_of "$box")" "$before" "--help: nothing was written"
 
 # ===========================================================================
-# 13. claude: the four hooks are merged into settings.json
+# 13. claude: roost's hooks are merged into settings.json
 # ===========================================================================
 # Every case here that expects a WRITE uses make_json_shim. roost_json_merge
 # returns 3 and writes nothing when neither python3 nor jq is on PATH, so the
@@ -572,7 +572,7 @@ claude_want() {
 print(json.dumps(json.load(sys.stdin)["hooks"][sys.argv[1]]))' "$1"
 }
 
-# --- an existing settings.json: roost's four go in, everything else stays ---
+# --- an existing settings.json: roost's hooks go in, everything else stays --
 box="$TMP/claudemerge"
 cset="$box/home/.claude/settings.json"
 mkdir -p "$box/home/.claude"
@@ -765,7 +765,7 @@ grep -qF "$TMP/deleted-checkout/scripts/roost-session-context" "$cset" 2>/dev/nu
 assert_eq "$s" "gone" \
   "claude wired to a deleted checkout: the dead SessionStart hook is gone too"
 
-# --- someone ELSE's hook in one of the four events -> kept, roost added ----
+# --- someone ELSE's hook in one of roost's events -> kept, roost added -----
 # roost's entry JOINS the event's array; the user's stays. This is not a
 # preference: hooks-merge used to assign over the whole array, and a
 # PostToolUse carrying a formatter came back with that entry gone -- rc 0,

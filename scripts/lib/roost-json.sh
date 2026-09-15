@@ -105,7 +105,7 @@ def _is_roosts(entry, wants, deaddir=""):
     # anyway, where the alternative costs the user their own command.
     #
     # WANTS is a list, not one path, because the claude patch invokes TWO
-    # scripts: four events run scripts/roost-agent-state, and SessionStart
+    # scripts: five events run scripts/roost-agent-state, and SessionStart
     # runs scripts/roost-session-context. With a single want, SessionStart's
     # own entry never matched, so it was never dropped before the patch's copy
     # was appended — every re-run stacked another one and the merge stopped
@@ -339,11 +339,11 @@ roost_json__jq_run() {
 
 # roost_json_merge FILE MODE [ARGS...] -> apply MODE to FILE (treated as "{}"
 # when FILE does not exist), writing the result atomically. Modes:
-#   claude-hooks TARGET_SCRIPT   add the four roost hook entries to .hooks
+#   claude-hooks TARGET_SCRIPT   add the six roost hook entries to .hooks
 #   codex-hooks  TARGET_SCRIPT   add the four roost handlers to .hooks
 #   copilot-flag                 set .enabledFeatureFlags.EXTENSIONS = true
 #
-# The two hook modes APPEND. Each of roost's four entries joins whatever that
+# The two hook modes APPEND. Each of roost's entries joins whatever that
 # event already holds; nothing already there is replaced or dropped, with the
 # single exception of a previous entry of ROOST'S OWN pointing at the same
 # TARGET_SCRIPT, which is removed so that re-running converges instead of
@@ -451,7 +451,7 @@ roost_json_merge() {
         # from a stranger's (leave it exactly where it is).
         #
         # claude passes a SECOND target because its patch invokes two scripts:
-        # SessionStart runs scripts/roost-session-context, the other four run
+        # SessionStart runs scripts/roost-session-context, the other five run
         # scripts/roost-agent-state. It is derived as a sibling of $target for
         # the same reason roost_hooks_claude derives it that way — $target may
         # have been injected by a caller or a test, and it stays the single

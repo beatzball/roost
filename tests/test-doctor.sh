@@ -722,22 +722,26 @@ rm -rf "$fixhome"
 # file every machine wired before #55 has. It badges everything else correctly,
 # so the only symptom is a failed turn left ⏳ working, which nobody connects
 # to a hook that is not there. doctor names it; the installer adds it.
-sfhome="$(mktemp -d /tmp/amx.XXXX)"
-mkdir -p "$sfhome/.claude"
-"$HERE/bin/roost" hooks claude | sed -n '/^{/,$p' > "$sfhome/.claude/settings.json"
-sfout="$(run_doctor "$sfhome" COLORTERM=truecolor 2>&1)"
-case "$sfout" in *"has no StopFailure hook"*) s=warned ;; *) s=quiet ;; esac
-assert_eq "$s" "quiet" "doctor does not warn about StopFailure on a settings.json roost wires today"
-python3 -c 'import json,sys
+# python3 builds the pre-#55 file; without it that file cannot be made, and the
+# warning assertions would fail for the fixture, not for doctor (found by review).
+if command -v python3 >/dev/null 2>&1; then
+  sfhome="$(mktemp -d /tmp/amx.XXXX)"
+  mkdir -p "$sfhome/.claude"
+  "$HERE/bin/roost" hooks claude | sed -n '/^{/,$p' > "$sfhome/.claude/settings.json"
+  sfout="$(run_doctor "$sfhome" COLORTERM=truecolor 2>&1)"
+  case "$sfout" in *"has no StopFailure hook"*) s=warned ;; *) s=quiet ;; esac
+  assert_eq "$s" "quiet" "doctor does not warn about StopFailure on a settings.json roost wires today"
+  python3 -c 'import json,sys
 d=json.load(open(sys.argv[1])); del d["hooks"]["StopFailure"]
 json.dump(d, open(sys.argv[1], "w"), indent=2)' "$sfhome/.claude/settings.json"
-sfout="$(run_doctor "$sfhome" COLORTERM=truecolor 2>&1)"
-assert_contains "$sfout" "Claude hooks wired in" "a pre-#55 settings.json is still reported as wired"
-l="$(doc_line "has no StopFailure hook" "$sfout")"
-[ -n "$l" ]; assert_true $? "doctor warns about a settings.json with no StopFailure hook"
-assert_contains "$l" "working" "...saying a failed turn stays working"
-assert_contains "$l" "or run: roost install" "...and pointing at roost install, which adds it"
-rm -rf "$sfhome"
+  sfout="$(run_doctor "$sfhome" COLORTERM=truecolor 2>&1)"
+  assert_contains "$sfout" "Claude hooks wired in" "a pre-#55 settings.json is still reported as wired"
+  l="$(doc_line "has no StopFailure hook" "$sfout")"
+  [ -n "$l" ]; assert_true $? "doctor warns about a settings.json with no StopFailure hook"
+  assert_contains "$l" "working" "...saying a failed turn stays working"
+  assert_contains "$l" "or run: roost install" "...and pointing at roost install, which adds it"
+  rm -rf "$sfhome"
+fi
 
 # --- and the states roost install REFUSES must NOT claim it ---
 # The installer's second load-bearing property is that a path which is not

@@ -211,9 +211,13 @@ elif [ "$stop_failure_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
   #     and underscores, 40 at most. Anything else, or a payload no reader can
   #     parse, is "unknown". The reason is printed by `wait-done` and `read`,
   #     and text copied out of a payload is not something roost prints as its
-  #     own words. The letters are spelled out rather than written a-z: bash
-  #     3.2 matches a range by the locale's collation, where a-z can include
-  #     capitals.
+  #     own words. The READER checks the whole string first, because the shell
+  #     cannot: `$(...)` strips trailing newlines and bash drops NUL bytes, so
+  #     "rate_limit\n" and "x<NUL>y" would reach the case below already
+  #     cleaned into "rate_limit" and "xy" (found by review, reproduced). The
+  #     case below stays as a second check. Its letters are spelled out rather
+  #     than written a-z: bash 3.2 matches a range by the locale's collation,
+  #     where a-z can include capitals.
   #  3. It still badges error when the payload cannot be read. StopFailure is
   #     itself the report, so a machine with no python3 and no jq loses only
   #     the kind and the subagent check, not the badge.
@@ -225,7 +229,7 @@ elif [ "$stop_failure_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
   kind=""
   if command -v python3 >/dev/null 2>&1; then
     kind="$(printf '%s' "$payload" | python3 -c '
-import sys, json
+import sys, json, re
 try:
     d = json.load(sys.stdin)
 except Exception:
@@ -237,11 +241,15 @@ if isinstance(a, str) and a:
     sys.stdout.write("subagent")
     sys.exit(0)
 e = d.get("error")
-sys.stdout.write("kind:" + (e if isinstance(e, str) else ""))' 2>/dev/null || true)"
+ok = isinstance(e, str) and re.fullmatch(r"[a-z_]{1,40}", e)
+sys.stdout.write("kind:" + (e if ok else ""))' 2>/dev/null || true)"
   elif command -v jq >/dev/null 2>&1; then
+    # \A and \z, not ^ and $: in jq's regex engine $ also matches before a
+    # trailing newline, which is the very case this check exists for.
     kind="$(printf '%s' "$payload" | jq -r 'if type == "object" then
         (if (.agent_id | type) == "string" and .agent_id != "" then "subagent"
-         else "kind:" + (if (.error | type) == "string" then .error else "" end) end)
+         else "kind:" + (if (.error | type) == "string" and (.error | test("\\A[a-z_]{1,40}\\z"))
+                         then .error else "" end) end)
       else "" end' 2>/dev/null || true)"
   fi
   case "$kind" in
