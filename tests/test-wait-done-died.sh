@@ -123,6 +123,74 @@ assert_eq "$rc" "2" "a PANE that closes between the unblock snapshots exits 2"
 # that died", so the bare word would pass on the wrong message.
 assert_contains "$err" "died: " "...saying it died, not that it was already gone"
 
+# The other side of that race: a pane that FINISHES and closes while the unblock
+# helper is busy with a blocked sibling. The real helper runs python3 over a
+# transcript tail, so it can take as long as a one-shot agent's done-to-gone
+# gap. The first read saw the pane done, so it must not count as died. Found by
+# review (flock round 2): recording history from the first read, without
+# dropping panes it saw finished, turned this finish into a death.
+#
+# The window it needs is one quarter-second tick wide — busy on the poll before
+# an offered tick, done on that tick's first read — so timing cannot hit it.
+# The copy wraps bin/roost's `t` and counts `list-panes` calls instead. Every
+# pass of a window wait takes one; an offered tick takes two. So call 6 is the
+# first read of tick 4, the second offered tick: the wrapper stamps X done just
+# before it, and the helper then closes X, as a one-shot agent's pane closes.
+# Each case's `fired` file proves the wrapper really acted; without it a broken
+# stub would report the fix as working.
+#
+# MODE kill is the same tick with X closed instead of finished, just before that
+# first read: the last poll saw it busy, so it died, and the check against the
+# first read must catch it before the history is rebuilt without it.
+tick4_case() { # MODE (done|kill)
+  local mode="$1" dir="$ROOST_TEST_SOCKDIR/tick4-$1" x w y n pid
+  mkdir -p "$dir/tree" "$dir/d"
+  cp -R "$HERE/bin" "$HERE/scripts" "$dir/tree/"
+  x="$(agent_window)"; w="$(win_of "$x")"
+  y="$(T split-window -d -P -F '#{pane_id}' -t "$x" 'exec sleep 600')"
+  # bin/roost defines `t` AFTER it sources roost-unblock.sh, so the stub is its
+  # own file, sourced from the copy right after the `t()` line.
+  grep -q '^t() { tmux ' "$dir/tree/bin/roost"; assert_true $? "tick4/$mode: the copy still defines t() where the stub is sourced"
+  sed -i.bak '/^t() { tmux /a\
+. "$ROOST_HOME/scripts/lib/test-stub.sh"
+' "$dir/tree/bin/roost"
+  if [ "$mode" = done ]; then act="_real_t set-option -p -t $x @agent_state done"; else act="_real_t kill-pane -t $x"; fi
+  cat > "$dir/tree/scripts/lib/test-stub.sh" <<EOF
+# TEST STUB (tests/test-wait-done-died.sh). Rename the real t, count list-panes.
+eval "\$(declare -f t | sed '1s/^t /_real_t /')"
+t() {
+  if [ "\$1" = list-panes ]; then
+    n=\$(( \$(cat "$dir/d/n" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "$dir/d/n"
+    if [ "\$n" = 6 ]; then $act; : > "$dir/d/fired"; fi
+  fi
+  _real_t "\$@"
+}
+# The helper clears nothing; in MODE done, on the second offer it closes X.
+roost_unblock_pane() {
+  [ "$mode" = done ] && [ -f "$dir/d/fired" ] && _real_t kill-pane -t "$x" 2>/dev/null
+  return 1
+}
+EOF
+  T set-option -p -t "$x" @agent_state working; T set-option -p -t "$y" @agent_state blocked
+  ( "$dir/tree/bin/roost" wait-done "$w" 20 2>"$work/tick4-$mode.err" >/dev/null; echo $? > "$work/tick4-$mode.rc" ) &
+  pid=$!
+  n=50; while [ ! -f "$dir/d/fired" ] && [ "$n" -gt 0 ]; do sleep 0.1; n=$((n - 1)); done
+  sleep 1.5; T set-option -p -t "$y" @agent_state done
+  bg_result "$pid" "tick4-$mode"
+  [ -f "$dir/d/fired" ]; assert_true $? "tick4/$mode: the wrapper really acted on tick 4's first read"
+  exists "$x"; assert_eq "$?" "1" "tick4/$mode: X really closed"
+  if [ "$mode" = done ]; then
+    assert_eq "$rc" "0" "a WINDOW pane seen done that closes while the helper works on a sibling exits 0, not died"
+    assert_eq "$err" "" "...with nothing on stderr"
+  else
+    assert_eq "$rc" "2" "a WINDOW pane seen busy that closes just before an offered tick's first read exits 2"
+    assert_contains "$err" "$x" "...naming the pane"
+  fi
+  T kill-window -t "$w" 2>/dev/null
+}
+tick4_case done
+tick4_case kill
+
 # A NON-agent sibling closing mid-wait is not a death: only panes seen busy count.
 p="$(agent_window)"; w="$(win_of "$p")"; T set-option -p -t "$p" @agent_state working
 sib="$(T split-window -d -P -F '#{pane_id}' -t "$p" 'exec sleep 600')"

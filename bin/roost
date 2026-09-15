@@ -1423,6 +1423,21 @@ JSON
     # the time, and the other half it sees working, then nothing, and would
     # report a finished agent as died. $timeout stays in seconds; $ticks
     # counts quarters.
+    #
+    # died_if_vanished ROWS: a pane $busy_seen names that ROWS no longer lists
+    # closed mid-turn — exit 2, naming it. In a window, a pane that was NOT busy
+    # closing is not a death, and a window target must give the answer a pane
+    # target would.
+    died_if_vanished() {
+      local _id _st
+      while read -r _id _st; do
+        [ -n "$_id" ] || continue
+        case "$1" in
+          "$_id "*|*$'\n'"$_id "*) ;;
+          *) echo "roost: '$raw' died: pane $_id closed while it read $_st" >&2; exit 2 ;;
+        esac
+      done <<< "$busy_seen"
+    }
     busy_seen=""; first=1; ticks=0
     while :; do
       if ! rows="$(snapshot)"; then
@@ -1446,14 +1461,23 @@ JSON
           [ "$_st" = "blocked" ] && { roost_unblock_pane "$_id" || true; offered=1; }
         done <<< "$rows"
         if [ "$offered" = 1 ]; then
-          # Every pane the snapshot ABOVE saw busy is history from here on,
-          # before the snapshot is taken again. Without this, a blocked pane
-          # that closes between the two reads — on the first poll, or on the
-          # pass it first turned busy — is simply missing from the second read,
-          # $busy_seen does not name it yet, and a window target whose sibling
-          # keeps the window open exits 0 on a pane that died. Found by review
-          # (flock round 1). A pane the helper clears is still listed below, so
-          # it never matches the vanished-while-busy check.
+          # The snapshot ABOVE becomes the history before the snapshot is taken
+          # again: first judged against the last poll's history, then made the
+          # history itself. Without the second step, a blocked pane that closes
+          # between the two reads — on the first poll, or on the pass it first
+          # turned busy — is simply missing from the second read, $busy_seen does
+          # not name it yet, and a window target whose sibling keeps the window
+          # open exits 0 on a pane that died. Found by review (flock round 1).
+          #
+          # REBUILT, not appended to. A pane the last poll saw busy and the read
+          # above saw done has finished; if it then closes while the helper runs
+          # — which reads a transcript, and can take as long as a one-shot
+          # agent's done-to-gone gap — an appended history would still name it
+          # busy and report the finish as a death. Found by review (flock round
+          # 2). A pane the helper clears is still listed below, so it never
+          # matches the vanished-while-busy check.
+          died_if_vanished "$rows"
+          busy_seen=""
           while read -r _id _dead _st; do
             case "$_st" in working|blocked) busy_seen="$busy_seen$_id $_st"$'\n' ;; esac
           done <<< "$rows"
@@ -1490,16 +1514,7 @@ JSON
         [ -n "$why" ] && echo "roost: $err_pane: $why" >&2
         exit 1
       fi
-      # A pane the last poll saw busy that is no longer listed closed mid-turn.
-      # In a window, a pane that was NOT busy closing is not a death, and a
-      # window target must give the answer a pane target would.
-      while read -r _id _st; do
-        [ -n "$_id" ] || continue
-        case "$rows" in
-          "$_id "*|*$'\n'"$_id "*) ;;
-          *) echo "roost: '$raw' died: pane $_id closed while it read $_st" >&2; exit 2 ;;
-        esac
-      done <<< "$busy_seen"
+      died_if_vanished "$rows"
       # A dead pane still badged busy: its process exited without finishing,
       # and a dead pane never runs another hook. One whose badge reads done or
       # idle finished first, and keeps its old answer below.

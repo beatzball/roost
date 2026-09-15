@@ -637,7 +637,13 @@ one used now.
   1348 ms after its badge read done (three runs). `wait-done` exits 0 for a pane
   it saw `done` before it closed, and polls every quarter second rather than
   every second so it lands in that gap. A gap under 250 ms would still be
-  reported as died. Not seen in a measurement, but not ruled out.
+  reported as died. Not seen in a measurement, but not ruled out. In a window
+  with a `blocked` sibling the gap can be wider than a tick: once a second the
+  loop hands that sibling to the #38 unblock helper, which reads a transcript
+  tail, and a pane that turns done AND closes during that call was never seen
+  done. A pane seen done before the call is safe — the history is rebuilt from
+  that read, and a test pins it — so only the finish-and-close inside the
+  helper's own run time is misreported.
 - **`is gone` cannot tell "finished, then closed" from "died".** A pane that
   closed before the wait started leaves no badge to read. The message says so.
 - **A window target cannot see an agent pane that closed before the wait
