@@ -848,6 +848,22 @@ on a branch, or on `main` between releases, reports the last release number
 while running code that release never had. A bug report from such a checkout
 still needs `git rev-parse HEAD` asked for by hand.
 
+### `roost wait-done` refuses a timeout that is not a whole number (#66)
+
+`abc`, `1.5` and a number too big for bash's integers used to loop forever,
+printing a bash error with the checkout's path four times a second. `-5` and an
+empty string waited with no limit, silently. They are now refused at once with
+exit 1 and a usage line that names the value.
+
+**The flows that change:** an **empty** timeout — a script passing `"$T"` with
+`T` unset — used to mean "no limit" and is now a usage error. A leading zero is
+decimal: `010` used to wait eight seconds and now waits ten, and `08` used to be
+a bash error. A value over 15 digits is refused; `timeout * 4` has to fit a
+64-bit integer.
+
+**Not covered:** words after the timeout are still ignored, as they always
+were. `roost wait-done api 30 extra` waits 30 seconds and says nothing.
+
 ### opencode counts retries too, and we still count our own
 
 `adapters/opencode/roost.js` hand-rolls a consecutive-`retry` counter.
