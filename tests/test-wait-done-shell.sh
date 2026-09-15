@@ -40,7 +40,14 @@ cleanup() {
   if [ -f "$work/jobs" ]; then
     while read -r g; do
       case "$g" in ''|*[!0-9]*) continue ;; esac
-      ps -A -o pgid=,command= | awk -v g="$g" -v w="$work/" '$1 == g && index($0, w)' | grep -q . \
+      # The path must be the process's FIRST ARGUMENT, not anywhere in the
+      # line: this very pipeline carries $work in its own awk argv and runs in
+      # the test's own process group, so a looser match would let a $work/jobs
+      # line naming the test's own pgid satisfy the guard with no stand-in
+      # alive — and kill the test, and under tests/run.sh the runner with it.
+      # Unreachable today (every stand-in's pgid is a live pane child), so this
+      # keeps it unreachable. Found by review (flock round 2).
+      ps -A -o pgid=,command= | awk -v g="$g" -v w="$work/" '$1 == g && index($3, w) == 1' | grep -q . \
         && kill -9 -- "-$g" 2>/dev/null
     done < "$work/jobs"
   fi
@@ -54,8 +61,10 @@ export ROOST_SOCKET="$sock"   # bin/roost talks to the isolated test server
 unset TMUX TMUX_PANE
 
 # --- stand-in agents ----------------------------------------------------------
-# agent: stamps working through the sink, then works. `exec sleep` keeps the
-#   script's pid, so the job is exactly one process.
+# agent: stamps working through the sink, then works. It `exec`s $work/idle,
+#   so the job keeps the script's pid and the command line still names this
+#   run; idle is a loop, so the job is two processes (the sh and a one-second
+#   sleep child), not one.
 cat > "$work/agent" <<EOF
 #!/bin/sh
 ps -o pgid= -p \$\$ | tr -d ' ' >> "$work/jobs"
