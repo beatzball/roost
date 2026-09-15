@@ -109,11 +109,42 @@ PY
 }
 
 # install_claude — `roost install --only claude` into the current box.
+#
+# The box's own fake claude goes first on PATH, because `roost install` wires
+# only a harness it can find with `command -v`. Without it this depended on
+# the machine running the suite having a real claude installed: green on a
+# developer's laptop, and on a CI runner with no claude the installer wired
+# nothing, so every comparison below had nothing to compare (found by CI on
+# PR #71). The fake is a file written fresh by box(), never a link to a real
+# binary.
 install_claude() {
+  PATH="$B/real:$PATH" \
   HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
   COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
     "$ROOST" install --only claude --yes </dev/null >"$B/out/install" 2>&1
 }
+
+# NOTMUX_BIN — a PATH folder holding every command in /usr/bin and /bin EXCEPT
+# tmux, each one a two-line exec wrapper written fresh into a new directory.
+#
+# Why wrappers: "a PATH with no tmux on it" cannot be made by leaving tmux's
+# directory out, because on Linux tmux sits in /usr/bin beside every core tool
+# doctor and the shim need (found by CI on PR #71, where the no-tmux doctor
+# case failed on Ubuntu). And never symlinks: a folder of links is a view onto
+# the real tools, and writing to an entry in it writes through into the real
+# binary. Every file here is created by `>` on a path this function has just
+# checked does not exist.
+NOTMUX_BIN="$TMP/notmux-bin"
+mkdir -p "$NOTMUX_BIN"
+for _f in /usr/bin/* /bin/*; do
+  _n="${_f##*/}"
+  [ "$_n" = tmux ] && continue
+  [ -f "$_f" ] && [ -x "$_f" ] || continue
+  [ -e "$NOTMUX_BIN/$_n" ] && continue
+  printf '#!/bin/sh\nexec %s "$@"\n' "$_f" > "$NOTMUX_BIN/$_n"
+done
+chmod +x "$NOTMUX_BIN"/*
+unset _f _n
 
 # =============================================================================
 printf '\n== generated settings: hooks only, and the same commands as roost install ==\n'
@@ -284,7 +315,13 @@ S="$B/sock/roost"
 g set-option -g @roost-wiring-enabled off
 assert_eq "$(shim_run PATH="$HERE/shims:$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin" TMUX="$S,1,0" ROOST_WIRING_DIR="$W" -- hi)" "REAL hi" \
   "@roost-wiring-enabled off: the shim runs the real claude with no settings"
-assert_eq "$(shim_run PATH="$P" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" -- hi)" "REAL hi" \
+PNT="$HERE/shims:$B/real:$NOTMUX_BIN"
+# The positive control: what `command -v tmux` PRINTS on that PATH, not its
+# exit status — a missing command is status 1 in bash and 127 in dash, which
+# is /bin/sh on Debian and Ubuntu.
+assert_eq "$(env -i PATH="$PNT" /bin/sh -c 'command -v tmux' 2>/dev/null)" "" \
+  "the curated no-tmux PATH really has no tmux on it (on Linux too, where tmux is in /usr/bin)"
+assert_eq "$(shim_run PATH="$PNT" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" -- hi)" "REAL hi" \
   "the switch is read through ROOST_TMUX when tmux is not on the pane's PATH"
 g set-option -gu @roost-wiring-enabled
 assert_eq "$(shim_run PATH="$P" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" -- hi)" "REAL $set_ok hi" \
@@ -443,7 +480,13 @@ doc() { env -i PATH="$1" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS
   COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
   ROOST_CONFIG_SOCK=/nonexistent ROOST_NOTIFY_SOCK=/nonexistent "${@:2}" "$HERE/scripts/roost-doctor" 2>&1; }
 DP="$HERE/shims:$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin"
-NOTMUX="$HERE/shims:$B/real:/usr/bin:/bin"
+NOTMUX="$HERE/shims:$B/real:$NOTMUX_BIN"
+# Both halves, so the empty answer below cannot come from a probe that failed
+# to run at all: the same probe on a PATH that DOES hold tmux has to find it.
+assert_eq "$(env -i PATH="$DP" /bin/sh -c 'command -v tmux' 2>/dev/null)" "$TMUXBIN" \
+  "the tmux probe finds tmux on a PATH that holds it (the control for the next check)"
+assert_eq "$(env -i PATH="$NOTMUX" /bin/sh -c 'command -v tmux' 2>/dev/null)" "" \
+  "doctor's no-tmux PATH really has no tmux on it"
 W="$(wdir_of "$B/xdg")"
 ROOST_SOCKET="$S" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
 
