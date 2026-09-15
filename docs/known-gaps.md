@@ -796,8 +796,39 @@ Holes in what did ship:
   same output as without it), so the position before a subcommand is fine.
 - **`roost wiring off -t SESSION` affects new panes only.** A pane that already
   exists keeps the environment its shell started with; use
-  `export ROOST_NO_SHIM=1` there. Not measured for opencode's
-  `set-environment -r` path.
+  `export ROOST_NO_SHIM=1` there. For opencode, measured by a reviewer on tmux
+  3.6: after `set-environment -t o -r OPENCODE_CONFIG_DIR` with a global value
+  set, a new pane in session `o` has no `OPENCODE_CONFIG_DIR` and a new pane in
+  another session keeps the global one.
+- **A `ROOST_NO_SHIM` in the shell that STARTS the server opts out the whole
+  server.** tmux copies the starting client's environment into the server's
+  global one, so every pane of that server runs claude without roost's
+  settings until `roost wiring on`, which clears it. On a server that is
+  already running, a caller's `ROOST_NO_SHIM` does not reach a new
+  `roost spawn` pane. Doctor shows `· ROOST_NO_SHIM is set here` in such a pane.
+- **A `claude` symlinked to the shim in an unmarked directory loops.** The
+  shim's PATH walk skips only directories holding `.roost-shim`, so a user who
+  links `shims/claude` into, say, `~/.local/bin` makes the shim find itself and
+  exec itself forever, adding `--settings` each round. Roost never creates such
+  a link. A guard comparing each candidate with the shim itself (`-ef "$0"`)
+  would close it; not done in #58 because it was found in the last review
+  round.
+- **`roost wiring off` from a shell with a different `XDG_CONFIG_HOME` leaves
+  `OPENCODE_CONFIG_DIR` set.** The check for "roost's own" value is computed
+  from the caller's XDG/HOME, not from the `ROOST_WIRING_DIR` the server
+  exported, so new opencode panes stay wired while the command says they start
+  unwired. Doctor's opencode note has the same dependence. Found in the last
+  review round; not fixed in #58.
+- **The login shell is started with `-l`, not an argv0 of `-<shell>`.** tmux
+  starts an unwired pane's shell with a leading dash in argv0; POSIX sh cannot
+  set argv0, so `roost-pane-shell` passes `-l`, which sh, bash, zsh and fish
+  accept. A shell without `-l` would not start as a login shell. Not measured
+  with such a shell.
+- **Outside roost, a `claude` found only through an empty or `.` PATH entry is
+  not run by the shim.** The PATH walk skips those entries before the roost
+  check, so a shim directory inherited onto PATH outside roost says "no claude
+  found" where the shell would have run a `./claude`. Exit 127 either way; the
+  argv is never changed.
 - **A `claude` an agent starts inside its own pane is wired too**, exactly as
   the global install already wires it, and badges the same pane. #64 decides
   how a child agent in one pane is treated.

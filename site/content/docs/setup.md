@@ -42,7 +42,7 @@ You can back out at every level:
 | to run without roost's wiring | do this |
 |---|---|
 | one `claude` | `ROOST_NO_SHIM=1 claude` |
-| every `claude` you type in one shell | `export ROOST_NO_SHIM=1` (a `roost spawn` from that shell is still wired) |
+| every `claude` you type in one shell | `export ROOST_NO_SHIM=1` (a `roost spawn` from that shell is still wired — unless that command is what starts the roost server, which then opts out every pane until `roost wiring on`) |
 | new panes in one roost session | `roost wiring off -t SESSION` (undo: `roost wiring on -t SESSION`) |
 | this roost server, until it stops | `roost wiring off` (undo: `roost wiring on`) |
 | every roost server, from the start | `set -g @roost-wiring-enabled off` in `~/.config/roost/roost.conf` |
