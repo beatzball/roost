@@ -249,6 +249,8 @@ assert_eq "$(rc scja)" 1 "screen --json TGT --json is a usage error"
 assert_contains "$(cat "$work/scja.err")" "--json goes before the target, once" "screen --json TGT --json names where the flag goes"
 cap sc7 "$ROOST" screen --json %0 007
 assert_eq "$(jv sc7 'd["lines"]')" 7 "screen --json reports a count with leading zeros as that count"
+cap sc00 "$ROOST" screen --json %0 00
+assert_eq "$(jv sc00 'd["lines"]')" 0 "screen --json reports a count of all zeros as 0"
 cap scp "$ROOST" screen --json %0 +3
 assert_eq "$(jv scp 'd["lines"]')" None "screen --json reports a non-count LINES such as +3 as null"
 

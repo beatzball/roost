@@ -1459,8 +1459,18 @@ JSON
       # roost_jsonout_int turns it into null.
       json_lines="${lines#-}"
       # A count tail honours with leading zeros (`007`) is still a count, so it
-      # is reported as 7 rather than as null. 10# stops bash reading it as octal.
-      case "$json_lines" in ''|*[!0-9]*) ;; *) json_lines="$((10#$json_lines))" ;; esac
+      # is reported as 7 rather than as null. The zeros are stripped as TEXT,
+      # not with $((10#...)): bash arithmetic wraps a 20-digit count to a
+      # plausible-looking wrong number, and GNU tail accepts such a count. Past
+      # 18 digits it is reported as null (roost_jsonout_int turns "" into null)
+      # rather than as a value JSON consumers may not hold exactly. Found by review.
+      case "$json_lines" in
+        ''|*[!0-9]*) ;;
+        *)
+          json_lines="${json_lines#"${json_lines%%[!0]*}"}"
+          [ -n "$json_lines" ] || json_lines=0
+          [ "${#json_lines}" -le 18 ] || json_lines="" ;;
+      esac
       roost_jsonout_emit screen target s "$raw" pane z "$json_pane" lines i "$json_lines" \
         text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail screen
       exit 0
