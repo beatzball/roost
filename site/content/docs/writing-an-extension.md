@@ -162,6 +162,8 @@ So roost hands you the flag alongside the value rather than making you derive it
 
 With `fleet` you also get roost's scripts on your `PATH`, so `roost read %3` and `roost send %3 "..."` work from inside your command without your knowing where roost is installed.
 
+If your command needs to know what is in the fleet, ask roost for JSON rather than scraping its English: `roost status --json`, `roost read --json %3`, and the others listed under "Machine-readable output" on the Driving a Fleet page. Those documents carry their own `"schema"` number, which is separate from `contract` — a new roost can add fields to them without touching the contract your manifest declares. Check `schema`, and ignore fields you do not know.
+
 ## Where your data goes
 
 Write everything you keep under `ROOST_EXT_STATE`. Roost creates that directory before your command runs, so it is there on your first line.

@@ -15,17 +15,17 @@
 #   roost spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
 #   roost split [-h|-v] [-t P] [-n NAME] [CMD]  open a helper pane in the current window; prints its %N
 #   roost view [-n NAME] CMD...  show CMD to the human: a pane beside you if there is room, a window if not. No focus steal; a second call with the same NAME replaces the first
-#   roost whoami             print this agent's own pane id (%N)
+#   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
 #                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
-#   roost read [-r|--render] TGT [N]
-#                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown)
-#   roost screen TGT [N]     print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
+#   roost read [-r|--render|--json] TGT [N]
+#                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program
+#   roost screen [--json] TGT [N]  print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
 #   roost reply TEXT...      record TEXT as this pane's reply, for another agent's `roost read`
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
-#   roost state STATE        report this pane's agent state (working|blocked|done|error|idle)
+#   roost state STATE [--json]  report this pane's agent state (working|blocked|done|error|idle); --json then says whether it landed
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
 #   roost ext SUBCOMMAND     add subcommands from a git repository: install, list, info, verify, update, remove
@@ -33,7 +33,7 @@
 #   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
-#   roost status             list running sessions + agents
+#   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
 #   roost kill [SESSION]     kill one session, or the whole server if none given
 #   roost help               show this text
 #   roost --version          print roost's version (-V, or `roost version`)
@@ -73,6 +73,14 @@ ROOST_HOME="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
 # redirect is already in place when the open fails.
 read -r ROOST_VERSION 2>/dev/null < "$ROOST_HOME/VERSION" || ROOST_VERSION=unknown
 ROOST_CONTRACT=1
+# The third version number, and kept apart from both of the above for the same
+# reason they are kept apart from each other. ROOST_JSON_SCHEMA is the schema of
+# the documents `--json` prints (#41), and it is the "schema" key of every one
+# of them. It moves only when a document changes in a way that breaks a
+# consumer -- a field removed, renamed, retyped or given a new meaning. Adding a
+# field, or a command that takes --json, is not a bump. The full rule is under
+# "Versioning" in docs/airig/specs/2026-09-15-json-output-design.md.
+ROOST_JSON_SCHEMA=1
 
 # Socket, in order: $ROOST_SOCKET (explicit seam — tests, a second server, a
 # `roost ssh` one) -> the roost server we are running inside -> the shared
@@ -320,6 +328,49 @@ case "${1:-up}" in
     # writes. It reads $TMUX and $TMUX_PANE to find the pane, and is a silent
     # no-op outside a roost server -- which is what makes an adapter safe to
     # leave installed when the agent runs somewhere else.
+    #
+    # `roost state STATE --json` (#41) sets the badge exactly as below and then
+    # says what landed. The flag goes AFTER the state because that invocation
+    # already set STATE and printed nothing before --json existed, so nothing
+    # that worked changes. `roost state --json`, flag first, still means what it
+    # always meant: --json is not a state, and an unknown state is idle.
+    #
+    # The point of the echo is the silent failure scripts/lib/roost-socket.sh
+    # records: badges that did not land, exit 0, nothing printed. `recorded` is
+    # a READ-BACK, so an adapter author can see a badge that went nowhere.
+    #
+    # Only `$3` is looked at, and nothing is forked when it is absent: the
+    # hooks call scripts/roost-agent-state directly, but adapters come through
+    # this arm, and the plain path must stay one `case` and an exec.
+    if [ "${3:-}" = "--json" ]; then
+      json_requested="${2-}"
+      "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      json_pane="" json_state="" json_recorded=0
+      # The same three conditions roost-agent-state checks before it writes
+      # anything, and the same server: it takes the socket from $TMUX, which is
+      # what ROOST_SELF_SOCK holds, NOT from $SOCKET, which $ROOST_SOCKET can
+      # point somewhere else.
+      if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && [ -n "${ROOST_SELF_SOCK:-}" ]; then
+        json_pane="$TMUX_PANE"
+        # The normalisation roost-agent-state applies ("anything unrecognised
+        # is idle"). A second copy of a five-word list, kept beside the read-back
+        # that needs it; if that script's list ever grows, this must grow too,
+        # and tests/test-json-output.sh's `state bogus --json` case goes red.
+        case "${2:-idle}" in
+          blocked|working|done|error) json_want="$2" ;;
+          *) json_want=idle ;;
+        esac
+        # show-options -p: pane scope only. A format lookup would fall back to
+        # a window or global @agent_state and report a badge that is not there.
+        if [ "$(tmux -S "$ROOST_SELF_SOCK" show-options -p -t "$TMUX_PANE" -qv @agent_state 2>/dev/null || true)" = "$json_want" ]; then
+          json_state="$json_want"; json_recorded=1
+        fi
+      fi
+      roost_jsonout_emit state requested s "$json_requested" state z "$json_state" \
+        pane z "$json_pane" recorded b "$json_recorded" || roost_jsonout_fail state
+      exit 0
+    fi
     exec "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
     ;;
   help|--help|-h)
@@ -390,6 +441,14 @@ case "${1:-up}" in
     if [ -z "${TMUX_PANE:-}" ]; then echo "roost whoami: not inside a roost session" >&2; exit 1; fi
     me="$(t display-message -p -t "$TMUX_PANE" '#{pane_id}' 2>/dev/null || true)"
     [ -n "$me" ] || { echo "roost whoami: not inside a roost session" >&2; exit 1; }
+    # --json (#41) only as the second word, the one place `whoami` ever looked.
+    # Any other extra word is still ignored, as it always was. The failures
+    # above stay exactly as they are: exit 1, stderr, and nothing on stdout.
+    if [ "${2:-}" = "--json" ]; then
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      roost_jsonout_emit whoami pane s "$me" || roost_jsonout_fail whoami
+      exit 0
+    fi
     printf '%s\n' "$me"
     ;;
   spawn)
@@ -1094,7 +1153,13 @@ JSON
     # count and neither can look like it; the rule is kept anyway so the two
     # commands are learned once, and so LINES stays the third word it has
     # always been rather than moving when a flag is added after the target.
+    #
+    # --json (#41) lives in the same slots, under the same rules: before the
+    # target, once. It cannot be combined with --render, and that is refused
+    # rather than resolved: JSON is for a program and --render is for a person,
+    # so a caller passing both has made a mistake that neither choice would fix.
     render=0
+    json=0
     case "${2:-}" in
       # An unknown flag in the flag slot used to fall through and be treated as
       # the TARGET, which failed later with an empty read and exit 1 -- a typo
@@ -1106,7 +1171,7 @@ JSON
       # target and fall through to the screen fallback for it, while
       # `roost read -r -5` refused the same word -- two slots disagreeing
       # about the same input. Found by review.
-      --render|-r) ;;
+      --render|-r|--json) ;;
       -*)
         echo "roost read: unknown flag '$2'." >&2
         echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
@@ -1123,12 +1188,29 @@ JSON
     # to consume. A mutation that made the loop run only once turned nothing
     # red, which is what exposed it.
     case "${2:-}" in
-      --render|-r)
-        render=1
+      --render|-r|--json)
+        if [ "$2" = "--json" ]; then json=1; else render=1; fi
         # Drop "read" and the flag, then put the subcommand back so every
         # positional reference below keeps its original number.
         shift 2
         set -- read "$@"
+        # The one flag pair that is refused for what it MEANS rather than for
+        # being repeated. Checked before the repeat refusal below, so the
+        # message names the real mistake.
+        case "${2:-}" in
+          --render|-r)
+            if [ "$json" -eq 1 ]; then
+              echo "roost read: --json and --render cannot be combined — JSON is for programs, --render is for people." >&2
+              echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+              exit 1
+            fi ;;
+          --json)
+            if [ "$render" -eq 1 ]; then
+              echo "roost read: --json and --render cannot be combined — JSON is for programs, --render is for people." >&2
+              echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+              exit 1
+            fi ;;
+        esac
         # The word after a consumed flag is a flag slot too. A second --render,
         # or a typo following a good flag, must not fall through to the target.
         # No `-[0-9]*` exemption here, unlike the LINES sweep below: a line
@@ -1136,7 +1218,13 @@ JSON
         # TGT` is malformed and used to make `-3` the target.
         case "${2:-}" in
           -*)
-            echo "roost read: '$2' is not valid here — --render/-r may be given once, before the target." >&2
+            # The --render wording is unchanged down to the byte; only a
+            # repeat after --json gets a sentence that names --json.
+            if [ "$json" -eq 1 ]; then
+              echo "roost read: '$2' is not valid here — --json may be given once, before the target." >&2
+            else
+              echo "roost read: '$2' is not valid here — --render/-r may be given once, before the target." >&2
+            fi
             echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
             exit 1 ;;
         esac
@@ -1215,6 +1303,23 @@ JSON
         working|blocked|error)
           echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
       esac
+      # --json: the values this branch has already read, as a document. The
+      # notice above has gone to stderr either way, and `stale` is that same
+      # decision as a field. The pane id and the error reason are the two extra
+      # reads, both silenced: the human mode reads neither here, and neither
+      # may add a line to stderr the human mode would not print.
+      if [ "$json" -eq 1 ]; then
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        json_pane="$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)"
+        json_stale=0 json_why=""
+        case "$state" in working|blocked|error) json_stale=1 ;; esac
+        if [ "$state" = "error" ]; then
+          json_why="$(t show-options -p -t "$tgt" -qv @roost-error-reason 2>/dev/null || true)"
+        fi
+        roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
+          stale b "$json_stale" error_reason z "$json_why" text t "$reply" || roost_jsonout_fail read
+        exit 0
+      fi
       # $lines is deliberately NOT applied. A recorded reply is returned whole:
       # `tail -n` on it would chop the BEGINNING off a long answer, and
       # skills/roost/SKILL.md passes 40 today, which would silently truncate
@@ -1276,6 +1381,20 @@ JSON
     if [ "$render" -eq 1 ]; then
       echo "roost read: the screen is not markdown, so it is not rendered — a renderer would delete <tags>, *stars* and _underscores_ that are the pane's own output." >&2
     fi
+    # --json: the screen as a document, after the same notices on stderr.
+    # roost_jsonout_screen fails where screen_dump fails, except on a blank
+    # screen, which is a valid empty document at exit 0 -- see that function.
+    if [ "$json" -eq 1 ]; then
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      roost_jsonout_screen "$tgt" "$lines" || exit 1
+      json_pane="$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)"
+      json_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+      json_why=""
+      if [ "$json_state" = "error" ]; then json_why="$why"; fi
+      roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s screen state z "$json_state" \
+        stale b 0 error_reason z "$json_why" text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail read
+      exit 0
+    fi
     screen_dump "$tgt" "$lines"
     ;;
   screen)
@@ -1285,6 +1404,15 @@ JSON
     # half. skills/roost/SKILL.md's "roost read it to see what's stuck"
     # guidance points here, because a stuck TUI is exactly the case where the
     # rendering IS the thing you want, chrome included.
+    # --json (#41) is the one flag the target slot accepts, once. It is taken
+    # off the front and the positionals renumbered, so everything below reads
+    # $2 and $3 as it always has.
+    json=0
+    if [ "${2:-}" = "--json" ]; then
+      json=1
+      shift 2
+      set -- screen "$@"
+    fi
     need_arg "${2:-}" "usage: roost screen [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
     # No target begins with a dash, so a word that does is a flag or a typo.
     # `roost read` refuses it; without this, `roost screen -5` took `-5` as a
@@ -1298,7 +1426,11 @@ JSON
     # `tail -n -3` means "the last 3 lines".
     case "$raw" in
       -*)
-        echo "roost screen: '$raw' is not a target — roost screen takes no flags." >&2
+        if [ "$json" -eq 1 ]; then
+          echo "roost screen: '$raw' is not a target — --json may be given once, before the target." >&2
+        else
+          echo "roost screen: '$raw' is not a target — roost screen takes no flags." >&2
+        fi
         echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
         exit 1 ;;
     esac
@@ -1311,6 +1443,17 @@ JSON
           exit 1 ;;
       esac
     done
+    if [ "$json" -eq 1 ]; then
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      roost_jsonout_screen "$(target "$raw")" "$lines" || exit 1
+      json_pane="$(t display-message -p -t "$(target "$raw")" '#{pane_id}' 2>/dev/null || true)"
+      # A negative LINES is reported as its count, the way tail reads it. Any
+      # other spelling tail accepts (`+3`, "from line 3") is not a count, and
+      # roost_jsonout_int turns it into null.
+      roost_jsonout_emit screen target s "$raw" pane z "$json_pane" lines i "${lines#-}" \
+        text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail screen
+      exit 0
+    fi
     screen_dump "$(target "$raw")" "$lines"
     ;;
   reply)
@@ -1546,6 +1689,14 @@ JSON
     exit 0
     ;;
   status)
+    # --json (#41) only as the second word; any other extra word is ignored, as
+    # it always was. The document reads the same tmux formats as the lines
+    # below, without trusting a delimiter -- see roost_jsonout_list.
+    if [ "${2:-}" = "--json" ]; then
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      roost_jsonout_status
+      exit 0
+    fi
     if server_running; then
       echo "roost: running (socket=$SOCKET)"
       t list-sessions -F '  session #{session_name} — #{session_windows} windows#{?session_attached, [attached],}'

@@ -1,0 +1,184 @@
+=== status, no server
+rc=0
+--- stdout 19 bytes
+roost: not running
+
+--- stderr 0 bytes
+
+=== status
+rc=0
+--- stdout 265 bytes
+roost: running (socket=<SOCK>)
+  session main — 2 windows
+  session side — 2 windows
+    %0  main:0.0 api/sleep  [done]
+    %1  main:1.0 web/sleep  [working]
+    %2  main:1.1 web/helper  [-]
+    %3  side:0.0 ops/sleep  [error]
+    %4  side:1.0 blank/sleep  [-]
+
+--- stderr 0 bytes
+
+=== status bogus (extra words are ignored)
+rc=0
+--- stdout 265 bytes
+roost: running (socket=<SOCK>)
+  session main — 2 windows
+  session side — 2 windows
+    %0  main:0.0 api/sleep  [done]
+    %1  main:1.0 web/sleep  [working]
+    %2  main:1.1 web/helper  [-]
+    %3  side:0.0 ops/sleep  [error]
+    %4  side:1.0 blank/sleep  [-]
+
+--- stderr 0 bytes
+
+=== whoami in %1
+rc=0
+--- stdout 3 bytes
+%1
+
+--- stderr 0 bytes
+
+=== whoami outside a pane
+rc=1
+--- stdout 0 bytes
+
+--- stderr 41 bytes
+roost whoami: not inside a roost session
+
+=== whoami with TMUX_PANE=%99
+rc=1
+--- stdout 0 bytes
+
+--- stderr 41 bytes
+roost whoami: not inside a roost session
+
+=== read %0 (reply)
+rc=0
+--- stdout 15 bytes
+hello from api
+
+--- stderr 0 bytes
+
+=== read main:api (reply, by name)
+rc=0
+--- stdout 15 bytes
+hello from api
+
+--- stderr 0 bytes
+
+=== read %1 (stale reply)
+rc=0
+--- stdout 19 bytes
+old reply from web
+
+--- stderr 70 bytes
+roost read: '%1' is working — this reply is from its previous turn.
+
+=== read %2 (screen fallback)
+rc=0
+--- stdout 32 bytes
+screen-line-one
+screen-line-two
+
+--- stderr 204 bytes
+roost read: no recorded reply for '%2' — showing the pane's screen instead.
+roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)
+
+=== read %3 (error fallback)
+rc=0
+--- stdout 32 bytes
+screen-line-one
+screen-line-two
+
+--- stderr 178 bytes
+roost read: no recorded reply for '%3' — showing the pane's screen instead.
+roost read: ('%3' is in error state: rate_limit; roost screen reads the screen without this notice)
+
+=== read %4 (blank screen)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 204 bytes
+roost read: no recorded reply for '%4' — showing the pane's screen instead.
+roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)
+
+=== read %99 (no such pane)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 226 bytes
+roost read: no recorded reply for '%99' — showing the pane's screen instead.
+roost read: (that pane has no roost adapter, or its turn has not finished; roost screen reads the screen without this notice)
+can't find pane: %99
+
+=== read --bogus %0
+rc=1
+--- stdout 0 bytes
+
+--- stderr 93 bytes
+roost read: unknown flag '--bogus'.
+usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]
+
+=== screen %0 3
+rc=0
+--- stdout 32 bytes
+screen-line-one
+screen-line-two
+
+--- stderr 0 bytes
+
+=== screen %0
+rc=0
+--- stdout 32 bytes
+screen-line-one
+screen-line-two
+
+--- stderr 0 bytes
+
+=== screen %4 (blank screen)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 0 bytes
+
+=== screen %99 (no such pane)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 21 bytes
+can't find pane: %99
+
+=== screen -5
+rc=1
+--- stdout 0 bytes
+
+--- stderr 113 bytes
+roost screen: '-5' is not a target — roost screen takes no flags.
+usage: roost screen [SESSION:]WINDOW [LINES]
+
+=== state working in %2
+rc=0
+--- stdout 0 bytes
+
+--- stderr 0 bytes
+
+=== state --json in %2 (flag first: sets idle, as before)
+rc=0
+--- stdout 0 bytes
+
+--- stderr 0 bytes
+
+=== state bogus in %2
+rc=0
+--- stdout 0 bytes
+
+--- stderr 0 bytes
+
+=== state done outside a pane
+rc=0
+--- stdout 0 bytes
+
+--- stderr 0 bytes
+

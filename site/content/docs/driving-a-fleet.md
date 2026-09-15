@@ -265,6 +265,107 @@ Two limits, both because roost reads only tmux facts to decide an agent is gone:
 
 A target that was gone used to exit `0`. If a script relied on that, it now sees `2`. A `set -e` script stops on a dead agent rather than continuing.
 
+## Machine-readable output: `--json`
+
+The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So five commands also print a JSON document when you pass `--json`:
+
+```sh
+roost status --json
+roost whoami --json
+roost read --json api            # flags go before the target, as with --render
+roost screen --json api 20
+roost state done --json          # the flag goes AFTER the state
+```
+
+Without `--json`, every one of them prints exactly what it printed before, byte for byte, with the same exit status.
+
+### The rules every document follows
+
+- **One document, one line**, then a newline. Nothing else goes to stdout.
+- **`"schema": 1`** and **`"command"`** come first in every document. Check `schema` before you read anything else.
+- **Every field is always present.** A value that is unknown or unset is `null`, not a missing key. An empty list is `[]`.
+- **Raw values, not human ones.** Timestamps are epoch seconds. States are names (`working`, `blocked`, `done`, `error`, `idle`), not badges.
+- **stderr does not change.** Every notice the plain command prints on stderr, it still prints there. Read the document from stdout only.
+- **Strings are valid UTF-8.** An agent's reply is stored as raw bytes. If those bytes are not valid UTF-8, each broken sequence becomes U+FFFD (`�`) and the document says `"lossy": true`.
+- **Failures print nothing on stdout.** A missing target, or `whoami` outside roost, exits with the same status and the same stderr as the plain command, and stdout is empty. Check the exit status first.
+- **Key order and spacing are not part of the contract.** Parse the JSON; do not compare text.
+
+### What counts as a change to `schema`
+
+`schema` goes up only for a change that can break you: a field removed or renamed, a field's type or meaning changed, or a change to when a document is printed. These do **not** change `schema`, so write your code to allow them:
+
+- a new field in a document
+- a new command that accepts `--json`
+- a new value in a field that lists names, such as a new agent state. Treat a value you do not know as unknown, not as an error.
+
+### `roost status --json`
+
+```json
+{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100}]}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `running` | bool | a roost server answered. With no server: `false`, and both lists are `[]`. Exit 0 either way |
+| `socket` | string | the socket name or path roost used |
+| `socket_kind` | `"name"` or `"path"` | whether tmux needs `-L` (a name) or `-S` (a path) for it |
+| `sessions[].name` | string | session name |
+| `sessions[].windows` | integer | number of windows |
+| `sessions[].attached_clients` | integer | clients attached to it; `0` when nobody is looking |
+| `panes[].id` | string | the pane's `%N` — use this as the target |
+| `panes[].session` | string | its session |
+| `panes[].window_id` | string | its window's `@N` |
+| `panes[].window_index`, `pane_index` | integer | the `session:window.pane` numbers |
+| `panes[].window_name` | string | window name |
+| `panes[].name` | string or `null` | the name given with `spawn`, `split` or `view -n`; `null` when there is none |
+| `panes[].command` | string | what the pane is running |
+| `panes[].state` | string or `null` | the agent state; `null` for a pane no hook has stamped (a plain shell) |
+| `panes[].since` | integer or `null` | epoch seconds when that state was set |
+
+### `roost whoami --json`
+
+`{"schema":1,"command":"whoami","pane":"%7"}` — `pane` is your own `%N`. Outside roost it exits 1, as the plain command does.
+
+### `roost read --json`
+
+```json
+{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"text":"Tests pass.","lossy":false}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `target` | string | the target as you typed it |
+| `pane` | string or `null` | the `%N` it resolved to |
+| `source` | `"reply"` or `"screen"` | whether `text` is the recorded reply or the screen fallback described above |
+| `state` | string or `null` | the agent state when it was read |
+| `stale` | bool | `true` when this is a stored reply on a pane that is `working`, `blocked` or `error` — the reply is from an earlier turn (see "A reply is never served as fresher than it is") |
+| `error_reason` | string or `null` | why the pane is in error, when its adapter recorded a reason |
+| `text` | string | the reply, whole; or the last `LINES` non-blank lines of the screen. No trailing newline |
+| `lossy` | bool | invalid UTF-8 in `text` was replaced |
+
+`--json` and `--render` cannot be combined: one is for programs and the other is for people. A blank screen gives `"text": ""` and exits 0.
+
+### `roost screen --json`
+
+`{"schema":1,"command":"screen","target":"api","pane":"%3","lines":20,"text":"…","lossy":false}` — `target`, `pane`, `text` and `lossy` as for `read`. `lines` is the count you asked for (default 40), or `null` when you passed something other than a count, such as `+3`. A blank screen gives `"text": ""` and exits 0.
+
+### `roost state STATE --json`
+
+For an adapter or a script that badges itself. It sets the state exactly as `roost state STATE` does, then tells you what landed:
+
+`{"schema":1,"command":"state","requested":"done","state":"done","pane":"%7","recorded":true}`
+
+| field | type | meaning |
+|---|---|---|
+| `requested` | string | the state you passed |
+| `state` | string or `null` | the state as recorded (an unknown word is recorded as `idle`); `null` when nothing was recorded |
+| `pane` | string or `null` | the pane it was set on; `null` outside roost |
+| `recorded` | bool | the pane's state was read back and matches. `false` means the badge did not land — outside roost, or on a server or pane that is not the one you think |
+
+It exits 0 even when `recorded` is `false`, as the plain command always has. Put `--json` **after** the state: `roost state --json` with the flag first still means "set idle", as it always did.
+
+`wait-done` does not take `--json` yet.
+
 ## The agent skill
 
 For LLM agents, install the portable skill so they know the loop:
