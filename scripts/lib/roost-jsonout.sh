@@ -39,7 +39,7 @@
 #   anything else -> U+FFFD, one per MAXIMAL SUBPART, and the value is marked
 #     lossy. That is the Unicode/WHATWG replacement rule, and Python's
 #     errors='replace' follows it too, which is what gives the test an oracle.
-#     JSON has no byte escape -- ÿ means U+00FF, not the byte 0xFF -- so a
+#     JSON has no byte escape -- \u00FF means U+00FF, not the byte 0xFF -- so a
 #     lossless byte round trip is not possible inside a JSON string; replacing
 #     and SAYING so is the honest option.
 #
@@ -139,7 +139,7 @@ END {
 # ${#v} is a BYTE count only because of it, the reply channel's own rule -- and
 # nothing loads a raw value with `read`. Any code added here must keep both.
 #
-# awk gets its OWN `LC_ALL=C` on the command line. The `local` above switches
+# awk gets its OWN `LC_ALL=C` on the command line. The `local` below switches
 # bash's behaviour, but a local is exported to children only if LC_ALL was
 # already in the environment, and with just LANG set awk would inherit a UTF-8
 # locale. mawk and BSD awk walk bytes whatever the locale, so no test on CI can

@@ -317,7 +317,7 @@ and repeats what `status --json` already gives.
   rule, which Python's `errors='replace'` also follows — so a test has a
   standard oracle), and the value is marked lossy
 
-JSON has no byte escape (`ÿ` means U+00FF, not byte 0xFF), so a lossless
+JSON has no byte escape (`\u00FF` means U+00FF, not byte 0xFF), so a lossless
 byte round trip is impossible in a JSON string. Replacement plus a `lossy` flag
 is honest. A lossless `text_b64` field could be added later without a schema
 bump.
@@ -357,7 +357,7 @@ strict UTF-8, parses as JSON, contains no raw byte below 0x20 and no raw DEL,
 equals `raw.decode('utf-8', 'replace')`, and the lossy flag equals "strict
 decode failed". Corpus: every single byte 0x01–0xFF, named edge cases (empty,
 `\n`, `12:34`, overlongs, surrogates, truncated sequences, U+10FFFF+1,
-U+2028/2029, `A` as literal text, trailing `;`), and 3,000 random strings
+U+2028/2029, `\u0041` as literal text, trailing `;`), and 3,000 random strings
 built from quotes, backslashes, control bytes, lead and continuation bytes and
 valid multi-byte characters, grouped 1–6 values per call to exercise framing.
 
@@ -485,7 +485,7 @@ New file `tests/test-json-output.sh`, on a `mktemp -d` `-S` socket from
 4. **Round trip, pathological values.** Through `roost reply` then
    `read --json`, and through `@roost-name` then `status --json`: quotes,
    backslashes, `\n`, `\t`, `\r`, `\x01`, ESC sequences, DEL, emoji, U+2028,
-   `A` as literal text, a trailing `;`, and invalid UTF-8. Each asserts
+   `\u0041` as literal text, a trailing `;`, and invalid UTF-8. Each asserts
    `text == raw.decode('utf-8','replace')` and the `lossy` flag.
 5. **Status integrity.** A name holding tabs and a newline, and a name crafted to
    look like a second record (`x\n%0\tmain\t…`): the pane count, ids and

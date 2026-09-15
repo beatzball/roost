@@ -273,7 +273,7 @@ corpus=(
   $'line one\nline two\ttab\rcarriage'
   $'ctl \x01 bs \x08 ff \x0c esc \x1b[31mred\x1b[0m us \x1f del \x7f'
   $'emoji \xf0\x9f\x90\x93 combining e\xcc\x81 separator \xe2\x80\xa8 cjk \xe4\xb8\xad'
-  'A and \n are literal text here'
+  '\u0041 and \n are literal text here'
   'return 0;'
   $'bad \xff lone-lead \xc3 overlong \xc0\xaf surrogate \xed\xa0\x80 lone-cont \x80 end'
   $'ends mid-sequence \xe2\x82'
