@@ -1446,8 +1446,20 @@ JSON
           [ "$_st" = "blocked" ] && { roost_unblock_pane "$_id" || true; offered=1; }
         done <<< "$rows"
         if [ "$offered" = 1 ]; then
-          # Gone between the two reads: the next pass reports it with the
-          # history this pass still holds.
+          # Every pane the snapshot ABOVE saw busy is history from here on,
+          # before the snapshot is taken again. Without this, a blocked pane
+          # that closes between the two reads — on the first poll, or on the
+          # pass it first turned busy — is simply missing from the second read,
+          # $busy_seen does not name it yet, and a window target whose sibling
+          # keeps the window open exits 0 on a pane that died. Found by review
+          # (flock round 1). A pane the helper clears is still listed below, so
+          # it never matches the vanished-while-busy check.
+          while read -r _id _dead _st; do
+            case "$_st" in working|blocked) busy_seen="$busy_seen$_id $_st"$'\n' ;; esac
+          done <<< "$rows"
+          first=0
+          # Gone between the two reads: the next pass reports it as died, with
+          # the history just recorded.
           rows="$(snapshot)" || { sleep 0.25; ticks=$((ticks + 1)); continue; }
         fi
       fi

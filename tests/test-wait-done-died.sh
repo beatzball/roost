@@ -96,6 +96,43 @@ bg_result "$pid" awg
 assert_eq "$rc" "2" "a WINDOW that closes while its agent reads blocked exits 2"
 assert_contains "$err" "died" "...saying it died"
 
+# A blocked pane that closes between wait-done's two back-to-back snapshots —
+# the one before the #62 unblock offer and the one after. Too narrow to hit by
+# timing, so a copy of the tree swaps in an unblock helper that closes the pane
+# it is offered and declines to clear it. Found by review (flock round 1): the
+# window target exited 0, because the second read no longer listed the pane
+# and nothing had recorded it as busy yet.
+race="$ROOST_TEST_SOCKDIR/race"; mkdir -p "$race"
+cp -R "$HERE/bin" "$HERE/scripts" "$race/"
+cat >> "$race/scripts/lib/roost-unblock.sh" <<'EOF'
+
+# TEST STUB (tests/test-wait-done-died.sh): close the offered pane, clear nothing.
+roost_unblock_pane() { t kill-pane -t "$1" 2>/dev/null; return 1; }
+EOF
+p="$(agent_window)"; w="$(win_of "$p")"; T set-option -p -t "$p" @agent_state blocked
+T split-window -d -t "$p" 'ENV= exec /bin/sh'
+err="$("$race/bin/roost" wait-done "$w" 5 2>&1 >/dev/null)"; rc=$?
+exists "$p"; assert_eq "$?" "1" "race: the stub really closed the blocked pane"
+assert_eq "$rc" "2" "a WINDOW whose blocked pane closes between the unblock snapshots exits 2, not 0"
+assert_contains "$err" "$p" "...naming the pane"
+T kill-window -t "$w"
+p="$(agent_window)"; T set-option -p -t "$p" @agent_state blocked
+err="$("$race/bin/roost" wait-done "$p" 5 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" "2" "a PANE that closes between the unblock snapshots exits 2"
+# `died: ` with the colon: the already-gone message also ends in "...from one
+# that died", so the bare word would pass on the wrong message.
+assert_contains "$err" "died: " "...saying it died, not that it was already gone"
+
+# A NON-agent sibling closing mid-wait is not a death: only panes seen busy count.
+p="$(agent_window)"; w="$(win_of "$p")"; T set-option -p -t "$p" @agent_state working
+sib="$(T split-window -d -P -F '#{pane_id}' -t "$p" 'exec sleep 600')"
+bg_wait "$w" 20 sib; pid=$!
+sleep 1.2; T kill-pane -t "$sib"; sleep 1; T set-option -p -t "$p" @agent_state done
+bg_result "$pid" sib
+assert_eq "$rc" "0" "a WINDOW whose non-agent sibling closes mid-wait still exits 0"
+assert_eq "$err" "" "...with nothing on stderr"
+T kill-window -t "$w"
+
 # --- finished, THEN closed, is success ----------------------------------------
 # A one-shot agent stamps done and its pane closes on its own. Measured with
 # `claude -p` in a `roost spawn` window: 531ms, 1297ms, 1348ms from done to
