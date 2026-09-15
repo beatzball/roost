@@ -1,9 +1,8 @@
 # Agent identity for `wait-done` (#64) — design
 
-Status: **approved 2026-09-15**. The human chose to count a hook-recorded
-identity as a fact, and to record the pane terminal's foreground job. Nothing
-is built yet. The build waits until #66 merges, because #66 changes
-`wait-done` too.
+Status: **approved 2026-09-15, and built on the #64 branch** after #66 merged.
+The human chose to count a hook-recorded identity as a fact, and to record the
+pane terminal's foreground job.
 
 ## 1. The problem
 
@@ -166,8 +165,15 @@ On a transition into `working` or `blocked` (after the unchanged-state bail):
 1. Read `#{pane_pid}`, in a tmux call that path already makes.
 2. Run `ps -o tpgid= -p PANE_PID`: the pane terminal's foreground job.
 3. If it is non-empty and differs from `PANE_PID`, set the pane option
-   `@roost-agent-job` to `"PGID PANE_PID"`. Otherwise unset it: the agent is
+   `@roost-agent-job` to `"PGID:PANE_PID"` (no space, so `wait-done` can read it as one field). Otherwise unset it: the agent is
    not a job of the pane's shell, and nothing is recorded.
+
+Nothing is recorded either when the foreground job is the sink's own process.
+`roost state working` typed at a prompt `exec`s into the sink, which then leads
+its own job and exits at once; a record of it would report "died" a moment
+later about a pane with no agent. (Added while building, and pinned by
+tests/test-wait-done-shell.sh. No measured harness runs the sink as a job
+leader.)
 
 Every tmux and `ps` call keeps the sink's `|| true` discipline: a failure
 records nothing, and never breaks the agent.

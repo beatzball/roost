@@ -342,6 +342,68 @@ if [ "$state" = "$prev" ]; then
   exit 0
 fi
 
+# The pane terminal's foreground job, for `roost wait-done` (#64). An agent
+# typed at a shell prompt and then killed leaves its pane alive at the prompt
+# with pane_dead 0 and the badge still busy, and no hook runs to say so. What
+# does change is the terminal: the shell gets it back. So a busy stamp records
+# WHICH JOB held the terminal, as "PGID:PANE_PID" in @roost-agent-job, and
+# wait-done calls the pane died only when that job has no process left AND the
+# pane's shell holds the terminal again. The design, and every measurement
+# behind it, is docs/airig/specs/2026-09-15-agent-identity-design.md.
+#
+# Read from the TERMINAL, not from this script's parents, and that is the
+# point. The process that runs a hook is not always the agent: copilot's
+# extension is a forked host, and codex's adapter runs this script two levels
+# below codex. But at every hook call measured — Claude, codex, opencode, pi,
+# copilot, through --settings, a settings file and a PATH wrapper — the
+# terminal's foreground job was the agent's job. Claude runs its hooks with no
+# terminal at all, which is why this asks about the PANE's process, not our own.
+#
+# Only on a transition into working or blocked, never above: the
+# unchanged-state bail is the PostToolUse hot path and gains nothing here.
+# Measured +5 to +7 ms per busy transition. A second, identical hook firing
+# (Claude runs both copies when two settings sources name it with different
+# strings) writes the same value, because it reads the same terminal.
+#
+# Nothing is recorded, and any old record is removed, when:
+#   - the foreground job IS the pane's process: an agent run as the pane's own
+#     command (`roost spawn`), one started with `&`, a shell without job
+#     control. A job that is the pane cannot be told from the shell, and #54
+#     already sees that pane close;
+#   - the foreground job is THIS process: `roost state working` typed at a
+#     prompt execs straight into this script, which leads its own job and exits
+#     at once. Recording it would report "died" a moment later about a pane
+#     that never had an agent;
+#   - tmux or ps give nothing usable (a dead server, a container that cannot
+#     see the host's pane process, a ps without tpgid). Degrades to today.
+# Removing, not leaving, is what keeps a record from one agent from being
+# checked against a later pane process; wait-done also ignores a record whose
+# PANE_PID is not the pane's current one (respawn-pane -k keeps options).
+#
+# Written BEFORE @agent_state, for the reply's reason: a waiter that sees the
+# new busy state should find the record that goes with it.
+if [ "$state" = "working" ] || [ "$state" = "blocked" ]; then
+  job=""
+  pane_pid="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{pane_pid}' 2>/dev/null || true)"
+  case "$pane_pid" in ''|*[!0-9]*) pane_pid="" ;; esac
+  if [ -n "$pane_pid" ]; then
+    fg_job="$(ps -o tpgid= -p "$pane_pid" 2>/dev/null || true)"
+    fg_job="${fg_job//[[:space:]]/}"
+    case "$fg_job" in ''|*[!0-9]*) fg_job="" ;; esac
+    # tpgid is 0 (macOS) or -1 (Linux, filtered above) for a terminal with no
+    # foreground job; 1 would be init. Neither names an agent.
+    if [ -n "$fg_job" ] && [ "$fg_job" -gt 1 ] \
+       && [ "$fg_job" != "$pane_pid" ] && [ "$fg_job" != "$$" ]; then
+      job="$fg_job:$pane_pid"
+    fi
+  fi
+  if [ -n "$job" ]; then
+    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-agent-job "$job" 2>/dev/null || true
+  else
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-agent-job 2>/dev/null || true
+  fi
+fi
+
 # Stamp the PANE, not the window. Pane scope is what lets two agents share one
 # window without overwriting each other's badge. Glyphs are NOT stamped: the
 # status bar derives them from @roost-glyph-<state> at render time, so a theme

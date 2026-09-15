@@ -117,7 +117,7 @@ If there is no dialog on the screen, any of these clears it:
 
 ## `roost wait-done` exits non-zero
 
-Exit 1 means **error or timeout**, distinguished by the message. An errored pane prints `roost: '<target>' is in error state, not done` and exits 1. Exit 2 means the agent **died** — its pane closed or its process exited mid-turn — or the target was already gone. `wait-done` deliberately does not count "stopped being busy" as success. The full table, and the one kind of death it cannot see, are in [Driving a fleet](/docs/driving-a-fleet).
+Exit 1 means **error or timeout**, distinguished by the message. An errored pane prints `roost: '<target>' is in error state, not done` and exits 1. Exit 2 means the agent **died** — its pane closed or its process exited mid-turn — or the target was already gone. `wait-done` deliberately does not count "stopped being busy" as success. The full table, and the kinds of death it cannot see, are in [Driving a fleet](/docs/driving-a-fleet).
 
 ## `prefix a` does nothing
 

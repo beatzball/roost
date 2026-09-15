@@ -256,13 +256,15 @@ done
 | `1` (`is in error state`) | an agent pane is 💥 **error**; a second line names the reason when the adapter recorded one | go and look, or re-prompt |
 | `1` (`timed out`) | still busy when the timeout ran out | wait longer, or `roost screen` it |
 | `1` (`usage:`) | the timeout is not a whole number of seconds — `abc`, `-5`, `1.5` or an empty string. Refused at once, before any waiting | fix the argument; omit it, or pass `0`, to wait with no limit |
-| `2` (`died`) | an agent pane closed, or its process exited, while its badge read `working` or `blocked` — the message names the pane | re-resolve or respawn; do not wait again |
+| `2` (`died`) | an agent pane closed, or its process exited, or an agent started from the pane's shell prompt exited, while its badge read `working` or `blocked` — the message names the pane | re-resolve or respawn; do not wait again |
 | `2` (`is gone`) | the target did not exist when `wait-done` started | re-resolve the target |
 
-Two limits, both because roost reads only tmux facts to decide an agent is gone:
+An agent you typed at a shell prompt in the pane is caught too: when its hook marks it busy, roost notes which job holds the pane's terminal, and `wait-done` reports `died` once that job is gone and the shell has the terminal back.
+
+Two limits:
 
 - **`is gone` cannot tell "finished, then closed" from "died".** A pane that is already gone has no badge left to read. If a one-shot agent may have closed before you started waiting, check its result another way.
-- **An agent killed inside a shell is not detected.** If you started the agent from a shell prompt in the pane rather than as the pane's command, the pane stays alive at that prompt, and `wait-done` still waits for its timeout and exits 1. `roost spawn NAME "cmd"` runs the agent as the pane's command, so a dead one is caught.
+- **An agent under a wrapper that keeps running is not detected.** If a script starts the agent without `exec` and keeps running after the agent dies, the script still holds the terminal, so `wait-done` waits for its timeout and exits 1. Run the agent directly, or end the script when the agent ends.
 
 A target that was gone used to exit `0`. If a script relied on that, it now sees `2`. A `set -e` script stops on a dead agent rather than continuing.
 
