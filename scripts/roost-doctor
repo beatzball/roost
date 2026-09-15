@@ -166,6 +166,103 @@ case "$(_settings_state "$settings")" in
   absent)     warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install" ;;
 esac
 
+# --- roost-owned wiring (#58) -----------------------------------------------
+# One row per state in the design's doctor table
+# (docs/airig/specs/2026-09-15-roost-owned-settings-design.md). A · line is
+# context, not a finding: like ok it never touches $required_fail, and unlike
+# warn it is not something to fix — every · state below is one the user chose.
+note() { printf '  · %s\n' "$1"; }
+# An XDG_CONFIG_HOME that is not absolute is ignored, as the XDG spec says and
+# as scripts/roost-wiring reads it, so the two agree on where the marker is.
+w_xdg="${XDG_CONFIG_HOME:-}"
+case "$w_xdg" in /*) : ;; *) w_xdg="" ;; esac
+w_root="${w_xdg:-$HOME/.config}/roost"
+# The wiring directory is the one this pane's server exported. There is one
+# per roost checkout, so it cannot be worked out from where doctor runs.
+w_dir="${ROOST_WIRING_DIR:-}"
+# Inside a roost pane is decided by the same rule the hooks and the shim use:
+# $TMUX names a socket whose path ends in /roost. Nothing else is asked, so a
+# doctor run from outside roost never contacts any server for these rows.
+w_sock=""
+case "${TMUX%%,*}" in */roost) w_sock="${TMUX%%,*}" ;; esac
+# The tmux the shim would use to read the server switch: ROOST_TMUX when it
+# names a binary, else whatever tmux is on PATH — the shim's own fallback.
+# Doctor reads the switch through the same one, so the two cannot disagree
+# about a pane whose PATH holds no tmux (found in review).
+w_tmux="${ROOST_TMUX:-}"
+if [ -z "$w_tmux" ] || [ ! -x "$w_tmux" ]; then
+  w_tmux="$(command -v tmux 2>/dev/null || true)"
+fi
+w_state=unknown
+if [ -e "$w_root/wiring.off" ]; then
+  w_state=removed
+  note "wiring is removed ($w_root/wiring.off) — claude and opencode badge only through roost install, if you ran it; to restore, run: roost wiring on"
+elif [ -z "$w_sock" ]; then
+  # Outside a roost pane there is no server to ask and no wiring directory
+  # to read, so nothing below is claimed either (found in review: the two
+  # "runs once / runs twice" rows used to print here about files that did
+  # not exist).
+  note "not inside a roost pane — the claude shim check was skipped"
+elif [ -n "$w_tmux" ] && [ "$("$w_tmux" -S "$w_sock" show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
+  w_state=off
+  note "wiring is off for this roost server — claude runs without roost's settings; to restore, run: roost wiring on"
+elif [ -n "$w_tmux" ] && [ "$("$w_tmux" -S "$w_sock" show-options -gqv @roost-wiring-active 2>/dev/null)" != on ]; then
+  # A roost server that was never wired: started by a roost from before this
+  # existed, or apply failed quietly at server start. "Wiring is on but a file
+  # is missing" was the wrong story for it (found in review round 2).
+  w_state=unwired
+  note "this roost server is not wired — it started before roost wiring existed, or wiring could not be applied; run: roost wiring on"
+else
+  w_state=on
+  [ -n "${ROOST_NO_SHIM:-}" ] \
+    && note "ROOST_NO_SHIM is set here — claude started from this shell or session runs without roost's settings"
+  [ -n "$w_tmux" ] \
+    || warn "the claude shim cannot read the server switch here — neither ROOST_TMUX nor tmux on PATH names a tmux binary, so wiring stays on; restart the roost server"
+  if [ -z "$w_dir" ]; then
+    # The server is wired but this pane's environment predates it: a pane that
+    # was open before `roost wiring on`. Only a new pane gets the variable.
+    warn "this pane has no ROOST_WIRING_DIR — it was opened before wiring was on, so claude here runs without roost's settings; open a new pane"
+  elif [ ! -f "$w_dir/claude/settings.json" ]; then
+    warn "wiring is on but $w_dir/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
+  fi
+  w_claude="$(command -v claude 2>/dev/null || true)"
+  if [ -n "$w_claude" ]; then
+    if [ -f "$(dirname "$w_claude")/.roost-shim" ]; then
+      # The ✓ only when the shim really adds the file here. With ROOST_NO_SHIM
+      # set, or no file to add, the note or warning above is the whole truth,
+      # and a ✓ beside it contradicted it (found in review round 2).
+      if [ -z "${ROOST_NO_SHIM:-}" ] && [ -n "$w_dir" ] && [ -f "$w_dir/claude/settings.json" ]; then
+        ok "claude in this pane runs through roost's shim — its hooks come from $w_dir/claude/settings.json"
+      fi
+    else
+      # No alias in the list of causes: doctor runs in its own process, where
+      # the user's shell aliases do not exist, so it cannot see one. An alias
+      # to claude's full path bypasses the shim while this row reads ok.
+      warn "claude in this pane resolves to $w_claude, not roost's shim — roost's settings are not added (your own default-command, or PATH order); badges then depend on: roost install"
+    fi
+  fi
+fi
+# The two routes together, compared against what the shim actually adds — the
+# generated file this server names — and not against doctor's own checkout,
+# which may be a different one (found in review). Identical commands from the
+# global install and the generated file run once (design M4b); different ones
+# run twice (M4 C3).
+if [ "$w_state" = on ] && [ -f "$w_dir/claude/settings.json" ] \
+   && [ "$(_settings_state "$settings")" = ok ] && grep -qF roost-agent-state "$settings" 2>/dev/null; then
+  w_cmd="$(grep -o '"[^"]*/roost-agent-state' "$w_dir/claude/settings.json" 2>/dev/null | head -1 | tr -d '"')"
+  if [ -n "$w_cmd" ] && grep -qF "\"$w_cmd " "$settings" 2>/dev/null; then
+    ok "the global Claude hooks and roost's wiring name the same commands, so each hook runs once"
+  else
+    warn "the global Claude hooks name a different checkout than this server's wiring, so every roost hook runs twice — run roost install from ${w_cmd%/scripts/roost-agent-state}, or: roost wiring off"
+  fi
+fi
+if [ -n "${OPENCODE_CONFIG_DIR:-}" ]; then
+  case "$OPENCODE_CONFIG_DIR" in
+    "$w_root/wiring/"*/opencode) : ;;
+    *) note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install" ;;
+  esac
+fi
+
 # Which warnings end with ", or run: roost install", and which must not. The
 # tail goes on every state that command actually resolves -- and it resolves
 # more than the "not installed" ones: it relinks a DANGLING adapter (that link

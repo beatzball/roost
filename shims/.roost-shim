@@ -1,0 +1,3 @@
+# Marks this directory as roost's shim directory. shims/claude skips every
+# PATH entry holding this file when it looks for the real claude, so a second
+# checkout's shims on the same PATH cannot make it find itself.

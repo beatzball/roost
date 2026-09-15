@@ -29,6 +29,8 @@
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
 #   roost ext SUBCOMMAND     add subcommands from a git repository: install, list, info, verify, update, remove
+#   roost wiring on|off [-t SESSION] | remove
+#                            roost's own route to claude and opencode in its panes, with no edit to your config: turn it on or off for the server or one session, or remove it (one claude run without it: ROOST_NO_SHIM=1 claude)
 #   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout
 #   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
@@ -157,8 +159,42 @@ ensure_session() {
     ROOST_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf"
     t set-option -g @roost-user-conf "$ROOST_USER_CONF"
     t source-file -qF "#{@roost-user-conf}"
+    # Roost-owned wiring (#58): the claude shim through default-command, and
+    # OPENCODE_CONFIG_DIR. AFTER the user's conf, because
+    # `set -g @roost-wiring-enabled off` there must stop it before anything is
+    # generated, and a default-command the user set there must be seen and
+    # kept. Only here, when a server starts, so no other roost command — and
+    # least of all `roost state` on every tool call — pays for it.
+    #
+    # Never fatal: a server that cannot be wired still has to start, and the
+    # global install (if any) still badges. `roost doctor` reports the state.
+    ROOST_SOCKET="$SOCKET" "$ROOST_HOME/scripts/roost-wiring" apply >/dev/null 2>&1 || true
+    # The first pane was created by the `new-session` above, BEFORE apply set
+    # default-command, ROOST_TMUX and ROOST_WIRING_DIR — and it is the pane
+    # `roost up` attaches a human to, where they type `claude`. Found in review:
+    # without this, every pane of a fresh server was wired except that one.
+    # Respawning is safe only here: nothing has run in it yet but the login
+    # shell that just started.
+    #
+    # The command is passed explicitly. Measured on tmux 3.6: `respawn-pane`
+    # with no command re-runs the command the pane was CREATED with — here
+    # none — and does not consult default-command, so it exits 0 and changes
+    # nothing. A default-command the user set themselves is what gets passed
+    # then, which is what that pane would have run anyway.
+    if pane_cmd_wired; then
+      _defcmd="$(t show-options -gqv default-command 2>/dev/null || true)"
+      if [ -n "$_defcmd" ]; then
+        t respawn-pane -k -t "=$s:" -c "$PWD" "$_defcmd" 2>/dev/null || true
+      fi
+    fi
   fi
 }
+
+# pane_cmd_wired — true when this server is wired, which is when a command
+# roost starts in a pane has to be run through roost-pane-shell. Kept separate
+# from the `set --` that uses it because `set --` inside a function would
+# change only the function's own arguments.
+pane_cmd_wired() { [ "$(t show-options -gqv @roost-wiring-active 2>/dev/null || true)" = on ]; }
 
 attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$1"; }
 
@@ -365,6 +401,14 @@ case "${1:-up}" in
     shift
     exec "$ROOST_HOME/scripts/roost-ext" "$@"
     ;;
+  wiring)
+    # Roost-owned wiring (#58): scripts/roost-wiring does the work. The socket
+    # is passed explicitly, as `view` does for its children, so the script
+    # resolves the same server this process did instead of falling through to
+    # the production `-L roost`.
+    shift
+    ROOST_SOCKET="$SOCKET" exec "$ROOST_HOME/scripts/roost-wiring" "$@"
+    ;;
   install|update)
     # `update` is an ALIAS, not a second arm: one shift, one exec, so the two
     # spellings cannot drift. They are the same command because re-running the
@@ -407,6 +451,13 @@ case "${1:-up}" in
     # session would jump there), and print its pane id target.
     # `=$sess:` — exact-match the session AND the trailing colon avoids tmux parsing
     # a numeric session name as a window index (e.g. `=0` fails "index 0 in use").
+    #
+    # On a wired server a command goes through roost-pane-shell, which puts
+    # roost's claude shim first on PATH and then runs the command the way tmux
+    # would have (a string through the shell, an argv directly). The server's
+    # own PATH cannot do this: tmux hands a client-created pane the CLIENT's
+    # PATH (#58, design M1). With no command, default-command already does it.
+    if [ "$#" -gt 0 ] && pane_cmd_wired; then set -- "$ROOST_HOME/scripts/roost-pane-shell" "$@"; fi
     new="$(t new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@")"
     # Naming is best-effort; the pane id is the contract. A short-lived CMD's
     # pane can already be gone by the time we set-option — don't let that abort
@@ -432,6 +483,9 @@ case "${1:-up}" in
     done
     [ -n "$from" ] || { echo "roost split: not inside a roost session" >&2; exit 1; }
     # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
+    # A command on a wired server goes through roost-pane-shell, for the reason
+    # given at the same line in `spawn`.
+    if [ "$#" -gt 0 ] && pane_cmd_wired; then set -- "$ROOST_HOME/scripts/roost-pane-shell" "$@"; fi
     new="$(t split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@")"
     # A label that survives what the process calls itself: #{pane_current_command}
     # reports a version string for some agents and changes every release.
