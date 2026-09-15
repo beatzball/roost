@@ -141,7 +141,7 @@ And these **only** if your manifest declared `"needs": ["fleet"]`:
 ```sh
 ROOST_SOCKET      # which tmux server your user's fleet is on
 ROOST_SOCKET_FLAG # "-L" if that is a socket NAME, "-S" if it is a PATH
-PATH              # with $ROOST_HOME/scripts prepended, so `roost read`, `roost send` are on it
+PATH              # with $ROOST_HOME/scripts prepended (roost's helper scripts; roost itself is $ROOST_HOME/bin/roost)
 ```
 
 Read `ROOST_SOCKET` **unguarded** — no `${ROOST_SOCKET:-}`, no fallback. Without `fleet` it is unset rather than empty, so under `set -u` you get a loud failure on the line that wanted it. That is deliberate: the fallback you would otherwise write ends up addressing the user's own everyday tmux, which is the one thing roost exists to leave alone.
@@ -160,9 +160,9 @@ tmux takes `-L` for a socket **name** and `-S` for a socket **path**, and they a
 
 So roost hands you the flag alongside the value rather than making you derive it. This was found by building an extension against the contract, not by reading the source — the first draft of contract 1 handed over `ROOST_SOCKET` on its own, and the first program written against it had to re-derive the rule to work at all.
 
-With `fleet` you also get roost's scripts on your `PATH`, so `roost read %3` and `roost send %3 "..."` work from inside your command without your knowing where roost is installed.
+With `fleet` you also get roost's scripts on your `PATH`, and `ROOST_HOME` tells you where roost itself is, so `"$ROOST_HOME/bin/roost" read %3` and `"$ROOST_HOME/bin/roost" send %3 "..."` work from inside your command. Call roost by that path: the scripts directory does not contain `roost` itself, and a bare `roost` finds whichever one the user's own `PATH` happens to hold, if any.
 
-If your command needs to know what is in the fleet, ask roost for JSON rather than scraping its English: `roost status --json`, `roost read --json %3`, and the others listed under "Machine-readable output" on the Driving a Fleet page. Those documents carry their own `"schema"` number, which is separate from `contract` — a new roost can add fields to them without touching the contract your manifest declares. Check `schema`, and ignore fields you do not know.
+If your command needs to know what is in the fleet, ask roost for JSON rather than scraping its English: `"$ROOST_HOME/bin/roost" status --json`, `"$ROOST_HOME/bin/roost" read --json %3`, and the others listed under "Machine-readable output" on the Driving a Fleet page. Those documents carry their own `"schema"` number, which is separate from `contract` — a new roost can add fields to them without touching the contract your manifest declares. Check `schema`, and ignore fields you do not know.
 
 ## Where your data goes
 

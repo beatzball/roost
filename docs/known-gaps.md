@@ -875,6 +875,15 @@ has already produced a real bug here.
   - **tmux 3.4's byte behaviour was not measured.** Names were measured on 3.6
     only. `status --json` does not rely on it: it checks tabs and line counts
     rather than trusting tmux to escape names.
+  - **`state STATE --json` can say `recorded:false` for a badge that shows.**
+    When `@agent_state` is set at WINDOW or global scope (only a hand-typed
+    `tmux set -w`/`-g` does that; roost writes pane scope), roost-agent-state's
+    unchanged-state early exit reads the state through a format, sees the outer
+    value, and writes nothing to the pane. `status --json` and the status bar
+    show the outer value; `state --json` reads pane scope only and reports that
+    nothing landed there. Measured on a throwaway socket. The root cause is that
+    early exit in scripts/roost-agent-state -- the PostToolUse hot path -- so it
+    was left for its own change rather than widened into this one.
   - **A trailing newline in an option value is lost**, in `--json` and in the
     plain commands alike, because `$(...)` strips it.
   - **Invalid UTF-8 is replaced, not preserved.** JSON strings cannot carry raw

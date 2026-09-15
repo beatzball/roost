@@ -1438,7 +1438,14 @@ JSON
       case "$_arg" in
         -[0-9]*) continue ;;
         -*)
-          echo "roost screen: '$_arg' is not valid — roost screen takes no flags." >&2
+          # After --json the old sentence would be false -- screen now takes one
+          # flag -- so that case names where it goes. Without --json the wording
+          # is unchanged down to the byte.
+          if [ "$json" -eq 1 ]; then
+            echo "roost screen: '$_arg' is not valid here — --json goes before the target, once." >&2
+          else
+            echo "roost screen: '$_arg' is not valid — roost screen takes no flags." >&2
+          fi
           echo "usage: roost screen [SESSION:]WINDOW [LINES]" >&2
           exit 1 ;;
       esac
@@ -1450,7 +1457,11 @@ JSON
       # A negative LINES is reported as its count, the way tail reads it. Any
       # other spelling tail accepts (`+3`, "from line 3") is not a count, and
       # roost_jsonout_int turns it into null.
-      roost_jsonout_emit screen target s "$raw" pane z "$json_pane" lines i "${lines#-}" \
+      json_lines="${lines#-}"
+      # A count tail honours with leading zeros (`007`) is still a count, so it
+      # is reported as 7 rather than as null. 10# stops bash reading it as octal.
+      case "$json_lines" in ''|*[!0-9]*) ;; *) json_lines="$((10#$json_lines))" ;; esac
+      roost_jsonout_emit screen target s "$raw" pane z "$json_pane" lines i "$json_lines" \
         text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail screen
       exit 0
     fi

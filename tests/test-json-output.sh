@@ -9,9 +9,10 @@
 #      commit before --json existed (tests/fixtures/json-human-output.txt)
 #   2. every document is one line of valid JSON with exactly the fields and
 #      values the design names
-#   3. pathological bytes -- quotes, backslashes, control bytes, NUL, emoji,
-#      invalid UTF-8, a trailing semicolon -- survive the round trip through the
-#      reply channel and through a pane name
+#   3. pathological bytes -- quotes, backslashes, control bytes, emoji, invalid
+#      UTF-8, a trailing semicolon -- survive the round trip through the reply
+#      channel and through a pane name. NUL cannot reach roost at all (argv and
+#      bash strings cannot carry it); the NUL cases only pin that shell fact
 #   4. the encoder itself, fuzzed with every single byte and random mixtures
 #
 # python3 is this file's JSON ORACLE and nothing more: roost never runs it.
@@ -137,11 +138,16 @@ gold 'read %3 (error fallback)' "$ROOST" read %3
 gold 'read %4 (blank screen)' "$ROOST" read %4
 gold 'read %99 (no such pane)' "$ROOST" read %99
 gold 'read --bogus %0' "$ROOST" read --bogus %0
+gold 'read -r -r %0 (repeated flag)' "$ROOST" read -r -r %0
+gold 'read --render --bogus %0' "$ROOST" read --render --bogus %0
+gold 'read -r -5 %0 (a count before the target)' "$ROOST" read -r -5 %0
+gold 'read %0 --json (a flag after the target)' "$ROOST" read %0 --json
 gold 'screen %0 3' "$ROOST" screen %0 3
 gold 'screen %0' "$ROOST" screen %0
 gold 'screen %4 (blank screen)' "$ROOST" screen %4
 gold 'screen %99 (no such pane)' "$ROOST" screen %99
 gold 'screen -5' "$ROOST" screen -5
+gold 'screen %0 --json (a flag after the target)' "$ROOST" screen %0 --json
 
 # --- 2. the documents -----------------------------------------------------------
 
@@ -237,6 +243,14 @@ cmp -s "$work/sc99.err" "$work/sc99_h.err"; assert_true $? "screen --json on a m
 cap scjj "$ROOST" screen --json --json %0
 assert_eq "$(rc scjj)" 1 "screen --json --json is a usage error"
 assert_eq "$(wc -c <"$work/scjj.out" | tr -d ' ')" 0 "screen --json --json prints nothing on stdout"
+assert_contains "$(cat "$work/scjj.err")" "--json may be given once, before the target" "screen --json --json says why it refused"
+cap scja "$ROOST" screen --json %0 --json
+assert_eq "$(rc scja)" 1 "screen --json TGT --json is a usage error"
+assert_contains "$(cat "$work/scja.err")" "--json goes before the target, once" "screen --json TGT --json names where the flag goes"
+cap sc7 "$ROOST" screen --json %0 007
+assert_eq "$(jv sc7 'd["lines"]')" 7 "screen --json reports a count with leading zeros as that count"
+cap scp "$ROOST" screen --json %0 +3
+assert_eq "$(jv scp 'd["lines"]')" None "screen --json reports a non-count LINES such as +3 as null"
 
 # --- 3. pathological bytes ------------------------------------------------------
 
@@ -318,6 +332,9 @@ assert_eq "$(jv nul 'd["text"]')" "xy" "a NUL given to roost reply never reaches
 
 # --- 4. the encoder, fuzzed -----------------------------------------------------
 
+# Skipped while recapturing the golden file: that runs against a pre-change
+# tree, which has no roost-jsonout.sh to source (see the note at the bottom).
+if [ -z "${ROOST_JSON_WRITE_GOLDEN:-}" ]; then
 . "$HERE/scripts/lib/roost-jsonout.sh"
 # The encoder is fuzzed from a UTF-8 locale when the machine has one, because
 # that is where bash 5 miscounts and rewrites bytes (roost_jsonout_encode's
@@ -327,6 +344,9 @@ fz_saved_lc="${LC_ALL-}"
 fz_utf8="$(locale -a 2>/dev/null | grep -i -m1 -E '^(C\.UTF-8|C\.utf8|en_US\.UTF-8|en_US\.utf8)$' || true)"
 if [ -n "$fz_utf8" ]; then
   export LC_ALL="$fz_utf8"
+elif [ -n "${CI:-}" ]; then
+  # On CI a quietly weaker fuzz is the same failure as a missing oracle.
+  assert_true 1 "CI has a UTF-8 locale for the encoder fuzz (locale -a found none)"
 else
   printf '  NOTE: no UTF-8 locale on this machine; the encoder fuzz runs in the current locale\n'
 fi
@@ -410,6 +430,7 @@ for bad in '9:abcx' 'ab:x' '3:abc2x' '2:a'; do
   if [ "$fz_rc" -ne 0 ] && [ "$fz_rc" -ne 143 ]; then fz_ok=0; else fz_ok=1; fi
   assert_true "$fz_ok" "a malformed frame ('$bad') makes the encoder exit non-zero promptly (rc $fz_rc)"
 done
+fi
 
 # --- state ----------------------------------------------------------------------
 
@@ -441,9 +462,15 @@ assert_eq "$(rc so)" 0 "state --json outside a roost pane exits 0, as the silent
 # --- the golden comparison ------------------------------------------------------
 
 # ROOST_JSON_WRITE_GOLDEN=1 rewrites the fixture instead of comparing. Use it
-# ONLY on a commit whose human output is known to be right -- the fixture was
-# first written from the commit before --json existed -- and never to make a
+# ONLY on a tree whose human output is known to be right, and never to make a
 # change to human output pass. A regenerated fixture is a reviewed diff.
+#
+# The fixture is captured from the commit BEFORE --json existed: export that
+# commit to a scratch directory (`git archive`), copy this file and
+# tests/fixtures/ into it, and run it there with ROOST_JSON_WRITE_GOLDEN=1. The
+# JSON assertions FAIL in that tree, which is expected -- the command it has
+# never heard of --json -- and section 4 is skipped because the library is not
+# there. Copy the fixture back and review the diff.
 if [ -n "${ROOST_JSON_WRITE_GOLDEN:-}" ]; then
   cp "$work/human.txt" "$GOLDEN"
   printf '  NOTE: wrote %s\n' "tests/fixtures/json-human-output.txt"

@@ -230,7 +230,7 @@ A repeated flag keeps today's refusal. The after-the-target sweep is unchanged.
 | field | type | meaning |
 |---|---|---|
 | `target` | string | the target exactly as the caller typed it |
-| `pane` | string | the `%N` it resolved to (`display-message -p '#{pane_id}'`) |
+| `pane` | string \| null | the `%N` it resolved to (`display-message -p '#{pane_id}'`); `null` only if the pane vanished between the read and this lookup |
 | `source` | `"reply"` \| `"screen"` | what `text` is: the recorded reply, or the screen fallback |
 | `state` | string \| null | `@agent_state`, read the same moment the human path reads it (after the #38 unblock check) |
 | `stale` | bool | `source` is `reply` and `state` is `working`, `blocked` or `error` — exactly when the human mode prints "this reply is from its previous turn". Always `false` for `screen` |
@@ -257,7 +257,7 @@ dash word. `--json` becomes the one flag it accepts there, once.
 | field | type | meaning |
 |---|---|---|
 | `target`, `pane` | string | as for `read` |
-| `lines` | integer | the `LINES` asked for (default 40). A negative count is accepted today (`tail -n -3`) and is reported as its absolute value |
+| `lines` | integer \| null | the `LINES` asked for (default 40). A negative count (`tail -n -3`) is reported as its absolute value and leading zeros are dropped (`007` → 7); any other spelling tail accepts, such as `+3`, is `null` |
 | `text`, `lossy` | | as for `read`. *Measured:* `capture-pane` already turns invalid UTF-8 into U+FFFD, so `lossy` is normally `false` here; it stays for symmetry |
 
 ### `roost state STATE --json` — echo after write **[chosen]**

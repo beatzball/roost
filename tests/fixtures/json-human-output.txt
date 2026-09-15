@@ -121,6 +121,38 @@ rc=1
 roost read: unknown flag '--bogus'.
 usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]
 
+=== read -r -r %0 (repeated flag)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 146 bytes
+roost read: '-r' is not valid here — --render/-r may be given once, before the target.
+usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]
+
+=== read --render --bogus %0
+rc=1
+--- stdout 0 bytes
+
+--- stderr 151 bytes
+roost read: '--bogus' is not valid here — --render/-r may be given once, before the target.
+usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]
+
+=== read -r -5 %0 (a count before the target)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 146 bytes
+roost read: '-5' is not valid here — --render/-r may be given once, before the target.
+usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]
+
+=== read %0 --json (a flag after the target)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 129 bytes
+roost read: '--json' looks like a flag, and flags go BEFORE the target.
+usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]
+
 === screen %0 3
 rc=0
 --- stdout 32 bytes
@@ -156,6 +188,14 @@ rc=1
 
 --- stderr 113 bytes
 roost screen: '-5' is not a target — roost screen takes no flags.
+usage: roost screen [SESSION:]WINDOW [LINES]
+
+=== screen %0 --json (a flag after the target)
+rc=1
+--- stdout 0 bytes
+
+--- stderr 114 bytes
+roost screen: '--json' is not valid — roost screen takes no flags.
 usage: roost screen [SESSION:]WINDOW [LINES]
 
 === state working in %2
