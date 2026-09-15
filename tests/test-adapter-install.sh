@@ -593,7 +593,7 @@ after="$(cat "$cset")"
 assert_contains "$after" "keep-me" "claude merge: an unrelated top-level key survives"
 assert_contains "$after" "echo unrelated-hook" "claude merge: an unrelated hook survives"
 if command -v python3 >/dev/null 2>&1; then
-  for ev in UserPromptSubmit Notification PostToolUse Stop; do
+  for ev in UserPromptSubmit Notification PostToolUse Stop StopFailure; do
     assert_eq "$(claude_event "$cset" "$ev")" "$(claude_want "$ev")" \
       "claude merge: the $ev entry is roost-hooks.sh's own, structure for structure"
   done
@@ -634,6 +634,32 @@ assert_contains "$out" "Already correct: opencode, claude" \
   "claude re-run: claude is named as already correct"
 case "$out" in *"merge  $cset"*) s=planned ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "claude re-run: no write is even PLANNED for it"
+
+# --- wired before StopFailure existed -> the one new hook is added (#55) ----
+# Every machine wired before #55 has roost's other hooks exactly right and no
+# StopFailure entry, so a failed Claude turn stays ⏳ working there. Re-running
+# the installer is the documented fix, so it must see the missing event as a
+# write, add it, and leave the rest as they were.
+if command -v python3 >/dev/null 2>&1; then
+  box="$TMP/claudepre55"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  ( . "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "$HERE/scripts/roost-agent-state" ) \
+    | python3 -c 'import json,sys
+d=json.load(sys.stdin); del d["hooks"]["StopFailure"]; print(json.dumps(d, indent=2))' > "$cset"
+  out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude wired before StopFailure: exits 0"
+  case "$out" in *"Already correct: opencode, claude"*) s=skipped ;; *) s=planned ;; esac
+  assert_eq "$s" "planned" "claude wired before StopFailure: is not reported as already correct"
+  assert_eq "$(claude_event "$cset" StopFailure)" "$(claude_want StopFailure)" \
+    "claude wired before StopFailure: the StopFailure entry is added"
+  for ev in SessionStart UserPromptSubmit Notification PostToolUse Stop; do
+    assert_eq "$(claude_event "$cset" "$ev")" "$(claude_want "$ev")" \
+      "claude wired before StopFailure: the $ev entry is still roost's own"
+  done
+  case "$out" in *"kept the"*|*"replaced 1"*) s=claimed ;; *) s=quiet ;; esac
+  assert_eq "$s" "quiet" "claude wired before StopFailure: claims to have kept or replaced nothing"
+fi
 
 # --- already wired, but the file is indented some other way ----------------
 # The distinction the case above cannot draw. roost_json_merge compares the

@@ -51,6 +51,13 @@ assert_eq "$claude_out" "$bare_out" \
 # not hash its hooks, and `roost install` recognises the older command as
 # roost's own and replaces it (tests/test-adapter-install.sh, the customised
 # Notification entry).
+#
+# One deliberate edit for #55, claude only: a SIXTH event, StopFailure, appended
+# after Stop, plus one paragraph of prose and "the other four" becoming "the
+# other five". Checked against bin/roost's output by this very comparison, not
+# typed blind. The five existing objects are untouched, and `roost install`
+# adds the new one to a settings.json that has only those five
+# (tests/test-adapter-install.sh, "wired before StopFailure existed").
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"

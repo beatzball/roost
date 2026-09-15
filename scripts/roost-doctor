@@ -125,6 +125,15 @@ case "$(_settings_state "$settings")" in
       # negative costs the feature.
       grep -q roost-session-context "$settings" 2>/dev/null \
         || warn "$settings has no SessionStart hook — agents will not be told they are inside roost; re-run: roost hooks, or run: roost install"
+      # Same shape again, for the StopFailure hook (#55). A config wired before
+      # it existed badges every healthy turn correctly, so nothing looks wrong
+      # until a turn fails on a rate limit or an overload — and then the pane
+      # reads ⏳ working on an agent that has stopped, `wait-done` waits out its
+      # whole timeout, and nobody connects that to a hook that is not there.
+      # `roost install` adds the missing entry and leaves the rest alone
+      # (tests/test-adapter-install.sh), so the tail names it.
+      grep -q -- --stop-failure-hook "$settings" 2>/dev/null \
+        || warn "$settings has no StopFailure hook — a Claude turn that ends on an API error (a rate limit, an overload) stays ⏳ working instead of 💥 error; re-run: roost hooks, or run: roost install"
     fi
     ;;
   unreadable) warn "$settings exists but is not readable — could not check whether Claude hooks are wired" ;;
