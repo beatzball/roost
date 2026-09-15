@@ -1,0 +1,91 @@
+#!/bin/sh
+# roost's claude shim (#58) — adds roost's hook settings to a claude started
+# inside a roost pane, and does nothing anywhere else.
+#
+# How it gets in front of the real claude: roost-pane-shell puts this
+# directory first on PATH when a roost pane's shell starts, and `roost spawn` /
+# `roost split` do the same for the command they run. The server's global PATH
+# cannot do it: tmux gives a client-created pane the CLIENT's PATH and ignores
+# the server's, `-e PATH=` included (design M1,
+# docs/airig/specs/2026-09-15-roost-owned-settings-design.md).
+#
+# What it adds is ONE argument pair, `--settings <file>`, and that file holds
+# nothing but `hooks` — the same six entries `roost install` writes, byte for
+# byte. `--settings` overrides only the keys it sets, so every other user
+# setting still applies; and Claude runs an identical hook command once when it
+# appears in two sources, so a machine that already ran `roost install` does
+# not fire each hook twice (design M4, M4b).
+#
+# POSIX sh, not bash: this runs on every `claude` a human types inside roost,
+# on whatever /bin/sh the machine has.
+#
+# Ways out, cheapest first, all of which exec the real claude with the argv
+# exactly as given:
+#   - not inside a roost server
+#   - ROOST_NO_SHIM set to anything non-empty (per run, per shell, per session)
+#   - @roost-wiring-enabled off on this server (roost wiring off)
+#   - no settings file (roost wiring remove)
+
+# --- the real claude --------------------------------------------------------
+# The first `claude` on PATH that is not in a directory marked as a roost shim
+# directory. Skipping by MARKER rather than by comparing against this script's
+# own directory means two checkouts' shim directories on one PATH still find
+# the real binary rather than each other, and costs no fork per entry.
+#
+# `set -f` because an unquoted $PATH is split on IFS and then globbed; a PATH
+# entry containing `*` would otherwise expand. Both are restored before exec,
+# though exec does not care: they are shell state, not environment.
+real=""
+set -f
+_ifs=$IFS
+IFS=:
+for d in $PATH; do
+  # An empty entry means the current directory to a POSIX shell. Following it
+  # would make the real claude whatever file named claude sits in the cwd,
+  # which is not a lookup a human expects from typing `claude`.
+  case "$d" in '' | .) continue ;; esac
+  [ -f "$d/.roost-shim" ] && continue
+  if [ -f "$d/claude" ] && [ -x "$d/claude" ]; then
+    real="$d/claude"
+    break
+  fi
+done
+IFS=$_ifs
+set +f
+
+if [ -z "$real" ]; then
+  echo "roost: no claude found on PATH after roost's shim" >&2
+  exit 127
+fi
+
+# --- is this roost? ---------------------------------------------------------
+# The same rule scripts/lib/roost-socket.sh applies for the hooks: the socket
+# path in $TMUX ends in /roost. Anything else — no tmux, the user's ordinary
+# tmux, a test server under another name — gets the real claude untouched,
+# because roost's hooks would do nothing there anyway.
+sock=${TMUX%%,*}
+case "$sock" in
+  */roost) : ;;
+  *) exec "$real" "$@" ;;
+esac
+
+# Non-EMPTY, not merely set, the same distinction ROOST_NO_EXT draws: an
+# `export ROOST_NO_SHIM=` in a profile, or a launcher that exports every name
+# it knows whether or not it has a value, is not a request to turn anything
+# off. No fork: this is the per-run route and it should cost nothing.
+[ -z "${ROOST_NO_SHIM:-}" ] || exec "$real" "$@"
+
+# The server switch, asked live so it covers panes that already exist. Read
+# through ROOST_TMUX, the absolute path `roost wiring apply` exported into the
+# server's global environment, because a pane's PATH need not contain tmux at
+# all (design M3, last row). If the switch cannot be read, wiring stays on —
+# `roost doctor` reports that state, and a silent loss of every badge would be
+# the worse surprise.
+if [ "$("${ROOST_TMUX:-tmux}" -S "$sock" show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
+  exec "$real" "$@"
+fi
+
+settings="${ROOST_WIRING_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/roost/wiring}/claude/settings.json"
+[ -f "$settings" ] || exec "$real" "$@"
+
+exec "$real" --settings "$settings" "$@"

@@ -34,6 +34,26 @@ and a pane still does not badge, check, in order:
 4. For codex, `~/.codex/hooks.json` is written **and** you have answered *"Trust all and continue"* at codex's own `Hooks need review` prompt. That answer is one of the two steps `roost install` cannot do for you.
 5. For any other agent, it must call `roost state <state>` itself.
 
+## claude inside roost does not use roost's wiring
+
+`roost doctor`, run in the pane, names the state:
+
+- **`! claude in this pane resolves to …, not roost's shim`.** Something put
+  another `claude` first: an alias to a full path, a `default-command` in your
+  own `roost.conf`, or your shell's startup files. The pane still badges if you
+  ran `roost install`.
+- **`· ROOST_NO_SHIM is set here`**, **`· wiring is off for this roost server`**
+  or **`· wiring is removed`.** You, or a script, turned it off. `roost wiring
+  on` turns it back on; for `ROOST_NO_SHIM`, unset it.
+- **`! ROOST_TMUX is not set to a tmux binary`.** The server was started by an
+  older roost. Restart the roost server. Until then `roost wiring off` cannot
+  reach a claude in an existing pane.
+- **`! the global Claude hooks name a different checkout`.** Every Claude hook
+  runs twice. Run `roost install` from the checkout this server runs, or turn
+  roost's wiring off.
+
+To run claude once with only your own settings: `ROOST_NO_SHIM=1 claude`.
+
 ## A copilot pane never badges, and copilot says nothing
 
 Two gates stand in front of the copilot extension, and **neither one tells you when it is not met** — the turn runs normally and the pane just stays blank. `roost doctor` checks the first; the second it can only remind you about.

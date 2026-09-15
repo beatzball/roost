@@ -730,7 +730,70 @@ one used now.
   window reads as having no busy agent and exits 0. A `%N` target on that same
   pane exits 2.
 
+### Roost's own wiring reaches claude and opencode only (#58)
+
+**A live risk, low.** Phase 1 of #58 wires claude (a PATH shim, reached through
+tmux `default-command`) and opencode (`OPENCODE_CONFIG_DIR`) in roost panes.
+The design is `docs/airig/specs/2026-09-15-roost-owned-settings-design.md`;
+its "Measured" section has the evidence for everything below.
+
+What stays on `roost install`, and why:
+
+- **codex.** `-c` can supply hooks, but codex ignores trust passed through `-c`,
+  so trust still has to be written into `~/.codex/config.toml` by codex's own
+  prompt. In a login zsh on the measured machine, Homebrew's codex also comes
+  before a shim on PATH.
+- **pi and copilot.** No variable adds an extension without also moving auth
+  and sessions (`PI_CODING_AGENT_DIR`, `COPILOT_HOME`); `-e` and
+  `--plugin-dir` are flags only. A shim loses to nvm (pi) and Homebrew
+  (copilot) in zsh on the measured machine.
+
+Holes in what did ship:
+
+- **The shim is bypassed** by an alias to claude's full path, by a
+  `default-command` in the user's own `roost.conf` (roost keeps it rather than
+  replace it), and by startup files that put claude's directory ahead of
+  roost's. The pane then badges only through `roost install`. `roost doctor` run
+  in the pane names the path that won. The PATH positions were measured on one
+  machine's zsh and bash startup files; **fish was not measured**.
+- **A server started by an older roost has no `ROOST_TMUX`.** The shim cannot
+  then read `@roost-wiring-enabled`, and `roost wiring off` does not reach a
+  claude started in a pane that already existed. It fails toward "on". Doctor
+  warns; a server restart fixes it.
+- **Two routes for two checkouts run every Claude hook twice.** Identical
+  commands run once (measured with real user settings); a global install
+  pointing at a different checkout is not identical. Doctor warns.
+- **The opencode load guard is keyed on opencode's plugin input.** Measured:
+  opencode loads the plugin twice when it is in both the user's plugin
+  directory and roost's; the guard keeps the second load from registering
+  hooks. The guard assumes both loads get the same `client` object or input
+  object. Measured live on opencode 1.18.30 with a recording `roost` on PATH:
+  roost's copy alone made 2 `roost state` calls in one turn, the guarded plugin
+  in both directories made 2, and an unguarded copy in both made 4. A future
+  opencode that builds a fresh input per plugin would bring the double report
+  back, and nothing would say so.
+- **`roost wiring off -t SESSION` affects new panes only.** A pane that already
+  exists keeps the environment its shell started with; use
+  `export ROOST_NO_SHIM=1` there. Not measured for opencode's
+  `set-environment -r` path.
+- **A `claude` an agent starts inside its own pane is wired too**, exactly as
+  the global install already wires it, and badges the same pane. #64 decides
+  how a child agent in one pane is treated.
+
 ## Behaviour changes
+
+### Claude and opencode in a roost pane are wired without `roost install` (#58)
+
+**A note, not a defect.** A roost server wires the claude and opencode started
+in its panes, whoever starts them, from files under `~/.config/roost/wiring/`.
+Nothing is written to the user's own config. Every back-out route is on the
+site's Setup page (`site/content/docs/setup.md`): `ROOST_NO_SHIM=1`, `roost wiring off [-t SESSION]`,
+`@roost-wiring-enabled off`, and `roost wiring remove`.
+
+Two visible differences in a pane: `default-command` is set to
+`scripts/roost-pane-shell` (the pane still starts the user's login shell), and
+`roost spawn`/`roost split` run their command through that script. Test
+servers whose socket is not named `roost` are never wired.
 
 ### A moved or re-cloned checkout still needs codex wired by hand
 

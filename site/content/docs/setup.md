@@ -14,6 +14,50 @@ roost init     # pick theme, glyph set, separator style; print the Claude hooks
 
 `roost init` writes `~/.config/roost/roost.conf` and is safe to re-run (it backs up the previous file). Reload a running roost with `prefix + r`.
 
+## Roost's own wiring, and backing out of it
+
+When a roost server starts, roost wires the agents you start **inside** its
+panes: a `claude` you type by hand, one `roost spawn` starts, and one another
+agent starts. It does this without editing your own config files.
+
+- **claude** runs through a small roost shim that adds one flag:
+  `--settings ~/.config/roost/wiring/claude/settings.json`. That file holds only
+  roost's hooks. Your own settings — model, permissions, env, plugins, your own
+  hooks — all still apply.
+- **opencode** gets `OPENCODE_CONFIG_DIR=~/.config/roost/wiring/opencode`,
+  which opencode merges with your own configuration.
+- **codex, pi and copilot** still badge only through `roost install`. See
+  [State Badges](/docs/state-badges).
+
+Outside roost, nothing changes. If you already ran `roost install`, nothing
+runs twice: the hooks in both places are the same commands, and Claude runs a
+command once.
+
+You can back out at every level:
+
+| to run without roost's wiring | do this |
+|---|---|
+| one `claude` | `ROOST_NO_SHIM=1 claude` |
+| everything started from one shell | `export ROOST_NO_SHIM=1` |
+| new panes in one roost session | `roost wiring off -t SESSION` (undo: `roost wiring on -t SESSION`) |
+| this roost server, until it stops | `roost wiring off` (undo: `roost wiring on`) |
+| every roost server, from the start | `set -g @roost-wiring-enabled off` in `~/.config/roost/roost.conf` |
+| all of it, files included | `roost wiring remove` (undo: `roost wiring on`) |
+
+`ROOST_NO_SHIM` must have a value: `ROOST_NO_SHIM=` with nothing after it is not
+a request to back out. For one opencode run, use
+`env -u OPENCODE_CONFIG_DIR opencode`. You can also run `claude` by its full
+path, which never goes through the shim.
+
+`roost wiring remove` deletes `~/.config/roost/wiring/` and leaves a
+`~/.config/roost/wiring.off` marker, so the next server start does not wire
+anything. After a restart, roost behaves as it did before wiring existed.
+`roost wiring on` removes the marker again. None of these commands edit your
+`roost.conf`, `~/.claude` or `~/.config/opencode`.
+
+A `default-command` you set in your own `roost.conf` is kept, and then new
+panes do not get the shim. `roost doctor` tells you which state you are in.
+
 ## Themes
 
 `roost`, `catppuccin-mocha`, `catppuccin-latte`, `tokyonight-storm`, `tokyonight-day`, `gruvbox`, `nord`, `rose-pine`.
