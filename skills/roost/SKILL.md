@@ -284,7 +284,12 @@ instead of your answer.
 3. `roost send TARGET "[from <you>] <task>"`.
 4. `roost wait-done TARGET [timeout]` — pane-precise on a `%N`, aggregates
    the window's agent panes otherwise. Exits 0 when done; exits 1 on error
-   or timeout — check the message to know which.
+   or timeout — check the message to know which; exits 2 when the agent
+   died (its pane closed or its process exited mid-turn) or the target was
+   already gone — re-resolve or respawn rather than waiting again. An
+   already-gone target may have finished first: roost cannot tell. An agent
+   you started from a shell prompt inside a pane is not caught when it dies;
+   that still times out with exit 1.
 5. `roost read TARGET` — collect the result. If it warns that it fell back to
    the screen, you did **not** get a reply; report that rather than guessing at
    what came back.

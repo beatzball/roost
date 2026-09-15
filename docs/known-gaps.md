@@ -598,6 +598,60 @@ one was noticed. The fix here is to read with `IFS=` unset over `read -d` — or
 to stop emitting an empty interior field — and it belongs in a branch that owns
 `roost-install`.
 
+### `wait-done` sees a dead agent only through tmux facts, and three cases slip past
+
+**Fixed by #54 for the common case.** `roost wait-done` reads two tmux facts on
+every poll, beside `@agent_state`: whether the pane still exists (from
+`list-panes`), and `#{pane_dead}`. An agent pane that closes, or whose process
+exits, while its badge reads `working` or `blocked` now exits **2** with a
+`died` message naming the pane. A target already gone when the wait starts
+also exits 2, with `is gone`. A window target gives the same answer.
+
+**What was measured** (tmux 3.6, throwaway `-S` servers, a stand-in agent and
+Claude Code 2.1.272 killed mid-turn; SIGTERM and SIGKILL behaved the same):
+
+| how the agent died | pane after | `pane_dead` | badge | before #54 |
+|---|---|---|---|---|
+| launched as the pane's command (`roost spawn NAME CMD`), killed | gone | — | — | **exit 0 at once** |
+| `kill-pane` / `kill-window` | gone | — | — | **exit 0 at once** |
+| `remain-on-exit on`, killed or exited | stays | 1 | `working` | whole timeout, exit 1 |
+| launched from a shell prompt in the pane, killed | stays, at the prompt | **0** | `working` | whole timeout, exit 1 |
+
+The first two were worse than a hang: `display-message -p -t %GONE` exits 0
+with every format empty, so a vanished pane read as "no badge", which read as
+done. `list-panes` exits non-zero on a missing target, which is why it is the
+one used now.
+
+**What is still not covered, most serious first.**
+
+- **An agent killed inside a shell is not detected.** The pane stays alive at a
+  prompt, `pane_dead` stays 0, and nothing rewrites the badge — Claude fires no
+  hook on SIGTERM either. The only tmux fact that changes is
+  `#{pane_current_command}` (Claude's reads `2.1.272`, then `bash`), which is a
+  process NAME: comparing it to a shell would call a working agent dead whenever
+  its own process is a shell, a wrapper script or `bash -c`. So `wait-done` still
+  waits its timeout and exits 1. An honest fix needs the hook to record the
+  agent's identity when it stamps `working`; that is its own issue.
+- **A one-shot agent that finishes and closes inside one poll reads as died.**
+  `claude -p` in a `roost spawn` window closed its pane 531 ms, 1297 ms and
+  1348 ms after its badge read done (three runs). `wait-done` exits 0 for a pane
+  it saw `done` before it closed, and polls every quarter second rather than
+  every second so it lands in that gap. A gap under 250 ms would still be
+  reported as died. Not seen in a measurement, but not ruled out. In a window
+  with a `blocked` sibling the gap can be wider than a tick: once a second the
+  loop hands that sibling to the #38 unblock helper, which reads a transcript
+  tail, and a pane that turns done AND closes during that call was never seen
+  done. A pane seen done before the call is safe — the history is rebuilt from
+  that read, and a test pins it — so only the finish-and-close inside the
+  helper's own run time is misreported.
+- **`is gone` cannot tell "finished, then closed" from "died".** A pane that
+  closed before the wait started leaves no badge to read. The message says so.
+- **A window target cannot see an agent pane that closed before the wait
+  started, if another pane keeps the window open.** The window exists, the
+  closed pane is not listed, and there is no record it was ever there, so the
+  window reads as having no busy agent and exits 0. A `%N` target on that same
+  pane exits 2.
+
 ## Behaviour changes
 
 ### A moved or re-cloned checkout still needs codex wired by hand
@@ -686,6 +740,20 @@ Failing loudly is the safe direction. The unsafe direction is a wrong success,
 and `wait-done` can only refuse one if nothing upstream of it reports a failed
 turn as `done` in the first place — which is why `adapters/opencode/roost.js`
 swallows the `session.idle` that follows a `session.error`.
+
+### `roost wait-done` exits 2 on a target that is gone or died (#54)
+
+A target that does not exist, or an agent pane that closed or whose process
+exited mid-turn, used to exit **0** — a dead agent reported as finished — or,
+with `remain-on-exit`, wait out its whole timeout. It now exits **2**, the code
+`roost send` already uses for "the target is unusable". 0 and 1 keep every
+other meaning. `site/content/docs/driving-a-fleet.md` carries the exit table and
+`skills/roost/SKILL.md` the idiom.
+
+**The one flow that changes:** a script that waited on a target it had already
+closed, and read the 0 as success, now stops. That 0 was the bug. The live
+risk above, *"`wait-done` sees a dead agent only through tmux facts"*, lists
+what is still not caught.
 
 ### opencode counts retries too, and we still count our own
 
