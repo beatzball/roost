@@ -113,7 +113,7 @@ to whatever is installed on the machine now. Re-run either after installing a
 harness roost had not seen, after moving or re-cloning your checkout, or after
 a roost release that adds an adapter.
 
-It is safe to repeat. Hooks you already have are kept and roost's four join
+It is safe to repeat. Hooks you already have are kept and roost's own join
 them — a `PostToolUse` formatter of your own survives — and a second run adds
 no duplicates. Anything at an adapter path that is not roost's is left exactly
 as found and named, with the command to replace it yourself if that is what you

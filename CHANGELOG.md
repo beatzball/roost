@@ -5,6 +5,44 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.1]
+
+Two more fixes to how roost reports an agent's state. One changes an exit code,
+and one needs a step from you after you upgrade.
+
+### Upgrade steps
+
+- **Claude Code:** re-run `roost install`. It adds a `StopFailure` hook to
+  Claude's settings. Until you do, a turn that fails on an API error still
+  shows ⏳ working, and `roost doctor` says so. Claude hooks need no trust prompt.
+
+### Changed
+
+- **`roost wait-done` exits 2 when its target is gone or its agent died** (#54).
+  Before, a pane or window that no longer existed made it exit **0**, so a dead
+  helper looked finished. A script that treats any 0 as "finished" will now see
+  2 for a dead helper. Exit 0 and 1 keep their meanings: done, and error or
+  timeout. A pane seen ✅ done during the wait that then closes is still 0.
+
+### Fixed
+
+- **A Claude Code turn that fails on an API error now shows 💥 error, not ⏳
+  working forever** (#55). This covers a rate limit, a server error, an unknown
+  model and an unreachable API. `roost wait-done` exits 1 and names the kind of
+  error, and `roost read` prints it.
+- **`roost wait-done` no longer misses a one-shot agent's ✅ done.** It now
+  checks every quarter second, because a one-shot pane can close about half a
+  second after it finishes (#54).
+
+### Known limits
+
+- An agent killed **inside a shell** in its pane still makes `wait-done` time
+  out with exit 1. The pane stays alive, so tmux cannot see the death. Tracked
+  as a follow-up issue.
+- Pressing Esc while Claude is still writing a reply leaves ⏳ working. Claude
+  fires no hook for it.
+- The full list is in `docs/known-gaps.md`.
+
 ## [0.2.0]
 
 Two fixes to how roost reports an agent's state. Both change behaviour, and

@@ -14,8 +14,14 @@
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — `roost
 # read` just falls back to scraping the pane's screen, and tells you it did.
+# StopFailure is what ends a turn that FAILED — a rate limit, an overload, a
+# model that does not exist. Claude fires it instead of Stop and nothing after
+# it, so without it the badge stays working on an agent that has stopped. It
+# badges error, and --stop-failure-hook records which kind of API error for
+# `roost wait-done` and `read` to print. It has no matcher on purpose: every
+# kind Claude reports is a turn that did not finish.
 #
-# SessionStart is the odd one out: the other four report state OUTWARD, and it
+# SessionStart is the odd one out: the other five report state OUTWARD, and it
 # is the only one that feeds context IN. It tells the agent it is inside roost
 # and gives it its own pane id, so it reaches for `roost split` rather than a
 # bare `tmux split-window` that would target the user's ordinary tmux server.
@@ -47,6 +53,9 @@
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state done --stop-hook" } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state error --stop-failure-hook" } ] }
     ]
   }
 }

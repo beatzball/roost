@@ -124,7 +124,7 @@ run_case() {
   assert_true $? "[$tool] second merge is byte-identical (idempotent)"
   assert_file_absent "$d"/settings.json.roost-bak-* "[$tool] idempotent re-merge makes no backup"
 
-  # -- APPEND, never replace: a user's own entry in one of roost's own four
+  # -- APPEND, never replace: a user's own entry in one of roost's own
   #    events survives, matcher and all --
   #
   # This was a real defect, not a hypothetical: `hooks[event] = patch[event]`

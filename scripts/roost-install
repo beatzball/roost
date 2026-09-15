@@ -661,7 +661,7 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
         json_probe_mode=hooks
         json_want="$CLAUDE_TARGET"
         json_patch="$(roost_hooks_claude "$CLAUDE_TARGET")"
-        json_label="roost's four Claude hooks" ;;
+        json_label="roost's Claude hooks" ;;
       codex)
         json_probe_mode=hooks
         json_want="$CODEX_TARGET"

@@ -49,6 +49,12 @@ stop_hook=0
 # stdin nobody closes would hang the agent.
 notification_hook=0
 [ "${2:-}" = "--notification-hook" ] && notification_hook=1
+# Only Claude Code's StopFailure hook passes this, with `error`, and it means
+# "stdin is that hook's payload" (#55). A flag for the same reason as the two
+# above: `roost state error` is typed by humans and passed by codex's adapter,
+# and neither must ever wait on a stdin nobody closes.
+stop_failure_hook=0
+[ "${2:-}" = "--stop-failure-hook" ] && stop_failure_hook=1
 
 # Must be inside tmux, in a known pane.
 [ -n "${TMUX:-}" ] || exit 0
@@ -72,6 +78,11 @@ sock="$ROOST_SELF_SOCK"
 
 # Normalise: anything unrecognised is idle.
 case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
+
+# Why a pane is error, for `roost wait-done` and `read`. Only an adapter sets
+# it — see the write below — and the StopFailure branch further down replaces
+# it with a sentence of its own.
+error_reason="${ROOST_ERROR_REASON:-}"
 
 # Record the turn's reply, for `roost read`.
 #
@@ -174,6 +185,83 @@ elif [ "$stop_hook" = 1 ] && [ "$state" = "idle" ] && [ ! -t 0 ]; then
   # one, so it is the previous turn's. Cleared for the same reasons as the error
   # arm above. Only adapters/codex/roost-codex-hook passes `idle --stop-hook`,
   # on codex's Interrupt event (#38).
+  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
+elif [ "$stop_failure_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
+  # Claude Code's StopFailure: the turn ended on an API error — a rate limit,
+  # an overload, a model that does not exist (#55). Claude fires it INSTEAD of
+  # Stop and nothing follows it, so before this hook was wired the pane kept
+  # UserPromptSubmit's `working` forever while Claude sat idle under an error
+  # banner. Measured on 2.1.272 with a logger on all 33 events: seven failures
+  # triggered on demand each fired exactly one StopFailure, and pressing Esc
+  # while the model was streaming fired none.
+  #
+  # Unlike codex's 💥 this is a REPORT, not an inference: Claude says the turn
+  # failed, and says what kind. The payload's `error` is one word out of a
+  # fixed list in Claude's source (rate_limit, overloaded, server_error,
+  # model_not_found, ... unknown), and it is the only thing taken from it.
+  #
+  # Three rules, each for a reason:
+  #
+  #  1. A payload that names an `agent_id` belongs to a SUBAGENT's loop.
+  #     Claude's source adds that field only there, and a subagent's API error
+  #     comes back to the main turn as a failed tool call — the main turn goes
+  #     on. So this call changes nothing at all, not even the reply, and
+  #     exits. Read from the source; not measured live.
+  #  2. The kind goes into @roost-error-reason only if it is lowercase letters
+  #     and underscores, 40 at most. Anything else, or a payload no reader can
+  #     parse, is "unknown". The reason is printed by `wait-done` and `read`,
+  #     and text copied out of a payload is not something roost prints as its
+  #     own words. The READER checks the whole string first, because the shell
+  #     cannot: `$(...)` strips trailing newlines and bash drops NUL bytes, so
+  #     "rate_limit\n" and "x<NUL>y" would reach the case below already
+  #     cleaned into "rate_limit" and "xy" (found by review, reproduced). The
+  #     case below stays as a second check. Its letters are spelled out rather
+  #     than written a-z: bash 3.2 matches a range by the locale's collation,
+  #     where a-z can include capitals.
+  #  3. It still badges error when the payload cannot be read. StopFailure is
+  #     itself the report, so a machine with no python3 and no jq loses only
+  #     the kind and the subagent check, not the badge.
+  #
+  # The previous turn's reply is cleared, for the reason the error arm above
+  # gives. last_assistant_message is NOT recorded in its place: on a
+  # StopFailure it is Claude's error banner, not an answer.
+  payload="$(cat 2>/dev/null || true)"
+  kind=""
+  if command -v python3 >/dev/null 2>&1; then
+    kind="$(printf '%s' "$payload" | python3 -c '
+import sys, json, re
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+a = d.get("agent_id")
+if isinstance(a, str) and a:
+    sys.stdout.write("subagent")
+    sys.exit(0)
+e = d.get("error")
+ok = isinstance(e, str) and re.fullmatch(r"[a-z_]{1,40}", e)
+sys.stdout.write("kind:" + (e if ok else ""))' 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    # \A and \z, not ^ and $: in jq's regex engine $ also matches before a
+    # trailing newline, which is the very case this check exists for.
+    kind="$(printf '%s' "$payload" | jq -r 'if type == "object" then
+        (if (.agent_id | type) == "string" and .agent_id != "" then "subagent"
+         else "kind:" + (if (.error | type) == "string" and (.error | test("\\A[a-z_]{1,40}\\z"))
+                         then .error else "" end) end)
+      else "" end' 2>/dev/null || true)"
+  fi
+  case "$kind" in
+    subagent) exit 0 ;;
+    kind:*) kind="${kind#kind:}" ;;
+    *) kind="" ;;
+  esac
+  case "$kind" in
+    ''|*[!abcdefghijklmnopqrstuvwxyz_]*) kind="unknown" ;;
+  esac
+  [ "${#kind}" -le 40 ] || kind="unknown"
+  error_reason="Claude ended the turn on an API error ($kind)"
   tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
 fi
 
@@ -282,10 +370,12 @@ fi
 # it, and the reason it leaves describes the turn that is still showing.
 #
 # ROOST_ERROR_REASON is set only by adapters/codex/roost-codex-hook, as a fixed
-# sentence. Like @agent_state it needs no trailing-semicolon escape; a caller
+# sentence. The StopFailure branch above sets $error_reason itself, to a fixed
+# sentence carrying one checked word. Like @agent_state neither needs the
+# trailing-semicolon escape: the StopFailure sentence ends in `)`, and a caller
 # who exported one ending in `;` would lose that character, not the write.
-if [ "$state" = "error" ] && [ -n "${ROOST_ERROR_REASON:-}" ]; then
-  tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-error-reason "$ROOST_ERROR_REASON" 2>/dev/null || true
+if [ "$state" = "error" ] && [ -n "$error_reason" ]; then
+  tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-error-reason "$error_reason" 2>/dev/null || true
 elif [ "$prev" = "error" ]; then
   tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-error-reason 2>/dev/null || true
 fi
