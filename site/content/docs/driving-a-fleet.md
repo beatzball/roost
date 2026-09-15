@@ -261,9 +261,10 @@ done
 
 An agent you typed at a shell prompt in the pane is caught too: when its hook marks it busy, roost notes which job holds the pane's terminal, and `wait-done` reports `died` once that job is gone and the shell has the terminal back.
 
-Two limits:
+Three limits:
 
 - **`is gone` cannot tell "finished, then closed" from "died".** A pane that is already gone has no badge left to read. If a one-shot agent may have closed before you started waiting, check its result another way.
+- **A Claude killed in the middle of a reply is detected only after about five minutes.** While it replies, Claude runs a helper (`caffeinate`) that outlives it for up to 300 seconds, and `wait-done` waits until no process the agent started is left. A shorter timeout exits 1. A Claude killed between replies is caught at once.
 - **An agent under a wrapper that keeps running is not detected.** If a script starts the agent without `exec` and keeps running after the agent dies, the script still holds the terminal, so `wait-done` waits for its timeout and exits 1. Run the agent directly, or end the script when the agent ends.
 
 A target that was gone used to exit `0`. If a script relied on that, it now sees `2`. A `set -e` script stops on a dead agent rather than continuing.

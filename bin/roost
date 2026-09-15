@@ -1501,7 +1501,11 @@ JSON
     #      live wrapper, a child the agent restarted as, or a background process
     #      it left in its job all keep this true, so none of them reads as died.
     #      (A wrapper that outlives its agent is therefore missed, and times
-    #      out: docs/known-gaps.md.) A pgid that has been reused can only make a
+    #      out: docs/known-gaps.md. So, for up to about 300 s, is a Claude killed
+    #      mid-reply: it runs `caffeinate -i -t 300` inside its own job, and
+    #      that helper outlives it — measured 305 s. Kept on purpose: "the
+    #      leader is gone" would answer at once but calls an agent that restarts
+    #      itself as a child died.) A pgid that has been reused can only make a
     #      dead job look alive, never a live one look dead.
     #   2. the pane's shell holds the terminal again (its tpgid is PANE_PID). If
     #      another job holds it, that may be a new agent typed at the same

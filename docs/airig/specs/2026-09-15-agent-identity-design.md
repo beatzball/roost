@@ -59,8 +59,11 @@ Other facts from the same runs:
   Codex runs a hook in its own process group but on the pane's terminal. The
   plugins' children share the agent's process group. So the hook's own process
   group is not the identity; the terminal's foreground job is.
-- Claude starts `caffeinate` inside its own process group. It exited on its
-  own when Claude was killed, so it did not keep the job alive.
+- Claude starts `caffeinate` inside its own process group. **Corrected while
+  building:** the design runs killed an *idle* Claude, when no `caffeinate` was
+  running. Killed in the middle of a reply, Claude 2.1.272 and 2.1.273 left
+  `caffeinate -i -t 300` alive in the job for up to 305 s — see section 8. The
+  human chose to keep the strict rule anyway.
 - After `SIGKILL` of the agent, in all five: the job had no process left, the
   terminal's foreground job returned to the pane's shell (`tpgid` =
   `pane_pid`), `pane_dead` stayed 0 and `pane_current_command` became `bash`.
@@ -255,7 +258,20 @@ changes `wait-done`'s argument parsing and both touch the same branch of
 6. `docs/known-gaps.md`: remove the "killed inside a shell" gap, and add the
    case in section 8 and the no-record cases in section 3.4.
 
-## 8. The one case this misses: a wrapper that outlives its agent
+## 8. What this misses
+
+### 8.1 A Claude killed in the middle of a reply (found while building)
+
+Mid-reply, Claude runs `caffeinate -i -t 300` in its own job. After Claude is
+killed, the shell has the terminal back within 0.08 s, but the job has a live
+process until the helper exits: 305.23 s on Claude 2.1.273, and still alive at
+76 s on 2.1.272, where `wait-done %0 60` timed out with exit 1. A `wait-done`
+with a shorter timeout therefore exits 1, as before #64. Kept on purpose: the
+human chose the strict rule over "the job's first process is gone", which would
+catch this at once but would call an agent that restarts itself as a child
+died. The evidence for revisiting that is recorded for a follow-up issue.
+
+### 8.2 A wrapper that outlives its agent
 
 If the agent runs under a wrapper script that keeps running after the agent
 dies — for example a script that starts `claude` without `exec`, then goes on

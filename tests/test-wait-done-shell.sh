@@ -44,7 +44,7 @@ echo "\$\$" > "$work/agent.pid"
 exec sleep 6464
 EOF
 # outliver: a wrapper that runs the agent as a child and keeps running after it
-#   dies — the one case the design says it misses.
+#   dies — one of the two cases the design says it misses.
 cat > "$work/outliver" <<EOF
 #!/bin/sh
 "$work/agent"
@@ -170,7 +170,7 @@ wait_shell_fg "$p"; assert_true $? "restart: control — the shell holds the ter
 expect_timeout "$p" "an agent that restarted itself as a child"
 T kill-window -t "$(win_of "$p")"
 
-# The one case the design misses, pinned so the limit is visible: a wrapper
+# One case the design misses, pinned so the limit is visible: a wrapper
 # that outlives its agent keeps the job alive and keeps the terminal.
 p="$(shell_pane)"; type_cmd "$p" "$work/outliver"; wait_record "$p"
 apid="$(cat "$work/agent.pid")"

@@ -704,7 +704,7 @@ one used now.
 
 - **An agent killed inside a shell was not detected.** Fixed by #64 wherever
   the agent's hook recorded its job — see the next section for what that
-  covers and the one case it still misses. The pane stays alive at a prompt,
+  covers and the two cases it still misses. The pane stays alive at a prompt,
   `pane_dead` stays 0, and nothing rewrites the badge — Claude fires no hook on
   SIGTERM either. The only tmux fact that changes is `#{pane_current_command}`
   (Claude's reads `2.1.272`, then `bash`), which is a process NAME: comparing it
@@ -742,7 +742,33 @@ target gives the same answer. The design and every measurement behind it are in
 measured, on Claude, codex, opencode, pi and copilot, the terminal's foreground
 job was the agent's job. `tests/test-wait-done-shell.sh` pins the cases below.
 
-**The one case it misses: a wrapper that outlives its agent.** If the agent
+**Two cases it misses, both on purpose, both a timeout and never a false
+`died`.** `wait-done` counts a job as gone only when no process of it is left.
+That strict rule was chosen over a quicker one (below).
+
+**1. A Claude killed in the middle of a reply is caught only when its
+`caffeinate` helper exits — up to about five minutes later.** While a reply is
+running, Claude starts `caffeinate -i -t 300` inside its own process group, and
+that helper outlives Claude. Measured (tmux 3.6, Claude typed into
+`/bin/sh -i`, killed with SIGKILL mid-reply):
+
+| Claude | shell had the terminal back | no process of the job left | `wait-done` |
+|---|---|---|---|
+| 2.1.272 | yes | `caffeinate -i -t 300` still in the job 76 s later, reparented to pid 1 | `wait-done %0 60` timed out, exit 1 |
+| 2.1.273 | 0.08 s after the kill | 305.23 s after the kill | — (timing run, no waiter) |
+
+So a `wait-done` whose timeout is shorter than that still exits 1, exactly as
+before #64; a longer one exits 2 once the helper exits. A Claude killed
+*between* replies has no helper running and is caught at once. codex, opencode,
+pi and copilot were measured with only their own process in the job mid-reply,
+and were caught within 0.10 s (codex: `wait-done` exit 2 in 0.56 s).
+
+The quicker rule — "the job's first process is gone and the shell holds the
+terminal" — would catch this Claude case in one poll. It was not taken because
+it calls an agent that restarts itself as a child and exits "died" while the
+agent still runs (measured with a stand-in; no real harness was seen doing it).
+
+**2. A wrapper that outlives its agent.** If the agent
 runs under a script that keeps running after the agent dies — it starts
 `claude` without `exec`, then sleeps or waits for something else — the wrapper
 is still a live process of the job, and the shell never gets the terminal
