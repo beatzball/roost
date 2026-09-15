@@ -51,6 +51,12 @@ Your `Notification` hook is missing the `permission_prompt` matcher. Unmatched, 
 
 Your `PostToolUse` hook is missing. No hook fires when you answer a permission dialog, so `PostToolUse` is the first observable event after approval — it is what clears 🛑.
 
+## A Claude pane stays working after an API error
+
+Your `StopFailure` hook is missing. When a turn ends on a rate limit, an overload or another API error, Claude fires `StopFailure` instead of `Stop`, and without that hook nothing moves the badge off ⏳ working. Run `roost install` again — it adds that one hook and leaves the rest alone. `roost doctor` tells you when it is missing.
+
+If the hook is there and the pane still reads working, look at the pane: Claude may still be retrying. It retries a rate limit for a few minutes before it gives up, and the badge turns 💥 when it does.
+
 ## `roost send` fails
 
 The exit code tells you which failure it is:

@@ -13,6 +13,77 @@ Keep it short. When an entry is fixed, delete it.
 
 ## Live risks
 
+### A Claude Code turn that fails on an API error: fixed by #55, with holes left
+
+**Fixed by #55.** Before it, a Claude turn that ended on a rate limit, an
+overload or any other API error left the pane ⏳ `working` forever. Claude fires
+`StopFailure` for that turn instead of `Stop`, and roost did not wire it. So
+`wait-done` burned its whole timeout on an idle agent, and the human saw no 💥.
+
+**What was measured** (Claude Code 2.1.272, one logger on all 33 hook events, a
+throwaway `-S` server, `--setting-sources local`; every failure triggered on
+demand, never a real rate limit):
+
+| case | events after `UserPromptSubmit` | `error` field |
+|---|---|---|
+| healthy haiku turn | `Stop` | — |
+| `--model` naming a model that does not exist (real API) | `StopFailure` | `model_not_found` |
+| local fake API answering 429, `CLAUDE_CODE_MAX_RETRIES=0` | `StopFailure` | `rate_limit` |
+| the same 429, default retries | 10 retries over ~3 min, then `StopFailure` | `rate_limit` |
+| fake API 500 | `StopFailure` | `server_error` |
+| fake API 529 | `StopFailure` | `server_error` |
+| base URL nobody listens on | `StopFailure` | `server_error` |
+| Esc while the model streams | nothing | — |
+
+`StopFailure` fired once, ~60 ms after the failure, and never together with
+`Stop`. The only later event was an `idle_prompt` Notification ~60 s on, which
+the `permission_prompt` matcher already ignores. The payload carries the usual
+fields plus `error` and `last_assistant_message`, which is Claude's error
+banner, not a reply. Raw logs were kept with the #55 work, not committed.
+
+**What is wired.** A sixth Claude hook, `StopFailure` with no matcher, runs
+`roost-agent-state error --stop-failure-hook`. It badges 💥 error, clears the
+previous turn's reply, and records `@roost-error-reason` as *Claude ended the
+turn on an API error (<kind>)* — the same path codex uses (#53), so
+`wait-done` and `read` print it. `<kind>` is the payload's `error` if it is
+lowercase letters and underscores, else `unknown`. A payload with an
+`agent_id` changes nothing. `tests/test-claude-stop-failure.sh` holds both
+directions: a failed turn is not `working` or `done`, and a healthy turn, and
+the healthy turn after a failed one, still reach `done`.
+
+**What is still not covered, most serious first.**
+
+- **Existing installs need `roost install` again.** A `settings.json` wired
+  before #55 has no `StopFailure` entry, so a failed turn still reads
+  `working` there. `roost doctor` warns about exactly this, and the installer
+  adds the one missing entry without touching the others.
+- **The subagent rule is read from Claude's source, not measured.** The
+  2.1.272 source adds `agent_id` to a hook payload only for a subagent's loop,
+  and a subagent's API error returns to the main turn as a failed tool call.
+  If a later Claude sends `agent_id` for the main loop too, a failed main
+  turn would stay `working` again. If a subagent's `StopFailure` ever arrives
+  WITHOUT `agent_id`, the main pane would read 💥 mid-turn until its next
+  tool call sets `working`.
+- **Three more failure routes are read from the source, not measured.**
+  2.1.272 also fires `StopFailure` for a prompt that is too long, an image
+  error, and a tool call the model could not form twice in a row. Each ends
+  the turn with no answer, so 💥 is right, but no capture was taken.
+- **With no python3 and no jq** the badge is still 💥, but the kind reads
+  `unknown` and a subagent's failure cannot be told apart, so it badges the
+  main pane too.
+- **A second failure on a pane that already reads `error` keeps the first
+  reason.** The unchanged-state bail in `scripts/roost-agent-state` returns
+  before the reason is written. In practice a new prompt sets `working` in
+  between, so this needs a hand-typed `roost state error` or a failure with no
+  `UserPromptSubmit` before it.
+- **Claude's own retries look like work.** On a 429 with default settings,
+  Claude retried for ~3 minutes before giving up, and the pane read
+  `working` for all of it. That is true — the turn is still running — but a
+  `wait-done` with a short timeout will time out, not report the error.
+- **`tests/live/claude-stop-failure-smoke.sh` is the only guard against a
+  Claude upgrade** renaming the event or its `error` field. The suite's
+  payloads are old captures. Run it by hand after an upgrade.
+
 ### A declined permission dialog: fixed for Claude Code and codex, with holes left
 
 **Fixed by #38, for two harnesses, from harness records rather than the

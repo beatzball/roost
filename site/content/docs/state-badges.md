@@ -17,7 +17,7 @@ roost install
 
 It touches only harnesses you already have, prints the plan before it writes
 anything, and asks once. It creates the three adapter symlinks (opencode, pi,
-copilot), merges roost's four hooks into Claude's `settings.json`, writes
+copilot), merges roost's hooks into Claude's `settings.json`, writes
 codex's `hooks.json`, and turns on copilot's `EXTENSIONS` flag. `roost update`
 is a real alias for the same command — it re-wires, it does **not** fetch new
 roost code — so run either one again after installing a new harness or moving
@@ -46,7 +46,7 @@ it is not roost's, or when you would simply rather see what goes where.
 
 ## Claude Code (one-time)
 
-The badges are driven by four Claude Code hooks. `roost install` merges them
+The badges are driven by Claude Code hooks. `roost install` merges them
 into `~/.claude/settings.json` for you, keeping whatever is already in those
 events. To do it by hand, print the snippet:
 
@@ -62,12 +62,16 @@ Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
 | `Notification` (matcher: `permission_prompt`) | 🛑 blocked |
 | `PostToolUse` | ⏳ working |
 | `Stop` | ✅ done |
+| `StopFailure` | 💥 error |
 
-Two of those are subtler than they look:
+Some of those are subtler than they look:
 
 - **`Notification` must be scoped to `permission_prompt`.** Unmatched, it also fires for `idle_prompt` and `auth_success` — so a *finished* agent would go red.
 - **`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission dialog, so it is the first observable event after you approve. Without it a window stays red from your approval until the whole turn ends.
 - **After No or Esc, Claude fires no hook at all.** `--notification-hook` records the path of Claude's own transcript beside the 🛑, and `roost send`, `read` and `wait-done` read that transcript before believing the badge. When the newest records in it are Claude's own "request interrupted" records, written after the badge, they clear it. They never set a state, and anything they cannot prove leaves the badge red.
+- **`StopFailure` is what ends a failed turn.** When a turn ends on an API error — a rate limit, an overload, a model that does not exist — Claude fires `StopFailure` instead of `Stop`, and nothing after it. roost badges that 💥 error, and `roost wait-done` exits 1 with the reason, for example *Claude ended the turn on an API error (rate_limit)*. While Claude is still retrying, the pane stays ⏳ working, because it is. A subagent's API error does not change the badge: the main turn goes on.
+
+**If you wired Claude before `StopFailure` was added, run `roost install` again.** Your other hooks keep working, so nothing looks wrong until a turn fails — and then the pane reads ⏳ working on an agent that has stopped. `roost doctor` warns about a `settings.json` with no `StopFailure` hook. `roost install` adds that one entry and leaves the rest as it found them.
 
 `scripts/roost-agent-state` is a **no-op unless it runs inside a roost pane**, so it is safe in your global Claude settings — running `claude` elsewhere does nothing. It also returns early when the state is already correct, which keeps it cheap on `PostToolUse` (that fires on every single tool call, and Claude waits for the hook to exit).
 
