@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.2.2]
+
+Two small fixes. No upgrade step is needed.
+
+### Added
+
+- **`roost doctor` now starts with the roost version** (#47). That is the
+  report people paste into a bug. If the version cannot be read, it says so
+  and says what failed.
+
+### Fixed
+
+- **`roost wait-done` no longer loops forever when its timeout is not a whole
+  number** (#66). A value like `abc`, `1.5` or `-5` is now refused at once,
+  with a message that names the bad value.
+
+### Changed
+
+- An **empty** timeout for `wait-done` is now refused. It used to mean "no
+  limit". Leaving the timeout out still means no limit.
+- A timeout with leading zeros is read as decimal: `010` is 10 seconds, not 8.
+
 ## [0.2.1]
 
 Two more fixes to how roost reports an agent's state. One changes an exit code,
