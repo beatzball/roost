@@ -218,7 +218,13 @@ case "$(reason "$p")" in
   *) no "rate_limit: the reason reads '$(reason "$p")' — did the StopFailure payload's error field move?" ;;
 esac
 werr="$(R wait-done "$p" 5 2>&1 >/dev/null)"; rc=$?
-[ "$rc" = "1" ] && ok "rate_limit: wait-done exits 1" || no "rate_limit: wait-done exited $rc"
+# Exit 1 alone is not enough: a timeout exits 1 too, and a pane stuck on
+# working times out. Measured — with the StopFailure hook removed, the bare
+# exit-code check passed. So it must be the error refusal, by its words.
+case "$rc:$werr" in
+  "1:"*"error state"*) ok "rate_limit: wait-done exits 1 because the pane is in error" ;;
+  *) no "rate_limit: wait-done exited $rc without the error refusal: $werr" ;;
+esac
 case "$werr" in *rate_limit*) ok "rate_limit: wait-done prints the reason" ;;
   *) no "rate_limit: wait-done did not print the reason: $werr" ;; esac
 
