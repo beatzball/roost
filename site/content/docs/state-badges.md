@@ -122,7 +122,7 @@ One thing to check before you rely on it: the plugin runs **inside the opencode 
 
 `roost wait-done` does not treat an errored pane as finished. It prints `roost: '<target>' is in error state, not done` and exits 1, rather than reporting success on a turn that produced nothing. When the adapter recorded why — codex does, because its 💥 is inferred — a second line names the pane and the reason.
 
-That matters most in a script. If you loop `roost wait-done` over several agents, a non-zero exit now means **error *or* timeout**, and the message tells you which. Under `set -e` a script will stop on a dead agent rather than carrying on, which is the intended behaviour but a change in flow if you had assumed non-zero meant "still busy, try again".
+That matters most in a script. If you loop `roost wait-done` over several agents, exit 1 means **error *or* timeout**, and the message tells you which; exit 2 means the agent died or the target is gone (see the [exit table](/docs/driving-a-fleet)). Under `set -e` a script will stop on a dead agent rather than carrying on, which is the intended behaviour but a change in flow if you had assumed non-zero meant "still busy, try again".
 
 `tests/live/opencode-smoke.sh` drives real opencode against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after an opencode upgrade.
 
