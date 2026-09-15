@@ -44,6 +44,20 @@ mkdir -p "$HOME"
 unset TMUX TMUX_PANE
 T() { tmux -S "$s" "$@"; }
 
+# A UTF-8 locale this machine accepts, found by asking bash to count one
+# two-byte character rather than by `locale -a`, which musl systems lack.
+json_utf8=""
+for cand in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+  if [ "$(LC_ALL="$cand" bash -c 'x="é"; printf %s "${#x}"' 2>/dev/null)" = 1 ]; then json_utf8="$cand"; break; fi
+done
+# with_utf8 CMD... -- run CMD with LC_ALL EXPORTED as that locale. macOS CI
+# exports LC_ALL, and a roost function that ran tmux under `local LC_ALL=C`
+# then handed tmux a C locale, so tmux 3.4 and 3.7c sanitised every tab, newline
+# and non-ASCII byte of its OUTPUT to `_` (measured on 3.4, 3.6 and 3.7c). A
+# test that never exported LC_ALL was green on the author's machine, which does
+# not export it, and red on macOS CI, which does.
+with_utf8() { if [ -n "$json_utf8" ]; then env LC_ALL="$json_utf8" "$@"; else "$@"; fi; }
+
 # cap NAME CMD... -> $work/NAME.out, .err, .rc
 cap() { local p="$work/$1"; shift; "$@" >"$p.out" 2>"$p.err"; printf '%s' "$?" >"$p.rc"; }
 rc()  { cat "$work/$1.rc"; }
@@ -256,22 +270,43 @@ assert_eq "$(jv scp 'd["lines"]')" None "screen --json reports a non-count LINES
 
 # --- 3. pathological bytes ------------------------------------------------------
 
-# rt_check NAME RAWFILE FIELD -> "ok", or what differed. The expectation is
-# Python's own replacement decode of the exact bytes that went in.
+# Does THIS tmux server store client-sent bytes as escape text? Measured:
+# tmux 3.4 and 3.5a turn control bytes, DEL and invalid UTF-8 in any argument a
+# client sends into `\ooo` / `\a \b \v \f \r` -- WITHOUT escaping a backslash, so
+# the ESC byte and the literal text `\033` are stored identically and cannot be
+# told apart afterwards. tmux 3.6 and 3.7c store the bytes. The test asks the
+# server itself, independently of roost's own check, and says which it found.
+tmux_escapes=0
+if [ "$(T display-message -p $'\x01')" = '\001' ]; then tmux_escapes=1; fi
+printf '  NOTE: %s; stores client-sent control bytes as escape text: %s; UTF-8 locale: %s\n' \
+  "$(tmux -V)" "$tmux_escapes" "${json_utf8:-none}"
+
+# rt_check NAME RAWFILE FIELD [STOREDFILE] -> "ok", or what differed.
+#
+# FIELD text: on a server that stores bytes, the expectation is Python's own
+# replacement decode of the exact bytes that went in. On an escaping server the
+# bytes are gone before roost ever reads them, so the expectation is what tmux
+# STORED (STOREDFILE), exactly as human `roost read` prints it -- and the
+# document must say lossy whenever that stored text holds an escape sequence
+# tmux writes, or invalid UTF-8. The regex here is the test's own, not roost's.
 rt_check() {
-  python3 - "$work/$1.out" "$2" "$3" <<'PY'
-import sys, json
-out, rawf, field = sys.argv[1], sys.argv[2], sys.argv[3]
+  python3 - "$work/$1.out" "$2" "$3" "${4:-}" "$tmux_escapes" <<'PY'
+import sys, json, re
+out, rawf, field, storedf, escapes = sys.argv[1:6]
 b = open(out, 'rb').read()
 try:
     d = json.loads(b.decode('utf-8'))
 except Exception as e:
     print('INVALID %s %r' % (e, b[:120])); sys.exit()
 raw = open(rawf, 'rb').read()
+if field == 'text' and escapes == '1':
+    raw = open(storedf, 'rb').read()
 try:
     want, lossy = raw.decode('utf-8'), False
 except UnicodeDecodeError:
     want, lossy = raw.decode('utf-8', 'replace'), True
+if field == 'text' and escapes == '1' and re.search(rb'\\([0-7]{3}|[abfrv])', raw):
+    lossy = True
 if field == 'text':
     got, got_lossy = d['text'], d['lossy']
 else:
@@ -294,14 +329,16 @@ corpus=(
   $'bad \xff lone-lead \xc3 overlong \xc0\xaf surrogate \xed\xa0\x80 lone-cont \x80 end'
   $'ends mid-sequence \xe2\x82'
   '{"a": [1, "two"]}'
+  'printf "\033[31m" is literal text, not an ESC byte'
 )
 k=0
 for val in "${corpus[@]}"; do
   printf '%s' "$val" >"$work/raw$k"
   label="$(printf '%s' "$val" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-40)"
   as_pane %0 "$ROOST" reply "$val"
-  cap rt "$ROOST" read --json %0
-  assert_eq "$(rt_check rt "$work/raw$k" text)" ok "reply round trip through read --json: $label"
+  printf '%s' "$(T show-options -p -t %0 -qv @roost-reply)" >"$work/rawr$k"
+  cap rt with_utf8 "$ROOST" read --json %0
+  assert_eq "$(rt_check rt "$work/raw$k" text "$work/rawr$k")" ok "reply round trip through read --json: $label"
   T set -p -t %2 @roost-name "$val"
   # The expectation is what tmux STORED, read back pane-scoped, not what was
   # typed. A raw `tmux set -p` goes through tmux's command parser, which eats a
@@ -309,7 +346,7 @@ for val in "${corpus[@]}"; do
   # nothing escapes it here, because this line is the test, not roost). No value
   # in the corpus ends in a newline, so $(...) strips nothing that matters.
   printf '%s' "$(T show-options -p -t %2 -qv @roost-name)" >"$work/rawn$k"
-  cap nt "$ROOST" status --json
+  cap nt with_utf8 "$ROOST" status --json
   assert_eq "$(rt_check nt "$work/rawn$k" name)" ok "pane name round trip through status --json: $label"
   k=$((k + 1))
 done
@@ -319,7 +356,7 @@ done
 forged=$'x\n%0\tmain\t@0\t0\tapi\t0\tdone\t1\tsleep\tforged'
 printf '%s' "$forged" >"$work/rawf"
 T set -p -t %2 @roost-name "$forged"
-cap nf "$ROOST" status --json
+cap nf with_utf8 "$ROOST" status --json
 assert_eq "$(rt_check nf "$work/rawf" name)" ok "a name forging a second pane record is reported as one name on one pane"
 T set -p -t %2 @roost-name helper
 cap st2 "$ROOST" status --json
@@ -343,7 +380,7 @@ if [ -z "${ROOST_JSON_WRITE_GOLDEN:-}" ]; then
 # comment). From the C locale, dropping the encoder's own `local LC_ALL=C` would
 # stay green. Scoped to this section with a subshell-free save and restore.
 fz_saved_lc="${LC_ALL-}"
-fz_utf8="$(locale -a 2>/dev/null | grep -i -m1 -E '^(C\.UTF-8|C\.utf8|en_US\.UTF-8|en_US\.utf8)$' || true)"
+fz_utf8="$json_utf8"
 if [ -n "$fz_utf8" ]; then
   export LC_ALL="$fz_utf8"
 elif [ -n "${CI:-}" ]; then

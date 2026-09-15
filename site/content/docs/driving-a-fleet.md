@@ -287,7 +287,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 - **Every field is always present.** A value that is unknown or unset is `null`, not a missing key. An empty list is `[]`.
 - **Raw values, not human ones.** Timestamps are epoch seconds. States are names (`working`, `blocked`, `done`, `error`, `idle`), not badges.
 - **stderr does not change.** Every notice the plain command prints on stderr, it still prints there. Read the document from stdout only.
-- **Strings are valid UTF-8.** An agent's reply is stored as raw bytes. If those bytes are not valid UTF-8, each broken sequence becomes U+FFFD (`�`) and the document says `"lossy": true`.
+- **Strings are valid UTF-8, and `lossy` says when `text` may not be what the agent wrote.** An agent's reply is stored as raw bytes. If those bytes are not valid UTF-8, each broken sequence becomes U+FFFD (`�`) and the document says `"lossy": true`. On **tmux 3.4 and 3.5a** it can also be `true` for another reason; see below.
 - **Failures print nothing on stdout.** A missing target, or `whoami` outside roost, exits with the same status and the same stderr as the plain command, and stdout is empty. Check the exit status first.
 - **Key order and spacing are not part of the contract.** Parse the JSON; do not compare text.
 
@@ -342,9 +342,11 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `stale` | bool | `true` when this is a stored reply on a pane that is `working`, `blocked` or `error` — the reply is from an earlier turn (see "A reply is never served as fresher than it is") |
 | `error_reason` | string or `null` | why the pane is in error, when its adapter recorded a reason |
 | `text` | string | the reply, whole; or the last `LINES` non-blank lines of the screen. No trailing newline |
-| `lossy` | bool | invalid UTF-8 in `text` was replaced |
+| `lossy` | bool | `text` may differ from the bytes the agent wrote: invalid UTF-8 was replaced, or tmux 3.4/3.5a had already rewritten the reply (below) |
 
-`--json` and `--render` cannot be combined: one is for programs and the other is for people. A blank screen gives `"text": ""` and exits 0.
+`--json` and `--render` cannot be combined: one is for programs and the other is for people.
+
+**On tmux 3.4 and 3.5a, a reply can arrive already rewritten.** Those versions store a control byte, DEL, or a byte of invalid UTF-8 as escape text (`\001`, `\r`, `\377`) the moment the reply is recorded, and they do not escape a backslash, so the escape text and the same characters typed on purpose are identical afterwards. roost cannot tell them apart, so it does not guess: `text` is exactly what tmux holds (plain `roost read` prints the same), and `lossy` is `true` whenever `text` contains such a sequence on a server that writes them. tmux 3.6 and later keep the bytes, and there `lossy` means only replaced UTF-8. A blank screen gives `"text": ""` and exits 0.
 
 ### `roost screen --json`
 

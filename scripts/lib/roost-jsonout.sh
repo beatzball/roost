@@ -17,6 +17,17 @@
 # and read its SOCKET, _SOCKET_FLAG and ROOST_JSON_SCHEMA, so the socket rule
 # stays in one place. roost_jsonout_encode needs nothing but bash and awk, which
 # is what lets tests/test-json-output.sh fuzz it on its own.
+#
+# NO TMUX CALL MAY RUN UNDER `local LC_ALL=C`. Several functions below need that
+# local for byte-exact lengths and patterns (see roost_jsonout_encode), but when
+# the caller's environment already EXPORTS LC_ALL -- macOS CI does -- the local
+# copy is exported too, measured on bash 3.2 and 5.3. A tmux client started
+# inside that scope then runs in the C locale, and tmux 3.4, 3.6 and 3.7c all
+# replace every tab, newline and non-ASCII byte in what they print to such a
+# client with `_`. `status --json` shipped that way first: the names read back
+# as `t_x__e` on macOS CI and exactly everywhere LC_ALL was not exported. So
+# tmux is called from functions that do not set the local, and the byte work is
+# done in helpers that do.
 
 # --- the encoder --------------------------------------------------------------
 #
@@ -184,6 +195,8 @@ roost_jsonout_int() {
 #   i  integer, or null when VALUE is not a plain non-negative integer
 #   b  true when VALUE is 1, else false
 #   t  string, then a "lossy" key saying whether invalid UTF-8 was replaced
+#   T  as t, with "lossy" true whatever the encoder found -- for text tmux may
+#      already have rewritten (roost_jsonout_looks_escaped)
 #
 # Every string value goes through ONE awk call, whatever the number of keys.
 roost_jsonout_emit() {
@@ -198,7 +211,7 @@ roost_jsonout_emit() {
   n=$i; i=0; j=1
   while [ "$i" -lt "$n" ]; do
     case "${kinds[i]}" in
-      s|t) strs[j]="${vals[i]}"; j=$((j + 1)) ;;
+      s|t|T) strs[j]="${vals[i]}"; j=$((j + 1)) ;;
       z) if [ -n "${vals[i]}" ]; then strs[j]="${vals[i]}"; j=$((j + 1)); fi ;;
     esac
     i=$((i + 1))
@@ -213,6 +226,7 @@ roost_jsonout_emit() {
         part="${ROOST_JSONOUT_STR[j]}"
         if [ "${ROOST_JSONOUT_LOSSY:j:1}" = 1 ]; then part="$part,\"lossy\":true"; else part="$part,\"lossy\":false"; fi
         j=$((j + 1)) ;;
+      T) part="${ROOST_JSONOUT_STR[j]},\"lossy\":true"; j=$((j + 1)) ;;
       z)
         if [ -n "${vals[i]}" ]; then part="${ROOST_JSONOUT_STR[j]}"; j=$((j + 1)); else part=null; fi ;;
       i) roost_jsonout_int "${vals[i]}"; part="$ROOST_JSONOUT_INT" ;;
@@ -230,6 +244,50 @@ roost_jsonout_emit() {
 roost_jsonout_fail() {
   echo "roost $1: could not encode JSON output" >&2
   exit 1
+}
+
+# --- text tmux may already have rewritten ------------------------------------
+#
+# MEASURED (throwaway servers, every single byte 0x01-0xFF): tmux 3.4 and 3.5a
+# rewrite every argument a CLIENT sends before the server keeps it. A control
+# byte becomes `\a \b \v \f \r` or `\ooo`, DEL becomes `\177`, and each byte of
+# invalid UTF-8 becomes `\ooo`. Tab, newline and valid UTF-8 are kept. A
+# backslash is NOT escaped. tmux 3.6 and 3.7c keep the bytes as sent.
+#
+# So on 3.4/3.5a, a reply written with `roost reply` or by a hook through
+# `tmux set-option` is stored already rewritten, and every reader -- human
+# `roost read` included -- gets the escape text back. It CANNOT be decoded
+# exactly: an agent that wrote the ESC byte and an agent that wrote the four
+# characters `\033` (any shell snippet in a reply) are stored identically, and
+# the second is far commoner. Decoding would corrupt that common case to rescue
+# the rare one. So --json leaves the text exactly as tmux holds it, identical to
+# what human `roost read` prints, and says "lossy": true whenever the text holds
+# a sequence tmux writes and the server is one that writes them.
+#
+# A non-UTF-8 WRITER is worse and undetectable: tmux 3.4, 3.5a and 3.7c store
+# tab, newline and every non-ASCII byte from such a client as `_`, which is an
+# ordinary character. docs/known-gaps.md records it.
+
+# roost_jsonout_looks_escaped TEXT -> 0 when TEXT holds `\` followed by three
+# octal digits or by one of a b f r v: the sequences the escaper above writes.
+# No tmux call, so LC_ALL=C is safe here.
+roost_jsonout_looks_escaped() {
+  local LC_ALL=C
+  case "$1" in
+    *\\[0-7][0-7][0-7]*|*\\[abfrv]*) return 0 ;;
+  esac
+  return 1
+}
+
+# roost_jsonout_server_escapes TARGET -> 0 when this tmux server stores
+# client-sent control bytes as escape text. Asked of the server itself rather
+# than of a version table, so a patched or backported tmux answers for itself.
+# display-message only prints; it changes nothing. A server that stores bytes
+# echoes the \x01 back (or `_`, to a non-UTF-8 client); an escaping one echoes
+# the four characters `\001`. Only called when the text already looks escaped,
+# so the common reply costs no extra tmux call. No `local LC_ALL=C`: it runs tmux.
+roost_jsonout_server_escapes() {
+  [ "$(t display-message -p -t "$1" $'\x01' 2>/dev/null || true)" = '\001' ]
 }
 
 # --- reading tmux without trusting a delimiter --------------------------------
@@ -260,13 +318,22 @@ roost_jsonout_fail() {
 #
 # Ids themselves (%N, @N, $N) never contain a tab or a newline.
 roost_jsonout_list() {
-  local LC_ALL=C
+  # No `local LC_ALL=C` here: this function runs tmux. See the file header.
   local nf="$1" idf="$2" rowf="$3"; shift 3
-  local before rows after line n=0 i=0 tabs
+  local before rows after
   ROOST_JSONOUT_IDS=(); ROOST_JSONOUT_ROWS=()
   before="$(t "$@" -F "$idf" 2>/dev/null)" || return 2
   rows="$(t "$@" -F "$rowf" 2>/dev/null)" || rows=""
   after="$(t "$@" -F "$idf" 2>/dev/null)" || after=""
+  roost_jsonout__trust "$nf" "$before" "$rows" "$after"
+}
+
+# roost_jsonout__trust NFIELDS BEFORE ROWS AFTER -> the checks above, on text
+# already read. Split out of roost_jsonout_list so the byte-exact `read` and
+# pattern work runs under LC_ALL=C and no tmux call does.
+roost_jsonout__trust() {
+  local LC_ALL=C
+  local nf="$1" before="$2" rows="$3" after="$4" line n=0 i=0 tabs
   # The fallback reads the LATEST list, so a pane that appeared mid-read is
   # listed and one that vanished is not.
   if [ -n "$after" ]; then
@@ -335,7 +402,10 @@ roost_jsonout_screen() {
 # (#{@agent_state}, #{@roost-name}), in both the one-call path and the fallback,
 # so the two modes can never disagree about a value.
 roost_jsonout_status() {
-  local LC_ALL=C
+  # No `local LC_ALL=C` here: this function runs tmux. See the file header.
+  # Nothing below needs it -- the byte work happens in roost_jsonout__trust,
+  # roost_jsonout_split, roost_jsonout_int and roost_jsonout_encode, which set
+  # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
   local ns=0 np=0 j

@@ -1316,8 +1316,17 @@ JSON
         if [ "$state" = "error" ]; then
           json_why="$(t show-options -p -t "$tgt" -qv @roost-error-reason 2>/dev/null || true)"
         fi
+        # tmux 3.4 and 3.5a store control bytes and invalid UTF-8 as escape
+        # text that cannot be decoded exactly (roost_jsonout_looks_escaped says
+        # why). The text is left as stored -- what the human mode prints -- and
+        # marked lossy when it could be such a rewrite. The server is asked only
+        # when the text looks escaped, so an ordinary reply costs nothing more.
+        json_text_kind=t
+        if roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
+          json_text_kind=T
+        fi
         roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
-          stale b "$json_stale" error_reason z "$json_why" text t "$reply" || roost_jsonout_fail read
+          stale b "$json_stale" error_reason z "$json_why" text "$json_text_kind" "$reply" || roost_jsonout_fail read
         exit 0
       fi
       # $lines is deliberately NOT applied. A recorded reply is returned whole:

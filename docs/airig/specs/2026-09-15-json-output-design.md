@@ -236,7 +236,7 @@ A repeated flag keeps today's refusal. The after-the-target sweep is unchanged.
 | `stale` | bool | `source` is `reply` and `state` is `working`, `blocked` or `error` — exactly when the human mode prints "this reply is from its previous turn". Always `false` for `screen` |
 | `error_reason` | string \| null | `@roost-error-reason` when `state` is `error`, else `null` |
 | `text` | string | the reply whole, or the last `LINES` non-blank screen lines joined by `\n`. **No trailing newline** (the human mode adds one) |
-| `lossy` | bool | invalid UTF-8 in `text` was replaced with U+FFFD. The reply channel stores raw bytes (*measured*: a reply with `\xff`, a lone `\xc3`, an overlong `\xc0\xaf`, a surrogate `\xed\xa0\x80` round-trips byte-identical through `roost reply` and `roost read`) |
+| `lossy` | bool | `text` may not be the bytes the agent wrote: invalid UTF-8 was replaced with U+FFFD, or the server is tmux 3.4/3.5a and `text` holds an escape sequence that tmux writes (see "tmux that rewrites what it stores"). The reply channel itself stores raw bytes on tmux 3.6+ (*measured*: a reply with `\xff`, a lone `\xc3`, an overlong `\xc0\xaf`, a surrogate `\xed\xa0\x80` round-trips byte-identical through `roost reply` and `roost read`) |
 
 `LINES` still applies only to the screen. A blank screen gives `"text": ""`
 with exit 0. Target not found: exit 1, stdout empty,
@@ -379,6 +379,40 @@ byte-oriented under `LC_ALL=C`, which the encoder sets, but that is a reading of
 its manual, not a run). tmux 3.4's byte behaviour for names and captures. CI
 runs mawk on Linux and BSD awk on macOS, so those two are what the suite will
 keep proving.
+
+### tmux that rewrites what it stores (added after CI, measured)
+
+The first CI run failed on Ubuntu's tmux 3.4 and on macOS's tmux 3.7c; the
+author's machine runs 3.6. Measured afterwards on throwaway servers, every single
+byte written as `a<byte>b` through `tmux set-option`, and read back three ways
+(`show-options -v`, `display -p '#{@x}'`, `list-panes -F`), which always agreed:
+
+| tmux | client locale | control bytes, DEL, invalid UTF-8 | tab, newline, valid UTF-8 | backslash |
+|---|---|---|---|---|
+| 3.4, 3.5a | UTF-8 | stored as `\a \b \v \f \r` or `\ooo` | kept | **not escaped** |
+| 3.4, 3.5a | not UTF-8 | as above | stored as `_` | not escaped |
+| 3.6 | either | kept | kept | kept |
+| 3.7c | UTF-8 | kept | kept | kept |
+| 3.7c | not UTF-8 | stored as `_` | stored as `_` | kept |
+
+**Decoding is ambiguous, so it is not attempted.** Because a backslash is not
+escaped, an agent that wrote the ESC byte and one that wrote the text `\033` are
+stored identically, and the second is common (any shell snippet in a reply).
+Decoding would corrupt that case to rescue the rare one. So `read --json` keeps
+`text` exactly as tmux holds it, which is also what plain `roost read` prints, and
+sets `lossy: true` when `text` contains `\` followed by three octal digits or one of
+`a b f r v` **and** the server echoes a raw `\x01` back as the text `\001`. That
+probe is a `display-message -p`, which changes nothing, and it runs only when the
+text already looks escaped. A `_` from a non-UTF-8 writer is an ordinary
+character and cannot be detected; it is recorded in `docs/known-gaps.md`.
+
+**A second defect, in this code, was found by the same CI run.** `status --json`
+ran tmux inside `local LC_ALL=C`. When the caller's environment exports
+`LC_ALL` (macOS CI does), a local copy is exported too (measured, bash 3.2 and
+5.3), the tmux client runs in the C locale, and tmux 3.4, 3.6 and 3.7c print every
+tab, newline and non-ASCII byte to such a client as `_`. Names came back as
+`t_x__e`. Fixed by keeping every tmux call out of the functions that set that
+local; the test now exports `LC_ALL` for the calls that read hostile values.
 
 ### Two bash traps found while proving it — rules for the builder
 
