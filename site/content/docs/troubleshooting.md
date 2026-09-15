@@ -11,7 +11,7 @@ sidebar:
 roost doctor
 ```
 
-It checks your tmux version, truecolor support, `fzf`, the notifier, the Claude hooks, the opencode plugin link, and the GitHub Copilot CLI extension link — and prints the exact fix command for your checkout. For copilot it also checks the feature flag that extensions sit behind, and reminds you of a consent prompt it cannot check from disk (see below).
+The report starts with the roost version you are running, so paste the whole report into any bug report — or at least its top. Then it checks your tmux version, truecolor support, `fzf`, the notifier, the Claude hooks, the opencode plugin link, and the GitHub Copilot CLI extension link — and prints the exact fix command for your checkout. For copilot it also checks the feature flag that extensions sit behind, and reminds you of a consent prompt it cannot check from disk (see below).
 
 ## Badges never appear
 

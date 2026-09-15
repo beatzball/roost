@@ -255,6 +255,7 @@ done
 | `0` | done — every agent pane is no longer `working` or `blocked`, including a pane that finished and then closed while you waited | `roost read` it |
 | `1` (`is in error state`) | an agent pane is 💥 **error**; a second line names the reason when the adapter recorded one | go and look, or re-prompt |
 | `1` (`timed out`) | still busy when the timeout ran out | wait longer, or `roost screen` it |
+| `1` (`usage:`) | the timeout is not a whole number of seconds — `abc`, `-5`, `1.5` or an empty string. Refused at once, before any waiting | fix the argument; omit it, or pass `0`, to wait with no limit |
 | `2` (`died`) | an agent pane closed, or its process exited, while its badge read `working` or `blocked` — the message names the pane | re-resolve or respawn; do not wait again |
 | `2` (`is gone`) | the target did not exist when `wait-done` started | re-resolve the target |
 

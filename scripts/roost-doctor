@@ -11,6 +11,32 @@ bad()  { printf '  ✗ %s\n' "$1"; required_fail=1; }
 # there -- the art is for a human looking at the screen.
 [ -t 1 ] && { "$(dirname "$0")/roost-banner" || true; printf '\n'; }
 
+# Which roost wrote this report (#47). doctor is what a user pastes into a bug
+# report, and a report that describes the machine in detail without naming the
+# roost that produced it is missing the one field that makes the rest
+# reproducible. So it is the first line of the report: a partial paste keeps
+# the top.
+#
+# Asked of THIS checkout's bin/roost rather than read from VERSION here, so
+# doctor and `roost version` read one source through one line of code and
+# cannot drift. bin/roost already turns a missing or unreadable VERSION into
+# the literal "unknown" rather than failing (see the comment above its `read`).
+#
+# An EMPTY answer is unknown too, but it is a different fault and gets its own
+# words: bin/roost itself is missing, or died before dispatching (a library it
+# sources is gone). VERSION may be perfectly readable then, and a report that
+# blamed it would send the reader to the wrong file. Found by review.
+#
+# A line of context, not a check: it goes through neither ok, warn nor bad, so
+# it can never touch $required_fail or doctor's exit code.
+roost_root="$(cd "$(dirname "$0")/.." && pwd)"
+roost_ver="$("$roost_root/bin/roost" version 2>/dev/null)"
+case "$roost_ver" in
+  '')      printf '  roost version: unknown (%s gave no version)\n' "$roost_root/bin/roost" ;;
+  unknown) printf '  roost version: unknown (could not read %s)\n' "$roost_root/VERSION" ;;
+  *)       printf '  roost version: %s\n' "$roost_ver" ;;
+esac
+
 ver="$(tmux -V 2>/dev/null | sed 's/^tmux //')"
 # numeric compare: 3.2 is the floor (#{P:} pane loops, #{E:}, pane options)
 maj="${ver%%.*}"; rest="${ver#*.}"; min="${rest%%[a-z]*}"
