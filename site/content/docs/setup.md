@@ -20,12 +20,16 @@ When a roost server starts, roost wires the agents you start **inside** its
 panes: a `claude` you type by hand, one `roost spawn` starts, and one another
 agent starts. It does this without editing your own config files.
 
-- **claude** runs through a small roost shim that adds one flag:
-  `--settings ~/.config/roost/wiring/claude/settings.json`. That file holds only
-  roost's hooks. Your own settings — model, permissions, env, plugins, your own
-  hooks — all still apply.
-- **opencode** gets `OPENCODE_CONFIG_DIR=~/.config/roost/wiring/opencode`,
-  which opencode merges with your own configuration.
+- **claude** runs through a small roost shim that adds one flag, `--settings`,
+  naming a file under `~/.config/roost/wiring/`. That file holds only roost's
+  hooks. Your own settings — model, permissions, env, plugins, your own hooks —
+  all still apply.
+- **opencode** gets `OPENCODE_CONFIG_DIR`, pointing at a folder under
+  `~/.config/roost/wiring/`, which opencode merges with your own configuration.
+
+Each roost checkout gets its own folder under `~/.config/roost/wiring/`, so a
+second roost server started from another checkout never changes the files the
+first one uses.
 - **codex, pi and copilot** still badge only through `roost install`. See
   [State Badges](/docs/state-badges).
 

@@ -169,6 +169,24 @@ ensure_session() {
     # Never fatal: a server that cannot be wired still has to start, and the
     # global install (if any) still badges. `roost doctor` reports the state.
     ROOST_SOCKET="$SOCKET" "$ROOST_HOME/scripts/roost-wiring" apply >/dev/null 2>&1 || true
+    # The first pane was created by the `new-session` above, BEFORE apply set
+    # default-command, ROOST_TMUX and ROOST_WIRING_DIR — and it is the pane
+    # `roost up` attaches a human to, where they type `claude`. Found in review:
+    # without this, every pane of a fresh server was wired except that one.
+    # Respawning is safe only here: nothing has run in it yet but the login
+    # shell that just started.
+    #
+    # The command is passed explicitly. Measured on tmux 3.6: `respawn-pane`
+    # with no command re-runs the command the pane was CREATED with — here
+    # none — and does not consult default-command, so it exits 0 and changes
+    # nothing. A default-command the user set themselves is what gets passed
+    # then, which is what that pane would have run anyway.
+    if pane_cmd_wired; then
+      _defcmd="$(t show-options -gqv default-command 2>/dev/null || true)"
+      if [ -n "$_defcmd" ]; then
+        t respawn-pane -k -t "=$s:" -c "$PWD" "$_defcmd" 2>/dev/null || true
+      fi
+    fi
   fi
 }
 

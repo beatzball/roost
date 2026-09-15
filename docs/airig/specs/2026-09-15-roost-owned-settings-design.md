@@ -402,9 +402,13 @@ the whole time.
 
 ### Phase 1 — Claude and opencode
 
-1. **Generated files, one directory.** `~/.config/roost/wiring/` holds only
-   what roost writes: `claude/settings.json` (only `hooks`, see above) and
-   `opencode/plugin/roost.js` (a symlink to the checkout's adapter). It is
+1. **Generated files, one directory per checkout.**
+   `~/.config/roost/wiring/<checkout id>/` holds only what roost writes:
+   `claude/settings.json` (only `hooks`, see above) and
+   `opencode/plugin/roost.js` (a symlink to the checkout's adapter). One
+   directory per checkout, because two servers started from two checkouts
+   would otherwise overwrite each other's file (found in review). Each server
+   exports its own as `ROOST_WIRING_DIR`, and the shim reads only that. It is
    regenerated atomically each time `ensure_session` boots a server, so a moved
    checkout heals at the next server start. The user's own
    `~/.config/roost/roost.conf` is beside it and is never touched.
@@ -414,7 +418,10 @@ the whole time.
    - `ensure_session` sets `default-command` to exec the user's `$SHELL` as a
      login shell with the shim directory prepended, unless wiring is off. A
      `default-command` in the user's own `roost.conf` wins; doctor reports it.
-   - `spawn`, `split` and `new` prepend it to the command they run.
+   - `spawn` and `split` prepend it to the command they run. `new` runs no
+     command, so `default-command` covers it.
+   - The first pane of a new server exists before wiring is applied, so
+     `ensure_session` respawns it once wiring is on (found in review).
 3. **opencode.** `ensure_session` sets `OPENCODE_CONFIG_DIR` on the server
    unless wiring is off or roost's own environment already has one (the user's
    choice wins, and that user stays on the global install).

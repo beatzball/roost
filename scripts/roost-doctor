@@ -103,19 +103,14 @@ settings="$(roost_adapter_settings claude)"
 # multi-model review of #27; the codex branch was already right, which is what
 # made the gap visible.
 clwant="$(cd "$(dirname "$0")/.." && pwd)/scripts/roost-agent-state"
-# Which global install this is, for the wiring rows further down: none, this
-# checkout's, another checkout's, or unknown (the file cannot be read).
-claude_global=unknown
 case "$(_settings_state "$settings")" in
   ok)
     # grep -F, like the codex branch: the needle is a filesystem path, and a
     # basic-regex `.` in a dotted directory name matches any character, which
     # makes a check that looks strict quietly permissive.
     if ! grep -qF roost-agent-state "$settings" 2>/dev/null; then
-      claude_global=none
       warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install"
     elif ! grep -qF "$clwant" "$settings" 2>/dev/null; then
-      claude_global=other
       # Deliberately does not try to say WHICH other checkout: reading it back
       # out means parsing JSON, which doctor does not require a tool for, and
       # printing a command string out of the user's own file as if it were
@@ -126,7 +121,6 @@ case "$(_settings_state "$settings")" in
       # is how you move it by hand.
       warn "$settings wires a roost-agent-state from a different checkout — this one is $clwant; run: roost install (it repairs a checkout that has been moved or deleted), or re-run: roost hooks"
     else
-      claude_global=this
       ok "Claude hooks wired in $settings"
       # A config copied from `roost hooks` before the reply channel existed
       # badges perfectly and records no reply, so the only symptom is that
@@ -169,8 +163,7 @@ case "$(_settings_state "$settings")" in
     fi
     ;;
   unreadable) warn "$settings exists but is not readable — could not check whether Claude hooks are wired" ;;
-  absent)     claude_global=none
-              warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install" ;;
+  absent)     warn "Claude hooks not found in $settings — run: roost hooks, or run: roost install" ;;
 esac
 
 # --- roost-owned wiring (#58) -----------------------------------------------
@@ -179,53 +172,80 @@ esac
 # context, not a finding: like ok it never touches $required_fail, and unlike
 # warn it is not something to fix — every · state below is one the user chose.
 note() { printf '  · %s\n' "$1"; }
-w_root="${XDG_CONFIG_HOME:-$HOME/.config}/roost"
-w_dir="${ROOST_WIRING_DIR:-$w_root/wiring}"
+# An XDG_CONFIG_HOME that is not absolute is ignored, as the XDG spec says and
+# as scripts/roost-wiring reads it, so the two agree on where the marker is.
+w_xdg="${XDG_CONFIG_HOME:-}"
+case "$w_xdg" in /*) : ;; *) w_xdg="" ;; esac
+w_root="${w_xdg:-$HOME/.config}/roost"
+# The wiring directory is the one this pane's server exported. There is one
+# per roost checkout, so it cannot be worked out from where doctor runs.
+w_dir="${ROOST_WIRING_DIR:-}"
 # Inside a roost pane is decided by the same rule the hooks and the shim use:
 # $TMUX names a socket whose path ends in /roost. Nothing else is asked, so a
 # doctor run from outside roost never contacts any server for these rows.
 w_sock=""
 case "${TMUX%%,*}" in */roost) w_sock="${TMUX%%,*}" ;; esac
-w_state=on
+# The tmux the shim would use to read the server switch: ROOST_TMUX when it
+# names a binary, else whatever tmux is on PATH — the shim's own fallback.
+# Doctor reads the switch through the same one, so the two cannot disagree
+# about a pane whose PATH holds no tmux (found in review).
+w_tmux="${ROOST_TMUX:-}"
+if [ -z "$w_tmux" ] || [ ! -x "$w_tmux" ]; then
+  w_tmux="$(command -v tmux 2>/dev/null || true)"
+fi
+w_state=unknown
 if [ -e "$w_root/wiring.off" ]; then
   w_state=removed
   note "wiring is removed ($w_root/wiring.off) — claude and opencode badge only through roost install, if you ran it; to restore, run: roost wiring on"
-elif [ -n "$w_sock" ] && [ "$(tmux -S "$w_sock" show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
+elif [ -z "$w_sock" ]; then
+  # Outside a roost pane there is no server to ask and no wiring directory
+  # to read, so nothing below is claimed either (found in review: the two
+  # "runs once / runs twice" rows used to print here about files that did
+  # not exist).
+  note "not inside a roost pane — the claude shim check was skipped"
+elif [ -n "$w_tmux" ] && [ "$("$w_tmux" -S "$w_sock" show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
   w_state=off
   note "wiring is off for this roost server — claude runs without roost's settings; to restore, run: roost wiring on"
-elif [ -z "$w_sock" ]; then
-  note "not inside a roost pane — the claude shim check was skipped"
 else
+  w_state=on
   [ -n "${ROOST_NO_SHIM:-}" ] \
     && note "ROOST_NO_SHIM is set here — claude started from this shell or session runs without roost's settings"
-  # The shim reads the server switch through ROOST_TMUX, because a pane's PATH
-  # need not contain tmux; without it `roost wiring off` cannot reach a claude
-  # started in an existing pane, and the shim keeps roost's settings on.
-  if [ -z "${ROOST_TMUX:-}" ] || [ ! -x "${ROOST_TMUX:-}" ]; then
-    warn "ROOST_TMUX is not set to a tmux binary — the claude shim cannot read the server switch, so wiring stays on; restart the roost server, or run: roost wiring on"
+  [ -n "$w_tmux" ] \
+    || warn "the claude shim cannot read the server switch here — neither ROOST_TMUX nor tmux on PATH names a tmux binary, so wiring stays on; restart the roost server"
+  if [ -z "$w_dir" ] || [ ! -f "$w_dir/claude/settings.json" ]; then
+    warn "wiring is on but ${w_dir:-(no ROOST_WIRING_DIR)}/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
   fi
-  [ -f "$w_dir/claude/settings.json" ] \
-    || warn "wiring is on but $w_dir/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
   w_claude="$(command -v claude 2>/dev/null || true)"
   if [ -n "$w_claude" ]; then
     if [ -f "$(dirname "$w_claude")/.roost-shim" ]; then
       ok "claude in this pane runs through roost's shim — its hooks come from $w_dir/claude/settings.json"
     else
-      warn "claude in this pane resolves to $w_claude, not roost's shim — roost's settings are not added (an alias, your own default-command, or PATH order); badges then depend on: roost install"
+      # No alias in the list of causes: doctor runs in its own process, where
+      # the user's shell aliases do not exist, so it cannot see one. An alias
+      # to claude's full path bypasses the shim while this row reads ok.
+      warn "claude in this pane resolves to $w_claude, not roost's shim — roost's settings are not added (your own default-command, or PATH order); badges then depend on: roost install"
     fi
   fi
 fi
-# The two routes together. Identical commands from the global install and the
-# generated file run once (design M4b); a global install for ANOTHER checkout
-# names different commands, and then every hook runs twice (M4 C3).
-if [ "$w_state" = on ]; then
-  case "$claude_global" in
-    this)  ok "the global Claude hooks and roost's wiring name the same commands, so each hook runs once" ;;
-    other) warn "the global Claude hooks name a different checkout, so every roost hook runs twice while wiring is on — run roost install from the checkout this server uses, or: roost wiring off" ;;
-  esac
+# The two routes together, compared against what the shim actually adds — the
+# generated file this server names — and not against doctor's own checkout,
+# which may be a different one (found in review). Identical commands from the
+# global install and the generated file run once (design M4b); different ones
+# run twice (M4 C3).
+if [ "$w_state" = on ] && [ -f "$w_dir/claude/settings.json" ] \
+   && [ "$(_settings_state "$settings")" = ok ] && grep -qF roost-agent-state "$settings" 2>/dev/null; then
+  w_cmd="$(grep -o '"[^"]*/roost-agent-state' "$w_dir/claude/settings.json" 2>/dev/null | head -1 | tr -d '"')"
+  if [ -n "$w_cmd" ] && grep -qF "\"$w_cmd " "$settings" 2>/dev/null; then
+    ok "the global Claude hooks and roost's wiring name the same commands, so each hook runs once"
+  else
+    warn "the global Claude hooks name a different checkout than this server's wiring, so every roost hook runs twice — run roost install from ${w_cmd%/scripts/roost-agent-state}, or: roost wiring off"
+  fi
 fi
-if [ -n "${OPENCODE_CONFIG_DIR:-}" ] && [ "$OPENCODE_CONFIG_DIR" != "$w_dir/opencode" ]; then
-  note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install"
+if [ -n "${OPENCODE_CONFIG_DIR:-}" ]; then
+  case "$OPENCODE_CONFIG_DIR" in
+    "$w_root/wiring/"*/opencode) : ;;
+    *) note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install" ;;
+  esac
 fi
 
 # Which warnings end with ", or run: roost install", and which must not. The

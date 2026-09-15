@@ -16,7 +16,8 @@ and every way to turn it off.
 `roost install` below is still what wires **codex, pi and copilot**, and what
 wires claude and opencode for a pane where you turned roost's wiring off. Having
 both is fine: the Claude hooks are the same commands in both places and run
-once, and the opencode plugin loads once even when it is found in both.
+once, and the opencode plugin registers its hooks once even when opencode loads
+it from both places.
 
 ## Wire everything at once
 

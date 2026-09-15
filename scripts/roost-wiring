@@ -8,21 +8,31 @@
 #   roost wiring apply              what a starting server runs (bin/roost ensure_session)
 #
 # What it owns, and nothing else:
-#   ~/.config/roost/wiring/claude/settings.json   hooks only, from roost_hooks_claude
-#   ~/.config/roost/wiring/opencode/plugin/roost.js  a symlink to this checkout's adapter
+#   ~/.config/roost/wiring/<checkout id>/claude/settings.json      hooks only, from roost_hooks_claude
+#   ~/.config/roost/wiring/<checkout id>/opencode/plugin/roost.js  a symlink to that checkout's adapter
 #   ~/.config/roost/wiring.off                    the "stay removed" marker
 #   on the server: default-command, OPENCODE_CONFIG_DIR, ROOST_TMUX,
 #   ROOST_WIRING_DIR, @roost-wiring-active
+#
+# ONE DIRECTORY PER CHECKOUT, and that was found in review, not designed in.
+# With one shared directory, a second server started from another checkout —
+# a worktree, a dev server — rewrote the file a running server's panes were
+# already pointed at. Those panes then ran the other checkout's hook commands,
+# which differ from their own global install's, so every hook ran twice; and
+# when that checkout was deleted, their hooks named a path that was gone.
+# Each server exports the directory of the checkout that started it as
+# ROOST_WIRING_DIR, and the shim reads only that.
 #
 # It never edits ~/.config/roost/roost.conf, ~/.claude, ~/.config/opencode or
 # any other harness's config. `roost install` is a separate route and keeps
 # working whatever this command does.
 #
-# Only a server whose socket path ends in /roost is wired: that is the rule
-# roost's hooks and its shim both use to decide they are inside roost
-# (scripts/lib/roost-socket.sh), so wiring anything else would add settings
-# that can do nothing. It is also what keeps the test suite's servers, most of
-# which are named `s`, from generating files at all.
+# Only a server whose socket path ends in /roost is wired, switched or
+# unswitched: that is the rule roost's hooks and its shim both use to decide
+# they are inside roost (scripts/lib/roost-socket.sh), so wiring anything else
+# would add settings that can do nothing, and setting options on it would
+# change a server that is not roost's. It is also what keeps the test suite's
+# servers, most of which are named `s`, from generating files at all.
 set -u
 
 # Resolved from this file's own location, never from an inherited $ROOST_HOME,
@@ -47,10 +57,19 @@ SOCKET="${ROOST_SOCKET:-roost}"
 case "$SOCKET" in */*) _flag="-S" ;; *) _flag="-L" ;; esac
 t() { tmux "$_flag" "$SOCKET" "$@"; }
 
-# ${VAR:-} rather than ${VAR-}: an EMPTY XDG_CONFIG_HOME means "use the
-# default" by the XDG spec, the same reading scripts/lib/roost-config.sh gives.
-CFG_ROOT="${XDG_CONFIG_HOME:-${HOME:-}/.config}/roost"
-WDIR="$CFG_ROOT/wiring"
+# An XDG_CONFIG_HOME that is not an absolute path is ignored, as the XDG base
+# directory spec requires. Used as given it would make `remove` delete a tree
+# relative to whatever directory the command was run from. Empty means the
+# default too, the reading scripts/lib/roost-config.sh gives.
+_xdg="${XDG_CONFIG_HOME:-}"
+case "$_xdg" in /*) : ;; *) _xdg="" ;; esac
+CFG_ROOT="${_xdg:-${HOME:-}/.config}/roost"
+WROOT="$CFG_ROOT/wiring"
+# The checkout id: a checksum of this checkout's resolved path. cksum is POSIX
+# and on every machine roost runs on; a readable name would need escaping for
+# every character a path may hold.
+CHECKOUT_ID="$(printf '%s' "$HERE" | cksum | cut -d' ' -f1)"
+WDIR="$WROOT/$CHECKOUT_ID"
 MARK="$CFG_ROOT/wiring.off"
 PANE_SHELL="$HERE/scripts/roost-pane-shell"
 # The value default-command gets. A single-quoted path is the one form every
@@ -73,7 +92,8 @@ usage: roost wiring on  [-t SESSION]
 
 Roost's own route to the agents in its panes: a claude shim that adds a
 hooks-only --settings file, and OPENCODE_CONFIG_DIR for opencode. Files live in
-~/.config/roost/wiring/. Your own config files are never edited.
+~/.config/roost/wiring/, one directory per roost checkout. Your own config
+files are never edited.
 
   on            turn wiring on for this roost server (and undo remove)
   off           turn it off for this roost server; new panes start unwired,
@@ -108,9 +128,12 @@ is_roost_socket() {
 # /.config/roost, and `remove` deletes a directory tree.
 safe_root() {
   case "$CFG_ROOT" in
-    /.config/roost | '' | /roost) echo "roost wiring: neither HOME nor XDG_CONFIG_HOME is set, refusing to write" >&2; return 1 ;;
+    /.config/roost | /roost | '')
+      echo "roost wiring: neither HOME nor XDG_CONFIG_HOME is set, refusing to write" >&2; return 1 ;;
+    /*) return 0 ;;
+    *)
+      echo "roost wiring: $CFG_ROOT is not an absolute path, refusing to write" >&2; return 1 ;;
   esac
-  return 0
 }
 
 generate() {
@@ -124,15 +147,24 @@ generate() {
   chmod 644 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$WDIR/claude/settings.json" || { rm -f "$tmp"; return 1; }
   # The plugin is a symlink, like the one `roost install` makes, so updating
-  # the checkout updates the plugin. Made beside its final name and renamed
-  # over it, so the rename replaces a previous link rather than following it.
+  # the checkout updates the plugin. The old name is removed first and the new
+  # link renamed into place. Renaming straight over the old name is not
+  # enough: when the old name is a symlink to a DIRECTORY, BSD `mv` moves the
+  # new link INTO that directory, leaves the old one standing, and exits 0
+  # (found in review). The gap between the two steps is a moment in which
+  # opencode starting up finds no plugin, which is the state before wiring.
   local lnk="$WDIR/opencode/plugin/.roost.js.$$"
   rm -f "$lnk"
   ln -s "$HERE/adapters/opencode/roost.js" "$lnk" || return 1
+  rm -f "$WDIR/opencode/plugin/roost.js"
   mv -f "$lnk" "$WDIR/opencode/plugin/roost.js" || { rm -f "$lnk"; return 1; }
 }
 
 ours_defcmd() { case "$1" in *roost-pane-shell*) return 0 ;; esac; return 1; }
+
+# Whether an OPENCODE_CONFIG_DIR line from `show-environment` is one this
+# command set, from any checkout.
+ours_ocdir() { case "$1" in "OPENCODE_CONFIG_DIR=$WROOT/"*/opencode) return 0 ;; esac; return 1; }
 
 apply() {
   server_up || return 0
@@ -157,10 +189,11 @@ apply() {
   # Likewise an OPENCODE_CONFIG_DIR the user already had: tmux copies the
   # starting client's environment into the server's, so theirs is already
   # here, and replacing it would move their opencode configuration.
-  case "$(t show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" in
-    '' | -OPENCODE_CONFIG_DIR | "OPENCODE_CONFIG_DIR=$WDIR/opencode")
-      t set-environment -g OPENCODE_CONFIG_DIR "$WDIR/opencode" ;;
-  esac
+  local oc
+  oc="$(t show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)"
+  if [ -z "$oc" ] || [ "$oc" = -OPENCODE_CONFIG_DIR ] || ours_ocdir "$oc"; then
+    t set-environment -g OPENCODE_CONFIG_DIR "$WDIR/opencode"
+  fi
 
   t set-option -g @roost-wiring-active on
 }
@@ -168,14 +201,21 @@ apply() {
 server_off() {
   t set-option -g @roost-wiring-enabled off
   ours_defcmd "$(t show-options -gqv default-command 2>/dev/null)" && t set-option -gu default-command
-  [ "$(t show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" = "OPENCODE_CONFIG_DIR=$WDIR/opencode" ] \
-    && t set-environment -gu OPENCODE_CONFIG_DIR
+  ours_ocdir "$(t show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" && t set-environment -gu OPENCODE_CONFIG_DIR
   t set-option -gu @roost-wiring-active 2>/dev/null || true
 }
 
-need_session() {
+# need_roost_server — a server is running AND it is a roost one. Every command
+# that changes a server goes through this, `apply` excepted (it is silent on
+# purpose, because it runs on every server roost starts). Found in review:
+# `off` and `remove` used to set @roost-wiring-enabled on any server
+# ROOST_SOCKET named.
+need_roost_server() {
   server_up || { echo "roost wiring: no roost server is running" >&2; exit 1; }
-  t has-session -t "=$1" 2>/dev/null || { echo "roost wiring: no session named '$1'" >&2; exit 1; }
+  is_roost_socket || {
+    echo "roost wiring: that tmux server is not a roost server (its socket path does not end in /roost); nothing changed" >&2
+    exit 1
+  }
 }
 
 cmd="${1:-}"; [ "$#" -gt 0 ] && shift
@@ -196,7 +236,8 @@ case "$cmd" in
     ;;
   on)
     if [ -n "$sess" ]; then
-      need_session "$sess"
+      need_roost_server
+      t has-session -t "=$sess" 2>/dev/null || { echo "roost wiring: no session named '$sess'" >&2; exit 1; }
       # -u, not -r: the session then inherits the global value again, which
       # is what "clear this session's opt-out" means. A variable that was
       # never set there makes tmux complain, and that is not a failure.
@@ -206,21 +247,18 @@ case "$cmd" in
       exit 0
     fi
     rm -f "$MARK" 2>/dev/null || true
-    if server_up; then
+    if server_up && is_roost_socket; then
       t set-option -gu @roost-wiring-enabled 2>/dev/null || true
       apply || exit 1
-      if is_roost_socket; then
-        echo "roost wiring: on — new panes run claude with $WDIR/claude/settings.json"
-      else
-        echo "roost wiring: marker cleared; this server's socket is not a roost socket, so nothing was wired"
-      fi
+      echo "roost wiring: on — new panes run claude with $WDIR/claude/settings.json"
     else
-      echo "roost wiring: on — applied when the roost server next starts"
+      echo "roost wiring: on — applied when a roost server next starts"
     fi
     ;;
   off)
     if [ -n "$sess" ]; then
-      need_session "$sess"
+      need_roost_server
+      t has-session -t "=$sess" 2>/dev/null || { echo "roost wiring: no session named '$sess'" >&2; exit 1; }
       # ROOST_NO_SHIM reaches every new pane of the session through its
       # environment, the same channel the global variables use (design M1).
       # -r marks OPENCODE_CONFIG_DIR removed there, so those panes do not
@@ -236,6 +274,7 @@ case "$cmd" in
       echo "or run: roost wiring remove"
       exit 0
     fi
+    need_roost_server
     server_off
     echo "roost wiring: off for this server — claude runs without roost's settings; new panes start unwired"
     echo "roost wiring: this lasts until the server stops; to keep it off, run: roost wiring remove"
@@ -243,14 +282,19 @@ case "$cmd" in
   remove)
     [ -z "$sess" ] || usage 2
     safe_root || exit 1
-    if [ -L "$WDIR" ]; then
-      rm -f "$WDIR"
-    elif [ -d "$WDIR" ]; then
-      rm -rf "$WDIR"
+    # Every checkout's directory, not only this one's: remove means wiring
+    # stays off everywhere until `roost wiring on`, and the marker below is
+    # global in the same way.
+    if [ -L "$WROOT" ]; then
+      rm -f "$WROOT"
+    elif [ -d "$WROOT" ]; then
+      rm -rf "$WROOT"
     fi
     mkdir -p "$CFG_ROOT" && : > "$MARK" || { echo "roost wiring: could not write $MARK" >&2; exit 1; }
-    server_up && server_off
-    echo "roost wiring: removed $WDIR and wrote $MARK"
+    # The running server is switched off too, but only a roost one; the files
+    # and the marker above are removed whichever server ROOST_SOCKET named.
+    if server_up && is_roost_socket; then server_off; fi
+    echo "roost wiring: removed $WROOT and wrote $MARK"
     echo "roost wiring: claude and opencode now badge only through roost install, if you ran it. Undo with: roost wiring on"
     ;;
   -h|--help|help) usage 0 ;;

@@ -24,7 +24,7 @@
 #   - not inside a roost server
 #   - ROOST_NO_SHIM set to anything non-empty (per run, per shell, per session)
 #   - @roost-wiring-enabled off on this server (roost wiring off)
-#   - no settings file (roost wiring remove)
+#   - no ROOST_WIRING_DIR, or no settings file in it (roost wiring remove)
 
 # --- the real claude --------------------------------------------------------
 # The first `claude` on PATH that is not in a directory marked as a roost shim
@@ -85,7 +85,12 @@ if [ "$("${ROOST_TMUX:-tmux}" -S "$sock" show-options -gqv @roost-wiring-enabled
   exec "$real" "$@"
 fi
 
-settings="${ROOST_WIRING_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/roost/wiring}/claude/settings.json"
+# The directory the server exported. It is one per roost checkout
+# (scripts/roost-wiring), so it cannot be worked out from here: guessing a
+# shared path is exactly what let one server's panes pick up another
+# checkout's hooks. No variable means no roost settings.
+[ -n "${ROOST_WIRING_DIR:-}" ] || exec "$real" "$@"
+settings="$ROOST_WIRING_DIR/claude/settings.json"
 [ -f "$settings" ] || exec "$real" "$@"
 
 exec "$real" --settings "$settings" "$@"

@@ -754,12 +754,19 @@ Holes in what did ship:
   `default-command` in the user's own `roost.conf` (roost keeps it rather than
   replace it), and by startup files that put claude's directory ahead of
   roost's. The pane then badges only through `roost install`. `roost doctor` run
-  in the pane names the path that won. The PATH positions were measured on one
-  machine's zsh and bash startup files; **fish was not measured**.
-- **A server started by an older roost has no `ROOST_TMUX`.** The shim cannot
-  then read `@roost-wiring-enabled`, and `roost wiring off` does not reach a
-  claude started in a pane that already existed. It fails toward "on". Doctor
-  warns; a server restart fixes it.
+  in the pane names the path that won — except for an alias, which doctor
+  cannot see: it runs in its own process, where the user's aliases do not
+  exist. The PATH positions were measured on one machine's zsh and bash startup
+  files; **fish was not measured**.
+- **A pane with neither `ROOST_TMUX` nor `tmux` on PATH.** The shim then cannot
+  read `@roost-wiring-enabled`, and `roost wiring off` does not reach a claude
+  started there. It fails toward "on". Doctor warns. Every pane of a server this
+  roost started has `ROOST_TMUX`, and most panes have tmux on PATH anyway.
+- **One wiring directory per checkout, and they are not cleaned up.** Each
+  server uses `~/.config/roost/wiring/<checkout id>/`, so a second server from
+  another checkout cannot overwrite the file a running server's panes use (found
+  in review). A checkout that is moved or deleted leaves its directory behind
+  until `roost wiring remove`; the files are small.
 - **Two routes for two checkouts run every Claude hook twice.** Identical
   commands run once (measured with real user settings); a global install
   pointing at a different checkout is not identical. Doctor warns.
@@ -771,7 +778,10 @@ Holes in what did ship:
   roost's copy alone made 2 `roost state` calls in one turn, the guarded plugin
   in both directories made 2, and an unguarded copy in both made 4. A future
   opencode that builds a fresh input per plugin would bring the double report
-  back, and nothing would say so.
+  back, and nothing would say so. The guard also only protects copies that
+  carry it: if the user's global plugin link names a checkout from before #58,
+  and opencode loads that unguarded copy, roost's copy registers as well and
+  every event reports twice. Doctor has no row for this.
 - **`roost wiring off -t SESSION` affects new panes only.** A pane that already
   exists keeps the environment its shell started with; use
   `export ROOST_NO_SHIM=1` there. Not measured for opencode's

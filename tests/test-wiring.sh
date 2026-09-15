@@ -14,14 +14,17 @@
 # real binary, because `>` onto a symlink writes through it into the real tool.
 set -u
 . "$(dirname "$0")/lib.sh"
-HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# -P: scripts/roost-wiring keys its directory on its checkout's RESOLVED path,
+# so the id computed here has to start from the same spelling.
+HERE="$(cd -P "$(dirname "$0")/.." && pwd)"
 ROOST="$HERE/bin/roost"
 SHIM="$HERE/shims/claude"
 WIRING="$HERE/scripts/roost-wiring"
 TMUXBIN="$(command -v tmux)"
+ID="$(printf '%s' "$HERE" | cksum | cut -d' ' -f1)"
 
 TMP="$(mktemp -d /tmp/amx.XXXX)"
-trap 'for s in "$TMP"/*/sock/roost; do [ -S "$s" ] && tmux -S "$s" kill-server 2>/dev/null; done; rm -rf "$TMP"' EXIT
+trap 'for s in "$TMP"/*/sock*/roost "$TMP"/*/sock/other; do [ -S "$s" ] && tmux -S "$s" kill-server 2>/dev/null; done; rm -rf "$TMP"' EXIT
 
 # --- the sandbox canary -----------------------------------------------------
 # Every home anything in this file could write to, exported at one directory
@@ -48,6 +51,10 @@ box() {
 # srv -> start a bare tmux server whose socket path ends in /roost, which is
 # the one shape roost's hooks and its shim treat as roost (lib/roost-socket.sh).
 srv() { tmux -S "$B/sock/roost" -f /dev/null new-session -d -s main -x 120 -y 30 'sleep 600'; }
+g() { tmux -S "$B/sock/roost" "$@"; }
+
+wdir_of() { printf '%s/roost/wiring/%s' "$1" "$ID"; }
+settings_of() { printf '%s/claude/settings.json' "$(wdir_of "$1")"; }
 
 # shim_run [VAR=VAL ...] -- ARGS... : run the shim with an empty environment
 # plus exactly what the caller names, so nothing from the developer's shell (a
@@ -80,29 +87,14 @@ shim_run() {
   return "$rc"
 }
 
-settings_of() { printf '%s/roost/wiring/claude/settings.json' "$1"; }
+# assert_lacks STRING NEEDLE LABEL — the absence twin of assert_contains.
+assert_lacks() {
+  case "$1" in
+    *"$2"*) ROOST_TESTS_FAIL=$((ROOST_TESTS_FAIL+1)); printf '  FAIL: %s\n       [%s] contains [%s]\n' "$3" "$1" "$2" ;;
+    *)      ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "$3" ;;
+  esac
+}
 
-# =============================================================================
-printf '\n== generated settings: hooks only, and the same commands as roost install ==\n'
-box gen
-srv
-ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" \
-  "$WIRING" apply >"$B/out/apply" 2>&1
-assert_eq "$?" "0" "roost wiring apply exits 0 on a roost server"
-gen="$(settings_of "$B/xdg")"
-[ -f "$gen" ]; assert_true $? "apply writes wiring/claude/settings.json under XDG_CONFIG_HOME"
-
-keys="$(python3 -c 'import json,sys; print(",".join(sorted(json.load(open(sys.argv[1])).keys())))' "$gen" 2>&1)"
-assert_eq "$keys" "hooks" "the generated file has exactly one top-level key, hooks — it overrides no user setting"
-
-# The upgrade path from a machine that already ran `roost install`: the same
-# six (event, matcher, command) triples, byte for byte. Claude runs an
-# identical command once when it appears in two sources (design M4b), so this
-# equality is what makes "hooks fire once" true — a single differing byte
-# makes every hook run twice.
-HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
-COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
-  "$ROOST" install --only claude --yes </dev/null >"$B/out/install" 2>&1
 triples() {
   python3 - "$1" <<'PY'
 import json, sys
@@ -115,26 +107,93 @@ for ev, groups in d.get("hooks", {}).items():
 print("\n".join(sorted(out)))
 PY
 }
+
+# install_claude — `roost install --only claude` into the current box.
+install_claude() {
+  HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
+  COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
+    "$ROOST" install --only claude --yes </dev/null >"$B/out/install" 2>&1
+}
+
+# =============================================================================
+printf '\n== generated settings: hooks only, and the same commands as roost install ==\n'
+box gen
+srv
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" \
+  "$WIRING" apply >"$B/out/apply" 2>&1
+assert_eq "$?" "0" "roost wiring apply exits 0 on a roost server"
+gen="$(settings_of "$B/xdg")"
+[ -f "$gen" ]; assert_true $? "apply writes wiring/<checkout id>/claude/settings.json under XDG_CONFIG_HOME"
+
+keys="$(python3 -c 'import json,sys; print(",".join(sorted(json.load(open(sys.argv[1])).keys())))' "$gen" 2>&1)"
+assert_eq "$keys" "hooks" "the generated file has exactly one top-level key, hooks — it overrides no user setting"
+
+# The upgrade path from a machine that already ran `roost install`: the same
+# six (event, matcher, command) triples, byte for byte. Claude runs an
+# identical command once when it appears in two sources (design M4b), so this
+# equality is what makes "hooks fire once" true — a single differing byte
+# makes every hook run twice.
+install_claude
 want="$(triples "$B/home/.claude/settings.json")"
 got="$(triples "$gen")"
 [ -n "$want" ]; assert_true $? "roost install wrote claude hooks into the sandbox (the comparison below is not two empty strings)"
 assert_eq "$got" "$want" "upgrade: every generated hook command is identical to the one roost install wrote, so each runs once"
 assert_eq "$(printf '%s\n' "$got" | grep -c .)" "6" "the generated file carries all six roost hook entries"
 
-oc="$B/xdg/roost/wiring/opencode/plugin/roost.js"
+oc="$(wdir_of "$B/xdg")/opencode/plugin/roost.js"
 [ -L "$oc" ] && [ "$oc" -ef "$HERE/adapters/opencode/roost.js" ]
-assert_true $? "apply links wiring/opencode/plugin/roost.js to this checkout's adapter"
+assert_true $? "apply links wiring/<checkout id>/opencode/plugin/roost.js to this checkout's adapter"
 
-g() { tmux -S "$B/sock/roost" "$@"; }
 assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" \
-  "OPENCODE_CONFIG_DIR=$B/xdg/roost/wiring/opencode" "apply sets OPENCODE_CONFIG_DIR on the server"
+  "OPENCODE_CONFIG_DIR=$(wdir_of "$B/xdg")/opencode" "apply sets OPENCODE_CONFIG_DIR on the server"
 assert_eq "$(g show-environment -g ROOST_TMUX 2>/dev/null)" "ROOST_TMUX=$TMUXBIN" \
   "apply exports the absolute tmux path as ROOST_TMUX, so the shim can read the switch without tmux on PATH"
-assert_eq "$(g show-environment -g ROOST_WIRING_DIR 2>/dev/null)" "ROOST_WIRING_DIR=$B/xdg/roost/wiring" \
-  "apply exports ROOST_WIRING_DIR"
+assert_eq "$(g show-environment -g ROOST_WIRING_DIR 2>/dev/null)" "ROOST_WIRING_DIR=$(wdir_of "$B/xdg")" \
+  "apply exports this checkout's own ROOST_WIRING_DIR"
 assert_contains "$(g show-options -gqv default-command)" "$HERE/scripts/roost-pane-shell" \
   "apply sets default-command to roost-pane-shell"
 assert_eq "$(g show-options -gqv @roost-wiring-active)" "on" "apply marks the server wired"
+
+# =============================================================================
+printf '\n== apply: an old plugin link to a directory is replaced, not moved into ==\n'
+box symdir
+srv
+mkdir -p "$(wdir_of "$B/xdg")/opencode/plugin" "$B/somedir"
+ln -s "$B/somedir" "$(wdir_of "$B/xdg")/opencode/plugin/roost.js"
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+[ "$(wdir_of "$B/xdg")/opencode/plugin/roost.js" -ef "$HERE/adapters/opencode/roost.js" ]
+assert_true $? "a roost.js that was a symlink to a directory now points at the adapter"
+assert_eq "$(ls -A "$B/somedir")" "" "nothing was moved into the directory the old link named"
+
+# =============================================================================
+printf '\n== apply: a relative XDG_CONFIG_HOME is ignored ==\n'
+box relxdg
+srv
+( cd "$B" && ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME=rel "$WIRING" apply >/dev/null 2>&1 )
+[ ! -e "$B/rel" ]; assert_true $? "nothing is written under a relative XDG_CONFIG_HOME"
+[ -f "$(settings_of "$B/home/.config")" ]; assert_true $? "a relative XDG_CONFIG_HOME falls back to HOME/.config"
+
+# =============================================================================
+printf '\n== two checkouts, two servers: neither overwrites the other ==\n'
+box two
+srv
+copy="$B/copyB"
+mkdir -p "$copy"
+( cd "$HERE" && tar cf - --exclude=.git --exclude=site --exclude=.claude . ) | ( cd "$copy" && tar xf - )
+copy="$(cd -P "$copy" && pwd)"
+IDB="$(printf '%s' "$copy" | cksum | cut -d' ' -f1)"
+mkdir -p "$B/sockB"
+tmux -S "$B/sockB/roost" -f /dev/null new-session -d -s main 'sleep 600'
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+ROOST_SOCKET="$B/sockB/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$copy/scripts/roost-wiring" apply >/dev/null 2>&1
+[ "$IDB" != "$ID" ]; assert_true $? "a second checkout has a different id"
+assert_contains "$(cat "$(settings_of "$B/xdg")")" "\"$HERE/scripts/roost-agent-state working\"" \
+  "after the second checkout's server starts, the first checkout's file still names the first checkout"
+assert_contains "$(cat "$B/xdg/roost/wiring/$IDB/claude/settings.json")" "\"$copy/scripts/roost-agent-state working\"" \
+  "the second checkout writes its own directory"
+assert_eq "$(g show-environment -g ROOST_WIRING_DIR)" "ROOST_WIRING_DIR=$(wdir_of "$B/xdg")" \
+  "the first server still names the first checkout's directory"
+tmux -S "$B/sockB/roost" kill-server 2>/dev/null
 
 # =============================================================================
 printf '\n== apply leaves a non-roost socket, a user default-command and a user OPENCODE_CONFIG_DIR alone ==\n'
@@ -143,6 +202,13 @@ tmux -S "$B/sock/other" -f /dev/null new-session -d -s main 'sleep 600'
 ROOST_SOCKET="$B/sock/other" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
 [ ! -e "$B/xdg/roost/wiring" ]; assert_true $? "a socket not named roost gets no wiring and no files"
 assert_eq "$(tmux -S "$B/sock/other" show-options -gqv default-command)" "" "a socket not named roost keeps an empty default-command"
+out="$(ROOST_SOCKET="$B/sock/other" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" off 2>&1)"; rc=$?
+assert_eq "$rc" "1" "roost wiring off on a socket not named roost refuses"
+assert_contains "$out" "is not a roost server" "and says why"
+assert_eq "$(tmux -S "$B/sock/other" show-options -gqv @roost-wiring-enabled)" "" "and sets nothing on that server"
+ROOST_SOCKET="$B/sock/other" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" remove >/dev/null 2>&1
+assert_eq "$(tmux -S "$B/sock/other" show-options -gqv @roost-wiring-enabled)" "" \
+  "roost wiring remove against a socket not named roost changes nothing on that server"
 tmux -S "$B/sock/other" kill-server 2>/dev/null
 
 box userdc
@@ -174,54 +240,55 @@ assert_eq "$(g show-options -gqv default-command)" "" "wiring.off marker: no def
 # =============================================================================
 printf '\n== the shim: scope, recursion, and the per-run bypass ==\n'
 box shim
-mkdir -p "$B/xdg/roost/wiring/claude"; echo '{"hooks":{}}' > "$(settings_of "$B/xdg")"
-set_ok="--settings $(settings_of "$B/xdg")"
+W="$(wdir_of "$B/xdg")"
+mkdir -p "$W/claude"; echo '{"hooks":{}}' > "$W/claude/settings.json"
+set_ok="--settings $W/claude/settings.json"
 P="$HERE/shims:$B/real:/usr/bin:/bin"
 
-assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" -- -p hi)" "REAL $set_ok -p hi" \
+assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$W" -- -p hi)" "REAL $set_ok -p hi" \
   "inside a roost server the shim adds --settings"
-assert_eq "$(shim_run PATH="$P" -- -p hi)" "REAL -p hi" "outside tmux the argv is untouched"
-assert_eq "$(shim_run PATH="$P" TMUX="/x/default,1,0" -- -p hi)" "REAL -p hi" \
+assert_eq "$(shim_run PATH="$P" ROOST_WIRING_DIR="$W" -- -p hi)" "REAL -p hi" "outside tmux the argv is untouched"
+assert_eq "$(shim_run PATH="$P" TMUX="/x/default,1,0" ROOST_WIRING_DIR="$W" -- -p hi)" "REAL -p hi" \
   "inside some other tmux server the argv is untouched"
-assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_NO_SHIM=1 -- -p hi)" "REAL -p hi" \
+assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$W" ROOST_NO_SHIM=1 -- -p hi)" "REAL -p hi" \
   "ROOST_NO_SHIM=1 runs the real claude with no roost settings"
-assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_NO_SHIM= -- -p hi)" "REAL $set_ok -p hi" \
+assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$W" ROOST_NO_SHIM= -- -p hi)" "REAL $set_ok -p hi" \
   "an EMPTY ROOST_NO_SHIM is not a request to bypass"
-assert_eq "$(shim_run PATH="$HERE/shims:$HERE/shims:$B/real:/usr/bin:/bin" TMUX="/x/roost,1,0" -- hi)" \
+assert_eq "$(shim_run PATH="$HERE/shims:$HERE/shims:$B/real:/usr/bin:/bin" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$W" -- hi)" \
   "REAL $set_ok hi" "the shim directory twice on PATH: no recursion, one --settings"
-out="$(shim_run PATH="$HERE/shims:/usr/bin:/bin" TMUX="/x/roost,1,0" -- hi; echo "rc=$?")"
+out="$(shim_run PATH="$HERE/shims:/usr/bin:/bin" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$W" -- hi; echo "rc=$?")"
 assert_contains "$out" "roost: no claude found on PATH after roost's shim" "no real claude on PATH: the shim says so"
 assert_contains "$out" "rc=127" "no real claude on PATH: exit 127, never a loop"
-rm "$(settings_of "$B/xdg")"
-assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" -- hi)" "REAL hi" "settings file missing: argv untouched"
-echo '{"hooks":{}}' > "$(settings_of "$B/xdg")"
-assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$B/elsewhere" -- hi)" "REAL hi" \
-  "ROOST_WIRING_DIR names where the settings are; a directory without them means no --settings"
+assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" -- hi)" "REAL hi" \
+  "no ROOST_WIRING_DIR: argv untouched — the shim never guesses a shared directory"
+rm "$W/claude/settings.json"
+assert_eq "$(shim_run PATH="$P" TMUX="/x/roost,1,0" ROOST_WIRING_DIR="$W" -- hi)" "REAL hi" "settings file missing: argv untouched"
+echo '{"hooks":{}}' > "$W/claude/settings.json"
 
 # =============================================================================
 printf '\n== the shim: the server switch, read through ROOST_TMUX ==\n'
 srv
 S="$B/sock/roost"
 g set-option -g @roost-wiring-enabled off
-assert_eq "$(shim_run PATH="$HERE/shims:$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin" TMUX="$S,1,0" -- hi)" "REAL hi" \
+assert_eq "$(shim_run PATH="$HERE/shims:$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin" TMUX="$S,1,0" ROOST_WIRING_DIR="$W" -- hi)" "REAL hi" \
   "@roost-wiring-enabled off: the shim runs the real claude with no settings"
-assert_eq "$(shim_run PATH="$P" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" -- hi)" "REAL hi" \
+assert_eq "$(shim_run PATH="$P" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" -- hi)" "REAL hi" \
   "the switch is read through ROOST_TMUX when tmux is not on the pane's PATH"
 g set-option -gu @roost-wiring-enabled
-assert_eq "$(shim_run PATH="$P" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" -- hi)" "REAL $set_ok hi" \
+assert_eq "$(shim_run PATH="$P" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" -- hi)" "REAL $set_ok hi" \
   "switch cleared: --settings again"
 
 # =============================================================================
-printf '\n== panes: default-command and spawn put the shim first ==\n'
+printf '\n== panes: the first pane, default-command and spawn all put the shim first ==\n'
 box panes
 # A stand-in login shell: tmux runs default-command through it with -c, and
-# roost-pane-shell execs it with -l. The -l call records what claude resolves
-# to, then waits.
+# roost-pane-shell execs it with -l. The -l call records, per pane, what claude
+# resolves to, then waits.
 cat > "$B/recsh" <<EOF
 #!/bin/sh
 case "\$1" in
   -c) exec /bin/sh -c "\$2" ;;
-  -l) printf '%s\n' "\$(command -v claude)" > "$B/out/login-claude"; exec sleep 600 ;;
+  -l) printf '%s\n' "\$(command -v claude)" > "$B/out/login-\$TMUX_PANE"; exec sleep 600 ;;
 esac
 exec /bin/sh "\$@"
 EOF
@@ -231,10 +298,16 @@ PATH_BOX="$B/real:/usr/bin:/bin:$(dirname "$TMUXBIN")"
 env PATH="$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" ROOST_SOCKET="$S" \
   "$ROOST" spawn first 'sleep 600' >/dev/null 2>&1
 assert_eq "$(tmux -S "$S" show-options -gqv @roost-wiring-active)" "on" "a server started by roost spawn is wired"
+# The first pane of the first session: created by ensure_session's new-session,
+# BEFORE apply ran, and the pane `roost up` attaches a human to.
+first="$(tmux -S "$S" list-panes -t main:1 -F '#{pane_id}' | head -1)"
+for _ in $(seq 1 40); do [ -s "$B/out/login-$first" ] && break; sleep 0.1; done
+assert_eq "$(cat "$B/out/login-$first" 2>/dev/null)" "$HERE/shims/claude" \
+  "the FIRST pane of a server roost started resolves claude to roost's shim"
 # A window from a client with no command — the prefix-c shape.
-env PATH="$PATH_BOX" tmux -S "$S" new-window -t main: 2>/dev/null
-for _ in $(seq 1 40); do [ -s "$B/out/login-claude" ] && break; sleep 0.1; done
-assert_eq "$(cat "$B/out/login-claude" 2>/dev/null)" "$HERE/shims/claude" \
+newp="$(env PATH="$PATH_BOX" tmux -S "$S" new-window -P -F '#{pane_id}' -t main: 2>/dev/null)"
+for _ in $(seq 1 40); do [ -s "$B/out/login-$newp" ] && break; sleep 0.1; done
+assert_eq "$(cat "$B/out/login-$newp" 2>/dev/null)" "$HERE/shims/claude" \
   "a client-created pane with no command resolves claude to roost's shim"
 env PATH="$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" ROOST_SOCKET="$S" \
   "$ROOST" spawn second "command -v claude > '$B/out/spawn-claude'; sleep 600" >/dev/null 2>&1
@@ -242,8 +315,7 @@ for _ in $(seq 1 40); do [ -s "$B/out/spawn-claude" ] && break; sleep 0.1; done
 assert_eq "$(cat "$B/out/spawn-claude" 2>/dev/null)" "$HERE/shims/claude" \
   "roost spawn NAME CMD resolves claude to roost's shim"
 env PATH="$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" ROOST_SOCKET="$S" \
-  TMUX_PANE="$(tmux -S "$S" list-panes -t main:1 -F '#{pane_id}' | head -1)" \
-  "$ROOST" split -t "$(tmux -S "$S" list-panes -t main:1 -F '#{pane_id}' | head -1)" \
+  TMUX_PANE="$first" "$ROOST" split -t "$first" \
   "command -v claude > '$B/out/split-claude'; sleep 600" >/dev/null 2>&1
 for _ in $(seq 1 40); do [ -s "$B/out/split-claude" ] && break; sleep 0.1; done
 assert_eq "$(cat "$B/out/split-claude" 2>/dev/null)" "$HERE/shims/claude" \
@@ -277,8 +349,8 @@ assert_eq "$(tmux -S "$S" show-options -gqv @roost-wiring-enabled)" "off" "off s
 assert_eq "$(tmux -S "$S" show-options -gqv default-command)" "" "off removes roost's default-command"
 tmux -S "$S" show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
 assert_eq "$?" "1" "off removes roost's OPENCODE_CONFIG_DIR"
-out="$(env -i PATH="$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" ROOST_SOCKET="$S" \
-  "$ROOST" spawn third "printf '%s' \"\$PATH\" > '$B/out/off-path'; sleep 600" >/dev/null 2>&1)"
+env -i PATH="$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" ROOST_SOCKET="$S" \
+  "$ROOST" spawn third "printf '%s' \"\$PATH\" > '$B/out/off-path'; sleep 600" >/dev/null 2>&1
 for _ in $(seq 1 40); do [ -e "$B/out/off-path" ] && break; sleep 0.1; done
 case "$(cat "$B/out/off-path" 2>/dev/null)" in *"$HERE/shims"*) r=1 ;; '') r=2 ;; *) r=0 ;; esac
 assert_eq "$r" "0" "while off, roost spawn does not put the shim on PATH"
@@ -288,7 +360,7 @@ tmux -S "$S" show-options -gq @roost-wiring-enabled | grep -q .
 assert_eq "$?" "1" "on clears @roost-wiring-enabled"
 assert_contains "$(tmux -S "$S" show-options -gqv default-command)" "roost-pane-shell" "on restores default-command"
 assert_eq "$(tmux -S "$S" show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" \
-  "OPENCODE_CONFIG_DIR=$B/xdg/roost/wiring/opencode" "on restores OPENCODE_CONFIG_DIR"
+  "OPENCODE_CONFIG_DIR=$(wdir_of "$B/xdg")/opencode" "on restores OPENCODE_CONFIG_DIR"
 
 # =============================================================================
 printf '\n== roost wiring remove, then on ==\n'
@@ -312,42 +384,57 @@ doc() { env -i PATH="$1" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS
   COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
   ROOST_CONFIG_SOCK=/nonexistent ROOST_NOTIFY_SOCK=/nonexistent "${@:2}" "$HERE/scripts/roost-doctor" 2>&1; }
 DP="$HERE/shims:$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin"
+NOTMUX="$HERE/shims:$B/real:/usr/bin:/bin"
+W="$(wdir_of "$B/xdg")"
 ROOST_SOCKET="$S" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
 
-out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "✓ claude in this pane runs through roost's shim" "doctor: on, shim first → ok"
-out="$(doc "$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
+out="$(doc "$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "! claude in this pane resolves to $B/real/claude, not roost's shim" "doctor: on, shim bypassed → warn with the path that won"
-out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_NO_SHIM=1 ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_NO_SHIM=1 ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "· ROOST_NO_SHIM is set here" "doctor: ROOST_NO_SHIM → info"
-out="$(doc "$DP" TMUX="$S,1,0" ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
-assert_contains "$out" "! ROOST_TMUX is not set to a tmux binary" "doctor: ROOST_TMUX missing → warn"
-mv "$(settings_of "$B/xdg")" "$B/out/held"
-out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
+out="$(doc "$NOTMUX" TMUX="$S,1,0" ROOST_WIRING_DIR="$W")"
+assert_contains "$out" "! the claude shim cannot read the server switch here" "doctor: no ROOST_TMUX and no tmux on PATH → warn"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_WIRING_DIR="$W")"
+assert_lacks "$out" "cannot read the server switch" "doctor: no ROOST_TMUX but tmux on PATH → no warning, the shim reads it"
+mv "$W/claude/settings.json" "$B/out/held"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "! wiring is on but" "doctor: settings file missing → warn"
-mv "$B/out/held" "$(settings_of "$B/xdg")"
+mv "$B/out/held" "$W/claude/settings.json"
 out="$(doc "$DP" OPENCODE_CONFIG_DIR=/users/own/dir)"
 assert_contains "$out" "· OPENCODE_CONFIG_DIR is /users/own/dir, not roost's" "doctor: a user OPENCODE_CONFIG_DIR → info"
-out="$(doc "$DP")"
-assert_contains "$out" "· not inside a roost pane — the claude shim check was skipped" "doctor: outside roost → info"
+out="$(doc "$DP" OPENCODE_CONFIG_DIR="$W/opencode")"
+assert_lacks "$out" "OPENCODE_CONFIG_DIR is" "doctor: roost's own OPENCODE_CONFIG_DIR → no note"
 g set-option -g @roost-wiring-enabled off
 out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN")"
 assert_contains "$out" "· wiring is off for this roost server" "doctor: server switch off → info"
+out="$(doc "$NOTMUX" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN")"
+assert_contains "$out" "· wiring is off for this roost server" "doctor reads the switch through ROOST_TMUX, as the shim does"
 g set-option -gu @roost-wiring-enabled
 : > "$B/xdg/roost/wiring.off"
 out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN")"
 assert_contains "$out" "· wiring is removed" "doctor: wiring.off marker → info"
 rm "$B/xdg/roost/wiring.off"
-HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
-COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
-  "$ROOST" install --only claude --yes </dev/null >/dev/null 2>&1
-out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
+install_claude
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "✓ the global Claude hooks and roost's wiring name the same commands, so each hook runs once" \
-  "doctor: global install for this checkout → ok, runs once"
+  "doctor: global install for the server's checkout → ok, runs once"
+out="$(doc "$DP")"
+assert_contains "$out" "· not inside a roost pane — the claude shim check was skipped" "doctor: outside roost → info"
+assert_lacks "$out" "runs once" "doctor outside roost claims nothing about hooks running once"
+cp "$W/claude/settings.json" "$B/out/gen-held"
+sed -i.bak "s#$HERE/scripts/#/other/checkout/scripts/#g" "$W/claude/settings.json"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W")"
+assert_contains "$out" "! the global Claude hooks name a different checkout than this server's wiring" \
+  "doctor compares the global install with the server's generated file, not with doctor's own checkout"
+cp "$B/out/gen-held" "$W/claude/settings.json"
 sed -i.bak "s#$HERE/scripts/#/some/other/checkout/scripts/#g" "$B/home/.claude/settings.json"
-out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$B/xdg/roost/wiring")"
-assert_contains "$out" "! the global Claude hooks name a different checkout, so every roost hook runs twice while wiring is on" \
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W")"
+assert_contains "$out" "! the global Claude hooks name a different checkout than this server's wiring, so every roost hook runs twice" \
   "doctor: global install for another checkout → warn, runs twice"
+out="$(doc "$DP")"
+assert_lacks "$out" "runs twice" "doctor outside roost claims nothing about hooks running twice"
 
 # =============================================================================
 printf '\n== sandbox ==\n'
