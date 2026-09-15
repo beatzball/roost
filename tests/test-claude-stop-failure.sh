@@ -170,5 +170,40 @@ for payload in "$(odd 429)" "$(odd '{}')" "$(odd drop)" "$(odd newline)" "$(odd 
   assert_contains "$(reason)" "unknown" "...with the kind given as unknown [${payload:0:40}]"
 done
 
+# --- the jq reader, on a PATH with no python3 ----------------------------------
+# Every machine this suite has run on has python3, so without this section the
+# jq branch is never run. Mutation showed why it matters: with ^ and $ in place
+# of \A and \z, jq's $ also matches before a trailing newline, and
+# "rate_limit\n" came back as rate_limit again with every test above green.
+#
+# The shim holds small exec wrappers, never symlinks to the real binaries: a
+# later `>` into a shim entry would follow a symlink and overwrite the real
+# tool. Only the commands the hook needs are in it, and python3 is not.
+if command -v jq >/dev/null 2>&1; then
+  shim="$sdir/jq-only-bin"; mkdir -p "$shim"
+  for c in tmux jq cat date dirname readlink sh bash env; do
+    real="$(command -v "$c")" || continue
+    printf '#!/bin/sh\nexec %s "$@"\n' "$real" > "$shim/$c"; chmod +x "$shim/$c"
+  done
+  env PATH="$shim" sh -c 'command -v python3' >/dev/null 2>&1
+  assert_eq "$?" "1" "the jq-only PATH really has no python3"
+  jhook() { env PATH="$shim" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" "$@"; }
+  hook working <<< "$UPS"
+  jhook error --stop-failure-hook <<< "$RATE_LIMIT"
+  assert_eq "$(pstate)" "error" "jq reader: a rate-limited turn badges error"
+  assert_contains "$(reason)" "rate_limit" "jq reader: ...and names rate_limit"
+  for v in newline nul; do
+    hook working <<< "$UPS"
+    jhook error --stop-failure-hook <<< "$(odd "$v")"
+    assert_contains "$(reason)" "unknown" "jq reader: a $v in the kind gives unknown"
+  done
+  hook done --stop-hook <<< "$STOP_OK"
+  hook working <<< "$UPS"
+  jhook error --stop-failure-hook <<< "$SUBAGENT"
+  assert_eq "$(pstate)" "working" "jq reader: a subagent's StopFailure leaves the main turn working"
+else
+  echo "  SKIP: jq not available, so the jq reader is not run here"
+fi
+
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
