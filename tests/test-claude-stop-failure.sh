@@ -185,8 +185,21 @@ if command -v jq >/dev/null 2>&1; then
     real="$(command -v "$c")" || continue
     printf '#!/bin/sh\nexec %s "$@"\n' "$real" > "$shim/$c"; chmod +x "$shim/$c"
   done
+  # The absence check accepts ANY non-zero exit. POSIX does not fix the code
+  # `command -v` returns for a missing command: bash and macOS sh return 1, and
+  # dash — Ubuntu's sh — returns 127. Asserting exactly 1 failed PR #63's CI on
+  # Ubuntu, and was reproduced locally by making the shim's sh dash.
+  #
+  # "Non-zero" alone would pass for a probe that cannot run at all, so a
+  # positive control goes first: the SAME shim sh, with python3's own
+  # directory added after the shim, must FIND python3. If the shim's sh or the
+  # probe is broken, that fails, and the absence check below proves nothing.
+  pydir="$(dirname "$(command -v python3)")"
+  env PATH="$shim:$pydir" sh -c 'command -v python3' >/dev/null 2>&1
+  assert_eq "$?" "0" "positive control: the shim's sh finds python3 when its directory is on PATH"
   env PATH="$shim" sh -c 'command -v python3' >/dev/null 2>&1
-  assert_eq "$?" "1" "the jq-only PATH really has no python3"
+  jrc=$?
+  [ "$jrc" -ne 0 ]; assert_true $? "the jq-only PATH really has no python3 (probe exit $jrc)"
   jhook() { env PATH="$shim" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" "$@"; }
   hook working <<< "$UPS"
   jhook error --stop-failure-hook <<< "$RATE_LIMIT"
