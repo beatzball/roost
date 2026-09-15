@@ -156,6 +156,81 @@ out="$(run_doctor "$EMPTY" COLORTERM=truecolor PATH="$shimdir:$PATH" 2>&1)"
 assert_contains "$out" "3.4" "doctor accepts tmux 3.4"
 rm -rf "$shimdir"
 
+# --- the product version (#47) ----------------------------------------------
+# doctor is what a user pastes into a bug report, so it names which roost wrote
+# it. Four properties, each pinned separately:
+#
+#   1. It is the FIRST line (stdout is not a terminal here, so no banner comes
+#      before it). A partial paste keeps the top of a report, and a version
+#      anywhere else is the line that gets cut off.
+#   2. It equals `roost version` byte for byte, so the two cannot drift.
+#   3. An unreadable VERSION says "unknown" plainly, and doctor still runs.
+#   4. It is context, not a check: doctor's exit code is the same with the
+#      version readable or not, for a passing run AND a failing one.
+first_line() { local l; IFS= read -r l <<EOF
+$1
+EOF
+  printf '%s' "$l"; }
+want_ver="$("$HERE/bin/roost" version)"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor 2>&1)"
+assert_eq "$(first_line "$out")" "  roost version: $want_ver" \
+  "doctor's first line is the version, and it equals roost version"
+
+# A copy of the tree, so VERSION can be taken away without touching this
+# checkout. The tmux shims make both exit codes deterministic: 3.4 passes the
+# one required check doctor has, 3.1c fails it.
+vtree="$(mktemp -d /tmp/amx.XXXX)"
+cp -R "$HERE/bin" "$HERE/scripts" "$HERE/adapters" "$HERE/VERSION" "$vtree/"
+vshim_ok="$(mktemp -d /tmp/amx.XXXX)"; vshim_bad="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\n[ "$1" = "-V" ] && { echo "tmux 3.4"; exit 0; }\nexit 0\n'  > "$vshim_ok/tmux"
+printf '#!/bin/sh\n[ "$1" = "-V" ] && { echo "tmux 3.1c"; exit 0; }\nexit 0\n' > "$vshim_bad/tmux"
+chmod +x "$vshim_ok/tmux" "$vshim_bad/tmux"
+# vdoc SHIMDIR -> run the copy's doctor; sets $vout (the report) and $vrc. Not
+# called in $(...): a subshell would lose both.
+vdoc() { vout="$(run_doctor "$EMPTY" COLORTERM=truecolor PATH="$1:$PATH" 2>&1)"; vrc=$?; }
+DOC_SAVED="$DOC"; DOC="$vtree/scripts/roost-doctor"
+vdoc "$vshim_ok";  rc_ok_readable=$vrc
+vdoc "$vshim_bad"; rc_bad_readable=$vrc
+# The control: the copy really does report the version while VERSION is there,
+# so "unknown" below is caused by the removal and nothing else.
+vdoc "$vshim_ok"
+assert_eq "$(first_line "$vout")" "  roost version: $want_ver" "control: the copied tree's doctor reports its version"
+
+rm "$vtree/VERSION"
+vdoc "$vshim_ok"; rc_ok_missing=$vrc
+assert_contains "$(first_line "$vout")" "roost version: unknown (could not read $vtree/VERSION)" \
+  "a missing VERSION: doctor's first line says the version is unknown, and which file it could not read"
+assert_contains "$vout" "tmux 3.4" "a missing VERSION: doctor still runs its checks"
+assert_eq "$("$vtree/bin/roost" version)" "unknown" "control: roost version itself reads unknown in that tree"
+vdoc "$vshim_bad"; rc_bad_missing=$vrc
+assert_eq "$rc_ok_readable" "0" "control: the passing doctor run exits 0"
+assert_eq "$rc_bad_readable" "1" "control: the failing doctor run exits 1"
+assert_eq "$rc_ok_missing" "$rc_ok_readable" "a missing VERSION does not change a passing doctor's exit code"
+assert_eq "$rc_bad_missing" "$rc_bad_readable" "a missing VERSION does not change a failing doctor's exit code"
+
+# Unreadable rather than missing: a stray permissions change. Skipped as root,
+# which reads a mode 000 file it owns.
+if [ "$(id -u)" != "0" ]; then
+  cp "$HERE/VERSION" "$vtree/VERSION"; chmod 000 "$vtree/VERSION"
+  vdoc "$vshim_ok"
+  assert_contains "$(first_line "$vout")" "roost version: unknown" \
+    "an unreadable VERSION: doctor's first line says the version is unknown"
+  assert_eq "$vrc" "$rc_ok_readable" "an unreadable VERSION does not change doctor's exit code"
+  chmod 644 "$vtree/VERSION"
+fi
+
+# bin/roost itself missing from the tree: it answers nothing at all, which is
+# unknown too, never an empty "roost version: " field. VERSION is readable
+# here, so the line must name bin/roost and not blame VERSION. Found by review.
+mv "$vtree/bin/roost" "$vtree/bin/roost.gone"
+vdoc "$vshim_ok"
+assert_eq "$(first_line "$vout")" "  roost version: unknown ($vtree/bin/roost gave no version)" \
+  "no bin/roost to ask: doctor's first line says the version is unknown, and names bin/roost, not VERSION"
+assert_eq "$vrc" "$rc_ok_readable" "no bin/roost to ask: doctor's exit code is unchanged"
+mv "$vtree/bin/roost.gone" "$vtree/bin/roost"
+DOC="$DOC_SAVED"
+rm -rf "$vtree" "$vshim_ok" "$vshim_bad"
+
 # --- the opencode adapter check ---
 # Informational only: most users will not have opencode, and its absence must
 # never fail the required-check exit code.

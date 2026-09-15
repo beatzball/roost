@@ -1353,7 +1353,43 @@ JSON
     t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
     ;;
   wait-done|wait)
-    need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout="${3:-0}"
+    need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout=0
+    # TIMEOUT_SEC is refused here, before any polling, unless it is a whole
+    # number of seconds (#66). It flows into `[ "$timeout" -gt 0 ]` and
+    # `$((timeout * 4))` in the loop below, and measured on the old code:
+    #
+    #   - `abc`, `1.5`, or a number too big for bash's integers: the `[` test
+    #     errors rather than succeeds, so the loop never ended and printed
+    #     `bin/roost: line N: [: abc: integer expression expected` — the
+    #     checkout's path — four times a second.
+    #   - `-5`: `-5 -gt 0` is false, so it silently waited with no limit.
+    #   - an EMPTY string: `${3:-0}` read it as omitted, and waited with no
+    #     limit. So the test is on $#, not on emptiness: omitted is the
+    #     default, an empty value is a caller's bug (an unset variable) and is
+    #     refused like any other.
+    #   - `08`: a leading zero made the arithmetic octal, so 08 was a bash
+    #     error and 010 meant eight seconds. Leading zeros are stripped, so
+    #     both are decimal.
+    #
+    # At most 15 digits once the zeros are gone, which is 31 million years:
+    # `timeout * 4` has to fit a 64-bit integer, and a longer value would wrap
+    # to a negative number and wait with no limit.
+    #
+    # Exit 1 and a usage line, as need_arg does, and echo rather than a
+    # `${3:?}` expansion for need_arg's reason: no path, no line number.
+    if [ "$#" -ge 3 ]; then
+      timeout="$3"
+      case "$timeout" in
+        ''|*[!0-9]*) timeout=bad ;;
+        *) timeout="${timeout#"${timeout%%[!0]*}"}"; timeout="${timeout:-0}"
+           [ "${#timeout}" -le 15 ] || timeout=bad ;;
+      esac
+      if [ "$timeout" = bad ]; then
+        echo "roost wait-done: TIMEOUT_SEC must be a whole number of seconds from 0 to 999999999999999, got '$3'" >&2
+        echo "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]" >&2
+        exit 1
+      fi
+    fi
     tgt="$(target "$raw")"
     # A %N target is pane-precise; anything else aggregates the window's agent
     # panes. The two cases MUST branch on the target form: `list-panes -t %N`
