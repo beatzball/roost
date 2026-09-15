@@ -26,12 +26,12 @@ agent starts. It does this without editing your own config files.
   all still apply.
 - **opencode** gets `OPENCODE_CONFIG_DIR`, pointing at a folder under
   `~/.config/roost/wiring/`, which opencode merges with your own configuration.
+- **codex, pi and copilot** still badge only through `roost install`. See
+  [State Badges](/docs/state-badges).
 
 Each roost checkout gets its own folder under `~/.config/roost/wiring/`, so a
 second roost server started from another checkout never changes the files the
 first one uses.
-- **codex, pi and copilot** still badge only through `roost install`. See
-  [State Badges](/docs/state-badges).
 
 Outside roost, nothing changes. If you already ran `roost install`, nothing
 runs twice: the hooks in both places are the same commands, and Claude runs a
@@ -42,7 +42,7 @@ You can back out at every level:
 | to run without roost's wiring | do this |
 |---|---|
 | one `claude` | `ROOST_NO_SHIM=1 claude` |
-| everything started from one shell | `export ROOST_NO_SHIM=1` |
+| every `claude` you type in one shell | `export ROOST_NO_SHIM=1` (a `roost spawn` from that shell is still wired) |
 | new panes in one roost session | `roost wiring off -t SESSION` (undo: `roost wiring on -t SESSION`) |
 | this roost server, until it stops | `roost wiring off` (undo: `roost wiring on`) |
 | every roost server, from the start | `set -g @roost-wiring-enabled off` in `~/.config/roost/roost.conf` |
@@ -59,8 +59,10 @@ anything. After a restart, roost behaves as it did before wiring existed.
 `roost wiring on` removes the marker again. None of these commands edit your
 `roost.conf`, `~/.claude` or `~/.config/opencode`.
 
-A `default-command` you set in your own `roost.conf` is kept, and then new
-panes do not get the shim. `roost doctor` tells you which state you are in.
+A `default-command` you set in your own `roost.conf` is kept. New panes that
+start a plain shell then do not get the shim; commands started with `roost
+spawn` or `roost split` still do. `roost doctor` tells you which state you are
+in.
 
 ## Themes
 

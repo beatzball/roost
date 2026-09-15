@@ -766,7 +766,11 @@ Holes in what did ship:
   server uses `~/.config/roost/wiring/<checkout id>/`, so a second server from
   another checkout cannot overwrite the file a running server's panes use (found
   in review). A checkout that is moved or deleted leaves its directory behind
-  until `roost wiring remove`; the files are small.
+  until `roost wiring remove`; the files are small. `roost wiring on` run from
+  a DIFFERENT checkout re-points a running server at that checkout's
+  directory: new panes get its hooks, panes already open keep the old ones. If
+  the global install names the first checkout, doctor's "runs twice" row is
+  the only thing that says so.
 - **Two routes for two checkouts run every Claude hook twice.** Identical
   commands run once (measured with real user settings); a global install
   pointing at a different checkout is not identical. Doctor warns.
@@ -782,6 +786,14 @@ Holes in what did ship:
   carry it: if the user's global plugin link names a checkout from before #58,
   and opencode loads that unguarded copy, roost's copy registers as well and
   every event reports twice. Doctor has no row for this.
+- **A user's own `--settings` replaces roost's for that run.** The shim puts
+  its `--settings` before the user's arguments. Measured on Claude Code
+  2.1.272 with two `--settings` flags, each file carrying a stamp hook: only
+  the LAST file's hook ran. So `claude --settings mine.json` inside roost runs
+  with the user's file and without roost's hooks — no badge for that run, and
+  never a double. Putting roost's last instead would silently drop the user's
+  file, which is worse. `claude --settings <file> mcp list` works (exit 0, the
+  same output as without it), so the position before a subcommand is fine.
 - **`roost wiring off -t SESSION` affects new panes only.** A pane that already
   exists keeps the environment its shell started with; use
   `export ROOST_NO_SHIM=1` there. Not measured for opencode's

@@ -211,6 +211,18 @@ assert_eq "$(tmux -S "$B/sock/other" show-options -gqv @roost-wiring-enabled)" "
   "roost wiring remove against a socket not named roost changes nothing on that server"
 tmux -S "$B/sock/other" kill-server 2>/dev/null
 
+box userdc2
+srv
+# A user's own command that merely CONTAINS roost's script name. Round 2 of
+# review found a substring match reading this as roost's own.
+g set-option -g default-command "/opt/user/roost-pane-shell-wrapper"
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-options -gqv default-command)" "/opt/user/roost-pane-shell-wrapper" \
+  "a user default-command that only contains roost-pane-shell is not replaced by apply"
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" off >/dev/null 2>&1
+assert_eq "$(g show-options -gqv default-command)" "/opt/user/roost-pane-shell-wrapper" \
+  "and is not removed by off"
+
 box userdc
 srv
 g set-option -g default-command "exec /bin/sh"
@@ -325,6 +337,13 @@ env PATH="$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" RO
 for _ in $(seq 1 40); do [ -s "$B/out/argv-claude" ] && break; sleep 0.1; done
 assert_eq "$(cat "$B/out/argv-claude" 2>/dev/null)" "$HERE/shims/claude" \
   "roost spawn NAME with a multi-word argv still runs it, with the shim first"
+# A client whose PATH already starts with the shim directory — an agent in a
+# wired pane running `roost spawn` — gets it once, not twice.
+env PATH="$HERE/shims:$PATH_BOX" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" ROOST_SOCKET="$S" \
+  "$ROOST" spawn nested "printf '%s' \"\$PATH\" > '$B/out/nested-path'; sleep 600" >/dev/null 2>&1
+for _ in $(seq 1 40); do [ -s "$B/out/nested-path" ] && break; sleep 0.1; done
+assert_eq "$(tr ':' '\n' < "$B/out/nested-path" 2>/dev/null | grep -cxF "$HERE/shims")" "1" \
+  "a nested spawn does not put the shim directory on PATH twice"
 
 # =============================================================================
 printf '\n== roost wiring off / on, for the server and for one session ==\n'
@@ -338,6 +357,11 @@ assert_eq "$(tmux -S "$S" show-environment -t other OPENCODE_CONFIG_DIR 2>/dev/n
   "off -t SESSION removes OPENCODE_CONFIG_DIR for that session"
 tmux -S "$S" show-environment -t main ROOST_NO_SHIM >/dev/null 2>&1
 assert_eq "$?" "1" "off -t SESSION leaves other sessions alone"
+# A NEW pane in that session, created by a client, really carries the opt-out
+# into its environment — which is what the shim reads.
+env PATH="$PATH_BOX" tmux -S "$S" new-window -t other: "printf '%s' \"\${ROOST_NO_SHIM:-unset}\" > '$B/out/other-noshim'; sleep 600" 2>/dev/null
+for _ in $(seq 1 40); do [ -s "$B/out/other-noshim" ] && break; sleep 0.1; done
+assert_eq "$(cat "$B/out/other-noshim" 2>/dev/null)" "1" "a new pane in an opted-out session sees ROOST_NO_SHIM=1"
 w on -t other >/dev/null
 tmux -S "$S" show-environment -t other ROOST_NO_SHIM >/dev/null 2>&1
 assert_eq "$?" "1" "on -t SESSION clears ROOST_NO_SHIM there"
@@ -355,7 +379,12 @@ for _ in $(seq 1 40); do [ -e "$B/out/off-path" ] && break; sleep 0.1; done
 case "$(cat "$B/out/off-path" 2>/dev/null)" in *"$HERE/shims"*) r=1 ;; '') r=2 ;; *) r=0 ;; esac
 assert_eq "$r" "0" "while off, roost spawn does not put the shim on PATH"
 
+out="$(w on -t other)"
+assert_contains "$out" "wiring is off for this server" "on -t SESSION while the server is off says it is still off"
+tmux -S "$S" set-environment -g ROOST_NO_SHIM 1
 w on >/dev/null; assert_eq "$?" "0" "roost wiring on exits 0"
+tmux -S "$S" show-environment -g ROOST_NO_SHIM >/dev/null 2>&1
+assert_eq "$?" "1" "server-wide on clears a global ROOST_NO_SHIM the server was started with"
 tmux -S "$S" show-options -gq @roost-wiring-enabled | grep -q .
 assert_eq "$?" "1" "on clears @roost-wiring-enabled"
 assert_contains "$(tmux -S "$S" show-options -gqv default-command)" "roost-pane-shell" "on restores default-command"
@@ -376,6 +405,36 @@ w on >/dev/null
 [ -f "$(settings_of "$B/xdg")" ]; assert_true $? "on after remove regenerates the settings file"
 
 # =============================================================================
+printf '\n== a checkout path with a space ==\n'
+# Its own box, AFTER the off/on and remove sections: those keep using the
+# panes box's $B and $S, and a `box` call in the middle of them re-pointed $B
+# at this one.
+box spacepath
+cat > "$B/recsh" <<EOF
+#!/bin/sh
+case "\$1" in
+  -c) exec /bin/sh -c "\$2" ;;
+  -l) printf '%s\n' "\$(command -v claude)" > "$B/out/login-\$TMUX_PANE"; exec sleep 600 ;;
+esac
+exec /bin/sh "\$@"
+EOF
+chmod +x "$B/recsh"
+CP="$B/with space/roost"
+mkdir -p "$CP"
+( cd "$HERE" && tar cf - --exclude=.git --exclude=site --exclude=.claude . ) | ( cd "$CP" && tar xf - )
+# Resolved, as roost-wiring resolves its own checkout: /tmp is /private/tmp
+# on macOS.
+CP="$(cd -P "$CP" && pwd)"
+env PATH="$B/real:/usr/bin:/bin:$(dirname "$TMUXBIN")" SHELL="$B/recsh" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" \
+  ROOST_SOCKET="$B/sock/roost" "$CP/bin/roost" spawn first 'sleep 600' >/dev/null 2>&1
+assert_eq "$(g show-options -gqv default-command)" "'$CP/scripts/roost-pane-shell'" \
+  "a checkout path with a space is written as one single-quoted default-command"
+sp_first="$(g list-panes -t main:1 -F '#{pane_id}' | head -1)"
+for _ in $(seq 1 40); do [ -s "$B/out/login-$sp_first" ] && break; sleep 0.1; done
+assert_eq "$(cat "$B/out/login-$sp_first" 2>/dev/null)" "$CP/shims/claude" \
+  "with a space in the checkout path, the first pane still resolves claude to that checkout's shim"
+
+# =============================================================================
 printf '\n== doctor: a row for every wiring state ==\n'
 box doc
 srv
@@ -394,6 +453,10 @@ out="$(doc "$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin" TMUX="$S,1,0" ROOST_TMU
 assert_contains "$out" "! claude in this pane resolves to $B/real/claude, not roost's shim" "doctor: on, shim bypassed → warn with the path that won"
 out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_NO_SHIM=1 ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "· ROOST_NO_SHIM is set here" "doctor: ROOST_NO_SHIM → info"
+assert_lacks "$out" "runs through roost's shim" "doctor: with ROOST_NO_SHIM set, no ✓ says the shim adds roost's hooks"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN")"
+assert_contains "$out" "! this pane has no ROOST_WIRING_DIR" "doctor: a pane opened before wiring was on → warn, open a new pane"
+assert_lacks "$out" "runs through roost's shim" "doctor: no ✓ for a pane whose shim has no settings to add"
 out="$(doc "$NOTMUX" TMUX="$S,1,0" ROOST_WIRING_DIR="$W")"
 assert_contains "$out" "! the claude shim cannot read the server switch here" "doctor: no ROOST_TMUX and no tmux on PATH → warn"
 out="$(doc "$DP" TMUX="$S,1,0" ROOST_WIRING_DIR="$W")"
@@ -435,6 +498,36 @@ assert_contains "$out" "! the global Claude hooks name a different checkout than
   "doctor: global install for another checkout → warn, runs twice"
 out="$(doc "$DP")"
 assert_lacks "$out" "runs twice" "doctor outside roost claims nothing about hooks running twice"
+# A roost server that was never wired.
+mkdir -p "$B/sockU"
+tmux -S "$B/sockU/roost" -f /dev/null new-session -d -s main 'sleep 600'
+out="$(doc "$DP" TMUX="$B/sockU/roost,1,0" ROOST_TMUX="$TMUXBIN")"
+assert_contains "$out" "· this roost server is not wired" "doctor: a roost server that was never wired → info, not 'wiring is on'"
+assert_lacks "$out" "wiring is on but" "doctor does not claim wiring is on for a server that was never wired"
+tmux -S "$B/sockU/roost" kill-server 2>/dev/null
+
+# =============================================================================
+printf '\n== a -L roost socket, by name ==\n'
+# tmux takes -L for a socket NAME and resolves it under TMUX_TMPDIR; the real
+# user's socket is the name `roost`, so the name form has to be exercised. The
+# guard and the throwaway TMUX_TMPDIR are mandatory (AGENTS.md §2): with
+# TMUX_TMPDIR unset, `-L roost` IS the live server. Every command below that
+# names the socket uses the resolved PATH with -S, never -L, except the one
+# roost-wiring call whose subject is the name form.
+box lroost
+LTMP="$(mktemp -d /tmp/amx.XXXX)"
+export TMUX_TMPDIR="$LTMP"
+roost_test_tmux_named_guard
+LSOCK="$LTMP/tmux-$(id -u)/roost"
+tmux -L roost -f /dev/null new-session -d -s main 'sleep 600'
+[ -S "$LSOCK" ]; assert_true $? "the -L roost test server landed in the throwaway TMUX_TMPDIR"
+ROOST_SOCKET=roost HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(tmux -S "$LSOCK" show-options -gqv @roost-wiring-active)" "on" "a -L roost server (by name) is wired"
+ROOST_SOCKET=roost HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" off >/dev/null 2>&1
+assert_eq "$(tmux -S "$LSOCK" show-options -gqv @roost-wiring-enabled)" "off" "roost wiring off reaches a -L roost server by name"
+tmux -S "$LSOCK" kill-server 2>/dev/null
+unset TMUX_TMPDIR
+rm -rf "$LTMP"
 
 # =============================================================================
 printf '\n== sandbox ==\n'

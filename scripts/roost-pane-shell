@@ -22,8 +22,15 @@
 # startup files run AFTER this, and M2 measured where the directory lands once
 # they have: in front of claude's install directory in every shell tried.
 shims=$(CDPATH= cd -P -- "$(dirname -- "$0")/../shims" 2>/dev/null && pwd -P)
+# Prepended unless it is already FIRST. A pane started by an agent in a wired
+# pane inherits a PATH that already begins with it, and each nesting level
+# used to add another copy. "Already somewhere on PATH" is not enough to skip:
+# it has to come before claude's own directory.
 if [ -n "$shims" ]; then
-  PATH="$shims:$PATH"
+  case "$PATH" in
+    "$shims" | "$shims":*) : ;;
+    *) PATH="$shims:$PATH" ;;
+  esac
   export PATH
 fi
 

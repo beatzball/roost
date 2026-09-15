@@ -249,7 +249,7 @@ and whether flag hooks plus the global `hooks.json` both fire.
 
 | harness | route | reaches a hand-typed agent | robustness | cost | what the user does |
 |---|---|---|---|---|---|
-| claude | shim on PATH, adds `--settings ~/.config/roost/wiring/claude/settings.json` | yes, when the shim precedes claude's directory after startup (4 of 4 shells here) | medium: PATH order is per machine; an alias to an absolute path or the user's own `default-command` bypasses it | a shim script, a `default-command`, one generated file | nothing; `roost doctor` reports a bypass |
+| claude | shim on PATH, adds `--settings ~/.config/roost/wiring/<checkout id>/claude/settings.json` | yes, when the shim precedes claude's directory after startup (4 of 4 shells here) | medium: PATH order is per machine; an alias to an absolute path or the user's own `default-command` bypasses it | a shim script, a `default-command`, one generated file | nothing; `roost doctor` reports a bypass |
 | opencode | `OPENCODE_CONFIG_DIR` in the roost server's global environment | yes, every pane and shell | high: an environment variable survives startup files; merged with the user's config | one variable, one symlink | nothing |
 | codex | stays on `roost install` | — | a shim loses to Homebrew in login zsh here, and trust must be written into `~/.codex/config.toml` either way | — | today's install and trust prompt |
 | pi | stays on `roost install` | — | no additive route; a shim loses to nvm here | — | today's install |
@@ -257,7 +257,7 @@ and whether flag hooks plus the global `hooks.json` both fire.
 
 ## What roost's Claude settings file sets
 
-The generated `~/.config/roost/wiring/claude/settings.json` has **exactly one
+The generated `~/.config/roost/wiring/<checkout id>/claude/settings.json` has **exactly one
 top-level key, `hooks`**, rendered by `roost_hooks_claude` — the same six
 entries, byte for byte, that `roost install` writes for this checkout:
 

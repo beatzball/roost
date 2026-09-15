@@ -16,6 +16,13 @@
 # appears in two sources, so a machine that already ran `roost install` does
 # not fire each hook twice (design M4, M4b).
 #
+# The pair goes BEFORE the user's own arguments. Measured on Claude Code
+# 2.1.272: with two `--settings` flags only the LAST file applies, so a user
+# who passes their own `--settings` gets theirs and not roost's hooks for that
+# run — a run without a badge, never one that loses the user's file. And
+# `claude --settings <file> mcp list` works, so the position ahead of a
+# subcommand is safe too.
+#
 # POSIX sh, not bash: this runs on every `claude` a human types inside roost,
 # on whatever /bin/sh the machine has.
 #

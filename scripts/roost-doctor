@@ -206,19 +206,34 @@ elif [ -z "$w_sock" ]; then
 elif [ -n "$w_tmux" ] && [ "$("$w_tmux" -S "$w_sock" show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
   w_state=off
   note "wiring is off for this roost server — claude runs without roost's settings; to restore, run: roost wiring on"
+elif [ -n "$w_tmux" ] && [ "$("$w_tmux" -S "$w_sock" show-options -gqv @roost-wiring-active 2>/dev/null)" != on ]; then
+  # A roost server that was never wired: started by a roost from before this
+  # existed, or apply failed quietly at server start. "Wiring is on but a file
+  # is missing" was the wrong story for it (found in review round 2).
+  w_state=unwired
+  note "this roost server is not wired — it started before roost wiring existed, or wiring could not be applied; run: roost wiring on"
 else
   w_state=on
   [ -n "${ROOST_NO_SHIM:-}" ] \
     && note "ROOST_NO_SHIM is set here — claude started from this shell or session runs without roost's settings"
   [ -n "$w_tmux" ] \
     || warn "the claude shim cannot read the server switch here — neither ROOST_TMUX nor tmux on PATH names a tmux binary, so wiring stays on; restart the roost server"
-  if [ -z "$w_dir" ] || [ ! -f "$w_dir/claude/settings.json" ]; then
-    warn "wiring is on but ${w_dir:-(no ROOST_WIRING_DIR)}/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
+  if [ -z "$w_dir" ]; then
+    # The server is wired but this pane's environment predates it: a pane that
+    # was open before `roost wiring on`. Only a new pane gets the variable.
+    warn "this pane has no ROOST_WIRING_DIR — it was opened before wiring was on, so claude here runs without roost's settings; open a new pane"
+  elif [ ! -f "$w_dir/claude/settings.json" ]; then
+    warn "wiring is on but $w_dir/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
   fi
   w_claude="$(command -v claude 2>/dev/null || true)"
   if [ -n "$w_claude" ]; then
     if [ -f "$(dirname "$w_claude")/.roost-shim" ]; then
-      ok "claude in this pane runs through roost's shim — its hooks come from $w_dir/claude/settings.json"
+      # The ✓ only when the shim really adds the file here. With ROOST_NO_SHIM
+      # set, or no file to add, the note or warning above is the whole truth,
+      # and a ✓ beside it contradicted it (found in review round 2).
+      if [ -z "${ROOST_NO_SHIM:-}" ] && [ -n "$w_dir" ] && [ -f "$w_dir/claude/settings.json" ]; then
+        ok "claude in this pane runs through roost's shim — its hooks come from $w_dir/claude/settings.json"
+      fi
     else
       # No alias in the list of causes: doctor runs in its own process, where
       # the user's shell aliases do not exist, so it cannot see one. An alias

@@ -160,7 +160,12 @@ generate() {
   mv -f "$lnk" "$WDIR/opencode/plugin/roost.js" || { rm -f "$lnk"; return 1; }
 }
 
-ours_defcmd() { case "$1" in *roost-pane-shell*) return 0 ;; esac; return 1; }
+# Whether a default-command is one this command set, from any checkout: the
+# exact form DEFCMD takes, a single-quoted path ending in
+# /scripts/roost-pane-shell. Not a substring match — that read a user's own
+# `/opt/x/roost-pane-shell-wrapper` as roost's, so `apply` replaced it and
+# `off` deleted it (found in review round 2).
+ours_defcmd() { case "$1" in \'*/scripts/roost-pane-shell\') return 0 ;; esac; return 1; }
 
 # Whether an OPENCODE_CONFIG_DIR line from `show-environment` is one this
 # command set, from any checkout.
@@ -243,12 +248,23 @@ case "$cmd" in
       # never set there makes tmux complain, and that is not a failure.
       t set-environment -t "=$sess" -u ROOST_NO_SHIM 2>/dev/null || true
       t set-environment -t "=$sess" -u OPENCODE_CONFIG_DIR 2>/dev/null || true
-      echo "roost wiring: session $sess no longer opts out; new panes there are wired"
+      if [ "$(t show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
+        echo "roost wiring: session $sess no longer opts out, but wiring is off for this server; run: roost wiring on"
+      else
+        echo "roost wiring: session $sess no longer opts out; new panes there are wired"
+      fi
       exit 0
     fi
     rm -f "$MARK" 2>/dev/null || true
     if server_up && is_roost_socket; then
       t set-option -gu @roost-wiring-enabled 2>/dev/null || true
+      # A ROOST_NO_SHIM in the server's GLOBAL environment opts out every pane
+      # the server will ever start: tmux copies the starting client's
+      # environment there, so a server started from a shell with
+      # `export ROOST_NO_SHIM=1` has it. `on` for the whole server means on,
+      # so it goes too (found in review round 2). The user's own shells keep
+      # theirs.
+      t set-environment -gu ROOST_NO_SHIM 2>/dev/null || true
       apply || exit 1
       echo "roost wiring: on — new panes run claude with $WDIR/claude/settings.json"
     else
