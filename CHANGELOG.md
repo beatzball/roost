@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.1]
+
+### Fixed
+
+- **`roost wait-done` now spots an agent that died at a shell prompt** (#64).
+  Before, if you started an agent by typing its name in a pane and it then died,
+  the pane stayed alive, the badge stayed ⏳, and `wait-done` waited for its whole
+  timeout. It now exits **2** and says the agent died, as it already did when a
+  pane closes.
+
+### Known limits
+
+- **A Claude killed in the middle of a reply is not caught quickly.** Claude
+  starts a `caffeinate` helper that can outlive it by up to about 5 minutes.
+  Until that helper exits, `wait-done` behaves as before: it waits, then times
+  out with exit 1. codex is caught in under a second.
+- A wrapper program that outlives its agent is never caught.
+- **Neither case ever reports a false "died".** The evidence for a quicker rule
+  is in issue #72.
+
 ## [0.4.0]
 
 Roost can now wire the agents in its own panes, instead of editing your files.
