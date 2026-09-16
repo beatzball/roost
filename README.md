@@ -252,10 +252,20 @@ Everything below is for people working **on** roost.
 ```
 bin/roost                   # launcher / CLI (up, session, new, spawn, split, view,
                             #   whoami, ssh, send, read, screen, reply, wait-done,
-                            #   state, hooks, doctor, validate, ext, install, update,
-                            #   init, settings, status, kill). Its `*)` fallback is the
-                            #   extension dispatcher — see "The extension seam"
+                            #   state, hooks, doctor, validate, ext, wiring, install,
+                            #   update, init, settings, status, kill). Its `*)` fallback
+                            #   is the extension dispatcher — see "The extension seam"
 tmux/roost.conf             # the isolated agent-view config
+shims/claude                # roost's claude shim: inside a roost pane it adds
+                            #   `--settings` with roost's hooks, anywhere else it
+                            #   execs the real claude untouched. shims/.roost-shim
+                            #   marks the directory so the lookup skips it (#58)
+scripts/roost-pane-shell    # what a wired pane runs: the shim directory first on
+                            #   PATH, then the login shell or the given command.
+                            #   The server's own PATH never reaches a pane
+scripts/roost-wiring        # `roost wiring`: generates ~/.config/roost/wiring/, sets
+                            #   default-command and OPENCODE_CONFIG_DIR when a server
+                            #   starts, and every way to turn that off
 scripts/roost-agent-state   # hook target that records agent state
                             #   (+ elapsed-time stamp, block notify, and the
                             #    turn's reply from the Stop payload)
