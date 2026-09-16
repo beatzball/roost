@@ -64,6 +64,25 @@ production.
 So: after editing `CHANGELOG.md`, or after adding a page to the sidebar, run
 `pnpm sync` and commit what it writes.
 
+## The landing-page hero is recorded, not screenshotted
+
+`public/roost-hero.png` comes out of [vhs](https://github.com/charmbracelet/vhs),
+from two files at the repository root:
+
+```sh
+./demo/seed-fleet.sh          # a throwaway roost server with a real fleet on it
+vhs demo/roost-hero.tape      # writes demo/roost-hero.{png,gif} and roost-agent.png
+cp demo/roost-hero.png site/public/roost-hero.png
+```
+
+Both files carry the reasons for what look like odd choices in them — the socket
+path that has to end in `/roost`, the Nerd Font, the blanked Claude status line,
+the three turns. Read them before changing either.
+
+Re-record rather than edit the PNG. The point of the tape is that the hero can
+be rebuilt when the status line or the switcher changes, and a hand-touched
+image quietly ends that.
+
 ## Rules
 
 - **Start the body at `##`, not `#`.** The `title` from frontmatter is already

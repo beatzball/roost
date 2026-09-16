@@ -276,18 +276,32 @@ export class SplashPage extends LitroPage {
             </div>
           </section>
 
-          <!-- What it looks like, before what to type. The status line across
-               the top is the product: five agents, each badged by itself. A
-               visitor decides whether this is their kind of tool from this
-               image, so it comes before the install block rather than after
-               it. Sized 3000x1613 (the real file) so the space is reserved
-               and nothing below it jumps once the image arrives. -->
-          <section style="margin-bottom:3rem;">
+          <!-- What it looks like, before what to type. A visitor decides
+               whether this is their kind of tool from this image, so it comes
+               before the install block rather than after it.
+               
+               Recorded, not screenshotted: demo/roost-hero.tape drives a real
+               fleet built by demo/seed-fleet.sh, on a throwaway roost server
+               with a seeded /tmp repo, so re-recording it is one command and
+               nothing of the author's machine is in the frame. Sized 1800x620
+               (the real file) so the space is reserved and nothing below it
+               jumps once the image arrives. -->
+          <!-- Wider than the 56rem prose column it sits in. The source is
+               1800px of terminal; held to the text width it renders at half
+               scale and the state names in the switcher stop being legible.
+               92vw rather than a fixed width so a phone still gets a gutter
+               and the page never scrolls sideways. -->
+          <section style="
+            margin-bottom:3rem;
+            width:min(92vw,68rem);
+            margin-left:50%;
+            transform:translateX(-50%);
+          ">
             <img
-              src="/roost-help.png"
-              alt="A roost session. The top line lists five agent windows, each with a state badge. Below it, the roost command list."
-              width="3000"
-              height="1613"
+              src="/roost-hero.png"
+              alt="A roost session with five agent windows across the top, each badged with its state. An agent has answered in the pane behind, and the agent switcher lists all five with their states and how long each has been there."
+              width="1800"
+              height="620"
               decoding="async"
               style="
                 display:block;
@@ -305,8 +319,9 @@ export class SplashPage extends LitroPage {
               max-width:36rem;
               margin:0.75rem auto 0;
             ">
-              One roost session, five agents. The top line is the fleet — every
-              agent, badged with what it is doing, reported by the agent itself.
+              One roost session, five agents. The top line is the fleet, and the
+              switcher lists every agent with its state and how long it has been
+              there — reported by the agents, not scraped off their screens.
             </p>
           </section>
 
