@@ -85,10 +85,12 @@ test('headings, code and chrome are Fira Mono; prose is not', async ({ page }) =
     expect.poll(() => fontOf(sel).catch(() => 'NOT FOUND'), { message: label, timeout: 30_000 }).toBe(want);
 
   await page.goto('/');
-  for (const sel of ['.site-title', 'nav a', 'h1', 'h2', '.card-title', 'kbd', 'code']) {
+  // The status line is .site-title plus nav; h3 is a fix heading; .lede is the
+  // hero paragraph, the prose control on this page.
+  for (const sel of ['.site-title', 'nav a', 'h1', 'h2', 'h3', 'kbd', 'code']) {
     await expectFont(sel, 'Fira Mono', `home ${sel}`);
   }
-  await expectFont('.card-desc', 'ui-sans-serif', 'home card prose');
+  await expectFont('.lede', 'ui-sans-serif', 'home prose');
 
   await page.goto('/docs/getting-started');
   for (const sel of ['.page-title', 'h2[id]', '.group-label', 'code']) {

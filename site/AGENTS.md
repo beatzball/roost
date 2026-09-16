@@ -12,7 +12,7 @@ Read this before changing anything in `site/`.
 | `content/docs/*.md` | Every documentation page. One file = one page. |
 | `server/starlight.config.js` | Site title, top nav, and the sidebar tree. |
 | `_data/metadata.js` | Site title, canonical URL, description (used for SEO and OG images). |
-| `pages/index.ts` | The landing page (a Lit component, not Markdown). |
+| `pages/index.ts` | The landing page (a Lit component, not Markdown). Dark only, and drawn in roost's own vocabulary: a status line using the `ascii` glyph set, the `roost` theme colours. Its header comment says where each comes from. |
 | `pages/docs/[slug].ts` | The doc page template. Do not edit to add a page. |
 | `src/components/` | Shared UI. Rarely needs touching. |
 | `Dockerfile`, `nginx.conf` | Deploy. Coolify builds these on push to `main`. |
