@@ -47,6 +47,13 @@ alone. See `AGENTS.md`; in particular, never run `tmux kill-server` without
     %7  main:2.1 web/claude  [blocked]
 ```
 
+If you are going to PARSE the output, do not parse that text — it is for people
+and its wording can change. Pass `--json` instead: `roost status --json`,
+`roost whoami --json`, `roost read --json TARGET`, `roost screen --json TARGET`.
+Each prints one JSON document with `"schema": 1`; failures print nothing on
+stdout and keep their exit status. The fields are documented on the "Driving a
+Fleet" docs page.
+
 ## Targets are stable ids
 
 `spawn`, `split`, `view`, and `whoami` each print a stable id (e.g. `%7`) for the

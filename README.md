@@ -294,6 +294,11 @@ scripts/lib/roost-config.sh # shared config helpers
                             #   (surgical writer, glyph/sep maps, live-apply)
 scripts/lib/roost-reply.sh  # the one place that decides how a reply is
                             #   truncated to fit tmux's command-length limit
+scripts/lib/roost-jsonout.sh # `--json` output (#41): the awk byte encoder, and
+                            #   tmux reads that do not trust a delimiter. Sourced
+                            #   only inside a --json branch. Its header records two
+                            #   bash 5 traps that silently corrupt bytes -- read it
+                            #   before touching a value it encodes
 scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
                             #   in?", for bin/roost and roost-agent-state alike
 scripts/lib/roost-ext.sh    # the extension seam's helpers: XDG paths, manifest
