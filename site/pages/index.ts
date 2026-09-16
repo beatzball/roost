@@ -1147,7 +1147,7 @@ export class SplashPage extends LitroPage {
         <section class="hero">
           <img class="owl" src="/logo.png" alt="" width="512" height="517" aria-hidden="true" />
           <div class="wrap">
-            <h1>Agents that report in.</h1>
+            <h1>See what every agent is doing.</h1>
             <p class="lede">
               Every coding agent writes its own state onto its tab: working,
               blocked, done. One look along the row shows where to go next, and
@@ -1278,7 +1278,7 @@ export class SplashPage extends LitroPage {
 
         <section class="closing">
           <div class="wrap">
-            <h2>Let the badges do the watching.</h2>
+            <h2>Start your first roost session.</h2>
             ${this.install('closing')}
             <p class="more">
               New to it? <a href=${docs}>Start with getting started</a>.
