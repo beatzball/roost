@@ -113,8 +113,12 @@ Two checks hold this in place:
 - The e2e test `headings, code and chrome are Fira Mono; prose is not` checks
   what actually renders, including that prose is still sans. Local only.
 
-`pnpm build` rewrites the files `pnpm dev` is serving, and the dev server stops.
-Restart it after a build.
+`pnpm build` rewrites the files a running `pnpm dev` in the same checkout is
+watching. The dev server does not reliably exit when that happens: it can hang
+halfway through a reload, still running and no longer answering on its port, so
+a restart-on-exit loop never fires. After a build, stop the dev server and start
+it again. `pnpm test:e2e` has the same effect on `dist/static`, which it empties
+— build again before serving the static output.
 
 If you ever add a second webfont, measure it first — the latin-subset woff2 a
 browser actually downloads, not the TTF. JetBrains Mono looks like the obvious
