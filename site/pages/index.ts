@@ -112,6 +112,9 @@ export const pageData = definePageData(async (_event) => {
     seoTitle: buildSeoTitle(siteTitle),
     seoHead: buildSeoHead({ title: siteTitle, description, path: '/' }),
     nav: siteConfig.nav,
+    // Six, not four: the card grid settles at three columns at this page
+    // width, so four cards render as a row of three plus a lone orphan. Keep
+    // the length a multiple of three.
     features: [
       {
         icon: '🪺',
@@ -132,6 +135,16 @@ export const pageData = definePageData(async (_event) => {
         icon: '📜',
         title: 'Just shell',
         description: 'A launcher, a tmux config and a few small scripts. No daemon, no binary, no plugin manager.',
+      },
+      {
+        icon: '🔌',
+        title: 'Wires itself in',
+        description: 'An agent started in a roost pane picks up the hook files roost owns. Your real config is left alone.',
+      },
+      {
+        icon: '🛰️',
+        title: 'Agents on other hosts',
+        description: 'roost ssh runs roost on a remote machine. The agents live there; you drive them from here.',
       },
     ],
   } satisfies SplashData;
@@ -213,6 +226,55 @@ export class SplashPage extends LitroPage {
                 font-size:var(--sl-text-base);
               ">GitHub</a>
             </div>
+          </section>
+
+          <!-- What it looks like, before what to type. The status line across
+               the top is the product: five agents, each badged by itself. A
+               visitor decides whether this is their kind of tool from this
+               image, so it comes before the install block rather than after
+               it. Sized 3000x1613 (the real file) so the space is reserved
+               and nothing below it jumps once the image arrives. -->
+          <section style="margin-bottom:3rem;">
+            <img
+              src="/roost-help.png"
+              alt="A roost session. The top line lists five agent windows, each with a state badge. Below it, the roost command list."
+              width="3000"
+              height="1613"
+              decoding="async"
+              style="
+                display:block;
+                width:100%;
+                height:auto;
+                border:1px solid var(--sl-color-border);
+                border-radius:var(--sl-border-radius);
+              "
+            />
+            <p style="
+              text-align:center;
+              color:var(--sl-color-gray-4);
+              font-size:var(--sl-text-sm);
+              line-height:1.6;
+              max-width:36rem;
+              margin:0.75rem auto 0;
+            ">
+              One roost session, five agents. The top line is the fleet — every
+              agent, badged with what it is doing, reported by the agent itself.
+            </p>
+          </section>
+
+          <!-- The four reasons to care. These used to sit at the very bottom,
+               under three how-to sections, where a first-time visitor never
+               reached them. Why before how. -->
+          <section style="margin-bottom:4rem;">
+            <litro-card-grid>
+              ${features.map(f => html`
+                <litro-card
+                  icon="${f.icon ?? ''}"
+                  title="${f.title}"
+                  description="${f.description}"
+                ></litro-card>
+              `)}
+            </litro-card-grid>
           </section>
 
           <!-- Install and first run: the four commands, in order, so the
@@ -397,17 +459,6 @@ export class SplashPage extends LitroPage {
             }
           </section>
 
-          <section>
-            <litro-card-grid>
-              ${features.map(f => html`
-                <litro-card
-                  icon="${f.icon ?? ''}"
-                  title="${f.title}"
-                  description="${f.description}"
-                ></litro-card>
-              `)}
-            </litro-card-grid>
-          </section>
         </main>
         <litro-footer recipe="starlight"></litro-footer>
       </div>
