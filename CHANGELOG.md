@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0]
+
+One new feature: output that programs can read. No upgrade step is needed.
+
+### Added
+
+- **`--json` on `roost status`, `whoami`, `read`, `screen`, and `state`** (#41).
+  Every document carries `"schema": 1`. Without `--json`, the output and every
+  exit code are exactly as before.
+  - `roost state STATE --json` sets the badge as before, then prints what
+    actually landed, so a script can see a badge that did not stick.
+  - Under `--json`, a command that fails prints nothing on stdout. The exit
+    code and the error message are the same as without `--json`.
+  - Under `--json`, a blank screen exits 0 with `"text": ""`. Without `--json`
+    it still exits 1 for now (#69).
+
+### Known limits
+
+- `roost state STATE --json` reports `"recorded": false` when the badge is set
+  for a whole window or globally rather than on the pane.
+- `wait-done --json` is not included yet.
+- Not yet measured with gawk, or with tmux 3.4.
+- The full list is in `docs/known-gaps.md`.
+
 ## [0.2.2]
 
 Two small fixes. No upgrade step is needed.

@@ -889,6 +889,42 @@ has already produced a real bug here.
 
 ## Small deferred items
 
+- **`--json` (#41): what shipped and what did not.** Shipped: `status`, `read`,
+  `screen`, `whoami`, and `state STATE --json`, schema 1, specified in
+  `docs/airig/specs/2026-09-15-json-output-design.md`. Not covered:
+  - **`wait-done --json`.** Left out while #47/#66 and #65 change its argument
+    parsing and exit codes. The design says what its document will be.
+  - **A blank screen: the two modes disagree on the exit status.** `screen
+    --json` and `read --json` exit 0 with `"text":""`, as the design chose.
+    Plain `roost screen` and `roost read` exit 1 there, because `screen_dump`'s
+    `grep -v` selects nothing under `pipefail`. That exit 1 is a bug of its own,
+    to be filed separately; until it is fixed, the modes differ in this one case.
+  - **gawk was never run.** The encoder was fuzzed with BSD awk, mawk and BusyBox
+    awk. It sets `LC_ALL=C` for awk, which is what gawk needs to walk bytes, but
+    CI runs mawk and BSD awk, which walk bytes in any locale — so a change that
+    dropped that `LC_ALL=C` would stay green in CI and break on a gawk machine.
+  - **On tmux 3.4 and 3.5a a reply is rewritten before anyone reads it.**
+    Measured: those versions store a control byte, DEL, or a byte of invalid
+    UTF-8 as escape text (`\001`, `\r`, `\377`) when `roost reply` or a hook
+    records it, and do not escape a backslash, so it cannot be decoded exactly.
+    `read --json` keeps the text as stored and says `"lossy": true` when it holds
+    such a sequence on such a server (a literal `\033` in a shell snippet is
+    flagged too: the flag means "may differ", not "did"). Plain `roost read` has
+    printed the same escape text on those versions since the reply channel
+    shipped; it is tmux's storage, not roost's output, and this change does not
+    alter it. Pane names, window names and `error_reason` carry no `lossy` flag,
+    so on those versions they are reported as tmux stores them.
+  - **A writer that is not in a UTF-8 locale loses tab, newline and non-ASCII.**
+    tmux 3.4, 3.5a and 3.7c store them as `_` when the client that writes the
+    option runs in a non-UTF-8 locale (3.6 keeps them). `_` is an ordinary
+    character, so neither mode can detect it. A hook environment without
+    `LANG`/`LC_ALL` would hit this.
+  - **A trailing newline in an option value is lost**, in `--json` and in the
+    plain commands alike, because `$(...)` strips it.
+  - **Invalid UTF-8 is replaced, not preserved.** JSON strings cannot carry raw
+    bytes. `"lossy": true` says it happened; a lossless extra field (base64)
+    could be added later without a schema bump.
+
 - **No signature verification of an extension.** Pinning to a full commit SHA,
   and recording the tree hash `roost ext verify` re-checks, is the substitute:
   it proves what runs is what was agreed to, and says nothing about who wrote
