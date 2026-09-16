@@ -55,16 +55,22 @@ const FLEET: ReadonlyArray<{ n: number; name: string; to: State; at: number; cur
 ];
 
 /**
- * The complaints roost was written to answer, each with the command that
- * answers it and a small picture of the result.
+ * What roost does, each with the command that does it and a small picture of
+ * the result.
+ *
+ * `title` is the row's heading, and it states the RESULT, never the problem.
+ * Headings get read on their own -- a visitor who skims past the section title
+ * would otherwise read "Your own tmux fills up with agents." as something roost
+ * causes. The problem belongs in `fix`, where the sentence around it makes the
+ * direction clear.
  *
  * Every `fix` has to be something roost already does -- the commands are the
  * proof, and a reader will run them. Kept in step with content/docs/how-it-works.md
  * and content/docs/driving-a-fleet.md.
  */
-const FIXES: ReadonlyArray<{ pain: string; fix: string; cmds: readonly string[]; widget: () => TemplateResult }> = [
+const FIXES: ReadonlyArray<{ title: string; fix: string; cmds: readonly string[]; widget: () => TemplateResult }> = [
   {
-    pain: 'You cannot tell which agent is waiting on you.',
+    title: 'Go straight to the agent that is stuck.',
     fix: 'Each agent reports its own state through a hook or an adapter, so a badge is what the agent said, not what its screen happened to look like. One key takes you to the one that needs you: error first, then blocked.',
     cmds: ['Ctrl-s b'],
     widget: () => html`
@@ -77,7 +83,7 @@ const FIXES: ReadonlyArray<{ pain: string; fix: string; cmds: readonly string[];
     `,
   },
   {
-    pain: 'Your own tmux fills up with agents.',
+    title: 'Your everyday tmux stays untouched.',
     fix: 'roost runs on a tmux server of its own, with its own config and its own prefix. Your everyday sessions never see it, and one command puts the whole thing away.',
     cmds: ['roost', 'roost kill'],
     widget: () => html`
@@ -94,7 +100,7 @@ const FIXES: ReadonlyArray<{ pain: string; fix: string; cmds: readonly string[];
     `,
   },
   {
-    pain: 'Driving agents from a script means scraping their screens.',
+    title: 'Script your agents without scraping their screens.',
     fix: 'read returns the reply the agent recorded as its turn ended, not the input box drawn underneath it. wait-done blocks until a pane is finished and exits 2 if the agent died, so a script can branch instead of guessing.',
     cmds: ['roost send', 'roost wait-done', 'roost read'],
     widget: () => html`
@@ -107,7 +113,7 @@ const FIXES: ReadonlyArray<{ pain: string; fix: string; cmds: readonly string[];
     `,
   },
   {
-    pain: 'Your agents need a bigger machine than your laptop.',
+    title: 'Run agents on a bigger machine, the same way.',
     fix: 'roost ssh starts roost on another host and attaches you to it. The agents run over there; the keys, the badges and every command stay the same.',
     cmds: ['roost ssh buildbox'],
     widget: () => html`
@@ -639,7 +645,7 @@ export class SplashPage extends LitroPage {
         color: var(--dim);
       }
 
-      /* What it fixes: text left, the picture of the fix right. */
+      /* What it does: text left, a picture of the result right. */
       .fix {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1131,13 +1137,13 @@ export class SplashPage extends LitroPage {
 
         <section class="block">
           <div class="wrap">
-            <h2>What it fixes</h2>
-            <p class="section-lede">Four things that get in the way once you run more than one agent.</p>
+            <h2>What it does</h2>
+            <p class="section-lede">Four things that change once your agents run in roost.</p>
             ${FIXES.map(
               (f) => html`
                 <article class="fix">
                   <div>
-                    <h3>${f.pain}</h3>
+                    <h3>${f.title}</h3>
                     <p>${f.fix}</p>
                     <div class="cmds">${f.cmds.map((c) => html`<code>${c}</code>`)}</div>
                   </div>
