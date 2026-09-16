@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 
 export interface SidebarItem {
@@ -24,7 +25,7 @@ export class StarlightSidebar extends LitElement {
     currentSlug: { type: String },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
     }
@@ -38,7 +39,6 @@ export class StarlightSidebar extends LitElement {
     }
 
     .group-label {
-      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: var(--sl-text-xs, 0.75rem);
       font-weight: 700;
       text-transform: uppercase;
@@ -92,7 +92,7 @@ export class StarlightSidebar extends LitElement {
       color: var(--sl-color-accent-high, #5b21b6);
       margin-left: 0.5rem;
     }
-  `;
+  `];
 
   groups: SidebarGroup[] = [];
   currentSlug = '';
@@ -102,7 +102,7 @@ export class StarlightSidebar extends LitElement {
       <nav aria-label="Site navigation">
         ${this.groups.map(group => html`
           <div class="group">
-            <p class="group-label">${group.label}</p>
+            <p class="group-label mono">${group.label}</p>
             <ul>
               ${group.items.map(item => html`
                 <li>

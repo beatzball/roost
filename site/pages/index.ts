@@ -6,6 +6,7 @@ import { getGlobalData } from 'litro:content';
 import { siteConfig } from '../server/starlight.config.js';
 import { starlightHead } from '../src/route-meta.js';
 import { buildSeoHead, buildSeoTitle } from '../src/seo.js';
+import { typography } from '../src/styles/typography.js';
 
 // Register components used in render()
 import '../src/components/starlight-header.js';
@@ -205,6 +206,11 @@ export const routeMeta = {
 
 @customElement('page-home')
 export class SplashPage extends LitroPage {
+  // Headings, <code> and <kbd> take the mono face from the shared sheet, so
+  // none of the inline styles below needs to name a font. See
+  // src/styles/typography.ts for why a shadow root needs this at all.
+  static override styles = [typography];
+
   override render() {
     const data = this.serverData as SplashData | null;
     const { siteTitle = 'roost', description = '', nav = [], features = [] } = data ?? {};
@@ -237,7 +243,6 @@ export class SplashPage extends LitroPage {
               "
             />
             <h1 style="
-              font-family:var(--sl-font-mono);
               font-size:clamp(2rem,5vw,3.5rem);
               font-weight:800;
               color:var(--sl-color-text);
@@ -347,7 +352,6 @@ export class SplashPage extends LitroPage {
                that out here costs them ten seconds instead of an install. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
-              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -376,7 +380,6 @@ export class SplashPage extends LitroPage {
                     ">${p.fix}</p>
                     <code style="
                       display:inline-block;
-                      font-family:var(--sl-font-mono,ui-monospace,monospace);
                       font-size:var(--sl-text-sm);
                       background:var(--sl-color-bg-inline-code,#f6f6f6);
                       border:1px solid var(--sl-color-border);
@@ -393,7 +396,6 @@ export class SplashPage extends LitroPage {
                landing page answers "how do I start" without a click. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
-              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -421,7 +423,6 @@ export class SplashPage extends LitroPage {
                lives in the docs; this is the short answer. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
-              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -452,7 +453,6 @@ export class SplashPage extends LitroPage {
                   ">
                     <kbd style="
                       flex-shrink:0;
-                      font-family:var(--sl-font-mono,ui-monospace,monospace);
                       font-size:var(--sl-text-sm);
                       background:var(--sl-color-bg-inline-code,#f6f6f6);
                       border:1px solid var(--sl-color-border);
@@ -474,7 +474,6 @@ export class SplashPage extends LitroPage {
                given reader actually needs. Smallest first. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
-              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -512,7 +511,6 @@ export class SplashPage extends LitroPage {
                     ">${shape.what}</p>
                     <code style="
                       display:block;
-                      font-family:var(--sl-font-mono,ui-monospace,monospace);
                       font-size:var(--sl-text-sm);
                       background:var(--sl-color-bg-inline-code,#f6f6f6);
                       border:1px solid var(--sl-color-border);
@@ -543,7 +541,6 @@ export class SplashPage extends LitroPage {
                answerable without opening the docs. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
-              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -586,7 +583,6 @@ export class SplashPage extends LitroPage {
                       line-height:1.5;
                     ">${a.how}</span>
                     <code style="
-                      font-family:var(--sl-font-mono,ui-monospace,monospace);
                       font-size:var(--sl-text-sm);
                       background:var(--sl-color-bg-inline-code,#f6f6f6);
                       border:1px solid var(--sl-color-border);

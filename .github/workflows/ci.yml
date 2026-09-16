@@ -123,6 +123,12 @@ jobs:
           cd site
           node scripts/sync-changelog.mjs --check
           node scripts/build-llms-txt.mjs --check
+      # A component that forgets the shared typography sheet renders its
+      # headings in the wrong font and fails nothing else -- it builds, deploys
+      # and looks almost right. CI does not run the site's Playwright suite, so
+      # this no-browser check is the only thing that turns that red.
+      - name: Every shadow root adopts the shared typography
+        run: node site/scripts/check-typography.mjs
       - uses: docker/setup-buildx-action@v3
       - name: Build image
         uses: docker/build-push-action@v6

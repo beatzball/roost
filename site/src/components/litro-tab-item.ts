@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 
 /**
@@ -14,7 +15,7 @@ export class LitroTabItem extends LitElement {
     selected: { type: Boolean, reflect: true },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
     }
@@ -22,7 +23,7 @@ export class LitroTabItem extends LitElement {
     :host(:not([selected])) {
       display: none;
     }
-  `;
+  `];
 
   label = '';
   selected = false;

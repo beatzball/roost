@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 
 /**
@@ -17,7 +18,7 @@ export class LitroCard extends LitElement {
     href: { type: String },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: flex;
       flex-direction: column;
@@ -70,7 +71,6 @@ export class LitroCard extends LitElement {
     }
 
     .card-title {
-      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: var(--sl-text-lg, 1.125rem);
       font-weight: 600;
       color: var(--sl-color-text, #23262f);
@@ -87,7 +87,7 @@ export class LitroCard extends LitElement {
     .card-slot {
       margin-top: 0.75rem;
     }
-  `;
+  `];
 
   title = '';
   description = '';
@@ -101,7 +101,7 @@ export class LitroCard extends LitElement {
         ${this.iconSrc
           ? html`<img class="card-icon-img" src="${this.iconSrc}" alt="" aria-hidden="true" />`
           : this.icon ? html`<span class="card-icon">${this.icon}</span>` : ''}
-        <p class="card-title">${this.title}</p>
+        <p class="card-title mono">${this.title}</p>
       </div>
       ${this.description ? html`<p class="card-desc">${this.description}</p>` : ''}
       <div class="card-slot"><slot></slot></div>

@@ -15,7 +15,8 @@
     "generate": "litro generate",
     "test:e2e": "playwright test",
     "sync": "node scripts/sync-changelog.mjs && node scripts/build-llms-txt.mjs",
-    "sync:check": "node scripts/sync-changelog.mjs --check && node scripts/build-llms-txt.mjs --check"
+    "sync:check": "node scripts/sync-changelog.mjs --check && node scripts/build-llms-txt.mjs --check",
+    "check:typography": "node scripts/check-typography.mjs"
   },
   "dependencies": {
     "@beatzball/litro": "latest",

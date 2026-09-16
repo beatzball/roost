@@ -78,9 +78,43 @@ Fira Mono rather than any other: the hero is a terminal recorded in Fira Code,
 and Fira Code is Fira Mono with ligatures. One typeface across the page and the
 picture, instead of two that nearly match.
 
-Shadow DOM does not inherit a global stylesheet, so each component that draws a
-heading names the family again. A new heading in a new component will come out
-sans until you add `font-family: var(--sl-font-mono, ...)` to its own rule.
+### Getting it into shadow DOM
+
+Every component renders into a shadow root. The font gets in fine; a **rule**
+does not. Precisely:
+
+| crosses into a shadow root? | |
+|---|---|
+| `@font-face` | **yes** — declared once in `starlight.css`, usable everywhere. Never repeat it |
+| an inherited value, like `font-family` on `html` | **yes** |
+| a custom property, like `--sl-font-mono` | **yes** |
+| a selector, like `h1 { font-family: ... }` | **no** — matches nothing inside any shadow root |
+
+That is shadow DOM as specified, not a Litro or Lit bug.
+
+So typography lives in one shared sheet, `src/styles/typography.ts`, and every
+component with a shadow root puts it **first**:
+
+```ts
+import { typography } from '../styles/typography.js';
+
+static override styles = [typography, css`  ...own rules...  `];
+```
+
+It sets the mono face on headings, `code`, `kbd`, `samp` and `pre`. For anything
+else that should be mono — a label, a wordmark — add `class="mono"` in the
+template. Do not add `font-family` to a component's own rules.
+
+Two checks hold this in place:
+
+- `pnpm check:typography` fails if any component with a shadow root does not
+  adopt the sheet. **CI runs this one.** It is the only guard CI has, because
+  CI does not run the Playwright suite.
+- The e2e test `headings, code and chrome are Fira Mono; prose is not` checks
+  what actually renders, including that prose is still sans. Local only.
+
+`pnpm build` rewrites the files `pnpm dev` is serving, and the dev server stops.
+Restart it after a build.
 
 If you ever add a second webfont, measure it first — the latin-subset woff2 a
 browser actually downloads, not the TTF. JetBrains Mono looks like the obvious
