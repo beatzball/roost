@@ -57,7 +57,7 @@ Roost keeps a larger working example in its own repository, at `tests/fixtures/e
 
 ## The repository layout
 
-Three rules, and nothing else about your repository is roost's business.
+Three rules. The rest of your repository is yours.
 
 - **`roost-ext.json` at the repository root.** Not in a subdirectory, not named anything else. That file is what makes a repository an extension.
 - **`bin/roost-<cmd>` for every command you declare**, and it must be executable. Git records the executable bit, so `chmod +x` before you commit, and check it survived: a declared command with no executable behind it is refused at install time.

@@ -39,7 +39,7 @@ scripts/roost-init          # setup wizard (theme, glyphs, separator style, prin
 scripts/roost-install       # `roost install` / `roost update`: wire every installed
                             #   harness to this checkout (symlinks + hook files)
 scripts/roost-settings      # live settings TUI (prefix S)
-scripts/roost-next-blocked  # select the pane that needs you: error, else blocked (prefix b)
+scripts/roost-next-blocked  # select the most urgent pane: error, else blocked (prefix b)
 scripts/roost-themes.sh     # built-in theme palettes
 scripts/lib/roost-config.sh # shared config helpers
                             #   (surgical writer, glyph/sep maps, live-apply)

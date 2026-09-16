@@ -1,7 +1,7 @@
 export const siteConfig = {
   title: 'roost',
   description:
-    'An on-demand tmux agent view for wrangling multiple AI coding agents — without giving up your normal tmux setup.',
+    'An on-demand tmux agent view. Every coding agent reports its own state on its tab, on a tmux server kept apart from yours.',
   logo: null,
   editUrlBase: 'https://github.com/beatzball/roost/edit/main/site/content/docs',
   nav: [

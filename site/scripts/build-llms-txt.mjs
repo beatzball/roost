@@ -54,7 +54,7 @@ function render() {
     'touch your everyday tmux. Each agent reports its own state through a hook or',
     'an adapter, so the tabs show what every agent is doing rather than a guess',
     'scraped off its screen. `send`, `read` and `wait-done` make that fleet',
-    'scriptable from a shell, from inside roost, or over ssh.',
+    'scriptable from a shell, from inside roost, or on another host.',
   );
   out.push('');
 

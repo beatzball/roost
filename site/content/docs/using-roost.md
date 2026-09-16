@@ -40,7 +40,7 @@ The prefix is **`Ctrl-s`** and the bindings mirror a typical GNU-Screen-style tm
 | `prefix > / <` | swap pane forward / back |
 | `prefix C-c` | new session |
 | `prefix a` | **agent switcher** — fzf popup of all agents + state + elapsed time |
-| `prefix b` | **jump to the agent that needs you** (error, else blocked) |
+| `prefix b` | **go to the most urgent agent** (error, else blocked) |
 | `prefix r` | reload roost config |
 | `prefix S` | **settings** — change theme/glyphs/separator/notifications, live |
 

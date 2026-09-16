@@ -87,7 +87,7 @@ one currently saved:
 
 ## Notifications
 
-When an agent you are *not* looking at becomes blocked (needs input), roost pings you with a native desktop notification. Only `blocked` notifies — `done` fires every turn and would be noise. `error` notifies too: an agent that has stopped making progress needs you just as much as one waiting for an answer.
+When an agent you are *not* looking at becomes blocked (needs input), roost pings you with a native desktop notification. Only `blocked` notifies — `done` fires every turn and would be noise. `error` notifies too: an agent that has stopped making progress deserves your attention as much as one waiting for an answer.
 
 Delivery is cross-platform, tried in this order:
 

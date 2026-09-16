@@ -70,8 +70,8 @@ const FLEET: ReadonlyArray<{ n: number; name: string; to: State; at: number; cur
  */
 const FIXES: ReadonlyArray<{ title: string; fix: string; cmds: readonly string[]; widget: () => TemplateResult }> = [
   {
-    title: 'Go straight to the agent that is stuck.',
-    fix: 'Each agent reports its own state through a hook or an adapter, so a badge is what the agent said, not what its screen happened to look like. One key takes you to the one that needs you: error first, then blocked.',
+    title: 'One key lands you on the blocked agent.',
+    fix: 'Each agent reports its own state through a hook or an adapter, so a badge is what the agent said, not what its screen happened to look like. One key takes you to the most urgent: an error first, then anything blocked.',
     cmds: ['Ctrl-s b'],
     widget: () => html`
       <div class="term" role="img" aria-label="Three agents listed by state. worker is blocked and highlighted; web is working; api is done.">
@@ -113,7 +113,7 @@ const FIXES: ReadonlyArray<{ title: string; fix: string; cmds: readonly string[]
     `,
   },
   {
-    title: 'Run agents on a bigger machine, the same way.',
+    title: 'Attach to a roost on another host.',
     fix: 'roost ssh starts roost on another host and attaches you to it. The agents run over there; the keys, the badges and every command stay the same.',
     cmds: ['roost ssh buildbox'],
     widget: () => html`
@@ -144,30 +144,31 @@ const INSTALL_STEPS = [
 /** The bindings that pay for themselves on the first day. */
 const KEY_HINTS = [
   { keys: 'Ctrl-s a', what: 'Every agent, its state, and how long it has been there.' },
-  { keys: 'Ctrl-s b', what: 'Straight to the agent that needs you.' },
+  { keys: 'Ctrl-s b', what: 'The most urgent agent: an error first, then anything blocked.' },
   { keys: 'Ctrl-s S', what: 'Theme, glyphs and notifications, changed live.' },
 ] as const;
 
 /**
- * Three shapes of fleet, smallest first. A reader who only wants the first one
- * should not have to read about the third to find out roost suits them.
- * Kept in step with content/docs/driving-a-fleet.md.
+ * One command, three typists. Not a ladder of workflows: the point is that
+ * nothing changes between them, because roost's commands are small enough to
+ * type, loop over, or hand to an agent. Kept in step with
+ * content/docs/driving-a-fleet.md.
  */
-const FLEET_SHAPES = [
+const TYPISTS = [
   {
-    title: 'By hand',
-    what: 'One agent per job, and a switcher that lists every one of them with its state.',
-    cmd: 'roost new api',
+    who: 'You',
+    what: 'Prompt an agent from whatever tab you happen to be on.',
+    cmd: 'roost send api "run the tests"',
   },
   {
-    title: 'From a shell script',
-    what: 'Prompt each agent, then wait for all of them. A loop over two commands is the whole orchestrator.',
+    who: 'A script',
+    what: 'Send the same prompt along the fleet, then wait-done on each.',
     cmd: 'for w in api web; do roost send "$w" "run the tests"; done',
   },
   {
-    title: 'Agent-driven',
-    what: 'One agent opens the others, prompts them, reads their replies, and hands you the result without stealing focus.',
-    cmd: 'roost spawn helper',
+    who: 'Another agent',
+    what: 'An agent prompts a helper it opened, then reads the reply it recorded.',
+    cmd: 'roost send %12 "review the diff"',
   },
 ] as const;
 
@@ -876,7 +877,7 @@ export class SplashPage extends LitroPage {
         line-height: 1.5;
       }
 
-      /* Three ways: three columns sharing hairlines, smallest first. */
+      /* Whoever is typing: three columns sharing hairlines. */
       .ways {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -912,7 +913,7 @@ export class SplashPage extends LitroPage {
         padding: 0.45rem 0.7rem;
       }
 
-      /* Works with your agent. */
+      /* Which agents report in. */
       .agents {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1146,11 +1147,12 @@ export class SplashPage extends LitroPage {
         <section class="hero">
           <img class="owl" src="/logo.png" alt="" width="512" height="517" aria-hidden="true" />
           <div class="wrap">
-            <h1>Know which agent needs you.</h1>
+            <h1>Agents that report in.</h1>
             <p class="lede">
-              roost runs your coding agents on a tmux server of its own, and every
-              tab carries a badge with what that agent is doing. The badge comes
-              from the agent, so it is never a guess.
+              Every coding agent writes its own state onto its tab: working,
+              blocked, done. One look along the row shows where to go next, and
+              none of it is guessed from the screen. roost runs them all on a tmux
+              server of its own.
             </p>
             ${this.install('hero')}
             <p class="needs">
@@ -1228,13 +1230,13 @@ export class SplashPage extends LitroPage {
 
         <section class="block">
           <div class="wrap">
-            <h2>Three ways to run a fleet</h2>
-            <p class="section-lede">Start with the first. They all use the same commands, so moving up is not a rewrite.</p>
-            <ol class="ways">
-              ${FLEET_SHAPES.map(
-                (w) => html`<li><h3>${w.title}</h3><p>${w.what}</p><code>${w.cmd}</code></li>`,
+            <h2>The same commands, whoever is typing</h2>
+            <p class="section-lede">roost's commands are small enough to type, loop over, or hand to an agent.</p>
+            <ul class="ways">
+              ${TYPISTS.map(
+                (t) => html`<li><h3>${t.who}</h3><p>${t.what}</p><code>${t.cmd}</code></li>`,
               )}
-            </ol>
+            </ul>
             <p class="agents-note">
               <a href="/docs/driving-a-fleet">Driving a fleet</a> has every command, with its exit codes.
             </p>
@@ -1243,8 +1245,8 @@ export class SplashPage extends LitroPage {
 
         <section class="block">
           <div class="wrap">
-            <h2>Works with your agent</h2>
-            <p class="section-lede">Badges come from the agent, so any harness can drive them.</p>
+            <h2>Which agents report in</h2>
+            <p class="section-lede">An adapter or a hook does the reporting. Anything else can call one command.</p>
             <ul class="agents">
               ${AGENTS.map(
                 (a) => html`<li><span class="name">${a.name}</span><span class="how">${a.how}</span><code>${a.cmd}</code></li>`,
@@ -1276,7 +1278,7 @@ export class SplashPage extends LitroPage {
 
         <section class="closing">
           <div class="wrap">
-            <h2>Give every agent a tab of its own.</h2>
+            <h2>Let the badges do the watching.</h2>
             ${this.install('closing')}
             <p class="more">
               New to it? <a href=${docs}>Start with getting started</a>.
@@ -1288,7 +1290,6 @@ export class SplashPage extends LitroPage {
       <footer>
         <div class="wrap foot-links">
           ${nav.map((item) => html`<a href=${item.href}>${item.label}</a>`)}
-          <a href="/llms.txt">llms.txt</a>
           <span class="credit">MIT licence. Built with <a href="https://litro.dev" rel="noopener">Litro</a>.</span>
         </div>
         <span class="wordmark mono" aria-hidden="true">roost</span>

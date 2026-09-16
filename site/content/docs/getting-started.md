@@ -11,7 +11,7 @@ sidebar:
 
 It runs on its **own isolated tmux server** with its own config, so your everyday `tmux` (config, sessions, plugins, muscle memory) is **never touched**. Launch it with one command, run your agents as panes or windows inside it, and each is badged with what its agent is doing:
 
-> 💥 error / needs you · 🛑 blocked / needs you · ⏳ working · ✅ done · 💤 idle
+> 💥 error · 🛑 blocked · ⏳ working · ✅ done · 💤 idle. The first two are the ones waiting on a person.
 
 State comes from **each agent's own lifecycle events** — Claude Code hooks, the opencode plugin, the GitHub Copilot CLI extension, or one `roost state` call from anything else — not from scraping process names or terminal output, so it is accurate rather than guessed. No compiled binary, nothing that reaches into `~/.tmux.conf`.
 
@@ -249,6 +249,6 @@ Watching agent state from inside tmux is a well-trodden idea; `roost` is a delib
 - [accessd/tmux-agent-indicator](https://github.com/accessd/tmux-agent-indicator) — pane-border / title / status-icon signals
 - [samleeney/tmux-agent-status](https://github.com/samleeney/tmux-agent-status) — sidebar + fzf target switcher
 - [craftzdog/tmux-claude-session-manager](https://github.com/craftzdog/tmux-claude-session-manager) — a popup picker across running Claude sessions
-- [flavio87/tap-to-tmux](https://github.com/flavio87/tap-to-tmux) — phone push when an agent needs you
+- [flavio87/tap-to-tmux](https://github.com/flavio87/tap-to-tmux) — phone push when an agent is waiting for input
 
 `roost` trades their richness for staying completely out of your primary tmux and owning nothing but a few small shell files you can read end to end.

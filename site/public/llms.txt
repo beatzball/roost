@@ -1,12 +1,12 @@
 # roost
 
-> An on-demand tmux agent view for wrangling multiple AI coding agents — without giving up your normal tmux setup.
+> An on-demand tmux agent view. Every coding agent reports its own state on its tab, on a tmux server kept apart from yours.
 
 roost runs a tmux server of its own, so the agents you are wrangling never
 touch your everyday tmux. Each agent reports its own state through a hook or
 an adapter, so the tabs show what every agent is doing rather than a guess
 scraped off its screen. `send`, `read` and `wait-done` make that fleet
-scriptable from a shell, from inside roost, or over ssh.
+scriptable from a shell, from inside roost, or on another host.
 
 ## Start Here
 
