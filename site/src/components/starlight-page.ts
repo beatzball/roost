@@ -97,6 +97,7 @@ export class StarlightPage extends LitElement {
     }
 
     .page-title {
+      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: var(--sl-text-4xl, 2.25rem);
       font-weight: 700;
       color: var(--sl-color-text, #23262f);

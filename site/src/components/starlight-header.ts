@@ -72,6 +72,7 @@ export class StarlightHeader extends LitElement {
     }
 
     .site-title {
+      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: var(--sl-text-lg, 1.125rem);
       font-weight: 700;
       color: var(--sl-color-text, #23262f);
@@ -135,6 +136,7 @@ export class StarlightHeader extends LitElement {
     }
 
     nav a {
+      font-family: var(--sl-font-mono, ui-monospace, monospace);
       padding: 0.35rem 0.75rem;
       font-size: var(--sl-text-sm, 0.875rem);
       font-weight: 500;

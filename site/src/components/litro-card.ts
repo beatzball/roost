@@ -70,6 +70,7 @@ export class LitroCard extends LitElement {
     }
 
     .card-title {
+      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: var(--sl-text-lg, 1.125rem);
       font-weight: 600;
       color: var(--sl-color-text, #23262f);

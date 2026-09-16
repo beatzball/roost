@@ -118,6 +118,9 @@ export class DocPage extends LitroPage {
     /* ── Typography for slotted doc content ─────────────────────────── */
     h1, h2, h3, h4, h5, h6 {
       margin-top: 1.5em; margin-bottom: 0.5em;
+      /* Same rule as the global sheet, repeated because this subtree is
+         slotted into a shadow root that the global sheet cannot reach. */
+      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-weight: 600; line-height: 1.25;
       color: var(--sl-color-text);
     }

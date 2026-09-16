@@ -237,6 +237,7 @@ export class SplashPage extends LitroPage {
               "
             />
             <h1 style="
+              font-family:var(--sl-font-mono);
               font-size:clamp(2rem,5vw,3.5rem);
               font-weight:800;
               color:var(--sl-color-text);
@@ -346,6 +347,7 @@ export class SplashPage extends LitroPage {
                that out here costs them ten seconds instead of an install. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
+              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -391,6 +393,7 @@ export class SplashPage extends LitroPage {
                landing page answers "how do I start" without a click. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
+              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -418,6 +421,7 @@ export class SplashPage extends LitroPage {
                lives in the docs; this is the short answer. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
+              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -470,6 +474,7 @@ export class SplashPage extends LitroPage {
                given reader actually needs. Smallest first. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
+              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);
@@ -538,6 +543,7 @@ export class SplashPage extends LitroPage {
                answerable without opening the docs. -->
           <section style="margin-bottom:4rem;">
             <h2 style="
+              font-family:var(--sl-font-mono);
               font-size:var(--sl-text-xl);
               font-weight:700;
               color:var(--sl-color-text);

@@ -64,6 +64,29 @@ production.
 So: after editing `CHANGELOG.md`, or after adding a page to the sidebar, run
 `pnpm sync` and commit what it writes.
 
+## The one webfont
+
+`public/fonts/fira-mono-latin-{400,700}.woff2` — 21KB for the pair, latin
+subset, self-hosted, with the OFL licence beside them because that licence
+requires it. They are the exact files Google serves Chrome.
+
+It is used for **headings, code, and the chrome** (site title, nav, sidebar and
+table-of-contents labels) and deliberately NOT for running prose: paragraphs in
+a monospace face are slower to read, and these docs are long.
+
+Fira Mono rather than any other: the hero is a terminal recorded in Fira Code,
+and Fira Code is Fira Mono with ligatures. One typeface across the page and the
+picture, instead of two that nearly match.
+
+Shadow DOM does not inherit a global stylesheet, so each component that draws a
+heading names the family again. A new heading in a new component will come out
+sans until you add `font-family: var(--sl-font-mono, ...)` to its own rule.
+
+If you ever add a second webfont, measure it first — the latin-subset woff2 a
+browser actually downloads, not the TTF. JetBrains Mono looks like the obvious
+pick and is 63KB for the same two weights, because Google serves it as a
+variable font.
+
 ## The landing-page hero is recorded, not screenshotted
 
 `public/roost-hero.png` comes out of [vhs](https://github.com/charmbracelet/vhs),

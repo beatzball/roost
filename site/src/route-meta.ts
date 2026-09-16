@@ -19,6 +19,13 @@ export const starlightHead = [
   '<link rel="icon" href="/favicon.ico" sizes="any" />',
   '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />',
   '<link rel="apple-touch-icon" href="/apple-touch-icon.png" />',
+  // Preloaded, and only the regular weight. The stylesheet below declares the
+  // @font-face, but a browser does not fetch a font until it has matched an
+  // element to it -- which is after CSS has parsed, one round trip later. The
+  // headings and every code block on the page are set in this file, so it is
+  // wanted immediately. Bold is left to be discovered: it is used by fewer
+  // elements and arrives in time to swap without a visible jump.
+  '<link rel="preload" href="/fonts/fira-mono-latin-400.woff2" as="font" type="font/woff2" crossorigin />',
   '<link rel="stylesheet" href="/shoelace/themes/light.css" />',
   '<link rel="stylesheet" href="/styles/starlight.css" />',
   '<link rel="stylesheet" href="/styles/highlight.css" />',

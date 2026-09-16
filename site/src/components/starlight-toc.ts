@@ -27,6 +27,7 @@ export class StarlightToc extends LitElement {
     }
 
     h2 {
+      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: var(--sl-text-xs, 0.75rem);
       font-weight: 700;
       text-transform: uppercase;
