@@ -913,7 +913,7 @@ export class SplashPage extends LitroPage {
         padding: 0.45rem 0.7rem;
       }
 
-      /* Which agents report in. */
+      /* Use any coding agent. */
       .agents {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1245,8 +1245,8 @@ export class SplashPage extends LitroPage {
 
         <section class="block">
           <div class="wrap">
-            <h2>Which agents report in</h2>
-            <p class="section-lede">An adapter or a hook does the reporting. Anything else can call one command.</p>
+            <h2>Use any coding agent</h2>
+            <p class="section-lede">Five come ready to report their own state. Anything else can call one command.</p>
             <ul class="agents">
               ${AGENTS.map(
                 (a) => html`<li><span class="name">${a.name}</span><span class="how">${a.how}</span><code>${a.cmd}</code></li>`,
