@@ -5,6 +5,71 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0]
+
+Roost can now wire the agents in its own panes, instead of editing your files.
+Nothing you already have stops working, and you can turn it off at any level.
+
+### Added
+
+- **Agents started inside a roost pane get roost's wiring** (#58), from files
+  roost owns under `~/.config/roost/wiring/`. That includes an agent you type by
+  hand, one from `roost spawn`, and one another agent starts. Nothing outside
+  roost is affected.
+  - **Claude Code** gets it through a small shim on the pane's PATH, which adds
+    a hooks-only settings file.
+  - **opencode** gets it through `OPENCODE_CONFIG_DIR`, which merges with your
+    own config. Its plugin will not load twice.
+  - **codex, pi and copilot are unchanged.** They still use `roost install`,
+    because none of them can add config without moving your login too.
+- **`roost wiring`** turns it on and off: `roost wiring on`, `roost wiring off`,
+  `roost wiring off -t SESSION`, and `roost wiring remove`.
+- **`roost doctor`** reports which wiring state you are in.
+
+### How to back out
+
+| scope | how |
+|---|---|
+| one run | `ROOST_NO_SHIM=1 claude` |
+| one session | `roost wiring off -t SESSION` |
+| the whole server | `roost wiring off`, or `set -g @roost-wiring-enabled off` |
+| everything | `roost wiring remove`, then restart the server |
+
+Your own tmux `default-command` also wins over roost's.
+
+### Notes
+
+- **Your existing `roost install` hooks can stay.** They name the same commands
+  as the generated file, so each hook still runs once. `roost doctor` warns if
+  they point at a different checkout.
+- Panes opened before the upgrade keep their old shell until they are reopened.
+- Known limits, including a `claude` alias to an absolute path, are in
+  `docs/known-gaps.md`.
+
+## [0.3.0]
+
+One new feature: output that programs can read. No upgrade step is needed.
+
+### Added
+
+- **`--json` on `roost status`, `whoami`, `read`, `screen`, and `state`** (#41).
+  Every document carries `"schema": 1`. Without `--json`, the output and every
+  exit code are exactly as before.
+  - `roost state STATE --json` sets the badge as before, then prints what
+    actually landed, so a script can see a badge that did not stick.
+  - Under `--json`, a command that fails prints nothing on stdout. The exit
+    code and the error message are the same as without `--json`.
+  - Under `--json`, a blank screen exits 0 with `"text": ""`. Without `--json`
+    it still exits 1 for now (#69).
+
+### Known limits
+
+- `roost state STATE --json` reports `"recorded": false` when the badge is set
+  for a whole window or globally rather than on the pane.
+- `wait-done --json` is not included yet.
+- Not yet measured with gawk, or with tmux 3.4.
+- The full list is in `docs/known-gaps.md`.
+
 ## [0.2.2]
 
 Two small fixes. No upgrade step is needed.

@@ -1,0 +1,42 @@
+#!/bin/sh
+# roost-pane-shell — start what a roost pane runs, with roost's shim directory
+# first on PATH (#58).
+#
+# Two callers:
+#   - the server's `default-command`, set by `roost wiring apply`. No arguments:
+#     exec the user's shell as a login shell, which is what tmux runs when
+#     default-command is empty.
+#   - `roost spawn` / `roost split` with a command. One argument is a command
+#     STRING, and tmux runs a string through the shell with -c, so this does
+#     the same. More than one is an argv, which tmux execs directly, so this
+#     does the same.
+#
+# Why a script rather than a default-command string: tmux runs default-command
+# through the user's default-shell with -c, and that shell may be fish, whose
+# syntax is not sh's. A single quoted path is the one thing every shell runs
+# the same way.
+#
+# Why PATH has to be set here at all: tmux gives a client-created pane the
+# client's PATH and ignores the server's global PATH (design M1,
+# docs/airig/specs/2026-09-15-roost-owned-settings-design.md). The shell's own
+# startup files run AFTER this, and M2 measured where the directory lands once
+# they have: in front of claude's install directory in every shell tried.
+shims=$(CDPATH= cd -P -- "$(dirname -- "$0")/../shims" 2>/dev/null && pwd -P)
+# Prepended unless it is already FIRST. A pane started by an agent in a wired
+# pane inherits a PATH that already begins with it, and each nesting level
+# used to add another copy. "Already somewhere on PATH" is not enough to skip:
+# it has to come before claude's own directory.
+if [ -n "$shims" ]; then
+  case "$PATH" in
+    "$shims" | "$shims":*) : ;;
+    *) PATH="$shims:$PATH" ;;
+  esac
+  export PATH
+fi
+
+shell=${SHELL:-/bin/sh}
+case $# in
+  0) exec "$shell" -l ;;
+  1) exec "$shell" -c "$1" ;;
+  *) exec "$@" ;;
+esac

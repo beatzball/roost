@@ -317,6 +317,7 @@ roost_ext_core_commands() {
     doctor \
     validate \
     ext \
+    wiring \
     install update \
     init \
     settings \

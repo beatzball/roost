@@ -548,6 +548,24 @@ try {
 check(threw, "", "a missing roost on PATH does not throw into opencode")
 process.env.PATH = `${dir}:${REAL_PATH}`
 
+// The load guard (#58). opencode loads this plugin twice in one process when
+// it is reachable from both the user's plugin directory and roost's wiring
+// directory, and hands both copies the same instance input. The second copy
+// must register no hooks at all, or every event reports twice.
+{
+  const client = {}
+  const first = await RoostState({ client, directory: "/p" })
+  const second = await RoostState({ client, directory: "/p" })
+  check(typeof first.event, "function", "load guard: the first load for an opencode instance registers the event hook")
+  check(Object.keys(second).join(","), "", "load guard: a second load for the SAME instance registers nothing")
+  const other = await RoostState({ client: {}, directory: "/q" })
+  check(typeof other.event, "function", "load guard: a different instance in the same process is still badged")
+  const shared = { directory: "/r" }
+  const a = await RoostState(shared)
+  const b = await RoostState(shared)
+  check(`${typeof a.event},${Object.keys(b).length}`, "function,0", "load guard: with no client, the input object itself is the key")
+}
+
 rmSync(dir, { recursive: true, force: true })
 console.log(`  (${pass} passed, ${fail} failed in the opencode plugin harness)`)
 process.exit(0)

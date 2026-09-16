@@ -156,7 +156,36 @@ const report = (state) => run(["state", state])
 // its own byte budget, so nothing is capped here — one place decides that.
 const publish = (text) => run(["reply", text])
 
-export const RoostState = async () => {
+// One copy of this plugin per opencode instance, however many places load it
+// (#58). roost can reach opencode two ways at once: the symlink `roost install`
+// puts in the user's plugin directory, and the one roost's wiring puts under
+// OPENCODE_CONFIG_DIR. Measured on opencode 1.18.30, opencode then loads the
+// plugin TWICE in one process — with one basename or two, and with both links
+// pointing at the same file — so every event would run `roost state` and
+// `roost reply` twice. The design (docs/airig/specs/2026-09-15-roost-owned-
+// settings-design.md, M5) chose a guard here over removing either link.
+//
+// Keyed on what opencode hands every plugin of one instance — its `client`,
+// or the input object itself — so two instances in one process (opencode
+// serve) are still each badged once. Held on globalThis under a registered
+// symbol, not in a module variable, because two different paths are two
+// module instances with two copies of any variable declared here.
+//
+// A call with no input object is never guarded. That is not how opencode
+// calls a plugin; it is how tests/opencode-plugin-harness.mjs builds a fresh
+// instance per case.
+const LOADED = Symbol.for("roost.opencode.adapter.instances")
+const alreadyLoaded = (input) => {
+  const key = input && typeof input === "object" ? (input.client && typeof input.client === "object" ? input.client : input) : null
+  if (!key) return false
+  const seen = (globalThis[LOADED] ??= new WeakSet())
+  if (seen.has(key)) return true
+  seen.add(key)
+  return false
+}
+
+export const RoostState = async (input) => {
+  if (alreadyLoaded(input)) return {}
   // opencode emits session.status busy several times per turn. Holding the
   // last reported state keeps a turn to one process spawn per real transition.
   // This is separate from roost state's own unchanged-state early-bail, which

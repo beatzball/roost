@@ -800,7 +800,123 @@ other job holds the terminal the pane is not died, and `respawn-pane -k`, which
 keeps pane options, changes the pane process the record names, so the record
 is ignored.
 
+### Roost's own wiring reaches claude and opencode only (#58)
+
+**A live risk, low.** Phase 1 of #58 wires claude (a PATH shim, reached through
+tmux `default-command`) and opencode (`OPENCODE_CONFIG_DIR`) in roost panes.
+The design is `docs/airig/specs/2026-09-15-roost-owned-settings-design.md`;
+its "Measured" section has the evidence for everything below.
+
+What stays on `roost install`, and why:
+
+- **codex.** `-c` can supply hooks, but codex ignores trust passed through `-c`,
+  so trust still has to be written into `~/.codex/config.toml` by codex's own
+  prompt. In a login zsh on the measured machine, Homebrew's codex also comes
+  before a shim on PATH.
+- **pi and copilot.** No variable adds an extension without also moving auth
+  and sessions (`PI_CODING_AGENT_DIR`, `COPILOT_HOME`); `-e` and
+  `--plugin-dir` are flags only. A shim loses to nvm (pi) and Homebrew
+  (copilot) in zsh on the measured machine.
+
+Holes in what did ship:
+
+- **The shim is bypassed** by an alias to claude's full path, by a
+  `default-command` in the user's own `roost.conf` (roost keeps it rather than
+  replace it), and by startup files that put claude's directory ahead of
+  roost's. The pane then badges only through `roost install`. `roost doctor` run
+  in the pane names the path that won — except for an alias, which doctor
+  cannot see: it runs in its own process, where the user's aliases do not
+  exist. The PATH positions were measured on one machine's zsh and bash startup
+  files; **fish was not measured**.
+- **A pane with neither `ROOST_TMUX` nor `tmux` on PATH.** The shim then cannot
+  read `@roost-wiring-enabled`, and `roost wiring off` does not reach a claude
+  started there. It fails toward "on". Doctor warns. Every pane of a server this
+  roost started has `ROOST_TMUX`, and most panes have tmux on PATH anyway.
+- **One wiring directory per checkout, and they are not cleaned up.** Each
+  server uses `~/.config/roost/wiring/<checkout id>/`, so a second server from
+  another checkout cannot overwrite the file a running server's panes use (found
+  in review). A checkout that is moved or deleted leaves its directory behind
+  until `roost wiring remove`; the files are small. `roost wiring on` run from
+  a DIFFERENT checkout re-points a running server at that checkout's
+  directory: new panes get its hooks, panes already open keep the old ones. If
+  the global install names the first checkout, doctor's "runs twice" row is
+  the only thing that says so.
+- **Two routes for two checkouts run every Claude hook twice.** Identical
+  commands run once (measured with real user settings); a global install
+  pointing at a different checkout is not identical. Doctor warns.
+- **The opencode load guard is keyed on opencode's plugin input.** Measured:
+  opencode loads the plugin twice when it is in both the user's plugin
+  directory and roost's; the guard keeps the second load from registering
+  hooks. The guard assumes both loads get the same `client` object or input
+  object. Measured live on opencode 1.18.30 with a recording `roost` on PATH:
+  roost's copy alone made 2 `roost state` calls in one turn, the guarded plugin
+  in both directories made 2, and an unguarded copy in both made 4. A future
+  opencode that builds a fresh input per plugin would bring the double report
+  back, and nothing would say so. The guard also only protects copies that
+  carry it: if the user's global plugin link names a checkout from before #58,
+  and opencode loads that unguarded copy, roost's copy registers as well and
+  every event reports twice. Doctor has no row for this.
+- **A user's own `--settings` replaces roost's for that run.** The shim puts
+  its `--settings` before the user's arguments. Measured on Claude Code
+  2.1.272 with two `--settings` flags, each file carrying a stamp hook: only
+  the LAST file's hook ran. So `claude --settings mine.json` inside roost runs
+  with the user's file and without roost's hooks — no badge for that run, and
+  never a double. Putting roost's last instead would silently drop the user's
+  file, which is worse. `claude --settings <file> mcp list` works (exit 0, the
+  same output as without it), so the position before a subcommand is fine.
+- **`roost wiring off -t SESSION` affects new panes only.** A pane that already
+  exists keeps the environment its shell started with; use
+  `export ROOST_NO_SHIM=1` there. For opencode, measured by a reviewer on tmux
+  3.6: after `set-environment -t o -r OPENCODE_CONFIG_DIR` with a global value
+  set, a new pane in session `o` has no `OPENCODE_CONFIG_DIR` and a new pane in
+  another session keeps the global one.
+- **A `ROOST_NO_SHIM` in the shell that STARTS the server opts out the whole
+  server.** tmux copies the starting client's environment into the server's
+  global one, so every pane of that server runs claude without roost's
+  settings until `roost wiring on`, which clears it. On a server that is
+  already running, a caller's `ROOST_NO_SHIM` does not reach a new
+  `roost spawn` pane. Doctor shows `· ROOST_NO_SHIM is set here` in such a pane.
+- **A `claude` symlinked to the shim in an unmarked directory loops.** The
+  shim's PATH walk skips only directories holding `.roost-shim`, so a user who
+  links `shims/claude` into, say, `~/.local/bin` makes the shim find itself and
+  exec itself forever, adding `--settings` each round. Roost never creates such
+  a link. A guard comparing each candidate with the shim itself (`-ef "$0"`)
+  would close it; not done in #58 because it was found in the last review
+  round.
+- **`roost wiring off` from a shell with a different `XDG_CONFIG_HOME` leaves
+  `OPENCODE_CONFIG_DIR` set.** The check for "roost's own" value is computed
+  from the caller's XDG/HOME, not from the `ROOST_WIRING_DIR` the server
+  exported, so new opencode panes stay wired while the command says they start
+  unwired. Doctor's opencode note has the same dependence. Found in the last
+  review round; not fixed in #58.
+- **The login shell is started with `-l`, not an argv0 of `-<shell>`.** tmux
+  starts an unwired pane's shell with a leading dash in argv0; POSIX sh cannot
+  set argv0, so `roost-pane-shell` passes `-l`, which sh, bash, zsh and fish
+  accept. A shell without `-l` would not start as a login shell. Not measured
+  with such a shell.
+- **Outside roost, a `claude` found only through an empty or `.` PATH entry is
+  not run by the shim.** The PATH walk skips those entries before the roost
+  check, so a shim directory inherited onto PATH outside roost says "no claude
+  found" where the shell would have run a `./claude`. Exit 127 either way; the
+  argv is never changed.
+- **A `claude` an agent starts inside its own pane is wired too**, exactly as
+  the global install already wires it, and badges the same pane. #64 decides
+  how a child agent in one pane is treated.
+
 ## Behaviour changes
+
+### Claude and opencode in a roost pane are wired without `roost install` (#58)
+
+**A note, not a defect.** A roost server wires the claude and opencode started
+in its panes, whoever starts them, from files under `~/.config/roost/wiring/`.
+Nothing is written to the user's own config. Every back-out route is on the
+site's Setup page (`site/content/docs/setup.md`): `ROOST_NO_SHIM=1`, `roost wiring off [-t SESSION]`,
+`@roost-wiring-enabled off`, and `roost wiring remove`.
+
+Two visible differences in a pane: `default-command` is set to
+`scripts/roost-pane-shell` (the pane still starts the user's login shell), and
+`roost spawn`/`roost split` run their command through that script. Test
+servers whose socket is not named `roost` are never wired.
 
 ### A moved or re-cloned checkout still needs codex wired by hand
 
@@ -958,6 +1074,42 @@ in exchange for a dependency on upstream's numbering, in the one code path that
 has already produced a real bug here.
 
 ## Small deferred items
+
+- **`--json` (#41): what shipped and what did not.** Shipped: `status`, `read`,
+  `screen`, `whoami`, and `state STATE --json`, schema 1, specified in
+  `docs/airig/specs/2026-09-15-json-output-design.md`. Not covered:
+  - **`wait-done --json`.** Left out while #47/#66 and #65 change its argument
+    parsing and exit codes. The design says what its document will be.
+  - **A blank screen: the two modes disagree on the exit status.** `screen
+    --json` and `read --json` exit 0 with `"text":""`, as the design chose.
+    Plain `roost screen` and `roost read` exit 1 there, because `screen_dump`'s
+    `grep -v` selects nothing under `pipefail`. That exit 1 is a bug of its own,
+    to be filed separately; until it is fixed, the modes differ in this one case.
+  - **gawk was never run.** The encoder was fuzzed with BSD awk, mawk and BusyBox
+    awk. It sets `LC_ALL=C` for awk, which is what gawk needs to walk bytes, but
+    CI runs mawk and BSD awk, which walk bytes in any locale — so a change that
+    dropped that `LC_ALL=C` would stay green in CI and break on a gawk machine.
+  - **On tmux 3.4 and 3.5a a reply is rewritten before anyone reads it.**
+    Measured: those versions store a control byte, DEL, or a byte of invalid
+    UTF-8 as escape text (`\001`, `\r`, `\377`) when `roost reply` or a hook
+    records it, and do not escape a backslash, so it cannot be decoded exactly.
+    `read --json` keeps the text as stored and says `"lossy": true` when it holds
+    such a sequence on such a server (a literal `\033` in a shell snippet is
+    flagged too: the flag means "may differ", not "did"). Plain `roost read` has
+    printed the same escape text on those versions since the reply channel
+    shipped; it is tmux's storage, not roost's output, and this change does not
+    alter it. Pane names, window names and `error_reason` carry no `lossy` flag,
+    so on those versions they are reported as tmux stores them.
+  - **A writer that is not in a UTF-8 locale loses tab, newline and non-ASCII.**
+    tmux 3.4, 3.5a and 3.7c store them as `_` when the client that writes the
+    option runs in a non-UTF-8 locale (3.6 keeps them). `_` is an ordinary
+    character, so neither mode can detect it. A hook environment without
+    `LANG`/`LC_ALL` would hit this.
+  - **A trailing newline in an option value is lost**, in `--json` and in the
+    plain commands alike, because `$(...)` strips it.
+  - **Invalid UTF-8 is replaced, not preserved.** JSON strings cannot carry raw
+    bytes. `"lossy": true` says it happened; a lossless extra field (base64)
+    could be added later without a schema bump.
 
 - **No signature verification of an extension.** Pinning to a full commit SHA,
   and recording the tree hash `roost ext verify` re-checks, is the substitute:
