@@ -1,11 +1,15 @@
 export const siteConfig = {
   title: 'roost',
   description:
-    'An on-demand tmux agent view for wrangling multiple AI coding agents — without giving up your normal tmux setup.',
+    'An on-demand tmux agent view. Every coding agent reports its own state on its tab, on a tmux server kept apart from yours.',
   logo: null,
   editUrlBase: 'https://github.com/beatzball/roost/edit/main/site/content/docs',
   nav: [
     { label: 'Docs', href: '/docs/getting-started' },
+    // A visitor deciding whether a tool is alive looks for this before they
+    // look at the docs. Generated from CHANGELOG.md -- see
+    // scripts/sync-changelog.mjs.
+    { label: 'Changelog', href: '/docs/changelog' },
     { label: 'GitHub', href: 'https://github.com/beatzball/roost' },
   ],
   sidebar: [
@@ -31,6 +35,7 @@ export const siteConfig = {
       items: [
         { label: 'How It Works',    slug: 'how-it-works' },
         { label: 'Troubleshooting', slug: 'troubleshooting' },
+        { label: 'Changelog',       slug: 'changelog' },
       ],
     },
   ],

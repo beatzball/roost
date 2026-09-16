@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement, property } from 'lit/decorators.js';
 
 /**
@@ -16,7 +17,7 @@ export class LitroFooter extends LitElement {
     recipe: { type: String },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
     }
@@ -44,7 +45,7 @@ export class LitroFooter extends LitElement {
          visually-hidden text instead. */
       white-space: nowrap;
     }
-  `;
+  `];
 
   /** Recipe the site was scaffolded from, e.g. "starlight". */
   recipe = '';

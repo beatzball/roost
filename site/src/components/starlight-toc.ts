@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 import type { TocEntry } from '../extract-headings.js';
 
@@ -13,7 +14,7 @@ export class StarlightToc extends LitElement {
     entries: { type: Array },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
     }
@@ -71,7 +72,7 @@ export class StarlightToc extends LitElement {
       color: var(--sl-color-accent, #7c3aed);
       border-left-color: var(--sl-color-accent, #7c3aed);
     }
-  `;
+  `];
 
   entries: TocEntry[] = [];
 

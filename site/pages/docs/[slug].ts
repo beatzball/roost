@@ -1,4 +1,5 @@
 import { html, css } from 'lit';
+import { typography } from '../../src/styles/typography.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { customElement } from 'lit/decorators.js';
 import { LitroPage } from '@beatzball/litro/runtime';
@@ -114,7 +115,7 @@ export class DocPage extends LitroPage {
    * <div slot="content"> subtree. Global stylesheets (starlight.css,
    * highlight.css) cannot pierce shadow DOM boundaries.
    */
-  static override styles = css`
+  static override styles = [typography, css`
     /* ── Typography for slotted doc content ─────────────────────────── */
     h1, h2, h3, h4, h5, h6 {
       margin-top: 1.5em; margin-bottom: 0.5em;
@@ -129,7 +130,6 @@ export class DocPage extends LitroPage {
     a  { color: var(--sl-color-text-accent, var(--sl-color-accent)); text-decoration: none; }
     a:hover { text-decoration: underline; }
     code {
-      font-family: var(--sl-font-mono, ui-monospace, monospace);
       font-size: 0.875em;
       background-color: var(--sl-color-bg-inline-code, #e8e8e8);
       border: 1px solid var(--sl-color-border, #e8e8e8);
@@ -179,7 +179,7 @@ export class DocPage extends LitroPage {
     .hljs-symbol, .hljs-bullet, .hljs-link { color: #38bdf8; }
     .hljs-emphasis { font-style: italic; }
     .hljs-strong { font-weight: bold; }
-  `;
+  `];
 
   override render() {
     const data = this.serverData as DocPageData | null;

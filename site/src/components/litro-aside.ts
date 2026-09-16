@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 
 type AsideType = 'note' | 'tip' | 'caution' | 'danger';
@@ -30,7 +31,7 @@ export class LitroAside extends LitElement {
     title: { type: String },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
     }
@@ -66,7 +67,7 @@ export class LitroAside extends LitElement {
     .aside.danger  .aside-title { color: var(--sl-color-danger, #b91c1c); }
 
     ::slotted(p:last-child) { margin-bottom: 0; }
-  `;
+  `];
 
   type: AsideType = 'note';
   title = '';

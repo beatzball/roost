@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 
 /**
@@ -9,7 +10,7 @@ import { customElement } from 'lit/decorators.js';
  */
 @customElement('litro-card-grid')
 export class LitroCardGrid extends LitElement {
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
       counter-reset: card;
@@ -20,7 +21,7 @@ export class LitroCardGrid extends LitElement {
       grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
       gap: 1.25rem;
     }
-  `;
+  `];
 
   override render() {
     return html`

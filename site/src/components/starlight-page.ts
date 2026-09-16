@@ -1,4 +1,5 @@
 import { LitElement, html, css } from 'lit';
+import { typography } from '../styles/typography.js';
 import { customElement } from 'lit/decorators.js';
 import type { NavItem } from './starlight-header.js';
 import type { SidebarGroup } from './starlight-sidebar.js';
@@ -40,7 +41,7 @@ export class StarlightPage extends LitElement {
     _navOpen:    { state: true },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
     }
@@ -147,7 +148,7 @@ export class StarlightPage extends LitElement {
         display: none;
       }
     }
-  `;
+  `];
 
   siteTitle = '';
   pageTitle = '';

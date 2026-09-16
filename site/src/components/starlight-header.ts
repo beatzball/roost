@@ -1,4 +1,5 @@
 import { LitElement, html, css } from "lit";
+import { typography } from "../styles/typography.js";
 import { customElement } from "lit/decorators.js";
 
 export interface NavItem {
@@ -21,7 +22,7 @@ export class StarlightHeader extends LitElement {
     _theme: { type: String, state: true },
   };
 
-  static override styles = css`
+  static override styles = [typography, css`
     :host {
       display: block;
       position: sticky;
@@ -181,7 +182,7 @@ export class StarlightHeader extends LitElement {
     .theme-toggle:hover {
       background-color: var(--sl-color-gray-2, #e8e8e8);
     }
-  `;
+  `];
 
   siteTitle = "";
   nav: NavItem[] = [];
@@ -305,7 +306,7 @@ export class StarlightHeader extends LitElement {
               </button>
             `
           : ""}
-        <a class="site-title" href="/">
+        <a class="site-title mono" href="/">
           <img class="site-logo" src="/logo.png" alt="" aria-hidden="true" />
           ${this.siteTitle}
         </a>
@@ -313,6 +314,7 @@ export class StarlightHeader extends LitElement {
           ${regularNav.map(
             (item) => html`
               <a
+                class="mono"
                 href="${item.href}"
                 aria-current="${this.currentPath.startsWith(item.href)
                   ? "page"
