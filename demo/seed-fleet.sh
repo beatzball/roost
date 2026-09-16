@@ -134,8 +134,14 @@ if command -v claude >/dev/null 2>&1; then
   # --settings blanks the user's own status line for this run. Theirs reports
   # plan tier and weekly usage across the bottom of every frame, and that is
   # their account, not roost's product.
+  # The command is TYPED into the pane, so its text is on screen above the
+  # agent until enough conversation pushes it out of frame. $HERE is an
+  # absolute path under the author's home directory; typed as-is it would put
+  # a username into a public image. Copy the file under /tmp and type that.
+  settings="$(dirname "$SOCK")/claude-settings.json"
+  cp "$HERE/claude-demo-settings.json" "$settings"
   t send-keys -t "=$SESS:api" "clear" Enter
-  t send-keys -t "=$SESS:api" "claude --settings $HERE/claude-demo-settings.json" Enter
+  t send-keys -t "=$SESS:api" "claude --settings $settings" Enter
   sleep 10
 
   # Claude asks whether it trusts a folder it has not seen before, and the
@@ -157,7 +163,11 @@ if command -v claude >/dev/null 2>&1; then
   }
   ask "In three short bullets, say what roost does for someone running several coding agents at once. No preamble, no tool calls, no code."
   ask "Now just the shell one-liner that prompts three agents named api, web and worker and then waits for all three. Code block only, no explanation."
-  ask "And in one line: which key takes me straight to whichever agent needs me? No code block."
+  # Asked about the seeded repo, not about roost. An earlier cut asked which
+  # key jumps to the agent that needs you, and the agent answered "Ctrl-s then
+  # a" -- wrong, it is Ctrl-s b -- and the answer shipped in the hero. The
+  # agent can read src/server.js; it cannot read roost's key bindings.
+  ask "In one line, what does src/server.js do? No code block."
 else
   echo "seed-fleet: claude not found — leaving 'api' as a shell." >&2
   state api working
