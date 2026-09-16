@@ -345,33 +345,75 @@ export class SplashPage extends LitroPage {
         border-bottom: 1px solid var(--line);
       }
 
-      .session {
+      /* Powerline segments: owl, then name, then the current tab.
+         Every segment ends in the same arrow. Each one after the first slides
+         --arrow to the left, UNDER the arrow before it (a lower z-index), so
+         the notch the arrow cuts shows the next segment's colour rather than
+         a square edge. The shape of roost's own status line. */
+      .statusline {
+        --arrow: 0.75rem;
+      }
+      .seg {
+        position: relative;
         display: flex;
         align-items: center;
-        gap: 0.5rem;
-        padding: 0 1rem 0 var(--gutter);
-        background: var(--violet);
+        clip-path: polygon(0 0, calc(100% - var(--arrow)) 0, 100% 50%, calc(100% - var(--arrow)) 100%, 0 100%);
+      }
+
+      /* One link, two segments: the owl and the name both go home. */
+      .home {
+        position: relative;
+        z-index: 2;
+        display: flex;
+        align-items: stretch;
+        text-decoration: none;
+      }
+      /* The segments paint over any outline on the link, so a ring showed
+         only as a sliver in the arrow's notch. The name segment itself
+         changes instead: lilac with dark underlined text is unmistakable and
+         keeps the powerline shape. */
+      .home:focus-visible {
+        outline: none;
+      }
+      .home:focus-visible .seg-name {
+        color: var(--night);
+        background: var(--lilac);
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 0.2em;
+      }
+      /* The owl on the dark, which is what it was drawn for. On the violet its
+         blue and violet face disappeared into the block behind it. */
+      .seg-owl {
+        z-index: 2;
+        padding: 0 calc(0.55rem + var(--arrow)) 0 var(--gutter);
+        background: var(--night);
+      }
+      .seg-owl img {
+        display: block;
+        width: 1.375rem;
+        height: 1.375rem;
+      }
+      .seg-name {
+        z-index: 1;
+        margin-left: calc(-1 * var(--arrow));
+        padding: 0 calc(0.75rem + var(--arrow)) 0 calc(0.6rem + var(--arrow));
         color: #fff;
         font-weight: 700;
-        text-decoration: none;
-        /* The powerline wedge roost draws after the session name. */
-        clip-path: polygon(0 0, calc(100% - 0.75rem) 0, 100% 50%, calc(100% - 0.75rem) 100%, 0 100%);
-        padding-right: 1.5rem;
+        background: var(--violet);
       }
-      .session:hover {
-        color: #fff;
+      .home:hover .seg-name {
         background: #8d81f5;
-      }
-      .session img {
-        width: 1.25rem;
-        height: 1.25rem;
       }
 
       .tabs {
+        position: relative;
+        z-index: 1;
         display: flex;
         align-items: stretch;
         min-width: 0;
-        margin: 0;
+        /* Tucks the first tab under the name segment's arrow. */
+        margin: 0 0 0 calc(-1 * var(--arrow));
         padding: 0;
         list-style: none;
         overflow: hidden;
@@ -385,9 +427,16 @@ export class SplashPage extends LitroPage {
         color: var(--dim);
         animation: flag 1.1s ease-out var(--at) both;
       }
+      /* Whatever tab comes first sits partly under the arrow before it, so it
+         gets that much more room on the left. */
+      .tab:first-child {
+        padding-left: calc(0.75rem + var(--arrow));
+      }
       .tab.current {
+        padding-right: calc(0.75rem + var(--arrow));
         color: var(--ink);
         background: var(--pane);
+        clip-path: polygon(0 0, calc(100% - var(--arrow)) 0, 100% 50%, calc(100% - var(--arrow)) 100%, 0 100%);
       }
       .tab[data-to='blocked'] {
         --flag: color-mix(in srgb, var(--s-blocked) 30%, transparent);
@@ -1055,14 +1104,14 @@ export class SplashPage extends LitroPage {
     const docs = nav.find((n) => n.href.startsWith('/docs/getting-started'))?.href ?? '/docs/getting-started';
 
     return html`
-      <!-- A roost status line. The session block is the home link, the tabs
+      <!-- A roost status line. The owl and name segments are the home link, the tabs
            are a fleet settling into its states, and the right side is the
            site's navigation. The tabs are a picture, so assistive tech is
            told what they show once rather than read five glyphs. -->
       <header class="statusline mono">
-        <a class="session site-title" href="/">
-          <img src="/favicon-32.png" alt="" width="20" height="20" />
-          roost
+        <a class="home" href="/">
+          <span class="seg seg-owl"><img src="/logo.png" alt="" width="22" height="22" /></span>
+          <span class="seg seg-name site-title">roost</span>
         </a>
         <ol class="tabs" role="img" aria-label="Five agents: api is done, web is working, worker is blocked, docs is idle, tests has an error.">
           ${FLEET.map(
