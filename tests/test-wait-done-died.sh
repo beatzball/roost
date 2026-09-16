@@ -13,8 +13,9 @@
 #     stays `working`, and wait-done burned its whole timeout.
 #   - an agent killed inside a shell leaves the pane alive at a prompt,
 #     `pane_dead` stays 0 and the badge stays `working`. No tmux fact says the
-#     agent is gone, so that case still times out with exit 1 -- pinned below,
-#     so nobody "fixes" it later with a guess. docs/known-gaps.md has the rest.
+#     agent is gone. #64 catches it from a job the sink RECORDED
+#     (tests/test-wait-done-shell.sh); a pane with no record still times out
+#     with exit 1 -- pinned below, so nobody "fixes" it later with a guess.
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -258,12 +259,14 @@ assert_eq "$rc" "1" "a dead pane badged error still exits 1"
 assert_contains "$err" "error state" "...naming the error state"
 T kill-window -t "$(win_of "$p")"
 
-# --- (b) killed inside a shell: NOT detected, on purpose ----------------------
-# The pane is alive at a prompt and pane_dead is 0; nothing but a process or
-# screen check could tell, and #54 rules both out. It must keep timing out
-# with exit 1 rather than returning a guess.
+# --- (b) busy inside a shell with NO recorded job: not detected, on purpose ----
+# The pane is alive at a prompt and pane_dead is 0. With no @roost-agent-job
+# (an older install, or a badge no hook wrote) nothing but a process or screen
+# check could tell, and #54 rules both out. It must keep timing out with exit 1
+# rather than returning a guess. A pane WITH a record is #64's, in
+# tests/test-wait-done-shell.sh.
 p="$(T new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"
 T set-option -p -t "$p" @agent_state working
 err="$("$ROOST" wait-done "$p" 1 2>&1 >/dev/null)"; rc=$?
-assert_eq "$rc" "1" "an agent killed inside a shell still times out with exit 1 (documented gap)"
+assert_eq "$rc" "1" "a busy shell pane with no recorded job still times out with exit 1"
 assert_contains "$err" "timed out" "...and says timed out, not died"

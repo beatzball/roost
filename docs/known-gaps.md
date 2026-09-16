@@ -702,14 +702,14 @@ one used now.
 
 **What is still not covered, most serious first.**
 
-- **An agent killed inside a shell is not detected.** The pane stays alive at a
-  prompt, `pane_dead` stays 0, and nothing rewrites the badge — Claude fires no
-  hook on SIGTERM either. The only tmux fact that changes is
-  `#{pane_current_command}` (Claude's reads `2.1.272`, then `bash`), which is a
-  process NAME: comparing it to a shell would call a working agent dead whenever
-  its own process is a shell, a wrapper script or `bash -c`. So `wait-done` still
-  waits its timeout and exits 1. An honest fix needs the hook to record the
-  agent's identity when it stamps `working`; that is its own issue.
+- **An agent killed inside a shell was not detected.** Fixed by #64 wherever
+  the agent's hook recorded its job — see the next section for what that
+  covers and the two cases it still misses. The pane stays alive at a prompt,
+  `pane_dead` stays 0, and nothing rewrites the badge — Claude fires no hook on
+  SIGTERM either. The only tmux fact that changes is `#{pane_current_command}`
+  (Claude's reads `2.1.272`, then `bash`), which is a process NAME: comparing it
+  to a shell would call a working agent dead whenever its own process is a
+  shell, a wrapper script or `bash -c`. That comparison is still not made.
 - **A one-shot agent that finishes and closes inside one poll reads as died.**
   `claude -p` in a `roost spawn` window closed its pane 531 ms, 1297 ms and
   1348 ms after its badge read done (three runs). `wait-done` exits 0 for a pane
@@ -729,6 +729,76 @@ one used now.
   closed pane is not listed, and there is no record it was ever there, so the
   window reads as having no busy agent and exits 0. A `%N` target on that same
   pane exits 2.
+
+### `wait-done` sees an agent that died inside a shell only through a recorded job
+
+**Fixed by #64.** When a hook stamps `working` or `blocked`,
+`scripts/roost-agent-state` records the job that holds the pane's terminal —
+its process group — in `@roost-agent-job`, as `PGID:PANE_PID`. `wait-done`
+exits **2** on a busy pane when that job has no process left **and** the pane's
+shell holds the terminal again, with a `died` message that says so. A window
+target gives the same answer. The design and every measurement behind it are in
+`docs/airig/specs/2026-09-15-agent-identity-design.md`: at every hook call
+measured, on Claude, codex, opencode, pi and copilot, the terminal's foreground
+job was the agent's job. `tests/test-wait-done-shell.sh` pins the cases below.
+
+**Two cases it misses, both on purpose, both a timeout and never a false
+`died`.** `wait-done` counts a job as gone only when no process of it is left.
+That strict rule was chosen over a quicker one (below).
+
+**1. A Claude killed in the middle of a reply is caught only when its
+`caffeinate` helper exits — up to about five minutes later.** While a reply is
+running, Claude starts `caffeinate -i -t 300` inside its own process group, and
+that helper outlives Claude. Measured (tmux 3.6, Claude typed into
+`/bin/sh -i`, killed with SIGKILL mid-reply):
+
+| Claude | shell had the terminal back | no process of the job left | `wait-done` |
+|---|---|---|---|
+| 2.1.272 | yes | `caffeinate -i -t 300` still in the job 76 s later, reparented to pid 1 | `wait-done %0 60` timed out, exit 1 |
+| 2.1.273 | 0.08 s after the kill | 305.23 s after the kill | — (timing run, no waiter) |
+
+So a `wait-done` whose timeout is shorter than that still exits 1, exactly as
+before #64; a longer one exits 2 once the helper exits. A Claude killed
+*between* replies has no helper running and is caught at once. codex, opencode,
+pi and copilot were measured with only their own process in the job mid-reply,
+and were caught within 0.10 s (codex: `wait-done` exit 2 in 0.56 s).
+
+The quicker rule — "the job's first process is gone and the shell holds the
+terminal" — would catch this Claude case in one poll. It was not taken because
+it calls an agent that restarts itself as a child and exits "died" while the
+agent still runs (measured with a stand-in; no real harness was seen doing it).
+
+**2. A wrapper that outlives its agent.** If the agent
+runs under a script that keeps running after the agent dies — it starts
+`claude` without `exec`, then sleeps or waits for something else — the wrapper
+is still a live process of the job, and the shell never gets the terminal
+back. Measured with Claude under a wrapper that runs `sleep 600` after it:
+Claude killed, the job still held two processes. `wait-done` waits its timeout
+and exits 1, as before #64. It never reports a false `died`. A wrapper that
+exits when its agent exits is caught.
+
+**No record, so exactly the #54 behaviour (a timeout, exit 1):**
+
+- the agent is the pane's own command (`roost spawn`) — #54 already sees that
+  pane close;
+- the agent was started in the background with `&`, or by a shell without job
+  control;
+- `roost state working` typed at a prompt: the stamp's own process leads the
+  job and exits at once, so it names no agent. A stamp made through a `roost`
+  shim that does not `exec` would lead the job instead, and *would* be recorded
+  and then reported died — not measured, and not a path any adapter uses;
+- a hook running inside a container, which cannot see the host's pane process;
+- a pane stamped by an install older than #64.
+
+**Not measured, inferred:** a pane whose command is a login wrapper rather than
+the shell. The shell's job is then not the pane's process, so rule 2 never
+holds and the pane times out. `opencode attach` records the attach client's
+job, which is the thing in the pane.
+
+A record left by an earlier agent cannot report a later one dead: while any
+other job holds the terminal the pane is not died, and `respawn-pane -k`, which
+keeps pane options, changes the pane process the record names, so the record
+is ignored.
 
 ### Roost's own wiring reaches claude and opencode only (#58)
 

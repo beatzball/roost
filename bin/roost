@@ -1637,6 +1637,12 @@ JSON
     # walk or a screen regex — both guess, and a guess that says "died" about a
     # working agent aborts the coordinator waiting on it.
     #
+    # One more fact joins them for an agent typed at a shell prompt (#64): the
+    # job that held the pane's terminal when its hook stamped busy, which
+    # scripts/roost-agent-state records in @roost-agent-job. It is still not a
+    # walk: the sink recorded which job, and this checks two kernel facts about
+    # it — see job_gone below.
+    #
     # What each way of dying looks like, MEASURED on tmux 3.6 with a stand-in
     # agent and with a real Claude Code killed mid-turn:
     #
@@ -1650,32 +1656,39 @@ JSON
     #   - killed inside a shell: the pane stays alive at a prompt, pane_dead is
     #     0 and the badge stays `working`. No tmux fact changes except
     #     #{pane_current_command}, which is a process NAME and is not trusted
-    #     here. That case still times out with exit 1; docs/known-gaps.md.
+    #     here. Until #64 that case timed out with exit 1; now the recorded
+    #     foreground job catches it (job_gone). A pane with no record — an older
+    #     install, or an agent that was not a job of the pane's shell — still
+    #     times out, exactly as before; docs/known-gaps.md.
     #
-    # snapshot() prints one "id dead state" line per pane the target covers,
+    # snapshot() prints one "id dead pane_pid jJOB state" line per pane the
+    # target covers,
     # and fails when the target is gone. list-panes, never display-message,
     # for the reason above: list-panes exits non-zero on a target that does not
     # exist. A %N target is matched by id out of `list-panes -a`, because
     # `list-panes -t %N` lists that pane's whole WINDOW, not the single pane.
     # The state is last on purpose: it is the only field that can be EMPTY (a
     # pane no hook has stamped), and `read` leaves a trailing empty field empty.
+    # @roost-agent-job can be empty too, so it carries a fixed `j` prefix: an
+    # unrecorded pane reads `j`, never a missing field that would shift the
+    # state one place left. Its value is "PGID:PANE_PID", with no space.
     #
     # A read loop over a captured string, not a pipe into `grep`/`awk ... exit`:
     # bin/roost runs under `set -o pipefail`, and a reader exiting early can
     # SIGPIPE list-panes, so the pipeline would report failure even when the
     # pane IS there — and wait-done would call a live agent gone.
     snapshot() {
-      local _all _id _dead _st
+      local _all _id _dead _pp _job _st
       case "$tgt" in
         %*)
-          _all="$(t list-panes -a -F '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null)" || return 1
-          while read -r _id _dead _st; do
-            [ "$_id" = "$tgt" ] && { printf '%s %s %s\n' "$_id" "$_dead" "$_st"; return 0; }
+          _all="$(t list-panes -a -F '#{pane_id} #{pane_dead} #{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null)" || return 1
+          while read -r _id _dead _pp _job _st; do
+            [ "$_id" = "$tgt" ] && { printf '%s %s %s %s %s\n' "$_id" "$_dead" "$_pp" "$_job" "$_st"; return 0; }
           done <<< "$_all"
           return 1
           ;;
         *)
-          t list-panes -t "$tgt" -F '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null
+          t list-panes -t "$tgt" -F '#{pane_id} #{pane_dead} #{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null
           ;;
       esac
     }
@@ -1707,6 +1720,39 @@ JSON
         esac
       done <<< "$busy_seen"
     }
+    # job_gone PANE_PID jJOB: true when the agent this busy pane recorded has
+    # died inside the pane's shell (#64). Both facts are needed, and both are
+    # read from the kernel, not inferred:
+    #
+    #   1. `kill -0 -- -PGID` fails: no process of the recorded job is left. A
+    #      live wrapper, a child the agent restarted as, or a background process
+    #      it left in its job all keep this true, so none of them reads as died.
+    #      (A wrapper that outlives its agent is therefore missed, and times
+    #      out: docs/known-gaps.md. So, for up to about 300 s, is a Claude killed
+    #      mid-reply: it runs `caffeinate -i -t 300` inside its own job, and
+    #      that helper outlives it — measured 305 s. Kept on purpose: "the
+    #      leader is gone" would answer at once but calls an agent that restarts
+    #      itself as a child died.) A pgid that has been reused can only make a
+    #      dead job look alive, never a live one look dead.
+    #   2. the pane's shell holds the terminal again (its tpgid is PANE_PID). If
+    #      another job holds it, that may be a new agent typed at the same
+    #      prompt that has not stamped yet — the record is stale, not a death.
+    #
+    # No record, a malformed one, or one whose PANE_PID is not the pane's
+    # current process (respawn-pane -k keeps pane options) → false: exactly the
+    # pre-#64 behaviour. Step 1 is a builtin and runs every poll; the `ps` of
+    # step 2 forks only once step 1 has failed.
+    job_gone() {
+      local _j="${2#j}" _pg _jp _fg
+      [ -n "$_j" ] || return 1
+      _pg="${_j%%:*}"; _jp="${_j#*:}"
+      case "$_pg:$_jp" in *[!0-9:]*|:*|*:) return 1 ;; esac
+      [ "$_jp" = "$1" ] && [ "$_pg" != "$1" ] && [ "$_pg" -gt 1 ] || return 1
+      kill -0 -- "-$_pg" 2>/dev/null && return 1
+      _fg="$(ps -o tpgid= -p "$1" 2>/dev/null)" || return 1
+      _fg="${_fg//[[:space:]]/}"
+      [ "$_fg" = "$1" ]
+    }
     busy_seen=""; first=1; ticks=0
     while :; do
       if ! rows="$(snapshot)"; then
@@ -1726,7 +1772,7 @@ JSON
       # transcript, and the recovery it exists for is not a race.
       if [ $((ticks % 4)) = 0 ]; then
         offered=0
-        while read -r _id _dead _st; do
+        while read -r _id _dead _pp _job _st; do
           [ "$_st" = "blocked" ] && { roost_unblock_pane "$_id" || true; offered=1; }
         done <<< "$rows"
         if [ "$offered" = 1 ]; then
@@ -1747,7 +1793,7 @@ JSON
           # matches the vanished-while-busy check.
           died_if_vanished "$rows"
           busy_seen=""
-          while read -r _id _dead _st; do
+          while read -r _id _dead _pp _job _st; do
             case "$_st" in working|blocked) busy_seen="$busy_seen$_id $_st"$'\n' ;; esac
           done <<< "$rows"
           first=0
@@ -1770,7 +1816,7 @@ JSON
       # Error is checked before death, so an errored pane keeps exit 1 even
       # once its process has gone: the reason it records is the better answer.
       err_pane=""
-      while read -r _id _dead _st; do
+      while read -r _id _dead _pp _job _st; do
         [ "$_st" = "error" ] && { err_pane="$_id"; break; }
       done <<< "$rows"
       if [ -n "$err_pane" ]; then
@@ -1788,11 +1834,15 @@ JSON
       # and a dead pane never runs another hook. One whose badge reads done or
       # idle finished first, and keeps its old answer below.
       busy_seen=""
-      while read -r _id _dead _st; do
+      while read -r _id _dead _pp _job _st; do
         case "$_st" in
           working|blocked)
             if [ "$_dead" = 1 ]; then
               echo "roost: '$raw' died: pane $_id is dead (its process exited) while it read $_st" >&2
+              exit 2
+            fi
+            if job_gone "$_pp" "$_job"; then
+              echo "roost: '$raw' died: the agent in pane $_id exited inside its shell while it read $_st — the job that held its terminal has no process left, and the shell has the terminal back" >&2
               exit 2
             fi
             busy_seen="$busy_seen$_id $_st"$'\n'
