@@ -1,0 +1,32 @@
+# roost
+
+> An on-demand tmux agent view for wrangling multiple AI coding agents — without giving up your normal tmux setup.
+
+roost runs a tmux server of its own, so the agents you are wrangling never
+touch your everyday tmux. Each agent reports its own state through a hook or
+an adapter, so the tabs show what every agent is doing rather than a guess
+scraped off its screen. `send`, `read` and `wait-done` make that fleet
+scriptable from a shell, from inside roost, or over ssh.
+
+## Start Here
+
+- [Getting Started](https://roosting.dev/docs/getting-started): What roost is, what it needs, and how to install and launch it.
+- [Setup and Settings](https://roosting.dev/docs/setup): Run the setup wizard, pick a theme and glyph set, and change settings live.
+- [State Badges](https://roosting.dev/docs/state-badges): Wire Claude Code hooks, or report state from any other agent, so the tabs show what each agent is doing.
+
+## Guides
+
+- [Using roost](https://roosting.dev/docs/using-roost): Sessions, windows, key bindings, and the at-a-glance status signals.
+- [Driving a Fleet](https://roosting.dev/docs/driving-a-fleet): Script your agents with send, read, screen and wait-done — from your shell, from inside roost, or over ssh.
+- [Extensions](https://roosting.dev/docs/extensions): Add commands to roost from a git repository — pinned to a commit, with what it asks for shown before you agree.
+- [Writing an Extension](https://roosting.dev/docs/writing-an-extension): The manifest, the environment your command is handed, and how to test one on your own machine before you publish it.
+
+## Reference
+
+- [How It Works](https://roosting.dev/docs/how-it-works): The isolated tmux server, pane-scoped badges, and what each file in the repo does.
+- [Troubleshooting](https://roosting.dev/docs/troubleshooting): Start with roost doctor, then the handful of things that actually go wrong.
+- [Changelog](https://roosting.dev/docs/changelog): Every released version of roost, what it added, and what it fixed.
+
+## Source
+
+- [Repository](https://github.com/beatzball/roost): the launcher, the tmux config, the adapters and the tests.

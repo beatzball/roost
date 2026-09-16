@@ -109,6 +109,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # site/content/docs/changelog.md and site/public/llms.txt are generated
+      # from CHANGELOG.md and the sidebar, but they are COMMITTED rather than
+      # built: Coolify builds the image with site/ as the Docker context, so
+      # ../CHANGELOG.md is not there at build time. Generating them in the
+      # Dockerfile would work on a laptop and ship an empty changelog to
+      # production. This step is what stops them drifting instead.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Generated docs are in step with their sources
+        run: |
+          cd site
+          node scripts/sync-changelog.mjs --check
+          node scripts/build-llms-txt.mjs --check
       - uses: docker/setup-buildx-action@v3
       - name: Build image
         uses: docker/build-push-action@v6

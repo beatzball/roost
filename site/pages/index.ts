@@ -28,6 +28,54 @@ const INSTALL_STEPS = [
   { note: 'start (or attach to) the default session', cmd: 'roost' },
 ] as const;
 
+/**
+ * The three complaints roost was written to answer, and the answer to each.
+ *
+ * Every `fix` here has to be something roost already does -- the commands are
+ * the proof, and a reader will run them. Kept in step with
+ * content/docs/how-it-works.md and content/docs/driving-a-fleet.md.
+ */
+const PAINS = [
+  {
+    pain: 'Your own tmux fills up with agents.',
+    fix: 'roost runs on a tmux server of its own, with its own config and its own prefix. Your everyday sessions never see it, and one command puts the whole thing away.',
+    cmd: 'roost   ·   roost kill',
+  },
+  {
+    pain: 'You cannot tell which agent is waiting on you.',
+    fix: 'Each agent reports its own state through a hook or an adapter, so a badge is what the agent said, not what its screen happened to look like. One key takes you to the one that needs you — error first, then blocked.',
+    cmd: 'Ctrl-s b',
+  },
+  {
+    pain: 'Driving agents from a script means scraping their screens.',
+    fix: 'read returns the reply the agent recorded as its turn ended, not the input box and status bars drawn underneath it. wait-done blocks until a pane is finished and exits 2 if the agent died, so a script can branch instead of guessing.',
+    cmd: 'roost send   ·   roost read   ·   roost wait-done',
+  },
+] as const;
+
+/**
+ * Three shapes of fleet, smallest first. A reader who only wants the first one
+ * should not have to read about the third to find out roost suits them.
+ * Kept in step with content/docs/driving-a-fleet.md.
+ */
+const FLEET_SHAPES = [
+  {
+    title: 'By hand',
+    what: 'One agent per job, and a switcher that lists every one of them with its state and how long it has been there.',
+    cmd: 'roost new api',
+  },
+  {
+    title: 'From a shell script',
+    what: 'Prompt each agent, then wait for all of them. A loop over two commands is the whole orchestrator.',
+    cmd: 'for w in api web worker; do roost send "$w" "run the tests"; done',
+  },
+  {
+    title: 'Agent-driven',
+    what: 'One agent opens the others, prompts them, reads their replies, and hands the result to a human in a pane that never steals focus.',
+    cmd: 'roost spawn   ·   roost send   ·   roost read   ·   roost view',
+  },
+] as const;
+
 /** The bindings that pay for themselves on the first day. */
 const KEY_HINTS = [
   { keys: 'Ctrl-s a', what: 'Agent switcher — every agent, its state, and how long it has been there' },
@@ -277,6 +325,53 @@ export class SplashPage extends LitroPage {
             </litro-card-grid>
           </section>
 
+          <!-- The complaint, then the answer. The cards above say what roost
+               is; this says what it is FOR. A reader who does not recognise
+               one of these three problems is not the audience, and finding
+               that out here costs them ten seconds instead of an install. -->
+          <section style="margin-bottom:4rem;">
+            <h2 style="
+              font-size:var(--sl-text-xl);
+              font-weight:700;
+              color:var(--sl-color-text);
+              margin:0 0 1.5rem;
+              text-align:center;
+            ">What it fixes</h2>
+            <div style="display:grid;gap:1rem;max-width:44rem;margin:0 auto;">
+              ${PAINS.map(
+                (p) => html`
+                  <div style="
+                    padding:1.25rem 1.5rem;
+                    border:1px solid var(--sl-color-border);
+                    border-radius:var(--sl-border-radius);
+                  ">
+                    <p style="
+                      margin:0 0 0.5rem;
+                      font-weight:700;
+                      color:var(--sl-color-text);
+                      font-size:var(--sl-text-base);
+                    ">${p.pain}</p>
+                    <p style="
+                      margin:0 0 0.75rem;
+                      color:var(--sl-color-gray-4);
+                      font-size:var(--sl-text-sm);
+                      line-height:1.6;
+                    ">${p.fix}</p>
+                    <code style="
+                      display:inline-block;
+                      font-family:var(--sl-font-mono,ui-monospace,monospace);
+                      font-size:var(--sl-text-sm);
+                      background:var(--sl-color-bg-inline-code,#f6f6f6);
+                      border:1px solid var(--sl-color-border);
+                      border-radius:0.25rem;
+                      padding:0.25rem 0.5rem;
+                    ">${p.cmd}</code>
+                  </div>
+                `,
+              )}
+            </div>
+          </section>
+
           <!-- Install and first run: the four commands, in order, so the
                landing page answers "how do I start" without a click. -->
           <section style="margin-bottom:4rem;">
@@ -353,6 +448,74 @@ export class SplashPage extends LitroPage {
                 `,
               )}
             </div>
+          </section>
+
+          <!-- Named shapes of work. The commands are on the page already;
+               what was missing was the sentence that says which of them a
+               given reader actually needs. Smallest first. -->
+          <section style="margin-bottom:4rem;">
+            <h2 style="
+              font-size:var(--sl-text-xl);
+              font-weight:700;
+              color:var(--sl-color-text);
+              margin:0 0 0.5rem;
+              text-align:center;
+            ">Three ways to run a fleet</h2>
+            <p style="
+              text-align:center;
+              color:var(--sl-color-gray-4);
+              font-size:var(--sl-text-sm);
+              margin:0 0 1.5rem;
+            ">Pick one. They use the same commands.</p>
+            <div style="display:grid;gap:0.75rem;max-width:44rem;margin:0 auto;">
+              ${FLEET_SHAPES.map(
+                (shape, i) => html`
+                  <div style="
+                    padding:1.25rem 1.5rem;
+                    border:1px solid var(--sl-color-border);
+                    border-radius:var(--sl-border-radius);
+                  ">
+                    <p style="
+                      margin:0 0 0.5rem;
+                      font-weight:700;
+                      color:var(--sl-color-text);
+                      font-size:var(--sl-text-base);
+                    ">
+                      <span style="color:var(--sl-color-gray-4);">${i + 1}.</span>
+                      ${shape.title}
+                    </p>
+                    <p style="
+                      margin:0 0 0.75rem;
+                      color:var(--sl-color-gray-4);
+                      font-size:var(--sl-text-sm);
+                      line-height:1.6;
+                    ">${shape.what}</p>
+                    <code style="
+                      display:block;
+                      font-family:var(--sl-font-mono,ui-monospace,monospace);
+                      font-size:var(--sl-text-sm);
+                      background:var(--sl-color-bg-inline-code,#f6f6f6);
+                      border:1px solid var(--sl-color-border);
+                      border-radius:0.25rem;
+                      padding:0.35rem 0.5rem;
+                      overflow-x:auto;
+                      white-space:pre;
+                    ">${shape.cmd}</code>
+                  </div>
+                `,
+              )}
+            </div>
+            <p style="
+              text-align:center;
+              font-size:var(--sl-text-sm);
+              margin:1.5rem 0 0;
+            ">
+              <a href="/docs/driving-a-fleet" style="
+                color:var(--sl-color-text-accent,var(--sl-color-accent));
+                text-decoration:none;
+                font-weight:600;
+              ">All of it, with the exit codes →</a>
+            </p>
           </section>
 
           <!-- Which harnesses this works with. The badges are the whole

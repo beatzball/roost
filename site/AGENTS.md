@@ -46,6 +46,24 @@ Read this before changing anything in `site/`.
 
 4. Build to verify (see below).
 
+## Two pages are generated, not written
+
+| Generated file | Source | Regenerate with |
+|---|---|---|
+| `content/docs/changelog.md` | `CHANGELOG.md` at the repository root | `node scripts/sync-changelog.mjs` |
+| `public/llms.txt` | `server/starlight.config.js` + doc frontmatter | `node scripts/build-llms-txt.mjs` |
+
+Both together: `pnpm sync`. To check without writing: `pnpm sync:check` —
+which is what CI runs, so a drifted file fails the build rather than shipping.
+
+They are **committed**, not built. Coolify builds the image with `site/` as the
+Docker context, so `../CHANGELOG.md` does not exist during `pnpm build`;
+generating them there would work locally and serve an empty changelog in
+production.
+
+So: after editing `CHANGELOG.md`, or after adding a page to the sidebar, run
+`pnpm sync` and commit what it writes.
+
 ## Rules
 
 - **Start the body at `##`, not `#`.** The `title` from frontmatter is already
@@ -53,6 +71,9 @@ Read this before changing anything in `site/`.
 - **Slugs must be unique across the whole `content/` directory.** The build
   throws on a collision rather than silently dropping a page.
 - **Internal links are absolute paths**: `/docs/setup`, not `setup.md`.
+- **Do not hand-edit `content/docs/changelog.md` or `public/llms.txt`.** Both
+  carry a generated-file banner and are overwritten by `pnpm sync`. Edit the
+  source instead — see the table above.
 - **Do not edit `routes.generated.ts` or `server/stubs/page-manifest.ts`.**
   Both are regenerated on every build and are gitignored.
 - **This site serves two audiences; the repo `README.md` serves the third.**

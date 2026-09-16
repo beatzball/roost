@@ -13,7 +13,9 @@
     "preview": "litro preview",
     "preview:portless": "portless run litro preview",
     "generate": "litro generate",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "sync": "node scripts/sync-changelog.mjs && node scripts/build-llms-txt.mjs",
+    "sync:check": "node scripts/sync-changelog.mjs --check && node scripts/build-llms-txt.mjs --check"
   },
   "dependencies": {
     "@beatzball/litro": "latest",
