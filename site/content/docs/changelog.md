@@ -44,9 +44,14 @@ before.
 
 ### Changed
 
-- `roost read` prints a kept file **only when the pane agrees with it**. If they
-  differ, the pane wins and you get today's output. Nothing kept on disk can
-  override what the live pane says.
+- `roost read` prints a kept file **only while the pane still holds the reply
+  that turn was written from**. If the pane has moved on, the pane wins and you
+  get today's output. Nothing kept on disk can override a live pane.
+- **A reply now prints as the agent wrote it, not as tmux stored it.** On tmux
+  3.4 a `$` before a letter or `{` was stored as `\$`, so `$HOME` came back as
+  `\$HOME`; from a shell with no UTF-8 locale, newlines, tabs and non-ASCII came
+  back as `_`. Where a reply was kept, `read` now prints the real bytes. Where
+  none was kept, it prints exactly what it printed before.
 - Files roost writes are private to you: directories `0700`, files `0600`.
 
 ### How to turn it off
@@ -64,10 +69,12 @@ where a limit bites, you get today's behaviour.
   before roost runs, because Linux refuses an argument that long. The largest
   real reply measured was 24,675 bytes.
 - Trailing newlines and NUL bytes are still dropped, as before.
-- On tmux 3.4 and 3.5a, and on any tmux with no UTF-8 locale, tmux rewrites some
-  bytes in the pane value. The pane then disagrees with the file, so `read`
-  prints the pane value — capped, as before. `--turn N` and a closed pane read
-  the file, so those still come back whole.
+- What ties a turn to its pane is a small record of what tmux stored, not the
+  reply's own bytes — they cannot be compared exactly on every tmux version. So
+  a turn file **edited by hand** is trusted and printed while the pane is
+  unchanged. Only a changed length under a truncation marker is caught.
+- Where nothing was kept — records off, or a write that failed — a reply that
+  tmux rewrote still prints rewritten, exactly as before.
 - A filesystem with no hard links keeps nothing.
 
 ## [0.4.1]
