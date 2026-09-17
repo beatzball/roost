@@ -240,10 +240,33 @@ export const routeMeta = {
 export class SplashPage extends LitroPage {
   static override properties = {
     copied: { state: true },
+    playing: { state: true },
   };
 
   /** Which install box last copied, so only that one says so. */
   copied: '' | 'hero' | 'closing' | 'hero-selected' | 'closing-selected' = '';
+
+  /** Whether the hero recording is playing; drives its Play/Pause label. */
+  playing = false;
+
+  override firstUpdated() {
+    const video = this.renderRoot.querySelector<HTMLVideoElement>('.hero-video');
+    if (!video) return;
+    video.addEventListener('play', () => (this.playing = true));
+    video.addEventListener('pause', () => (this.playing = false));
+    // Reduced motion: stay on the poster until the visitor presses Play.
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // Muted and inline, so browsers allow it without a gesture. A refusal
+    // leaves the poster and a Play button, which is the right fallback.
+    video.play().catch(() => {});
+  }
+
+  private toggleVideo = () => {
+    const video = this.renderRoot.querySelector<HTMLVideoElement>('.hero-video');
+    if (!video) return;
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  };
 
   // typography first: headings, code and kbd take the mono face from it, and
   // `.mono` is the handle for everything else. See src/styles/typography.ts.
@@ -657,14 +680,37 @@ export class SplashPage extends LitroPage {
         z-index: 0;
         pointer-events: none;
       }
-      .shot img {
+      .shot img,
+      .shot video {
         position: relative;
         z-index: 1;
         display: block;
         width: 100%;
         height: auto;
+        background: var(--pane);
         border: 1px solid var(--line);
         border-radius: 8px;
+      }
+      /* A pause control for motion that starts on its own and runs longer
+         than five seconds. Sits in the recording's corner, over the dark of
+         the terminal, where it covers nothing roost draws. */
+      .video-toggle {
+        position: absolute;
+        right: 0.75rem;
+        bottom: 0.75rem;
+        z-index: 2;
+        padding: 0.35rem 0.8rem;
+        font-size: 0.8125rem;
+        font-weight: 700;
+        color: var(--ink);
+        background: color-mix(in srgb, var(--night) 80%, transparent);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .video-toggle:hover {
+        background: var(--violet);
+        color: #fff;
       }
       .caption {
         max-width: 40rem;
@@ -1162,26 +1208,51 @@ export class SplashPage extends LitroPage {
           </div>
         </section>
 
-        <!-- Recorded, not screenshotted: demo/roost-hero.tape drives a real
-             fleet built by demo/seed-fleet.sh on a throwaway roost server, so
-             re-recording is one command and nothing of the author's machine is
-             in the frame. Sized 1800x620, the real file, so its space is
-             reserved before it loads. -->
+        <!-- A review flock, cut to 15 seconds from demo/flock.tape, recorded
+             through demo/record.sh against live agents on a throwaway roost
+             server: Claude Code on Opus leads; Claude on Sonnet, Codex on
+             gpt-5.6-terra and opencode on a free Nemotron review. Four cuts
+             of the full take -- every agent working in the switcher, codex
+             researching, opencode reviewing, then the reviewed plan in preen.
+
+             Encoded at 1440 wide and 15 fps: it is mostly still text, shown
+             about 1070 wide, and that halves the size with no visible loss
+             (303 KB WebM, 382 KB MP4; a browser fetches one). Rebuilt by
+             demo/cut-hero.sh, never edited by hand.
+
+             No autoplay attribute, and preload="none": nothing is fetched
+             while the page loads, and a visitor with reduced motion -- or
+             without JavaScript -- gets the poster, the clip's last frame.
+             firstUpdated() starts playback otherwise. Sized 1440x736, the real
+             video, so its space is reserved up front. -->
         <section class="shot">
           <div class="wrap">
             <div class="frame">
-              <img
-                src="/roost-hero.png"
-                alt="A roost session with five agent windows across the top, each badged with its state. An agent has answered in the pane behind, and the agent switcher lists all five with their states and how long each has been there."
-                width="1800"
-                height="620"
-                decoding="async"
-              />
+              <video
+                class="hero-video"
+                width="1440"
+                height="736"
+                poster="/demo/flock-hero-poster.jpg"
+                muted
+                loop
+                playsinline
+                preload="none"
+                aria-label="A review flock in roost, recorded: the switcher lists four agents all working; Codex researches the kitty graphics protocol; opencode on Nemotron reviews; then Claude's summary credits each reviewer and the reviewed plan opens, rendered, in a pane on the right."
+              >
+                <source src="/demo/flock-hero.webm" type="video/webm" />
+                <source src="/demo/flock-hero.mp4" type="video/mp4" />
+              </video>
+              <button
+                type="button"
+                class="video-toggle mono"
+                aria-label=${this.playing ? 'Pause the recording' : 'Play the recording'}
+                @click=${this.toggleVideo}
+              >${this.playing ? 'Pause' : 'Play'}</button>
             </div>
             <p class="caption">
-              A real session. The switcher lists every agent with its state and
-              how long it has been there, and the agent behind it has just
-              answered.
+              Claude drafts a plan and asks three other agents to review it at
+              once: Claude on Sonnet, Codex and opencode. Every tab shows who is
+              working, and the reviewed plan opens in a pane on the right.
             </p>
           </div>
         </section>

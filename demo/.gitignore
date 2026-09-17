@@ -1,0 +1,8 @@
+# Raw recordings. Each is rebuilt by `demo/record.sh <name>` from its tape, and a
+# single take runs to several megabytes; the history does not need every take.
+# What the site actually serves is cut from them and committed under
+# site/public/demo/ -- see demo/cut-hero.sh.
+*.mp4
+*.webm
+/first-run.png
+/flock.png

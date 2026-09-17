@@ -1,5 +1,10 @@
-# Landing-page hero for roosting.dev — build with:
-#   ./demo/seed-fleet.sh && vhs demo/roost-hero.tape
+# A still of a staged fleet: five badged windows, the switcher over a live
+# agent's answer. It was roosting.dev's hero before the flock recording.
+#
+#   ./demo/record.sh hero
+#
+# Through record.sh, never vhs directly: that is where the clean environment
+# and the privacy scan live (see demo/lib.sh).
 #
 # The tape only LOOKS at the fleet. Everything it shows -- the five badges, the
 # agent's answer -- was put there by seed-fleet.sh, so a re-record does not
@@ -29,7 +34,7 @@ Set Theme { "name": "roost", "background": "#211e38", "foreground": "#c8c3e0", "
 # Nothing here clears a pane. The focused window holds a live agent and its
 # answer, which is the content the shot is for; `clear` would throw it away.
 Hide
-Type 'export ROOST_SOCKET=/tmp/roost-demo-sock/roost'
+Type 'export ROOST_SOCKET=/tmp/roost-demo-sock/roost XDG_CONFIG_HOME=/tmp/roost-demo-xdg'
 Enter
 Type "cd /tmp/roost-demo-repo && clear"
 Enter

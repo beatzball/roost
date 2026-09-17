@@ -1,3 +1,4 @@
 {
-  "statusLine": { "type": "command", "command": "printf ''" }
+  "statusLine": { "type": "command", "command": "printf ''" },
+  "outputStyle": "default"
 }
