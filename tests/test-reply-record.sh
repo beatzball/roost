@@ -504,6 +504,45 @@ assert_eq "$ROOST_RECORD_LIVENESS" gone "a stale socket file with no server behi
 mkdir -p "$work/emptydir"
 roost_record_liveness "$work/emptydir/roost" "1000000000-1" "%0"
 assert_eq "$ROOST_RECORD_LIVENESS" gone "a socket missing from a searchable directory is gone"
+# Review round 2: a directory the caller may not LOOK into must not read as
+# "not there". A locked grandparent gives tmux "Permission denied"; a sandbox
+# gives "Operation not permitted". Both are unknown. The chmod case needs a
+# non-root user (root ignores the mode); the shim case runs everywhere.
+lg="$work/locked/inner/roost"; mkdir -p "$work/locked/inner"
+tmux -S "$lg" -f /dev/null new-session -d 'ENV= exec /bin/sh'
+lgboot="$(tmux -S "$lg" display -p '#{start_time}-#{pid}')"
+plant "$REC/$lgboot/0" "$lg"
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 "$work/locked"
+  roost_record_liveness "$lg" "$lgboot" "%0"; lgans="$ROOST_RECORD_LIVENESS"
+  out="$("$ROOST" forget --gone 2>&1)"
+  chmod 755 "$work/locked"
+  assert_eq "$lgans" unknown "a socket under a grandparent the caller cannot search is unknown, not gone"
+  [ -d "$REC/$lgboot/0" ]; assert_true $? "...and forget --gone keeps that live record"
+else
+  printf '  (root: the locked-directory case cannot be made here; the shim case below covers the rule)\n'
+fi
+roost_record_liveness "$lg" "$lgboot" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" live "the same record is live once the directory is readable (control)"
+tmux -S "$lg" kill-server; rm -rf "$REC/$lgboot"
+shim3="$work/shim3"; mkdir -p "$shim3"
+printf '#!/bin/sh\necho "error connecting to $3 (Operation not permitted)" >&2\nexit 1\n' > "$shim3/tmux"; chmod +x "$shim3/tmux"
+PATH="$shim3:$PATH" roost_record_liveness "$work/any/roost" "1-1" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" unknown "a sandbox's Operation not permitted is unknown"
+printf '#!/bin/sh\necho "error connecting to $3 (No such file or directory)" >&2\nexit 1\n' > "$shim3/tmux"
+PATH="$shim3:$PATH" roost_record_liveness "$work/any/roost" "1-1" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" gone "No such file or directory is gone (control for the shim)"
+printf '#!/bin/sh\nexit 0\n' > "$shim3/tmux"
+PATH="$shim3:$PATH" roost_record_liveness "$work/any/roost" "1-1" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" unknown "an empty answer at exit 0 is unknown, not gone"
+printf '#!/bin/sh\necho "2-2 %%0"\n' > "$shim3/tmux"
+PATH="$shim3:$PATH" roost_record_liveness "$work/any/roost" "1-1" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" gone "another boot's answer is gone (control)"
+# roost_record_match in a fresh bash -u that had not sourced roost-reply.sh must
+# leave ROOST_REPLY_MAX usable for a later encode (review round 2).
+out="$(bash -uc '. "$1/scripts/lib/roost-record.sh"; printf x > "$2/nm"; roost_record_match "y
+[roost: reply truncated — 5 of 1 bytes]" "$2/nm"; command -v roost_reply_encode >/dev/null || echo "control: match did not source roost-reply.sh"; roost_reply_encode ok' _ "$HERE" "$work" 2>&1)"
+assert_eq "$out" "ok" "roost_record_match leaves ROOST_REPLY_MAX set for a later encode"
 
 # 16c. Names in replies/ that roost did not write are stepped past.
 pn2="$(new_pane)"; require_pane "$pn2" "foreign names"

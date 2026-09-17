@@ -947,17 +947,17 @@ right — the failure is always today's output.
   failure and no word about the sweep; a hint for it was dropped because it
   could not tell a swept record from one that never existed. No `roost doctor`
   line reports the directory's size yet.
-- **A live server whose socket file was deleted reads as gone.** The liveness
-  check calls a socket missing from a searchable directory "gone", because tmux
-  unlinks its socket when it exits. A /tmp cleaner that removes the socket of a
+- **A live server whose socket file was deleted reads as gone.** tmux answers
+  "No such file or directory" for a socket that is not there, and the liveness
+  check calls that gone, because tmux unlinks its socket when it exits. A /tmp cleaner that removes the socket of a
   server still running makes that server unreachable anyway, but `forget
   --gone` and the sweep would then remove its panes' records.
 - **A shared home over NFS mixes hosts' records.** The boot key has no host in
   it. Host B asking about host A's record asks B's own server at the same socket
   path, gets another boot key, and calls A's live records gone. Not measured.
 - **A record that cannot be checked is kept until a human removes it.** No
-  socket recorded, a socket that is not a socket, or a server that never answers
-  within 2 seconds: `forget --gone` names such records and keeps them, and the
+  socket recorded, a socket directory the caller may not look into (a locked
+  parent, a sandbox), or a server that never answers within 2 seconds: `forget --gone` names such records and keeps them, and the
   sweep keeps them silently. `roost forget TGT` or `--all` removes them.
 - **A record whose `schema` file was lost is removed by nothing.** Every delete
   path requires the schema file, so a directory of the right shape that roost

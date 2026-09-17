@@ -431,16 +431,31 @@ socket's directory unsearchable. `roost_record_liveness` now answers:
 
 | answer | when |
 |---|---|
-| `live` | the server reports this boot and has the pane |
-| `gone` | the server answered with another boot or no such pane; tmux says `no server running on` the socket (a socket file a killed server left — measured on tmux 3.4 and 3.6); the socket is absent from a directory that exists and can be searched; or its directory is gone |
-| `unknown` | no socket recorded; tmux not found; the directory cannot be searched; something that is not a socket is at the path; any other tmux error; no answer within 2 seconds |
+| `live` | tmux printed exactly this boot key and pane id |
+| `gone` | tmux printed another boot key, or this boot with no such pane; or failed with `no server running on` (a socket file a killed server left) or `(No such file or directory)` (the socket or its directory is not there) |
+| `unknown` | no socket recorded; tmux not found; `(Permission denied)`, `(Operation not permitted)`, any other error or output; no answer within 2 seconds |
 
 Only `gone` is ever deleted. `forget --gone` names each record it could not
-check and counts them; the sweep keeps them silently. The error is matched on
-tmux's own words only — strerror text follows the locale. The 2-second bound
-is there because a stopped server (`kill -STOP`) accepts the connection and
-never answers, and the probe then hung (reproduced); macOS has no `timeout(1)`,
-so the probe runs in the background and is killed if it overruns.
+check and counts them; the sweep keeps them silently. The 2-second bound is
+there because a stopped server (`kill -STOP`) accepts the connection and never
+answers, and the probe then hung (reproduced); macOS has no `timeout(1)`, so
+the probe runs in the background beside a watchdog.
+
+**Changed in review round 2 — nothing is decided from the filesystem.** The
+round-1 fix still called a record gone when `[ -d ]` on the socket's directory
+was false, and `test(1)` gives the same false for "not there" and "not allowed
+to look". A locked grandparent directory, or a sandbox hiding `/tmp/tmux-UID`,
+still deleted live records (reproduced). Now tmux is always asked, with
+`LC_MESSAGES=C` pinned so its strerror text is matchable. Measured as a normal
+user on macOS tmux 3.6, Alpine tmux 3.4 and Ubuntu tmux 3.3a: a locked parent or
+grandparent gives `Permission denied`; a missing socket or directory gives `No
+such file or directory`; a killed server's socket gives `no server running on`.
+
+**Also found while fixing round 2:** a tmux client passes its stdout to the
+server, so a stopped server holds a command substitution's pipe open and the
+caller waits forever even after the watchdog kills the client. The probe writes
+to a file instead — unlinked as soon as it is opened and read back through a
+second descriptor, so a caller killed mid-probe leaves nothing behind.
 
 **Changed in review round 1 — what counts as a record.** Every delete path
 first checks `roost_record_is_record`: a pane-number directory, under a

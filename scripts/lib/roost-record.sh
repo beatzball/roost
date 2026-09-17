@@ -236,74 +236,92 @@ roost_record_live() {
 # roost_record_liveness SOCKET BOOT PANE -> ROOST_RECORD_LIVENESS: live, gone,
 # or unknown. Only `gone` may be acted on by anything that deletes.
 #
-# THREE answers, because "could not ask" is not "not there" (review round 1,
-# reproduced): with tmux off PATH, or a socket directory the caller cannot
-# search, the first version answered "not live" and `forget --gone` removed a
-# live pane's history at exit 0. So:
+# THREE answers, because "could not ask" is not "not there". With tmux off PATH,
+# or a socket directory the caller cannot search, the first version answered
+# "not live" and `forget --gone` removed a live pane's history at exit 0 (review
+# round 1, reproduced). The second version decided some cases with test(1)
+# before asking tmux, and `[ -d ]` is false for "no such directory" and for
+# "not allowed to look" alike, so a locked grandparent directory, or a sandbox
+# hiding /tmp/tmux-UID, still deleted live records (review round 2, reproduced).
+# So nothing is decided from the filesystem: tmux is asked, and its answer read.
 #
-#   gone     the server answered and this is not its boot or it has no such
-#            pane; or tmux says "no server running on" the socket (a socket file
-#            a killed server left behind — measured on tmux 3.4 and 3.6); or the
-#            socket is absent from a directory that exists and can be searched,
-#            or its directory is gone (tmux unlinks its socket on exit)
-#   unknown  no socket recorded; tmux not found; the socket's directory cannot
-#            be searched; something that is not a socket sits at the path; any
-#            other tmux error; or no answer within 2 seconds
-#   live     the server at SOCKET reports BOOT and has PANE
+#   live     tmux printed exactly "BOOT PANE"
+#   gone     tmux printed a boot key that is not BOOT, or BOOT with no such
+#            pane; or it failed with "no server running on" (a socket file a
+#            killed server left) or "(No such file or directory)" (the socket
+#            or its directory is not there — tmux unlinks its socket on exit)
+#   unknown  anything else: no socket recorded, tmux not found, "(Permission
+#            denied)", "(Operation not permitted)", any other error or output,
+#            or no answer within 2 seconds
 #
-# The error text is matched on tmux's own words, "no server running on", and
-# nowhere on strerror text, which follows the locale. Every other failure is
-# unknown, which errs toward keeping a record.
+# Measured on macOS tmux 3.6, Alpine tmux 3.4 and Ubuntu tmux 3.3a, as a normal
+# user: a locked parent or grandparent gives "Permission denied"; a missing
+# socket or missing directory gives "No such file or directory". The strerror
+# half is locale text, so LC_MESSAGES=C is pinned for this one call — with
+# LC_ALL removed from its environment, because LC_ALL outranks LC_MESSAGES and
+# a UTF-8 LC_CTYPE is left alone.
 #
 # A 2-second bound, because a stopped server (kill -STOP, a debugger) accepts the
 # connection and never answers, and `tmux display-message` then waits forever
 # (review round 1, reproduced). macOS ships no timeout(1), so the probe runs in
-# the background, is polled, and is killed if it overruns.
+# the background beside a watchdog that kills it.
+#
+# Its output goes to a FILE, not to the command substitution's pipe. A tmux
+# client hands its stdout to the server, so a stopped server holds a pipe's
+# write end open and `$(...)` waits for it forever — the watchdog killed the
+# client and the caller still hung (measured while fixing review round 2). The
+# file is unlinked the moment it is opened, and read back through a second
+# descriptor opened before the unlink, so a caller killed mid-probe leaves
+# nothing behind (review round 2). A killed client exits 0 with no output, which
+# the shape check below reads as unknown. `sleep 2` is a whole number of
+# seconds, which every sleep(1) accepts.
 roost_record_liveness() {
-  local sock="$1" parent pid rc i=0 out="" tmpd
+  local sock="$1" got rc body
   ROOST_RECORD_LIVENESS=unknown
   [ -n "$sock" ] || return 0
   command -v tmux >/dev/null 2>&1 || return 0
-  parent="${sock%/*}"
-  [ -n "$parent" ] || parent=/
-  if [ ! -e "$sock" ] && [ ! -L "$sock" ]; then
-    if [ ! -d "$parent" ]; then
-      ROOST_RECORD_LIVENESS=gone
-    elif [ -x "$parent" ]; then
-      ROOST_RECORD_LIVENESS=gone
-    fi
-    return 0
-  fi
-  [ -S "$sock" ] || return 0
-  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/roost-live.XXXXXX" 2>/dev/null)" || return 0
-  tmux -S "$sock" display-message -p -t "$3" '#{start_time}-#{pid} #{pane_id}' \
-    > "$tmpd/out" 2> "$tmpd/err" &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    i=$((i + 1))
-    if [ "$i" -gt 40 ]; then
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      rm -rf "$tmpd"
+  got="$(
+    f="$(mktemp "${TMPDIR:-/tmp}/roost-live.XXXXXX" 2>/dev/null)" || exit 0
+    exec 3>"$f" 4<"$f"
+    rm -f "$f"
+    env -u LC_ALL LC_MESSAGES=C tmux -S "$sock" display-message -p -t "$3" \
+      '#{start_time}-#{pid} #{pane_id}' </dev/null >&3 2>&3 3>&- 4<&- &
+    probe=$!
+    { sleep 2; kill "$probe"; } </dev/null >/dev/null 2>&1 3>&- 4<&- &
+    dog=$!
+    status=0
+    wait "$probe" || status=$?
+    kill "$dog" 2>/dev/null
+    exec 3>&-
+    cat <&4
+    printf '\nrc=%s' "$status"
+  )"
+  case "$got" in *"
+rc="*) ;; *) return 0 ;; esac
+  rc="${got##*
+rc=}"
+  body="${got%
+rc=*}"
+  # tmux ends its answer, and its error, with a newline of its own.
+  body="${body%
+}"
+  if [ "$rc" = 0 ]; then
+    if [ "$body" = "$2 $3" ]; then
+      ROOST_RECORD_LIVENESS=live
       return 0
     fi
-    sleep 0.05
-  done
-  rc=0
-  wait "$pid" || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    IFS= read -r out < "$tmpd/out" || true
-    if [ "$out" = "$2 $3" ]; then
-      ROOST_RECORD_LIVENESS=live
-    else
-      ROOST_RECORD_LIVENESS=gone
-    fi
-  else
-    case "$(cat "$tmpd/err" 2>/dev/null)" in
-      "no server running on"*) ROOST_RECORD_LIVENESS=gone ;;
+    # Only an answer shaped like tmux's own is trusted to say "not this pane".
+    # An empty or mangled one (a full disk, a wrapper printing something else)
+    # stays unknown.
+    case "$body" in
+      [0-9]*-[0-9]*" "|[0-9]*-[0-9]*" %"[0-9]*) ROOST_RECORD_LIVENESS=gone ;;
     esac
+    return 0
   fi
-  rm -rf "$tmpd"
+  case "$body" in
+    "no server running on "*) ROOST_RECORD_LIVENESS=gone ;;
+    "error connecting to "*"(No such file or directory)") ROOST_RECORD_LIVENESS=gone ;;
+  esac
   return 0
 }
 
@@ -529,7 +547,7 @@ roost_record_read() {
 # Anything else, including a value tmux rewrote on the way in, keeps the pane
 # value: today's output. Byte lengths under LC_ALL=C, the reply channel's rule.
 roost_record_match() {
-  local LC_ALL=C reply="$1" tail m ROOST_REPLY_MAX
+  local LC_ALL=C reply="$1" tail m enc
   ROOST_RECORD_TEXT=""
   roost_record_read "$2" || return 1
   if [ "$reply" = "$ROOST_RECORD_TEXT" ]; then
@@ -547,7 +565,11 @@ roost_record_match() {
   if ! command -v roost_reply_encode >/dev/null 2>&1; then
     . "${BASH_SOURCE[0]%/*}/roost-reply.sh" 2>/dev/null || return 1
   fi
-  ROOST_REPLY_MAX="$m"
-  [ "$(roost_reply_encode "$ROOST_RECORD_RAW")" = "$reply" ] || return 1
+  # The cap goes in as a prefix assignment, which bash undoes when the function
+  # returns. A `local ROOST_REPLY_MAX` here, in a process where this call was
+  # the first to source roost-reply.sh, swallowed that file's global default and
+  # left the variable unset for any later roost_reply_encode (review round 2).
+  enc="$(ROOST_REPLY_MAX="$m" roost_reply_encode "$ROOST_RECORD_RAW")"
+  [ "$enc" = "$reply" ] || return 1
   return 0
 }
