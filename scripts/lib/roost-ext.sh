@@ -331,6 +331,7 @@ roost_ext_core_commands() {
     read \
     screen \
     reply \
+    forget \
     wait-done wait \
     status \
     kill down stop \

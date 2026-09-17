@@ -903,7 +903,106 @@ Holes in what did ship:
   the global install already wires it, and badges the same pane. #64 decides
   how a child agent in one pane is treated.
 
+### Kept replies (#42): what the pane record does not cover
+
+**Shipped:** each turn's reply is kept whole in
+`${XDG_STATE_HOME:-~/.local/state}/roost/panes/<boot>/<pane>/replies/`, beside
+the capped `@roost-reply`. `read` prints a reply past 12 KB whole, `read --turn
+N` reads an earlier turn, a closed `%N` still reads its last reply, and `roost
+forget` deletes them. Design: docs/airig/specs/2026-09-16-pane-record-design.md.
+The pane option stays the truth: a file is printed only when it agrees with
+`@roost-reply`.
+
+What it does not cover. Each is low severity, and none reports a wrong reply as
+right — the failure is always today's output.
+
+- **A reply of 131,072 bytes or more from opencode, pi or copilot is lost.**
+  Those adapters pass the reply to `roost reply` as one argument, and Linux
+  refuses a single argument that long (measured in the Ubuntu CI image). The
+  spawn fails before roost runs, so neither the pane nor the record gets it, and
+  `read` falls back to the screen with its notice. macOS allows more (not
+  measured). The largest Claude reply seen on the design machine was 24,675
+  bytes. A `roost reply` stdin form would close it.
+- **Trailing newlines and NUL bytes are still dropped**, before either store,
+  because the reply passes through `$(...)` and a bash variable. A kept reply is
+  whole in content, not bit-exact at the end.
+- **Without a record, a reply still prints the way tmux rewrote it.** tmux 3.4
+  stores `$` before a letter or `{` as `\$` (`$HOME` → `\$HOME`) and control
+  bytes as `\ooo`; tmux 3.5a the control bytes. A tmux client that is not UTF-8
+  (no UTF-8 locale, no `-u`, no `$TMUX` — a `roost read` from a plain shell)
+  prints newline, tab, non-ASCII and control bytes as `_`. With a record, `read`
+  serves the file while the pane still holds what the writer's read-back saw
+  (the `.pane` sidecar), so those replies print as written; with none — records
+  off, or a write that failed — they print as before. Found by CI on PR #84.
+- **A turn file edited in place is trusted while the pane is unchanged.** The
+  link between pane and file is the `.pane` sidecar, not the file's content,
+  because the content cannot be compared exactly on tmux 3.4. Only a changed
+  byte count under a truncation marker is caught.
+- **A closed pane is readable by `%N` only, and only on the server boot that
+  wrote it.** A window name for a closed window, or a pane from before a server
+  restart, is not looked up: the `name` field that would allow it is reserved,
+  not built.
+- **A filesystem without hard links** (some network and FAT volumes) records
+  nothing: the writer gives up at the first failed link, and the pane option
+  works as before.
+- **A hook that fires twice for one Stop** (two different command strings for
+  one event, the #58 migration case) keeps the turn twice.
+- **Removals are reported only where they are asked for.** `read --turn` names a
+  pruned turn and the kept range, and `forget` lists what it removed. A closed
+  pane's record swept after 30 days leaves `read %N` with today's gone-pane
+  failure and no word about the sweep; a hint for it was dropped because it
+  could not tell a swept record from one that never existed. No `roost doctor`
+  line reports the directory's size yet.
+- **A live server whose socket file was deleted reads as gone.** tmux answers
+  "No such file or directory" for a socket that is not there, and the liveness
+  check calls that gone, because tmux unlinks its socket when it exits. A /tmp cleaner that removes the socket of a
+  server still running makes that server unreachable anyway, but `forget
+  --gone` and the sweep would then remove its panes' records.
+- **A shared home over NFS mixes hosts' records.** The boot key has no host in
+  it. Host B asking about host A's record asks B's own server at the same socket
+  path, gets another boot key, and calls A's live records gone. Not measured.
+- **A record that cannot be checked is kept until a human removes it.** No
+  socket recorded, a socket directory the caller may not look into (a locked
+  parent, a sandbox), or a server that never answers within 2 seconds: `forget --gone` names such records and keeps them, and the
+  sweep keeps them silently. `roost forget TGT` or `--all` removes them.
+- **A record whose `schema` file was lost is removed by nothing.** Every delete
+  path requires the schema file, so a directory of the right shape that roost
+  did not write is left alone — and so is a damaged record. Delete its
+  directory by hand.
+- **The suite's leak check sees new pane directories only.** `tests/run.sh`
+  looks for record directories created during the run whose socket is gone. A
+  turn a test appended to a record that already existed, or a record whose test
+  server was left running, would not be caught.
+- **The sweep runs only when a new pane record is created.** A machine that
+  never starts another agent never sweeps; `roost forget --gone` does it by hand.
+- **`read --json` gained `"turn":null`** on every document without a kept turn.
+  Additive under the #41 rule; a consumer comparing whole documents byte for
+  byte would see it.
+- **Pruning against a stale listing** could in theory give a turn a number
+  already freed, out of order. It needs `ROOST_RECORD_KEEP` writes on one pane
+  between one writer's listing and its link. Not reachable with one agent per
+  pane; not tested.
+
 ## Behaviour changes
+
+### Replies are kept on disk, and `read` prints long ones whole (#42)
+
+Every recorded reply is now also written to a file under
+`${XDG_STATE_HOME:-~/.local/state}/roost/panes/`, private to the user (`0700`
+on the root roost creates and on every directory under it, `0600` files). The newest 100 turns per pane are kept
+(`ROOST_RECORD_KEEP`), and a closed pane's turns are deleted 30 days after its
+last reply (`ROOST_RECORD_DAYS`), when the next new pane record is made. So what
+an agent said now outlives its pane, on disk, until then. `roost forget --all`
+deletes every kept reply; `ROOST_RECORD_DIR=""` in the environment agents start
+from keeps none.
+
+`roost read` on a reply longer than 12 KB prints the whole reply instead of the
+head and a truncation marker. On tmux 3.4, and from a shell without a UTF-8
+locale, a reply with a record also prints as the agent wrote it instead of as
+tmux rewrote it (`\$HOME`, `_`). Everything else it prints is unchanged —
+measured byte for byte against the previous `read` on 23 invocations without
+`--json`, on tmux 3.6 — except `read --json`'s added `"turn"` field.
+
 
 ### Claude and opencode in a roost pane are wired without `roost install` (#58)
 

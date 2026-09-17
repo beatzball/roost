@@ -135,8 +135,59 @@ if [ "$stop_hook" = 1 ] && [ "$state" = "done" ]; then
       # PostToolUse never gets this far, so the hot path does not pay for a
       # file read it has no use for.
       . "$SELF_DIR/lib/roost-reply.sh"
-      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
-        "$(roost_reply_encode "$reply")" 2>/dev/null || true
+      # The durable copy (#42), written BEFORE the pane option for the same
+      # reason the reply is written before @agent_state: a reader that sees the
+      # pointer below must find its file. docs/airig/specs/2026-09-16-pane-record-design.md
+      # has the layout and the measurements; scripts/lib/roost-record.sh has the
+      # rules. Every step fails soft: no record means the pane option below is
+      # written exactly as it always was, and `read` serves it as it always did.
+      #
+      # The boot key costs one tmux read, so it is taken only when records are
+      # on — ROOST_RECORD_DIR set to "" (the test suite's default) costs nothing.
+      . "$SELF_DIR/lib/roost-record.sh"
+      turn=""
+      roost_record_root
+      if [ -n "$ROOST_RECORD_ROOT" ]; then
+        boot="$(tmux -S "$sock" display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+        if roost_record_pane_dir "$boot" "$TMUX_PANE" \
+           && roost_record_append "$ROOST_RECORD_PANE_DIR" "$sock" "$reply"; then
+          turn="$ROOST_RECORD_TURN"
+        fi
+      fi
+      # @roost-reply-turn names the file that holds THIS reply. It is set in the
+      # same tmux command as @roost-reply, so no reader sees one without the
+      # other. When nothing was recorded it is left as it is: `read` uses it only
+      # while @roost-reply is set, and serves the file only when the file agrees
+      # with @roost-reply, so a pointer left from an earlier turn cannot change
+      # what is printed (and an unset here could not be caught by any test).
+      #
+      # The pointer is a few dozen bytes; roost_reply_encode's cap leaves ~4 KB
+      # of headroom under tmux's command-length limit for exactly this.
+      #
+      # The same command then reads @roost-reply back, and that text — what tmux
+      # STORED, which on tmux 3.4 and 3.5a is not always what it was sent — is
+      # kept beside the turn as NNNNNN.pane. `read` serves the turn file only
+      # while the pane still holds exactly that (roost_record_match, which says
+      # why the value cannot be compared with the file itself). One command, so
+      # no other writer's set-option can land between the write and the read.
+      # If set-option fails, tmux runs nothing after it, the read-back is empty
+      # and no sidecar is written: `read` then prints the pane value, as before.
+      #
+      # A tmux client that is not UTF-8 (no UTF-8 locale, no -u, no $TMUX)
+      # PRINTS newline, tab, non-ASCII and control bytes as `_` — on output, not
+      # in storage (measured on tmux 3.3a and 3.4). This hook only runs with
+      # $TMUX set, which makes its client UTF-8, so the read-back is the stored
+      # value itself; `read` compares through `tmux -u` to see the same thing.
+      if [ -n "$turn" ]; then
+        stored="$(tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
+          "$(roost_reply_encode "$reply")" \; \
+          set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
+          show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+        roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
+      else
+        tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
+          "$(roost_reply_encode "$reply")" 2>/dev/null || true
+      fi
     else
       # This turn ENDED and produced nothing to record. Clearing is not
       # tidiness, it is the whole point: the staleness notice in bin/roost's

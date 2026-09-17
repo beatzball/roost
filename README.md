@@ -294,6 +294,10 @@ scripts/lib/roost-config.sh # shared config helpers
                             #   (surgical writer, glyph/sep maps, live-apply)
 scripts/lib/roost-reply.sh  # the one place that decides how a reply is
                             #   truncated to fit tmux's command-length limit
+scripts/lib/roost-record.sh # the per-pane record (#74): each turn's reply kept
+                            #   whole on disk, the liveness check, prune and sweep.
+                            #   Sourced by the Stop hook and by `reply`, `read`
+                            #   and `forget`. The pane option stays the truth
 scripts/lib/roost-jsonout.sh # `--json` output (#41): the awk byte encoder, and
                             #   tmux reads that do not trust a delimiter. Sourced
                             #   only inside a --json branch. Its header records two

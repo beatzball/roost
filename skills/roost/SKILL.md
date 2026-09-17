@@ -135,6 +135,18 @@ roost read "$helper"              # print the reply it just gave
 Each agent records its last message on its own pane as the turn ends, and `read`
 returns that recording whole — so no line count is needed and none is applied.
 
+Each turn's reply is also kept on disk, so a long reply comes back whole and an
+earlier turn is still there:
+
+```sh
+roost read --turn -2 "$helper"    # the turn before its newest (-1 is the newest)
+roost read --turn 1 "$helper"     # its first kept turn
+roost read %42                    # a CLOSED pane: its last reply, with a notice
+```
+
+A closed pane is found by its `%N` only, and only until its server restarts. The
+newest 100 turns per pane are kept; asking for an older one says it was pruned.
+
 When there is no recorded reply, `read` falls back to scraping the pane's screen
 and **says so on stderr**. Two things cause that, and they need different
 responses:

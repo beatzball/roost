@@ -19,8 +19,10 @@
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] TGT TEXT
 #                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force
-#   roost read [-r|--render|--json] TGT [N]
-#                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program
+#   roost read [--turn N] [-r|--render|--json] TGT [N]
+#                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
+#   roost forget TGT | --gone | --all
+#                            delete kept replies: one pane's, every pane's that is closed or on a server that has stopped, or all of them. They live in ${XDG_STATE_HOME:-~/.local/state}/roost/panes (ROOST_RECORD_DIR overrides; set it to "" to keep none), and a closed pane's are deleted on their own 30 days after its last reply (ROOST_RECORD_DAYS)
 #   roost screen [--json] TGT [N]  print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
 #   roost reply TEXT...      record TEXT as this pane's reply, for another agent's `roost read`
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
@@ -208,6 +210,63 @@ attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" atta
 
 # @N (window-id) / %N (pane-id) / anything with a colon → verbatim; a bare word → default session.
 target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
+
+# record_for RAW TGT — find the pane record (#74) that RAW names, for `read` and
+# `forget`. Returns 1 when records are off or RAW names nothing that could have
+# one. Otherwise sets:
+#
+#   RF_DIR    the record directory (it may not exist)
+#   RF_PANE   the %N it belongs to
+#   RF_LIVE   1 when the pane exists now, 0 when it is gone
+#   RF_STATE  what roost_record_schema said: 0 usable, 1 none, 2 unreadable,
+#             3 written by a newer roost
+#
+# A live target is filed under its own server's boot key, read in the same tmux
+# call that resolves it. A target tmux cannot find is looked up only when it is
+# a pane id, under the boot of the server `t` talks to: a window name or @N of a
+# window that is gone no longer names any pane, and a %N from an EARLIER boot is
+# a different pane (tmux restarts pane ids at %0), so neither is guessed at.
+record_for() {
+  local info boot pane
+  RF_DIR="" RF_PANE="" RF_LIVE=0 RF_STATE=1
+  . "$ROOST_HOME/scripts/lib/roost-record.sh"
+  roost_record_root
+  [ -n "$ROOST_RECORD_ROOT" ] || return 1
+  info="$(t display-message -p -t "$2" '#{start_time}-#{pid} #{pane_id}' 2>/dev/null || true)"
+  # tmux 3.6 does NOT fail display-message for a pane id that is gone: it
+  # prints the server's own formats and an EMPTY #{pane_id} (measured while
+  # building this). So "found" is a non-empty pane id, not a zero exit.
+  boot="${info%% *}"; pane="${info#* }"
+  case "$pane" in %[0-9]*) RF_LIVE=1 ;; *) pane="" ;; esac
+  if [ "$RF_LIVE" = 0 ]; then
+    case "$1" in %[0-9]*) ;; *) return 1 ;; esac
+    boot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+    pane="$1"
+  fi
+  roost_record_pane_dir "$boot" "$pane" || return 1
+  RF_PANE="$pane"
+  RF_DIR="$ROOST_RECORD_PANE_DIR"
+  RF_STATE=0
+  roost_record_schema "$RF_DIR" || RF_STATE=$?
+  return 0
+}
+
+# record_warn COMMAND LABEL — the one line a record this roost cannot use earns.
+# A warning and never a failure: the pane option still answers, and a damaged
+# file in a state directory must not break the command that stumbled on it.
+# What the schema file held is printed only when it is short and plain.
+record_warn() {
+  local seen="${ROOST_RECORD_SCHEMA_SEEN:-}"
+  case "$seen" in *[!A-Za-z0-9._-]*) seen="?" ;; esac
+  [ "${#seen}" -le 20 ] || seen="?"
+  case "$RF_STATE" in
+    2) echo "roost $1: the record for '$2' is unreadable (schema: $seen) — ignored." >&2 ;;
+    3) echo "roost $1: the record for '$2' was written by a newer roost (schema $seen) — ignored." >&2 ;;
+  esac
+}
+
+# plural N WORD — "1 turn", "2 turns".
+plural() { if [ "$1" = 1 ]; then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi; }
 
 # A pane/window NAME containing a tab or newline corrupts every consumer that
 # treats a line as one record: `roost status` emits one line PER pane, so a
@@ -1214,6 +1273,41 @@ JSON
     # so a caller passing both has made a mistake that neither choice would fix.
     render=0
     json=0
+    # --turn N (#42) reads one kept turn. It is taken out of the flag slots
+    # FIRST, wherever it sits among them — before or after -r/--json — and the
+    # flag handling below then runs on what is left exactly as it always has,
+    # so every message it prints is unchanged down to the byte. Like the other
+    # flags it goes before the target, once; after the target it is refused by
+    # the sweep further down, as any flag is.
+    turn="" turn_given=0
+    read_turn_value() {
+      local n="${1#-}"
+      case "$n" in ''|*[!0-9]*|0*) n="" ;; esac
+      if [ -z "$n" ] || [ "${#n}" -gt 15 ]; then
+        echo "roost read: --turn needs a turn number — N counts from the first turn, -N back from the newest (-1 is the newest)." >&2
+        echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+        exit 1
+      fi
+      turn="$1"; turn_given=1
+    }
+    case "${2:-}" in
+      --turn)
+        read_turn_value "${3:-}"
+        shift 3; set -- read "$@" ;;
+      --render|-r|--json)
+        if [ "${3:-}" = "--turn" ]; then
+          read_turn_value "${4:-}"
+          _flag="$2"; shift 4; set -- read "$_flag" "$@"
+        fi ;;
+    esac
+    if [ "$turn_given" = 1 ]; then
+      case "${2:-}|${3:-}" in
+        --turn\|*|--render\|--turn|-r\|--turn|--json\|--turn)
+          echo "roost read: '--turn' is not valid here — --turn may be given once, before the target." >&2
+          echo "usage: roost read [-r|--render] [SESSION:]WINDOW [LINES]" >&2
+          exit 1 ;;
+      esac
+    fi
     case "${2:-}" in
       # An unknown flag in the flag slot used to fall through and be treated as
       # the TARGET, which failed later with an empty read and exit 1 -- a typo
@@ -1310,6 +1404,103 @@ JSON
       esac
     done
     tgt="$(target "$raw")"
+    # --turn N: one kept turn, from the record only (#42). It never falls back
+    # to the screen — the caller asked for a particular turn, and the screen is
+    # not it — and it carries no staleness notice, because the caller chose the
+    # turn. A turn that is not there says whether it was pruned (ROOST_RECORD_KEEP)
+    # and which turns are kept: a bound is reported, never silent.
+    if [ "$turn_given" = 1 ]; then
+      ROOST_RECORD_COUNT=0
+      if record_for "$raw" "$tgt"; then
+        if [ "$RF_STATE" -eq 0 ]; then
+          roost_record_scan "$RF_DIR/replies"
+        else
+          record_warn read "$raw"
+        fi
+      fi
+      if [ "$ROOST_RECORD_COUNT" -eq 0 ]; then
+        echo "roost read: no recorded turns for '$raw'." >&2
+        exit 1
+      fi
+      roost_record_keep
+      rt_min="$ROOST_RECORD_MIN" rt_max="$ROOST_RECORD_MAX"
+      if [ "$turn" -gt 0 ]; then
+        want="$turn"
+      else
+        # Counting back walks the turns that EXIST, newest first, so a gap a
+        # human made by deleting a file is stepped over rather than counted.
+        want=""
+        if [ "${turn#-}" -le "$ROOST_RECORD_COUNT" ]; then
+          roost_record_back "$RF_DIR" "${turn#-}"
+          want="$ROOST_RECORD_BACK"
+        fi
+      fi
+      if [ -n "$want" ]; then
+        roost_record_turn_file "$RF_DIR" "$want"
+        roost_record_read "$ROOST_RECORD_FILE" || want=""
+      fi
+      if [ -z "$want" ]; then
+        if { [ "$turn" -gt 0 ] && [ "$turn" -lt "$rt_min" ]; } \
+           || { [ "$turn" -lt 0 ] && [ "${turn#-}" -gt "$ROOST_RECORD_COUNT" ] && [ "$rt_min" -gt 1 ]; }; then
+          echo "roost read: turn $turn of '$raw' was pruned — turns $rt_min to $rt_max are kept (ROOST_RECORD_KEEP=$ROOST_RECORD_KEEP_N)." >&2
+        else
+          echo "roost read: turn $turn of '$raw' is not recorded — turns $rt_min to $rt_max are kept." >&2
+        fi
+        exit 1
+      fi
+      if [ "$RF_LIVE" = 0 ]; then
+        echo "roost read: '$raw' is gone — this is its recorded turn $want." >&2
+      fi
+      if [ "$json" -eq 1 ]; then
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        json_state=""
+        if [ "$RF_LIVE" = 1 ]; then
+          json_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+        fi
+        roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "$json_state" \
+          stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" || roost_jsonout_fail read
+        exit 0
+      fi
+      if [ "$render" -eq 1 ]; then
+        printf '%s\n' "$ROOST_RECORD_TEXT" | render_stdin
+      else
+        printf '%s\n' "$ROOST_RECORD_TEXT"
+      fi
+      exit 0
+    fi
+    # A closed pane (#42): `roost read %N` on a pane that is gone prints its
+    # last kept reply, and says on stderr that the pane is gone. Only a %N, and
+    # only on the boot of the server `t` talks to — see record_for. A pane that
+    # never had a record falls through to exactly today's failure, and so does a
+    # record this roost cannot use, after one warning line.
+    case "$raw" in
+      %[0-9]*)
+        if record_for "$raw" "$tgt" && [ "$RF_LIVE" = 0 ]; then
+          if [ "$RF_STATE" -eq 0 ]; then
+            roost_record_scan "$RF_DIR/replies"
+            if [ "$ROOST_RECORD_COUNT" -gt 0 ]; then
+              roost_record_turn_file "$RF_DIR" "$ROOST_RECORD_MAX"
+              if roost_record_read "$ROOST_RECORD_FILE"; then
+                echo "roost read: '$raw' is gone — this is its last recorded reply (turn $ROOST_RECORD_MAX)." >&2
+                if [ "$json" -eq 1 ]; then
+                  . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+                  roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "" \
+                    stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" || roost_jsonout_fail read
+                  exit 0
+                fi
+                if [ "$render" -eq 1 ]; then
+                  printf '%s\n' "$ROOST_RECORD_TEXT" | render_stdin
+                else
+                  printf '%s\n' "$ROOST_RECORD_TEXT"
+                fi
+                exit 0
+              fi
+            fi
+          else
+            record_warn read "$raw"
+          fi
+        fi ;;
+    esac
     # Prefer what the agent SAID over what its pane is DRAWING. An adapter
     # (the Claude Stop hook, adapters/opencode/roost.js) stamps @roost-reply
     # with the turn's last assistant message before it stamps the state, so a
@@ -1357,6 +1548,35 @@ JSON
         working|blocked|error)
           echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
       esac
+      # The kept copy of this reply (#42). @roost-reply-turn names the turn file
+      # the writer made with it, and roost_record_match lets that file stand in
+      # for the pane value only while the pane still holds exactly what tmux
+      # stored for that turn (its .pane sidecar). So a reply prints whole and as
+      # the agent wrote it — including on tmux 3.4/3.5a, which store some bytes
+      # rewritten — and a pane value set any other way afterwards (by hand, by a
+      # writer that recorded nothing, by an older roost) is printed as it is.
+      # The pane wins.
+      json_turn=""
+      if record_for "$raw" "$tgt" && [ "$RF_LIVE" = 1 ]; then
+        ptr="$(t show-options -p -t "$tgt" -qv @roost-reply-turn 2>/dev/null || true)"
+        case "$ptr" in ''|*[!0-9]*|0*) ptr="" ;; esac
+        if [ -n "$ptr" ] && [ "${#ptr}" -le 15 ]; then
+          if [ "$RF_STATE" -eq 0 ]; then
+            # Compared as a UTF-8 client (-u), the way the writer read it back:
+            # without a UTF-8 locale outside tmux, a plain client PRINTS newline,
+            # tab and non-ASCII as `_`, and the two would never be equal. $reply
+            # itself — what a match does not replace — is left exactly as
+            # this command has always printed it.
+            reply_u="$(t -u show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+            if roost_record_match "$reply_u" "$RF_DIR" "$ptr"; then
+              reply="$ROOST_RECORD_TEXT"
+              json_turn="$ptr"
+            fi
+          else
+            record_warn read "$raw"
+          fi
+        fi
+      fi
       # --json: the values this branch has already read, as a document. The
       # notice above has gone to stderr either way, and `stale` is that same
       # decision as a field. The pane id and the error reason are the two extra
@@ -1376,11 +1596,14 @@ JSON
         # marked lossy when it could be such a rewrite. The server is asked only
         # when the text looks escaped, so an ordinary reply costs nothing more.
         json_text_kind=t
-        if roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
+        # Text served from the kept turn file is the agent's raw bytes, never a
+        # value tmux rewrote, so the "may be tmux's escape text" marking below
+        # applies only to a pane value printed as it is.
+        if [ -z "$json_turn" ] && roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
           json_text_kind=T
         fi
         roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
-          stale b "$json_stale" error_reason z "$json_why" text "$json_text_kind" "$reply" || roost_jsonout_fail read
+          stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" || roost_jsonout_fail read
         exit 0
       fi
       # $lines is deliberately NOT applied. A recorded reply is returned whole:
@@ -1455,7 +1678,7 @@ JSON
       json_why=""
       if [ "$json_state" = "error" ]; then json_why="$why"; fi
       roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s screen state z "$json_state" \
-        stale b 0 error_reason z "$json_why" text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail read
+        stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail read
       exit 0
     fi
     screen_dump "$tgt" "$lines"
@@ -1574,10 +1797,38 @@ JSON
     # pane id HERE, so an unguarded write lands on a real, unrelated pane and
     # nothing reports an error.
     caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
-    our_pid="$(t display-message -p '#{pid}' 2>/dev/null || true)"
+    # The server's start time rides on the same read as its pid: it is the other
+    # half of the boot key the record below is filed under, and a second round
+    # trip for it would be spent on every turn of every adapter.
+    our="$(t display-message -p '#{pid} #{start_time}' 2>/dev/null || true)"
+    our_pid="${our%% *}"
     [ -n "$our_pid" ] && [ "$caller_pid" = "$our_pid" ] || exit 0
     . "$ROOST_HOME/scripts/lib/roost-reply.sh"
-    t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
+    # The durable copy (#42), before the pane option — the Stop hook in
+    # scripts/roost-agent-state does the same, and its comment says why. An
+    # empty reply is not recorded: it reads as no reply at all.
+    #
+    # The socket recorded is the caller's own, from $TMUX: the guard above has
+    # just proved it is the server `t` talks to, and it is an absolute path
+    # where $SOCKET may be a -L name.
+    . "$ROOST_HOME/scripts/lib/roost-record.sh"
+    turn=""
+    roost_record_root
+    if [ -n "$*" ] && [ -n "$ROOST_RECORD_ROOT" ] \
+       && roost_record_pane_dir "${our#* }-$our_pid" "$TMUX_PANE" \
+       && roost_record_append "$ROOST_RECORD_PANE_DIR" "${TMUX%%,*}" "$*"; then
+      turn="$ROOST_RECORD_TURN"
+    fi
+    # One tmux command for both options and the read-back of what tmux stored,
+    # kept as the turn's .pane sidecar — for the reasons given at the Stop hook.
+    if [ -n "$turn" ]; then
+      stored="$(t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" \; \
+        set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
+        show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+      roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
+    else
+      t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
+    fi
     ;;
   wait-done|wait)
     need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout=0
@@ -1857,6 +2108,86 @@ JSON
       fi
     done
     exit 0
+    ;;
+  forget)
+    # Delete kept replies (#42). The pane records live under one directory the
+    # user can remove in one command; this is that command, with two narrower
+    # forms. It never touches a pane option: the pane stays the truth, and a
+    # live pane's current reply still reads after its record is gone.
+    #
+    #   forget TGT     one pane's record — a live pane, or a closed %N on this
+    #                  server's boot (see record_for)
+    #   forget --gone  every record whose pane is closed, or whose server has
+    #                  stopped or restarted: the liveness check asks the server
+    #                  at each record's socket, never a pid. A record it cannot
+    #                  check is KEPT and named (roost_record_liveness)
+    #   forget --all   every record
+    #
+    # Every form removes only what roost_record_is_record recognises: a
+    # pane-number directory under a boot-key directory, holding the `schema`
+    # file a writer creates first. A directory of the right shape without one is
+    # left alone, and so is anything else under a ROOST_RECORD_DIR pointed
+    # somewhere by mistake. What a user put INSIDE a record goes with it.
+    . "$ROOST_HOME/scripts/lib/roost-record.sh"
+    roost_record_root
+    if [ -z "$ROOST_RECORD_ROOT" ]; then
+      echo "roost forget: no record directory — ROOST_RECORD_DIR is not an absolute path, or HOME is unset." >&2
+      exit 1
+    fi
+    case "${2:-}" in
+      --all)
+        n=0
+        for _p in "$ROOST_RECORD_ROOT"/*/*; do
+          roost_record_is_record "$_p" || continue
+          rm -rf "$_p"
+          rmdir "${_p%/*}" 2>/dev/null || true
+          n=$((n + 1))
+        done
+        rmdir "$ROOST_RECORD_ROOT" 2>/dev/null || true
+        echo "roost forget: removed $(plural "$n" record) under $ROOST_RECORD_ROOT"
+        ;;
+      --gone)
+        removed=0 kept=0 unknown=0
+        for _p in "$ROOST_RECORD_ROOT"/*/*; do
+          roost_record_is_record "$_p" || continue
+          _n="${_p##*/}"; _b="${_p%/*}"; _boot="${_b##*/}"
+          roost_record__socket "$_p" || true
+          roost_record_liveness "$ROOST_RECORD_SOCKET_SEEN" "$_boot" "%$_n"
+          case "$ROOST_RECORD_LIVENESS" in
+            live) kept=$((kept + 1)); continue ;;
+            unknown)
+              echo "roost forget: kept $_boot/$_n — could not ask its server whether the pane is still there"
+              unknown=$((unknown + 1)); continue ;;
+          esac
+          roost_record_scan "$_p/replies"
+          rm -rf "$_p"
+          rmdir "$_b" 2>/dev/null || true
+          echo "roost forget: removed $_boot/$_n ($(plural "$ROOST_RECORD_COUNT" turn))"
+          removed=$((removed + 1))
+        done
+        if [ "$unknown" -gt 0 ]; then
+          echo "roost forget: removed $(plural "$removed" record), kept $kept live and $unknown that could not be checked."
+        else
+          echo "roost forget: removed $(plural "$removed" record), kept $kept live."
+        fi
+        ;;
+      ''|-*)
+        echo "usage: roost forget TGT | --gone | --all" >&2
+        exit 1
+        ;;
+      *)
+        tgt="$(target "$2")"
+        if ! record_for "$2" "$tgt" || ! roost_record_is_record "$RF_DIR"; then
+          echo "roost forget: no record for '$2'." >&2
+          exit 1
+        fi
+        roost_record_scan "$RF_DIR/replies"
+        kb="$(du -sk "$RF_DIR" 2>/dev/null | awk '{print $1}')"
+        rm -rf "$RF_DIR"
+        rmdir "${RF_DIR%/*}" 2>/dev/null || true
+        echo "roost forget: removed the record for '$2' ($(plural "$ROOST_RECORD_COUNT" turn), ${kb:-0} KB)"
+        ;;
+    esac
     ;;
   status)
     # --json (#41) only as the second word; any other extra word is ignored, as
