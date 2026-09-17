@@ -484,36 +484,52 @@ gone.
    comment gives) and the boot key. Either empty, the record directory
    missing, `schema` not `1`, or the turn file missing → print `$reply` exactly
    as today.
-4. **The match check.** Read the file with a sentinel, so no trailing byte is
-   lost: `f="$(cat "$file"; printf x)"; f="${f%x}"`, then strip trailing
-   newlines to match what the pane holds. Serve the file only if:
-   - `$reply` equals it, **or**
-   - `$reply` is **exactly** `roost_reply_encode` of the file's bytes, run with
-     the `M` its marker `[roost: reply truncated — M of N bytes]` names: the
-     same head, cut back to the same newline, and the same marker.
+4. **The match check.** Read `@roost-reply` again as a UTF-8 client
+   (`tmux -u`), and serve the turn file only if that value equals the turn's
+   `NNNNNN.pane` sidecar exactly — the value tmux stored, read back by the
+   writer in the same tmux command that stored it. When the value ends in the
+   `[roost: reply truncated — M of N bytes]` marker, `N` must also be the
+   file's byte count. Anything else → print `$reply` exactly as today. This is
+   what makes "the pane wins" mechanical: the file stands in only while the
+   pane holds exactly what was stored for that turn.
 
-   **Changed in review round 1:** the first build checked only `N` and that
-   the head was a prefix of the file, so a pane value with a shorter head, or a
-   marker whose `M` did not match its head, still let the file through
-   (reproduced by the reviewer without tmux). `M` comes from the marker, not the
-   reader's `ROOST_REPLY_MAX`: a head a writer cut at another cap is still
-   exactly that file's.
-   Anything else → print `$reply` exactly as today. This is what makes "the
-   pane wins" mechanical: a file can only ever replace a pane value it agrees
-   with.
+   **Changed twice.** The build compared the pane value with the file loosely;
+   review round 1 made it exact by re-encoding the file. **CI on PR #84 showed
+   no content comparison can be exact,** because tmux does not store, or print,
+   what it is sent. Measured, as a client with and without a UTF-8 locale:
+
+   | | stored | printed by a client that is not UTF-8 |
+   |---|---|---|
+   | tmux 3.3a, 3.6, 3.7c | as sent | newline, tab, non-ASCII, control → `_` (3.6 on macOS: as sent) |
+   | tmux 3.4 | `$` before a letter or `{` → `\$`; control → `\ooo` | as the left column, then `_` for newline, tab, non-ASCII |
+   | tmux 3.5a | control → `\ooo` | the same `_` rule |
+
+   A client is UTF-8 when its locale is, when `-u` is given, or when `$TMUX` is
+   set — so every writer (the hook and `roost reply` both require `$TMUX`)
+   reads back the stored value itself, and `read` asks with `-u` to see the
+   same. The rewrites cannot be undone (`\$` may have been `$` or `\$`; `\033`
+   may have been ESC or four characters), so the link is "the pane is unchanged
+   since the write", not "the pane looks like the file". CI printed a reply
+   containing `$HOME` as `\$HOME` on tmux 3.4 because of the first two versions.
+
+   **Decided, and tested:** a turn file edited in place while the pane is
+   unchanged is served as edited (only a changed byte count under a truncation
+   marker is caught). The file is roost's own state, and trusting it is what
+   lets a tmux 3.4 server print a reply as the agent wrote it.
 5. The staleness notice (`working|blocked|error`), unchanged.
 6. Print with the same `printf '%s\n'` (or `render_stdin`).
 
-**Byte-identical for today's users, by construction.** Without a record, steps
-3–4 fall through to today's print. With a record and a reply under the cap, the
-match check passes only when the file equals `$reply`, so the same bytes are
-printed (M8, cases 1–7). The only visible change is the one #42 asks for: a
-reply over the cap prints whole, without the truncation marker (M8, case 8).
+**Byte-identical for today's users where tmux is faithful.** Without a record,
+steps 3–4 fall through to today's print. With a record, on a server that stores
+and prints what it is sent (tmux 3.3a and 3.6 with a UTF-8 client), the file
+equals the pane value under the cap, so the same bytes are printed (M8, cases
+1–7), and a reply over the cap prints whole (M8, case 8).
 
-On tmux 3.4 and 3.5a a reply containing control bytes or invalid UTF-8 is
-stored rewritten (#41's "tmux that rewrites what it stores"), so the match fails
-and the pane value is printed — today's output, including the 12 KB cap for
-such a reply on those versions.
+Where tmux rewrites — tmux 3.4 storing `$HOME` as `\$HOME`, or a client without
+a UTF-8 locale printing a newline as `_` — a reply with a record now prints as
+the agent wrote it, where it used to print rewritten. That is a change in bytes,
+and it is the correct one. A reply with no record prints exactly as before,
+rewritten.
 
 ### `--turn N`
 
@@ -792,9 +808,10 @@ its numeric sort, the pointer option's meaning, and the schema rule.
   `ln`. *Not reachable with one agent per pane; not tested.*
 - **Boot-key collision** — a new server with the same pid in the same second
   (M3). *Not reachable in practice.*
-- **tmux 3.4/3.5a**: a reply with control bytes or invalid UTF-8 keeps the
-  12 KB cap on `read` there (the match check fails, the pane wins). *Severity:
-  low; documented in known-gaps by the build.*
+- **A reply with no record still prints rewritten** on tmux 3.4 (`\$HOME`),
+  3.5a (control bytes as `\ooo`), and to a client without a UTF-8 locale
+  outside tmux (`_`). That is the reply channel as it was before #42; a record
+  now avoids it. *Severity: low; in known-gaps.*
 
 ### Left out on purpose
 

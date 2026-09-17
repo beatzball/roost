@@ -17,14 +17,18 @@
 #     schema            "1"
 #     socket            the socket path of the server that wrote it
 #     replies/000001    the raw bytes of one turn's reply, one file per turn
+#     replies/000001.pane  what tmux STORED in @roost-reply for that turn, read
+#                       back in the same tmux command that stored it; `read`
+#                       serves the turn file only while the pane still holds
+#                       exactly this (roost_record_match)
 #
 # The server's boot key is in the path because tmux restarts pane ids at %0 on
 # every server start (measured on tmux 3.3a, 3.4 and 3.6): keyed by socket and
 # pane alone, a restarted server's %0 would overwrite the dead server's %0.
 #
 # Names reserved for later work, which nothing here writes (see the spec):
-# name, session, window, cwd, state, harness, session_id, and per-turn sidecars
-# `replies/NNNNNN.<field>`. A reader here counts a turn only when its name is
+# name, session, window, cwd, state, harness, session_id, and further per-turn
+# sidecars `replies/NNNNNN.<field>` (`.pane` is the one #42 uses). A reader here counts a turn only when its name is
 # digits alone, which is what keeps those sidecars — and `.tmp.*` files —
 # invisible to it.
 #
@@ -472,7 +476,8 @@ roost_record_prune() {
     roost_record_turn_file "$1" "$ROOST_RECORD_MIN"
     f="$ROOST_RECORD_FILE"
     [ -f "$f" ] || return 0
-    rm -f "$f" || return 0
+    # The turn's sidecars go with it — `.pane` today, any `.<field>` later.
+    rm -f "$f" "$f".* || return 0
     roost_record_scan "$1/replies"
   done
 }
@@ -527,49 +532,64 @@ roost_record_read() {
   ROOST_RECORD_TEXT="$raw"
 }
 
-# roost_record_match REPLY FILE -> 0, with ROOST_RECORD_TEXT set, when the file
-# may be printed in place of REPLY. This is the rule that makes "the pane wins"
-# mechanical: a file can only ever replace a pane value it agrees with.
+# roost_record_put_pane DIR N STORED — record what tmux stored in @roost-reply
+# for turn N, as `replies/NNNNNN.pane`. STORED is the output of a
+# `show-options -pqv @roost-reply` run in the SAME tmux command as the
+# set-option that stored it, so another writer cannot slip in between. Written
+# whole or not at all; an empty value records nothing.
+roost_record_put_pane() {
+  [ -n "$3" ] || return 1
+  roost_record_turn_file "$1" "$2"
+  roost_record__put "$ROOST_RECORD_FILE.pane" "$3"
+}
+
+# roost_record_match REPLY DIR N -> 0, with ROOST_RECORD_TEXT set, when turn N's
+# file may be printed in place of REPLY, the pane's current @roost-reply. This
+# is the rule that makes "the pane wins" mechanical.
 #
-#   - REPLY equals the file (trailing newlines aside), so printing the file is
-#     printing the same bytes; or
-#   - REPLY is EXACTLY what roost_reply_encode makes of the file's bytes: the
-#     same head, cut back to the same newline, and the same
-#     `[roost: reply truncated — M of N bytes]` marker.
+# The file stands in only while the pane still holds EXACTLY what tmux stored
+# for that turn: REPLY must equal `NNNNNN.pane`. Both sides are tmux's own
+# stored text, so they compare exactly whatever tmux did to the value on the way
+# in. A value set any other way afterwards — by hand, by a writer that recorded
+# nothing, by an older roost — differs, and the pane value is printed as before.
 #
-# The second is checked by re-encoding the file with the M the marker names and
-# comparing the whole value. The first version checked only N and that the head
-# was a prefix, so a pane value with a shorter head, or a marker whose M did not
-# match its head, still let the file through (review round 1, reproduced). M is
-# taken from the marker rather than from this process's ROOST_REPLY_MAX: a
-# writer with a different cap produced a head that is still exactly that file's.
+# WHY NOT COMPARE THE PANE WITH THE FILE. The first two versions did, first
+# loosely and then by re-encoding the file (review round 1). That can only work
+# if tmux stores what it is sent, and it does not (measured, one printable and
+# one control byte per version, as a client with and without a UTF-8 locale):
 #
-# Anything else, including a value tmux rewrote on the way in, keeps the pane
-# value: today's output. Byte lengths under LC_ALL=C, the reply channel's rule.
+#   tmux 3.4      `$` before a letter or `{` stored as `\$` (`$HOME` -> `\$HOME`)
+#   3.4, 3.5a     control bytes and invalid UTF-8 stored as `\ooo`
+#   3.3a/3.4/3.5a/3.7c, no UTF-8 locale:  newline, tab, non-ASCII -> `_`
+#   3.6           as sent
+#
+# Those rewrites cannot be undone: `\$` may have been `$` or `\$`, `\033` may
+# have been ESC or four characters, `_` may have been anything. CI on tmux 3.4
+# printed a reply containing `$HOME` as `\$HOME` for exactly this reason (PR #84).
+# Reading back what was stored sidesteps the question instead of modelling every
+# version's rules, and it also serves the RAW bytes on those servers, where the
+# pane value alone would print them rewritten.
+#
+# One defence is kept on top: when REPLY ends in roost_reply_encode's
+# `[roost: reply truncated — M of N bytes]` marker, N must be the file's byte
+# count, so a turn file replaced after the fact is not printed under an old
+# pane value. A marker tmux mangled (no UTF-8 locale turns the dash into `_`)
+# simply does not parse, and the sidecar comparison stands alone.
 roost_record_match() {
-  local LC_ALL=C reply="$1" tail m enc
+  local LC_ALL=C reply="$1" stored tail n
   ROOST_RECORD_TEXT=""
-  roost_record_read "$2" || return 1
-  if [ "$reply" = "$ROOST_RECORD_TEXT" ]; then
-    return 0
-  fi
+  roost_record_turn_file "$2" "$3"
+  roost_record_read "$ROOST_RECORD_FILE.pane" || return 1
+  stored="$ROOST_RECORD_TEXT"
+  [ -n "$stored" ] && [ "$reply" = "$stored" ] || return 1
+  roost_record_turn_file "$2" "$3"
+  roost_record_read "$ROOST_RECORD_FILE" || return 1
   tail="${reply##*$'\n'}"
   case "$tail" in
-    "[roost: reply truncated — "*" of "*" bytes]") ;;
-    *) return 1 ;;
+    "[roost: reply truncated — "*" of "*" bytes]")
+      n="${tail##* of }"
+      n="${n% bytes]}"
+      [ "$n" = "${#ROOST_RECORD_RAW}" ] || return 1 ;;
   esac
-  m="${tail#\[roost: reply truncated — }"
-  m="${m%% of *}"
-  case "$m" in ''|*[!0-9]*|0*) return 1 ;; esac
-  [ "${#m}" -le 9 ] || return 1
-  if ! command -v roost_reply_encode >/dev/null 2>&1; then
-    . "${BASH_SOURCE[0]%/*}/roost-reply.sh" 2>/dev/null || return 1
-  fi
-  # The cap goes in as a prefix assignment, which bash undoes when the function
-  # returns. A `local ROOST_REPLY_MAX` here, in a process where this call was
-  # the first to source roost-reply.sh, swallowed that file's global default and
-  # left the variable unset for any later roost_reply_encode (review round 2).
-  enc="$(ROOST_REPLY_MAX="$m" roost_reply_encode "$ROOST_RECORD_RAW")"
-  [ "$enc" = "$reply" ] || return 1
   return 0
 }

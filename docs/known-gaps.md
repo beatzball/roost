@@ -926,12 +926,18 @@ right — the failure is always today's output.
 - **Trailing newlines and NUL bytes are still dropped**, before either store,
   because the reply passes through `$(...)` and a bash variable. A kept reply is
   whole in content, not bit-exact at the end.
-- **A pane value tmux rewrote does not match its file**, so `read` prints the
-  pane value — capped at 12 KB, and rewritten, exactly as before. tmux 3.4 and
-  3.5a rewrite a control byte or invalid UTF-8. tmux 3.3a, and tmux 3.4 whose
-  client runs with no UTF-8 locale (measured in containers with `LANG` unset),
-  also turn a newline, a tab and every non-ASCII byte into `_`. `read --turn N`
-  and a closed pane read the file itself, so those still come back whole.
+- **Without a record, a reply still prints the way tmux rewrote it.** tmux 3.4
+  stores `$` before a letter or `{` as `\$` (`$HOME` → `\$HOME`) and control
+  bytes as `\ooo`; tmux 3.5a the control bytes. A tmux client that is not UTF-8
+  (no UTF-8 locale, no `-u`, no `$TMUX` — a `roost read` from a plain shell)
+  prints newline, tab, non-ASCII and control bytes as `_`. With a record, `read`
+  serves the file while the pane still holds what the writer's read-back saw
+  (the `.pane` sidecar), so those replies print as written; with none — records
+  off, or a write that failed — they print as before. Found by CI on PR #84.
+- **A turn file edited in place is trusted while the pane is unchanged.** The
+  link between pane and file is the `.pane` sidecar, not the file's content,
+  because the content cannot be compared exactly on tmux 3.4. Only a changed
+  byte count under a truncation marker is caught.
 - **A closed pane is readable by `%N` only, and only on the server boot that
   wrote it.** A window name for a closed window, or a pane from before a server
   restart, is not looked up: the `name` field that would allow it is reserved,
@@ -991,9 +997,11 @@ deletes every kept reply; `ROOST_RECORD_DIR=""` in the environment agents start
 from keeps none.
 
 `roost read` on a reply longer than 12 KB prints the whole reply instead of the
-head and a truncation marker. Everything else it prints is unchanged — measured
-byte for byte against the previous `read` on 23 invocations without `--json` —
-except `read --json`'s added `"turn"` field.
+head and a truncation marker. On tmux 3.4, and from a shell without a UTF-8
+locale, a reply with a record also prints as the agent wrote it instead of as
+tmux rewrote it (`\$HOME`, `_`). Everything else it prints is unchanged —
+measured byte for byte against the previous `read` on 23 invocations without
+`--json`, on tmux 3.6 — except `read --json`'s added `"turn"` field.
 
 
 ### Claude and opencode in a roost pane are wired without `roost install` (#58)

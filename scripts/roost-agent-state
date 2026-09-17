@@ -163,10 +163,27 @@ if [ "$stop_hook" = 1 ] && [ "$state" = "done" ]; then
       #
       # The pointer is a few dozen bytes; roost_reply_encode's cap leaves ~4 KB
       # of headroom under tmux's command-length limit for exactly this.
+      #
+      # The same command then reads @roost-reply back, and that text — what tmux
+      # STORED, which on tmux 3.4 and 3.5a is not always what it was sent — is
+      # kept beside the turn as NNNNNN.pane. `read` serves the turn file only
+      # while the pane still holds exactly that (roost_record_match, which says
+      # why the value cannot be compared with the file itself). One command, so
+      # no other writer's set-option can land between the write and the read.
+      # If set-option fails, tmux runs nothing after it, the read-back is empty
+      # and no sidecar is written: `read` then prints the pane value, as before.
+      #
+      # A tmux client that is not UTF-8 (no UTF-8 locale, no -u, no $TMUX)
+      # PRINTS newline, tab, non-ASCII and control bytes as `_` — on output, not
+      # in storage (measured on tmux 3.3a and 3.4). This hook only runs with
+      # $TMUX set, which makes its client UTF-8, so the read-back is the stored
+      # value itself; `read` compares through `tmux -u` to see the same thing.
       if [ -n "$turn" ]; then
-        tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
+        stored="$(tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
           "$(roost_reply_encode "$reply")" \; \
-          set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" 2>/dev/null || true
+          set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
+          show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+        roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
       else
         tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
           "$(roost_reply_encode "$reply")" 2>/dev/null || true

@@ -1549,20 +1549,26 @@ JSON
           echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
       esac
       # The kept copy of this reply (#42). @roost-reply-turn names the turn file
-      # the hook wrote with it, and roost_record_match lets that file stand in
-      # for the pane value only when the two agree: equal, or the pane value is
-      # the capped head of exactly that file. So a reply under the cap prints the
-      # same bytes it always did, a reply over it prints whole, and a pane value
-      # set any other way — by hand, by an older roost, or rewritten by tmux
-      # 3.4/3.5a — is printed as it is. The pane wins.
+      # the writer made with it, and roost_record_match lets that file stand in
+      # for the pane value only while the pane still holds exactly what tmux
+      # stored for that turn (its .pane sidecar). So a reply prints whole and as
+      # the agent wrote it — including on tmux 3.4/3.5a, which store some bytes
+      # rewritten — and a pane value set any other way afterwards (by hand, by a
+      # writer that recorded nothing, by an older roost) is printed as it is.
+      # The pane wins.
       json_turn=""
       if record_for "$raw" "$tgt" && [ "$RF_LIVE" = 1 ]; then
         ptr="$(t show-options -p -t "$tgt" -qv @roost-reply-turn 2>/dev/null || true)"
         case "$ptr" in ''|*[!0-9]*|0*) ptr="" ;; esac
         if [ -n "$ptr" ] && [ "${#ptr}" -le 15 ]; then
           if [ "$RF_STATE" -eq 0 ]; then
-            roost_record_turn_file "$RF_DIR" "$ptr"
-            if roost_record_match "$reply" "$ROOST_RECORD_FILE"; then
+            # Compared as a UTF-8 client (-u), the way the writer read it back:
+            # without a UTF-8 locale outside tmux, a plain client PRINTS newline,
+            # tab and non-ASCII as `_`, and the two would never be equal. $reply
+            # itself — what a match does not replace — is left exactly as
+            # this command has always printed it.
+            reply_u="$(t -u show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+            if roost_record_match "$reply_u" "$RF_DIR" "$ptr"; then
               reply="$ROOST_RECORD_TEXT"
               json_turn="$ptr"
             fi
@@ -1590,7 +1596,10 @@ JSON
         # marked lossy when it could be such a rewrite. The server is asked only
         # when the text looks escaped, so an ordinary reply costs nothing more.
         json_text_kind=t
-        if roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
+        # Text served from the kept turn file is the agent's raw bytes, never a
+        # value tmux rewrote, so the "may be tmux's escape text" marking below
+        # applies only to a pane value printed as it is.
+        if [ -z "$json_turn" ] && roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
           json_text_kind=T
         fi
         roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
@@ -1810,10 +1819,13 @@ JSON
        && roost_record_append "$ROOST_RECORD_PANE_DIR" "${TMUX%%,*}" "$*"; then
       turn="$ROOST_RECORD_TURN"
     fi
-    # One tmux command for both options, for the reason given at the Stop hook.
+    # One tmux command for both options and the read-back of what tmux stored,
+    # kept as the turn's .pane sidecar — for the reasons given at the Stop hook.
     if [ -n "$turn" ]; then
-      t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" \; \
-        set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" 2>/dev/null || true
+      stored="$(t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" \; \
+        set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
+        show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+      roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
     else
       t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
     fi

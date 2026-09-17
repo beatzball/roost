@@ -161,7 +161,7 @@ assert_contains "$(cat "$work/err")" "no recorded reply for '$pn'" "...with toda
 pk="$(new_pane)"; require_pane "$pk" "keep bound"
 for n in 1 2 3 4 5; do ROOST_RECORD_KEEP=3 as_pane "$pk" "$ROOST" reply "TURN $n"; done
 assert_eq "$(turns_in "$pk")" 3 "ROOST_RECORD_KEEP=3 keeps three turn files"
-assert_eq "$(ls "$(recdir "$pk")/replies" | tr '\n' ' ')" "000003 000004 000005 " "...the three newest"
+assert_eq "$(ls "$(recdir "$pk")/replies" | grep '^[0-9]*$' | tr '\n' ' ')" "000003 000004 000005 " "...the three newest"
 ROOST_RECORD_KEEP=3 "$ROOST" read --turn 1 "$pk" >/dev/null 2>"$work/err"; rc=$?
 assert_eq "$rc" 1 "reading a pruned turn fails"
 assert_eq "$(cat "$work/err")" "roost read: turn 1 of '$pk' was pruned — turns 3 to 5 are kept (ROOST_RECORD_KEEP=3)." \
@@ -305,12 +305,16 @@ f="$(recdir "$pw")/replies/000002"
 printf 'tampered' >> "$f"
 out="$("$ROOST" read "$pw")"
 assert_contains "$out" "reply truncated" "a truncated pane value is printed when the file's size disagrees"
-# Same size, different head.
+# Same size, different head: DOCUMENTED, not defended. The link between pane and
+# file is "the pane still holds what tmux stored for this turn" (the .pane
+# sidecar), not the file's content, because tmux 3.4/3.5a store some bytes
+# rewritten and a content comparison cannot be exact there. A turn file edited
+# in place to the same length is therefore trusted while the pane is unchanged.
 claude_turn "$pw" "$big"
 f="$(recdir "$pw")/replies/000003"
 python3 -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[0:4]=b"LINE"; open(p,"wb").write(b)' "$f"
 out="$("$ROOST" read "$pw")"
-assert_contains "$out" "reply truncated" "a truncated pane value is printed when the file's head disagrees"
+assert_prefix "$out" "LINE 00000" "a turn file edited in place to the same size is served while the pane is unchanged (documented)"
 
 # --- 10. a malformed record is a warning, never the cause of a failure ------
 
@@ -377,7 +381,7 @@ for n in $(seq 1 20); do as_pane "$pc" "$ROOST" reply "CONCURRENT $n $(printf '%
 wait
 assert_eq "$(turns_in "$pc")" 20 "twenty writers at once make twenty turns"
 assert_eq "$(ls -A "$(recdir "$pc")/replies" | grep -c '^\.' )" 0 "...and leave no temp file"
-sizes="$(for f in "$(recdir "$pc")"/replies/0*; do wc -c < "$f" | tr -d ' '; done | sort -u | tr '\n' ' ')"
+sizes="$(for f in "$(recdir "$pc")"/replies/[0-9][0-9][0-9][0-9][0-9][0-9]; do wc -c < "$f" | tr -d ' '; done | sort -u | tr '\n' ' ')"
 assert_eq "$sizes" "4013 4014 " "...and every turn file is whole"
 
 # --- 13. a record that cannot be written never breaks the hook --------------
@@ -447,15 +451,16 @@ mbytes="$(wc -c < "$mf" | tr -d ' ')"
 tmux -S "$s" set-option -p -t "$pm2" @roost-reply "$(head -c 100 "$mf")
 [roost: reply truncated — 12288 of $mbytes bytes]"
 out="$("$ROOST" read "$pm2")"
-assert_contains "$out" "reply truncated — 12288 of" "a short head with the right total is not the file's capped form: the pane value prints"
+# Matched without the dash: a client with no UTF-8 locale PRINTS it as `_`.
+assert_contains "$out" " 12288 of $mbytes bytes]" "a short head with the right total is not the file's capped form: the pane value prints"
 . "$HERE/scripts/lib/roost-reply.sh"
 tmux -S "$s" set-option -p -t "$pm2" @roost-reply "$(ROOST_REPLY_MAX=10000 roost_reply_encode "$(cat "$mf")" | sed 's/— 10000 of/— 12288 of/')"
 out="$("$ROOST" read "$pm2")"
-assert_contains "$out" "reply truncated — 12288 of" "a head cut at one cap under a marker naming another: the pane value prints"
+assert_contains "$out" " 12288 of $mbytes bytes]" "a head cut at one cap under a marker naming another: the pane value prints"
 pm3="$(new_pane)"; require_pane "$pm3" "writer cap differs"
 ROOST_REPLY_MAX=10000 as_pane "$pm3" "$ROOST" reply "$(cat "$work/m.txt")"
 case "$(tmux -S "$s" show-options -pqv -t "$pm3" @roost-reply)" in
-  *"— 10000 of"*) assert_true 0 "a writer with ROOST_REPLY_MAX=10000 stored a 10000-byte head (control)" ;;
+  *" 10000 of "*) assert_true 0 "a writer with ROOST_REPLY_MAX=10000 stored a 10000-byte head (control)" ;;
   *) assert_true 1 "a writer with ROOST_REPLY_MAX=10000 stored a 10000-byte head (control)" ;;
 esac
 "$ROOST" read "$pm3" > "$work/out"; expect_file "$work/m.txt" "$work/want"
@@ -538,11 +543,6 @@ assert_eq "$ROOST_RECORD_LIVENESS" unknown "an empty answer at exit 0 is unknown
 printf '#!/bin/sh\necho "2-2 %%0"\n' > "$shim3/tmux"
 PATH="$shim3:$PATH" roost_record_liveness "$work/any/roost" "1-1" "%0"
 assert_eq "$ROOST_RECORD_LIVENESS" gone "another boot's answer is gone (control)"
-# roost_record_match in a fresh bash -u that had not sourced roost-reply.sh must
-# leave ROOST_REPLY_MAX usable for a later encode (review round 2).
-out="$(bash -uc '. "$1/scripts/lib/roost-record.sh"; printf x > "$2/nm"; roost_record_match "y
-[roost: reply truncated — 5 of 1 bytes]" "$2/nm"; command -v roost_reply_encode >/dev/null || echo "control: match did not source roost-reply.sh"; roost_reply_encode ok' _ "$HERE" "$work" 2>&1)"
-assert_eq "$out" "ok" "roost_record_match leaves ROOST_REPLY_MAX set for a later encode"
 
 # 16c. Names in replies/ that roost did not write are stepped past.
 pn2="$(new_pane)"; require_pane "$pn2" "foreign names"
@@ -605,4 +605,69 @@ as_pane "$p7" "$ROOST" reply "SEVEN DIGITS"
 [ -f "$(recdir "$p7")/replies/1000000" ]; assert_true $? "the turn after 999999 is 1000000"
 assert_eq "$("$ROOST" read --turn -1 "$p7")|$("$ROOST" read --turn -2 "$p7")" "SEVEN DIGITS|SEED" "turn 1000000 is the newest, not sorted before 999999"
 assert_eq "$("$ROOST" read "$p7")" "SEVEN DIGITS" "...and read serves it through a seven-digit pointer"
+
+# --- 17. a tmux that stores the reply rewritten (CI, PR #84) ---------------
+
+# tmux 3.4 stores `$HOME` as `\$HOME`; 3.4 and 3.5a store control bytes as
+# `\ooo`; without a UTF-8 locale several versions store newline, tab and
+# non-ASCII as `_`. So the pane value cannot be compared with the file. The
+# writer reads back what tmux STORED, in the same tmux command, as the turn's
+# .pane sidecar, and `read` serves the file while the pane still holds that.
+#
+# A stand-in for such a tmux, so this runs on every platform: it escapes every
+# `$` in the value that follows @roost-reply, then runs the real tmux.
+export REAL_TMUX="$(command -v tmux)"
+rw="$work/rewrite"; mkdir -p "$rw"
+cat > "$rw/tmux" <<'EOF'
+#!/usr/bin/env bash
+out=(); next=0
+for a in "$@"; do
+  if [ "$next" = 1 ]; then a="${a//\$/\\\$}"; next=0; fi
+  [ "$a" = "@roost-reply" ] && next=1
+  out+=("$a")
+done
+exec "$REAL_TMUX" "${out[@]}"
+EOF
+chmod +x "$rw/tmux"
+prw="$(new_pane)"; require_pane "$prw" "rewriting tmux, reply"
+dollars='cost $HOME and ${x} and $1'
+PATH="$rw:$PATH" as_pane "$prw" "$ROOST" reply "$dollars"
+case "$(tmux -S "$s" show-options -pqv -t "$prw" @roost-reply)" in
+  *'\$HOME'*) assert_true 0 "the stand-in stored the reply rewritten (control)" ;;
+  *) assert_true 1 "the stand-in stored the reply rewritten (control)" ;;
+esac
+assert_eq "$("$ROOST" read "$prw")" "$dollars" "a reply tmux stored rewritten reads back as the agent wrote it"
+assert_eq "$("$ROOST" read --json "$prw" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["text"], d["turn"], d["lossy"])')" \
+  "$dollars 1 False" "...and --json carries the raw text, not lossy"
+side="$(recdir "$prw")/replies/000001.pane"
+[ -f "$side" ]; assert_true $? "the turn has a .pane sidecar"
+assert_eq "$(cat "$side")" "$(tmux -S "$s" show-options -pqv -t "$prw" @roost-reply)" "...holding exactly what tmux stored"
+prh="$(new_pane)"; require_pane "$prh" "rewriting tmux, hook"
+printf '%s' "$dollars" > "$work/dollars"
+PATH="$rw:$PATH" claude_turn "$prh" "$work/dollars"
+assert_eq "$("$ROOST" read "$prh")" "$dollars" "the same through the Stop hook"
+# The pane is still the truth: change it, and the pane value prints.
+tmux -S "$s" set-option -p -t "$prw" @roost-reply 'cost $HOME set by hand'
+assert_eq "$("$ROOST" read "$prw")" "$(tmux -S "$s" show-options -pqv -t "$prw" @roost-reply)" "a pane value changed after the write prints as it is"
+# No sidecar (a record from before this rule, or a failed read-back): the pane
+# value prints as it is.
+PATH="$rw:$PATH" as_pane "$prw" "$ROOST" reply "$dollars"
+rm -f "$(recdir "$prw")/replies/000002.pane"
+assert_eq "$("$ROOST" read "$prw")" "$(tmux -S "$s" show-options -pqv -t "$prw" @roost-reply)" "a turn with no sidecar prints the pane value as tmux stored it"
+case "$("$ROOST" read "$prw")" in
+  *'\$HOME'*) assert_true 0 "...which is the rewritten value (control)" ;;
+  *) assert_true 1 "...which is the rewritten value (control)" ;;
+esac
+# Served from the file, the text is the agent's raw bytes, so --json never marks
+# it lossy — even when it LOOKS like tmux escape text on a server that escapes
+# (tmux 3.4/3.5a; on other servers this check cannot fail).
+plit="$(new_pane)"; require_pane "$plit" "literal escape text"
+litval='literal \033 and \177 text'
+as_pane "$plit" "$ROOST" reply "$litval"
+assert_eq "$("$ROOST" read --json "$plit" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["text"], d["lossy"])')" \
+  "$litval False" "text served from the file is not marked lossy, even when it looks like escape text"
+# Pruning takes a turn's sidecar with it.
+pps="$(new_pane)"; require_pane "$pps" "prune sidecars"
+for n in 1 2 3 4 5; do ROOST_RECORD_KEEP=3 as_pane "$pps" "$ROOST" reply "SIDE $n"; done
+assert_eq "$(ls "$(recdir "$pps")/replies" | tr '\n' ' ')" "000003 000003.pane 000004 000004.pane 000005 000005.pane " "pruning removes a turn's .pane sidecar with it"
 
