@@ -195,32 +195,35 @@ assert_eq "$(cat "$work/wh_j.out")" "" "whoami --json outside a pane prints noth
 assert_eq "$(cat "$work/wh_j.err")" "$(cat "$work/wh_h.err")" "whoami --json outside a pane keeps the human stderr"
 
 # read: the JSON document, and stderr byte-identical to the human invocation.
+# "turn" (#42) is the kept turn whose file supplied "text", and null for every
+# pane here: none of them has a kept reply, because tests/lib.sh switches pane
+# records off. Additive under the schema-1 rule, so ROOST_JSON_SCHEMA is still 1.
 read_case() {  # read_case NAME TARGET EXPECTED-JSON LABEL
   cap "$1" "$ROOST" read --json "$2"
   cap "$1_h" "$ROOST" read "$2"
   doc_is "$1" "$3" "$4"
   cmp -s "$work/$1.err" "$work/$1_h.err"; assert_true $? "$4: stderr is byte-identical to the human mode"
 }
-read_case r0 %0 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"text":"hello from api","lossy":false}' \
+read_case r0 %0 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false}' \
   "read --json returns a recorded reply"
 assert_eq "$(rc r0)" 0 "read --json on a reply exits 0"
-read_case rn main:api '{"schema":1,"command":"read","target":"main:api","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"text":"hello from api","lossy":false}' \
+read_case rn main:api '{"schema":1,"command":"read","target":"main:api","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false}' \
   "read --json keeps the target as typed and resolves the pane"
-read_case r1 %1 '{"schema":1,"command":"read","target":"%1","pane":"%1","source":"reply","state":"working","stale":true,"error_reason":null,"text":"old reply from web","lossy":false}' \
+read_case r1 %1 '{"schema":1,"command":"read","target":"%1","pane":"%1","source":"reply","state":"working","stale":true,"error_reason":null,"turn":null,"text":"old reply from web","lossy":false}' \
   "read --json marks a reply on a working pane stale"
-read_case r2 %2 '{"schema":1,"command":"read","target":"%2","pane":"%2","source":"screen","state":null,"stale":false,"error_reason":null,"text":"screen-line-one\nscreen-line-two","lossy":false}' \
+read_case r2 %2 '{"schema":1,"command":"read","target":"%2","pane":"%2","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false}' \
   "read --json falls back to the screen and says so in source"
 assert_eq "$(jv r2 'd["text"]')" "$(cat "$work/r2_h.out")" "read --json screen text is the human stdout without its final newline"
-read_case r3 %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"screen","state":"error","stale":false,"error_reason":"rate_limit","text":"screen-line-one\nscreen-line-two","lossy":false}' \
+read_case r3 %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"screen","state":"error","stale":false,"error_reason":"rate_limit","turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false}' \
   "read --json carries an errored pane's recorded reason"
-read_case r4 %4 '{"schema":1,"command":"read","target":"%4","pane":"%4","source":"screen","state":null,"stale":false,"error_reason":null,"text":"","lossy":false}' \
+read_case r4 %4 '{"schema":1,"command":"read","target":"%4","pane":"%4","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"","lossy":false}' \
   "read --json on a blank screen is a valid empty document"
 assert_eq "$(rc r4)" 0 "read --json on a blank screen exits 0 (the human mode's exit 1 is a separate bug)"
 # A reply stored on an ERRORED pane is stale too: every adapter drops the reply
 # of a failed turn, so whatever is stored is an earlier turn's. The human mode
 # says so on stderr; `stale` must say the same, and the reason must come along.
 as_pane %3 "$ROOST" reply "an earlier turn's answer"
-read_case r3r %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"reply","state":"error","stale":true,"error_reason":"rate_limit","text":"an earlier turn'"'"'s answer","lossy":false}' \
+read_case r3r %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"reply","state":"error","stale":true,"error_reason":"rate_limit","turn":null,"text":"an earlier turn'"'"'s answer","lossy":false}' \
   "read --json marks a reply on an errored pane stale and carries the reason"
 T set-option -pu -t %3 @roost-reply
 cap r99 "$ROOST" read --json %99

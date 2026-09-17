@@ -3,6 +3,16 @@
 : "${ROOST_TESTS_PASS:=0}"
 : "${ROOST_TESTS_FAIL:=0}"
 
+# Pane records (#42) are OFF for every test file unless it turns them on. Every
+# test that runs `roost reply` or the Stop hook would otherwise file its turns in
+# the developer's real ${XDG_STATE_HOME:-~/.local/state}/roost/panes. Empty is
+# the documented "record nothing" value (scripts/lib/roost-record.sh), and it
+# also keeps every existing test on exactly the no-record path it was written
+# for. tests/test-reply-record.sh sets its own directory after sourcing this.
+# Assigned, not defaulted: a ROOST_RECORD_DIR exported in the developer's shell
+# must not leak its real path into the suite.
+export ROOST_RECORD_DIR=""
+
 roost_test_server() {
   # Short socket dir — the ~104-char unix socket limit silently corrupts long paths.
   ROOST_TEST_SOCKDIR="$(mktemp -d /tmp/amx.XXXX)"

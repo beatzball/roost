@@ -1,6 +1,8 @@
 # A per-pane record that outlives the pane (#74) — design
 
-Status: **proposed 2026-09-16, two decisions open (D1, D2).** Everything under
+Status: **approved 2026-09-16 (D1 = B, D2 = H), built for #42 on the #74
+branch.** Where building changed a decided detail, the section says so under
+"Changed while building". Everything under
 "Measured" was executed that day on throwaway sockets; anything not executed is
 labelled *inferred* or *not measured*. No product code was written. The
 scratch prototype used for the measurements is described in M4 and is not part
@@ -13,7 +15,7 @@ add — as new files in the same directory, never a new format.
 
 ## Decisions
 
-- **D1 (open): how a record is stored on disk.**
+- **D1 [chosen: B]: how a record is stored on disk.**
   - **A. One JSON object per pane** (the issue's proposal), rewritten whole on
     every turn, with a `replies: [...]` array.
   - **B. One directory per pane, plain files** — one raw file per turn, one
@@ -24,7 +26,7 @@ add — as new files in the same directory, never a new format.
   runtime dependencies (`scripts/roost-doctor`), and `scripts/lib/roost-jsonout.sh`
   is an encoder only; A would need a decoder in `read`, or would make `read`
   depend on `python3`/`jq`. A's advantage is one file to look at or copy.
-- **D2 (open): where the reply is captured.**
+- **D2 [chosen: H]: where the reply is captured.**
   - **H. In the hook, at the end of a turn** — the two places that write
     `@roost-reply` today also write the turn file. **Recommended.**
   - **L. Lazily, for Claude only** — the 2026-09-14 comment on #42: record only
@@ -476,11 +478,21 @@ target like the existing ones, each once, in any order.
 - A turn that was pruned: exit 1, stderr
   `roost read: turn 3 of '%5' was pruned — turns 51 to 150 are kept (ROOST_RECORD_KEEP=100).`
 - No record: exit 1, stderr `roost read: no recorded turns for '%5'.`
+- A turn past the newest, or in a gap: exit 1, stderr
+  `roost read: turn 9 of '%5' is not recorded — turns 3 to 5 are kept.`
+- `--turn -K` with K larger than the number of kept turns reads as pruned when
+  turn 1 is no longer kept, and as not recorded otherwise.
+- A value that is not a non-zero integer, or a second `--turn`, is a usage
+  error, exit 1. The usage line printed with it is the existing one, unchanged.
+
+**Built note:** counting back sorts the kept turn numbers with one `sort -n`
+fed from a variable (`roost_record_back`). The first version ran a `for` loop
+holding a `case` inside `$(...)`, which bash 3.2 cannot parse.
 
 ### A gone pane
 
-When `TGT` is a pane id (`%N`), `display-message` cannot find it, and the
-server `read` talks to is running: take that server's boot key, and if
+When `TGT` is a pane id (`%N`), tmux has no such pane, and the server `read`
+talks to is running: take that server's boot key, and if
 `<boot>/<N>/` exists, print its newest turn (or `--turn N`) with a notice on
 stderr and exit 0:
 
@@ -493,13 +505,27 @@ pane in #42 and keeps today's error. That is the `name` field's job later.
 A record from an earlier server boot is not reachable by `%N` alone: `%0` on
 this boot is a different pane (M1).
 
+**Changed while building — "tmux has no such pane" is an empty `#{pane_id}`, not
+a failed command.** On tmux 3.6, `display-message -p -t %N '#{start_time}-#{pid}
+#{pane_id}'` for a pane that was closed exits 0 and prints the server's own
+formats with an empty pane id. The first build treated a zero exit as "the pane
+exists", and a closed pane never reached its record. `bin/roost`'s `record_for`
+now calls a pane found only when the printed pane id is non-empty.
+
 ### Malformed or foreign records
 
-| found | `read`, live pane | `read`, gone pane / `--turn` | exit |
-|---|---|---|---|
-| no `schema`, unreadable, not an integer | print the pane value | `roost read: the record for '%5' is unreadable (schema: …) — ignored.` | live: unchanged; gone: 1 |
-| `schema` greater than 1 | print the pane value | `… was written by a newer roost (schema 2) — ignored.` | same |
-| pointer names a missing file | print the pane value | — | unchanged |
+Every case is **one warning line on stderr**, and the command then does exactly
+what it would do with no record at all. The warning never decides the exit code.
+
+| found | warning | then |
+|---|---|---|
+| no `schema` (but `replies/` exists), or not a plain integer | `roost read: the record for '%5' is unreadable (schema: x) — ignored.` | live pane: the pane value, exit unchanged. Gone pane: today's failure for a gone pane (exit 1, the usual notices). `--turn`: `no recorded turns`, exit 1 |
+| `schema` greater than 1 | `roost read: the record for '%5' was written by a newer roost (schema 2) — ignored.` | the same |
+| pointer names a missing file | none | the pane value |
+| a directory with neither `schema` nor `replies/` | none — a writer may be creating it | treated as no record |
+
+What the schema file held is printed only when it is at most 20 plain
+characters; otherwise the warning says `?`.
 
 `status` does not read records in #42, so it has nothing to warn about. When
 #51 adds `status --all`, a malformed record is one warning line there, never
@@ -510,7 +536,12 @@ exit 1 — the rule is stated here so that build inherits it.
 Additive only, so `ROOST_JSON_SCHEMA` stays 1 (the #41 rule: adding a field or
 an enum value is not breaking):
 
-- a new field `turn`: number or `null` — the turn whose file supplied `text`;
+- a new field `turn`: number or `null` — the turn whose file supplied `text`.
+  It is present in **every** `read --json` document, the screen fallback
+  included, so a consumer never tests for a missing key. This is the one byte
+  difference a pane with no record shows: `"turn":null` after `error_reason`
+  (measured by an old-versus-new comparison, 27 invocations, in the build
+  report);
 - `source` gains the value `"record"`, used for a gone pane and for `--turn`.
   A live pane served from its file keeps `"reply"`: it is the pane's reply.
 
@@ -538,25 +569,41 @@ bytes; the practical ceiling comes from the adapters (see Risks).
 **Nothing is removed silently.**
 
 - `read --turn` names a pruned turn and the kept range (above).
-- `read` on a gone pane whose record was swept prints today's error plus one
-  line: `roost read: records that are not live are removed after 30 days (ROOST_RECORD_DAYS).`
-  — only when the record directory for this boot has other panes but not this
-  one, so a pane that never had a record gets today's output.
-- `roost doctor` gains one line: the record directory, its size, the number of
-  pane records, and the oldest.
+- `roost help` states both bounds, their variables, where records live, and
+  how to turn them off.
+
+**Changed while building — two reports dropped.** The design also proposed a
+hint on `read` for a gone pane whose record was swept, shown "when the record
+directory for this boot has other panes but not this one", and a `roost doctor`
+line. The hint was a guess: a closed shell pane that never had a record meets
+the same condition, and would have been told its record was swept. It is not
+built. The doctor line is left for a follow-up; the bounds are documented in
+`roost help` instead.
 
 **The command: `roost forget`.**
 
 | form | removes | prints |
 |---|---|---|
-| `roost forget TGT` | that pane's record (live or gone, `%N` on this boot) | `removed the record for %5 (12 turns, 31 KB)` |
-| `roost forget --gone` | every record whose liveness check fails, on every boot | one line per removed pane, then a total |
-| `roost forget --all` | the whole `panes/` directory | its path and size |
+| `roost forget TGT` | that pane's record (live or gone, `%N` on this boot) | `roost forget: removed the record for '%5' (12 turns, 31 KB)`; no record: `roost forget: no record for '%5'.`, exit 1 |
+| `roost forget --gone` | every record whose liveness check fails, on every boot | `roost forget: removed <boot>/<N> (K turns)` per record, then `roost forget: removed R records, kept L live.` |
+| `roost forget --all` | every directory under the root shaped like a boot key, then the root if it is empty | `roost forget: removed N records under <root>` |
+
+**Changed while building:** `--all` removes only boot-key-shaped directories,
+not the whole root. A `ROOST_RECORD_DIR` pointed at the wrong directory by
+mistake then loses nothing roost did not write. No argument, or an unknown
+flag: `usage: roost forget TGT | --gone | --all`, exit 1.
 
 `forget` never touches a pane option: the pane stays the truth, and its current
 reply still reads.
 
 ## Test plan for the #42 build
+
+**As built:** `tests/test-reply-record.sh`. Two suite-wide guards were added
+that this plan did not name: `tests/lib.sh` exports `ROOST_RECORD_DIR=""` so no
+existing test file records anything, and `tests/run.sh` fails the run if a
+record appears in the real record directory during it whose socket no longer
+exists (a test server's — a live agent's record names a socket that is still
+there).
 
 A new file, `tests/test-reply-record.sh`. It drives the hook with synthetic
 payloads the way `tests/test-reply-channel.sh` does (CI has no `claude`), on a
