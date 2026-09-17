@@ -947,6 +947,26 @@ right — the failure is always today's output.
   failure and no word about the sweep; a hint for it was dropped because it
   could not tell a swept record from one that never existed. No `roost doctor`
   line reports the directory's size yet.
+- **A live server whose socket file was deleted reads as gone.** The liveness
+  check calls a socket missing from a searchable directory "gone", because tmux
+  unlinks its socket when it exits. A /tmp cleaner that removes the socket of a
+  server still running makes that server unreachable anyway, but `forget
+  --gone` and the sweep would then remove its panes' records.
+- **A shared home over NFS mixes hosts' records.** The boot key has no host in
+  it. Host B asking about host A's record asks B's own server at the same socket
+  path, gets another boot key, and calls A's live records gone. Not measured.
+- **A record that cannot be checked is kept until a human removes it.** No
+  socket recorded, a socket that is not a socket, or a server that never answers
+  within 2 seconds: `forget --gone` names such records and keeps them, and the
+  sweep keeps them silently. `roost forget TGT` or `--all` removes them.
+- **A record whose `schema` file was lost is removed by nothing.** Every delete
+  path requires the schema file, so a directory of the right shape that roost
+  did not write is left alone — and so is a damaged record. Delete its
+  directory by hand.
+- **The suite's leak check sees new pane directories only.** `tests/run.sh`
+  looks for record directories created during the run whose socket is gone. A
+  turn a test appended to a record that already existed, or a record whose test
+  server was left running, would not be caught.
 - **The sweep runs only when a new pane record is created.** A machine that
   never starts another agent never sweeps; `roost forget --gone` does it by hand.
 - **`read --json` gained `"turn":null`** on every document without a kept turn.
@@ -963,7 +983,7 @@ right — the failure is always today's output.
 
 Every recorded reply is now also written to a file under
 `${XDG_STATE_HOME:-~/.local/state}/roost/panes/`, private to the user (`0700`
-directories, `0600` files). The newest 100 turns per pane are kept
+on the root roost creates and on every directory under it, `0600` files). The newest 100 turns per pane are kept
 (`ROOST_RECORD_KEEP`), and a closed pane's turns are deleted 30 days after its
 last reply (`ROOST_RECORD_DAYS`), when the next new pane record is made. So what
 an agent said now outlives its pane, on disk, until then. `roost forget --all`

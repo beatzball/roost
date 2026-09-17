@@ -321,8 +321,12 @@ Example: `~/.local/state/roost/panes/1789545413-84460/581/` for pane `%581`.
 - **The boot key is the directory**, so every record of one server is one
   directory, and one server's records can be removed together.
 - **The pane number without `%`**, so a path is never a `printf` format.
-- Directories are created `0700`, files `0600` (`mktemp` already does this):
-  a record holds what an agent said.
+- The root (when roost creates it), each boot directory and each pane
+  directory are `0700`, files `0600` (`mktemp` already does this): a record
+  holds what an agent said. **Changed in review round 1:** the first build left
+  the root `0755`. A `ROOST_RECORD_DIR` the user made keeps its own mode, and the
+  parents of the root (`…/state/roost`, shared with extension state) are not
+  touched.
 
 ### Files for #42 (schema 1)
 
@@ -416,9 +420,34 @@ bail.
 
 A record is **live** when the server at its `socket` answers
 `#{start_time}-#{pid} #{pane_id}` with the record's boot key and pane id (M3).
-Otherwise it is **history**. The check never passes a pid to the kernel, so a
-reused pid cannot make history look live. `#{pane_current_command}` and
-`#{pane_pid}` are not part of it (M2, M3 case 6).
+The check never passes a pid to the kernel, so a reused pid cannot make history
+look live. `#{pane_current_command}` and `#{pane_pid}` are not part of it (M2,
+M3 case 6).
+
+**Changed in review round 1 — three answers, not two.** The first build treated
+every failure to ask as "not live", and a reviewer reproduced `forget --gone`
+deleting a live pane's record at exit 0 with tmux off `PATH`, and with the
+socket's directory unsearchable. `roost_record_liveness` now answers:
+
+| answer | when |
+|---|---|
+| `live` | the server reports this boot and has the pane |
+| `gone` | the server answered with another boot or no such pane; tmux says `no server running on` the socket (a socket file a killed server left — measured on tmux 3.4 and 3.6); the socket is absent from a directory that exists and can be searched; or its directory is gone |
+| `unknown` | no socket recorded; tmux not found; the directory cannot be searched; something that is not a socket is at the path; any other tmux error; no answer within 2 seconds |
+
+Only `gone` is ever deleted. `forget --gone` names each record it could not
+check and counts them; the sweep keeps them silently. The error is matched on
+tmux's own words only — strerror text follows the locale. The 2-second bound
+is there because a stopped server (`kill -STOP`) accepts the connection and
+never answers, and the probe then hung (reproduced); macOS has no `timeout(1)`,
+so the probe runs in the background and is killed if it overruns.
+
+**Changed in review round 1 — what counts as a record.** Every delete path
+first checks `roost_record_is_record`: a pane-number directory, under a
+boot-key directory, holding a `schema` file. A directory of the right shape
+without one — even one holding `replies/` — is left alone. The first build
+deleted by shape alone, and the reviewer reproduced all three paths removing a
+directory roost never wrote.
 
 `read` rarely needs this call: when the target resolves to a live pane,
 `read` already knows the server and the boot key. The explicit check is for
@@ -444,10 +473,16 @@ gone.
    lost: `f="$(cat "$file"; printf x)"; f="${f%x}"`, then strip trailing
    newlines to match what the pane holds. Serve the file only if:
    - `$reply` equals it, **or**
-   - `$reply` ends in the marker `roost_reply_encode` writes,
-     `[roost: reply truncated — M of N bytes]`, **and** `N` is the file's byte
-     length (`LC_ALL=C`), **and** the text before `\n[roost:` is a prefix of the
-     file.
+   - `$reply` is **exactly** `roost_reply_encode` of the file's bytes, run with
+     the `M` its marker `[roost: reply truncated — M of N bytes]` names: the
+     same head, cut back to the same newline, and the same marker.
+
+   **Changed in review round 1:** the first build checked only `N` and that
+   the head was a prefix of the file, so a pane value with a shorter head, or a
+   marker whose `M` did not match its head, still let the file through
+   (reproduced by the reviewer without tmux). `M` comes from the marker, not the
+   reader's `ROOST_REPLY_MAX`: a head a writer cut at another cap is still
+   exactly that file's.
    Anything else → print `$reply` exactly as today. This is what makes "the
    pane wins" mechanical: a file can only ever replace a pane value it agrees
    with.
@@ -566,7 +601,9 @@ reply.
 No bytes-per-reply cap in the file. The largest reply measured was 24,675
 bytes; the practical ceiling comes from the adapters (see Risks).
 
-**Nothing is removed silently.**
+**Pruning is never silent; the sweep is documented, not reported.** (The first
+draft said "nothing is removed silently", which review round 1 correctly called
+untrue of the sweep.)
 
 - `read --turn` names a pruned turn and the kept range (above).
 - `roost help` states both bounds, their variables, where records live, and

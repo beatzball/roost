@@ -202,16 +202,19 @@ tmux -S "$s" kill-pane -t "$pdead"
 [ -d "$(recdir "$pdead")" ]; assert_true $? "the closed pane's record exists before --gone (control)"
 plant "$REC/1000000000-1/0" "$s"                 # this socket, an earlier boot: a restarted server
 plant "$REC/1000000000-2/0" "$work/no-such/roost" # a socket that is gone
-plant "$REC/1000000000-3/0" ""                    # no socket recorded at all
+plant "$REC/1000000000-3/0" ""                    # no socket recorded: cannot be checked
 out="$("$ROOST" forget --gone)"; rc=$?
 assert_eq "$rc" 0 "forget --gone exits 0"
 assert_file_absent "$(recdir "$pdead")" "forget --gone removes a closed pane's record"
 assert_file_absent "$(recdir "$pg")" "...including the one section 4 closed"
 assert_file_absent "$REC/1000000000-1" "forget --gone removes a restarted server's record"
 assert_file_absent "$REC/1000000000-2" "forget --gone removes a record whose socket is gone"
-assert_file_absent "$REC/1000000000-3" "forget --gone removes a record with no socket"
+[ -d "$REC/1000000000-3/0" ]; assert_true $? "forget --gone KEEPS a record it cannot check (no socket recorded)"
+assert_contains "$out" "kept 1000000000-3/0 — could not ask its server" "...and names it"
 [ -d "$(recdir "$pf1")" ]; assert_true $? "forget --gone keeps a live pane's record"
-assert_contains "$out" "removed 5 records, kept" "forget --gone totals what it removed"
+assert_contains "$out" "removed 4 records, kept" "forget --gone totals what it removed"
+assert_contains "$out" "and 1 that could not be checked." "...and what it could not check"
+rm -rf "$REC/1000000000-3"
 
 # --all removes every record, and nothing that is not one.
 # A file AND a directory that roost did not write: the loop skips files by
@@ -420,9 +423,147 @@ env -u ROOST_RECORD_DIR HOME="$work/home2" XDG_STATE_HOME="$work/xdg2" TMUX="$s,
 [ -f "$work/xdg2/roost/panes/$boot/${pdf#%}/replies/000001" ]; assert_true $? "unset ROOST_RECORD_DIR records under \$XDG_STATE_HOME/roost/panes"
 env -u ROOST_RECORD_DIR HOME="$work/home2" XDG_STATE_HOME=relative TMUX="$s,$spid,0" TMUX_PANE="$pdf" "$ROOST" reply "HOME"
 [ -f "$work/home2/.local/state/roost/panes/$boot/${pdf#%}/replies/000001" ]; assert_true $? "a relative XDG_STATE_HOME is ignored: \$HOME/.local/state/roost/panes"
+mode="$(ls -ld "$work/home2/.local/state/roost/panes" | cut -c1-10)"
+assert_eq "$mode" "drwx------" "the record root roost created is private to the user"
+mode="$(ls -ld "$work/home2/.local/state/roost/panes/$boot" | cut -c1-10)"
+assert_eq "$mode" "drwx------" "a boot directory is private to the user"
 mode="$(ls -ld "$work/home2/.local/state/roost/panes/$boot/${pdf#%}" | cut -c1-10)"
 assert_eq "$mode" "drwx------" "a pane record directory is private to the user"
 mode="$(ls -l "$work/home2/.local/state/roost/panes/$boot/${pdf#%}/replies/000001" | cut -c1-10)"
 assert_eq "$mode" "-rw-------" "a turn file is private to the user"
 assert_eq "$(find "$HOME" "$XDG_STATE_HOME" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')" 0 \
   "nothing was written to the canary HOME or XDG_STATE_HOME"
+
+# --- 16. review round 1 -----------------------------------------------------
+
+# 16a. The pane value must be EXACTLY the capped form of the file. The first
+# matcher checked only the marker's total and that the head was a prefix.
+pm2="$(new_pane)"; require_pane "$pm2" "exact match"
+awk 'BEGIN{for(i=0;i<1500;i++) printf "row %05d with enough text to pass the cap\n", i}' > "$work/m.txt"
+as_pane "$pm2" "$ROOST" reply "$(cat "$work/m.txt")"
+mf="$(recdir "$pm2")/replies/000001"
+[ -f "$mf" ]; assert_true $? "the exact-match file exists (control)"
+mbytes="$(wc -c < "$mf" | tr -d ' ')"
+tmux -S "$s" set-option -p -t "$pm2" @roost-reply "$(head -c 100 "$mf")
+[roost: reply truncated — 12288 of $mbytes bytes]"
+out="$("$ROOST" read "$pm2")"
+assert_contains "$out" "reply truncated — 12288 of" "a short head with the right total is not the file's capped form: the pane value prints"
+. "$HERE/scripts/lib/roost-reply.sh"
+tmux -S "$s" set-option -p -t "$pm2" @roost-reply "$(ROOST_REPLY_MAX=10000 roost_reply_encode "$(cat "$mf")" | sed 's/— 10000 of/— 12288 of/')"
+out="$("$ROOST" read "$pm2")"
+assert_contains "$out" "reply truncated — 12288 of" "a head cut at one cap under a marker naming another: the pane value prints"
+pm3="$(new_pane)"; require_pane "$pm3" "writer cap differs"
+ROOST_REPLY_MAX=10000 as_pane "$pm3" "$ROOST" reply "$(cat "$work/m.txt")"
+case "$(tmux -S "$s" show-options -pqv -t "$pm3" @roost-reply)" in
+  *"— 10000 of"*) assert_true 0 "a writer with ROOST_REPLY_MAX=10000 stored a 10000-byte head (control)" ;;
+  *) assert_true 1 "a writer with ROOST_REPLY_MAX=10000 stored a 10000-byte head (control)" ;;
+esac
+"$ROOST" read "$pm3" > "$work/out"; expect_file "$work/m.txt" "$work/want"
+cmp -s "$work/out" "$work/want"; assert_true $? "...and a reader on the default cap still prints that file whole: it is exactly its capped form"
+
+# 16b. "Could not ask" is not "gone". A tmux that errors, or a stopped server,
+# must keep a record, never delete it.
+pl="$(new_pane)"; require_pane "$pl" "liveness unknown"
+as_pane "$pl" "$ROOST" reply "KEEP WHEN UNSURE"
+[ -d "$(recdir "$pl")" ]; assert_true $? "the record to protect exists (control)"
+shim2="$work/shim2"; mkdir -p "$shim2"
+printf '#!/bin/sh\necho "error connecting to x (Permission denied)" >&2\nexit 1\n' > "$shim2/tmux"; chmod +x "$shim2/tmux"
+out="$(PATH="$shim2:$PATH" "$ROOST" forget --gone 2>&1)"
+[ -d "$(recdir "$pl")" ]; assert_true $? "forget --gone keeps a record when tmux cannot answer"
+assert_contains "$out" "could not ask its server" "...and says it could not check"
+sb="$work/stopped/roost"; mkdir -p "$work/stopped"
+tmux -S "$sb" -f /dev/null new-session -d 'ENV= exec /bin/sh'
+sbpid="$(tmux -S "$sb" display -p '#{pid}')"
+sbboot="$(tmux -S "$sb" display -p '#{start_time}-#{pid}')"
+plant "$REC/$sbboot/0" "$sb"
+kill -STOP "$sbpid"
+t0="$(date +%s)"
+watch 15 "$ROOST" forget --gone > "$work/out" 2>&1; rc=$?
+t1="$(date +%s)"
+kill -CONT "$sbpid"
+assert_eq "$rc" 0 "forget --gone finishes when a recorded server is stopped (no hang)"
+[ $((t1 - t0)) -le 8 ]; assert_true $? "...within the liveness bound, not a hang ($((t1 - t0)) s)"
+[ -d "$REC/$sbboot/0" ]; assert_true $? "...and keeps that server's record"
+roost_record_liveness "$sb" "$sbboot" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" live "the resumed server's record is live again (control)"
+tmux -S "$sb" kill-server
+roost_record_liveness "$sb" "$sbboot" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" gone "a server that exited is gone"
+rm -rf "$REC/$sbboot"
+# A server killed with SIGKILL leaves its socket file behind; tmux then says
+# "no server running on" it, which is gone, not unknown.
+sk="$work/killed/roost"; mkdir -p "$work/killed"
+tmux -S "$sk" -f /dev/null new-session -d 'ENV= exec /bin/sh'
+skboot="$(tmux -S "$sk" display -p '#{start_time}-#{pid}')"
+kill -9 "${skboot#*-}"; sleep 0.3
+[ -S "$sk" ]; assert_true $? "a SIGKILLed server leaves its socket file (control)"
+roost_record_liveness "$sk" "$skboot" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" gone "a stale socket file with no server behind it is gone"
+# A socket file missing from a directory that exists and can be searched: tmux
+# unlinked it on exit, so the server is gone.
+mkdir -p "$work/emptydir"
+roost_record_liveness "$work/emptydir/roost" "1000000000-1" "%0"
+assert_eq "$ROOST_RECORD_LIVENESS" gone "a socket missing from a searchable directory is gone"
+
+# 16c. Names in replies/ that roost did not write are stepped past.
+pn2="$(new_pane)"; require_pane "$pn2" "foreign names"
+as_pane "$pn2" "$ROOST" reply "ONE"
+mkdir "$(recdir "$pn2")/replies/000002"
+mkdir -p "$work/outside"; ln -s "$work/outside" "$(recdir "$pn2")/replies/000003"
+ln -s "$work/nowhere" "$(recdir "$pn2")/replies/000004"
+as_pane "$pn2" "$ROOST" reply "TWO"
+as_pane "$pn2" "$ROOST" reply "THREE"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pn2" @roost-reply-turn)" 6 "a directory and symlinks named like turns are stepped past"
+assert_eq "$("$ROOST" read --turn 5 "$pn2")|$("$ROOST" read --turn 6 "$pn2")" "TWO|THREE" "...and the turns after them read back"
+assert_eq "$(ls -A "$work/outside" | wc -l | tr -d ' ')" 0 "...and nothing was written through the symlink"
+assert_eq "$(find "$(recdir "$pn2")/replies/000002" -mindepth 1 | wc -l | tr -d ' ')" 0 "...or into the directory"
+pn3="$(new_pane)"; require_pane "$pn3" "15 digits"
+as_pane "$pn3" "$ROOST" reply "SEED"
+: > "$(recdir "$pn3")/replies/999999999999999"
+as_pane "$pn3" "$ROOST" reply "PAST FIFTEEN DIGITS"
+assert_eq "$(ls "$(recdir "$pn3")/replies" | awk 'length($0) > 15' | wc -l | tr -d ' ')" 0 "a turn number past 15 digits is never written"
+assert_eq "$("$ROOST" read "$pn3")" "PAST FIFTEEN DIGITS" "...and the pane still takes the reply"
+
+# 16d. Only what roost wrote is deleted: a directory of the right SHAPE with no
+# schema and no replies/ is not a record, and neither is a non-boot directory.
+mkdir -p "$REC/1000000000-5/7"; printf 'mine\n' > "$REC/1000000000-5/7/notes.txt"
+plant "$REC/1000000000-5/8" "$work/no-such/roost"
+mkdir -p "$REC/notaboot/9/replies"
+touch -t "$old_stamp" "$REC/notaboot/9/replies"
+mkdir -p "$REC/1000000000-7/3/replies"; printf 'x' > "$REC/1000000000-7/3/replies/000001"
+# ...with a socket that is gone, so ONLY the missing schema can save it from the sweep
+printf '%s\n' "$work/no-such/roost" > "$REC/1000000000-7/3/socket"
+touch -t "$old_stamp" "$REC/1000000000-7/3/replies"   # shape AND replies/, but no schema
+plant "$REC/1000000000-6/9" ""
+touch -t "$old_stamp" "$REC/1000000000-6/9/replies"
+pnew2="$(new_pane)"; require_pane "$pnew2" "sweep trigger 2"
+as_pane "$pnew2" "$ROOST" reply "NEW PANE 2"
+[ -d "$REC/notaboot/9" ]; assert_true $? "the sweep leaves a directory that is not under a boot key"
+[ -d "$REC/1000000000-6/9" ]; assert_true $? "the sweep keeps an old record it cannot check"
+[ -f "$REC/1000000000-7/3/replies/000001" ]; assert_true $? "the sweep leaves an old boot/pane/replies directory with no schema"
+"$ROOST" forget --gone >/dev/null 2>&1
+[ -f "$REC/1000000000-5/7/notes.txt" ]; assert_true $? "forget --gone leaves a record-shaped directory with nothing roost writes"
+assert_file_absent "$REC/1000000000-5/8" "...and removes the real record beside it (control)"
+"$ROOST" forget --all >/dev/null 2>&1
+[ -f "$REC/1000000000-5/7/notes.txt" ]; assert_true $? "forget --all leaves a record-shaped directory with nothing roost writes"
+[ -d "$REC/notaboot/9/replies" ]; assert_true $? "forget --all leaves a directory that is not under a boot key"
+[ -f "$REC/1000000000-7/3/replies/000001" ]; assert_true $? "forget --all leaves a boot/pane/replies directory with no schema"
+assert_file_absent "$REC/1000000000-6/9" "forget --all removes a record it could not check (control)"
+rm -rf "$REC/1000000000-5" "$REC/notaboot" "$REC/1000000000-7"
+
+# 16e. Only digit names are turns, and order is numeric past six digits.
+ps2="$(new_pane)"; require_pane "$ps2" "sidecars"
+as_pane "$ps2" "$ROOST" reply "TURN ONE"
+printf 'not a turn' > "$(recdir "$ps2")/replies/000001.session_id"
+printf 'not a turn' > "$(recdir "$ps2")/replies/000002x"
+as_pane "$ps2" "$ROOST" reply "TURN TWO"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$ps2" @roost-reply-turn)" 2 "a reserved sidecar and a non-digit name are not counted as turns"
+assert_eq "$("$ROOST" read --turn -2 "$ps2")" "TURN ONE" "...and counting back steps over them"
+p7="$(new_pane)"; require_pane "$p7" "seven digits"
+as_pane "$p7" "$ROOST" reply "SEED"
+mv "$(recdir "$p7")/replies/000001" "$(recdir "$p7")/replies/999999"
+as_pane "$p7" "$ROOST" reply "SEVEN DIGITS"
+[ -f "$(recdir "$p7")/replies/1000000" ]; assert_true $? "the turn after 999999 is 1000000"
+assert_eq "$("$ROOST" read --turn -1 "$p7")|$("$ROOST" read --turn -2 "$p7")" "SEVEN DIGITS|SEED" "turn 1000000 is the newest, not sorted before 999999"
+assert_eq "$("$ROOST" read "$p7")" "SEVEN DIGITS" "...and read serves it through a seven-digit pointer"
+

@@ -2107,10 +2107,15 @@ JSON
     #                  server's boot (see record_for)
     #   forget --gone  every record whose pane is closed, or whose server has
     #                  stopped or restarted: the liveness check asks the server
-    #                  at each record's socket, never a pid (roost_record_live)
-    #   forget --all   every record. Only directories shaped like a boot key are
-    #                  removed, so a ROOST_RECORD_DIR pointed somewhere by
-    #                  mistake loses nothing that roost did not write
+    #                  at each record's socket, never a pid. A record it cannot
+    #                  check is KEPT and named (roost_record_liveness)
+    #   forget --all   every record
+    #
+    # Every form removes only what roost_record_is_record recognises: a
+    # pane-number directory under a boot-key directory, holding the `schema` or
+    # `replies/` a writer creates. A directory of the right shape with neither is
+    # left alone, and so is anything else under a ROOST_RECORD_DIR pointed
+    # somewhere by mistake. What a user put INSIDE a record goes with it.
     . "$ROOST_HOME/scripts/lib/roost-record.sh"
     roost_record_root
     if [ -z "$ROOST_RECORD_ROOT" ]; then
@@ -2120,34 +2125,39 @@ JSON
     case "${2:-}" in
       --all)
         n=0
-        for _b in "$ROOST_RECORD_ROOT"/*; do
-          [ -d "$_b" ] || continue
-          roost_record_pane_dir "${_b##*/}" "%0" || continue
-          for _p in "$_b"/*; do [ -d "$_p" ] && n=$((n + 1)); done
-          rm -rf "$_b"
+        for _p in "$ROOST_RECORD_ROOT"/*/*; do
+          roost_record_is_record "$_p" || continue
+          rm -rf "$_p"
+          rmdir "${_p%/*}" 2>/dev/null || true
+          n=$((n + 1))
         done
         rmdir "$ROOST_RECORD_ROOT" 2>/dev/null || true
         echo "roost forget: removed $(plural "$n" record) under $ROOST_RECORD_ROOT"
         ;;
       --gone)
-        removed=0 kept=0
+        removed=0 kept=0 unknown=0
         for _p in "$ROOST_RECORD_ROOT"/*/*; do
-          [ -d "$_p" ] || continue
+          roost_record_is_record "$_p" || continue
           _n="${_p##*/}"; _b="${_p%/*}"; _boot="${_b##*/}"
-          roost_record_pane_dir "$_boot" "%$_n" || continue
-          [ "$ROOST_RECORD_PANE_DIR" = "$_p" ] || continue
           roost_record__socket "$_p" || true
-          if roost_record_live "$ROOST_RECORD_SOCKET_SEEN" "$_boot" "%$_n"; then
-            kept=$((kept + 1))
-            continue
-          fi
+          roost_record_liveness "$ROOST_RECORD_SOCKET_SEEN" "$_boot" "%$_n"
+          case "$ROOST_RECORD_LIVENESS" in
+            live) kept=$((kept + 1)); continue ;;
+            unknown)
+              echo "roost forget: kept $_boot/$_n — could not ask its server whether the pane is still there"
+              unknown=$((unknown + 1)); continue ;;
+          esac
           roost_record_scan "$_p/replies"
           rm -rf "$_p"
           rmdir "$_b" 2>/dev/null || true
           echo "roost forget: removed $_boot/$_n ($(plural "$ROOST_RECORD_COUNT" turn))"
           removed=$((removed + 1))
         done
-        echo "roost forget: removed $(plural "$removed" record), kept $kept live."
+        if [ "$unknown" -gt 0 ]; then
+          echo "roost forget: removed $(plural "$removed" record), kept $kept live and $unknown that could not be checked."
+        else
+          echo "roost forget: removed $(plural "$removed" record), kept $kept live."
+        fi
         ;;
       ''|-*)
         echo "usage: roost forget TGT | --gone | --all" >&2
@@ -2155,7 +2165,7 @@ JSON
         ;;
       *)
         tgt="$(target "$2")"
-        if ! record_for "$2" "$tgt" || [ ! -d "$RF_DIR" ]; then
+        if ! record_for "$2" "$tgt" || ! roost_record_is_record "$RF_DIR"; then
           echo "roost forget: no record for '$2'." >&2
           exit 1
         fi

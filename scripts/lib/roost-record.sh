@@ -152,7 +152,7 @@ roost_record_schema() {
 roost_record__put() {
   local tmp
   tmp="$(mktemp "${1%/*}/.tmp.XXXXXX" 2>/dev/null)" || return 1
-  if printf '%s' "$2" > "$tmp" && mv -f "$tmp" "$1" 2>/dev/null; then
+  if { printf '%s' "$2" > "$tmp"; } 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null; then
     return 0
   fi
   rm -f "$tmp"
@@ -225,11 +225,104 @@ roost_record_back() {
 #
 # What could still fool it: a new server on the same socket, with the same pid,
 # started in the same second. That needs a pid wrap inside one second.
+#
+# Returns 0 only for "live". Code that DELETES must not read its 1 as "gone" —
+# use roost_record_liveness, which can also answer "unknown".
 roost_record_live() {
-  local got
-  [ -n "$1" ] && [ -S "$1" ] || return 1
-  got="$(tmux -S "$1" display-message -p -t "$3" '#{start_time}-#{pid} #{pane_id}' 2>/dev/null)" || return 1
-  [ "$got" = "$2 $3" ]
+  roost_record_liveness "$@"
+  [ "$ROOST_RECORD_LIVENESS" = live ]
+}
+
+# roost_record_liveness SOCKET BOOT PANE -> ROOST_RECORD_LIVENESS: live, gone,
+# or unknown. Only `gone` may be acted on by anything that deletes.
+#
+# THREE answers, because "could not ask" is not "not there" (review round 1,
+# reproduced): with tmux off PATH, or a socket directory the caller cannot
+# search, the first version answered "not live" and `forget --gone` removed a
+# live pane's history at exit 0. So:
+#
+#   gone     the server answered and this is not its boot or it has no such
+#            pane; or tmux says "no server running on" the socket (a socket file
+#            a killed server left behind — measured on tmux 3.4 and 3.6); or the
+#            socket is absent from a directory that exists and can be searched,
+#            or its directory is gone (tmux unlinks its socket on exit)
+#   unknown  no socket recorded; tmux not found; the socket's directory cannot
+#            be searched; something that is not a socket sits at the path; any
+#            other tmux error; or no answer within 2 seconds
+#   live     the server at SOCKET reports BOOT and has PANE
+#
+# The error text is matched on tmux's own words, "no server running on", and
+# nowhere on strerror text, which follows the locale. Every other failure is
+# unknown, which errs toward keeping a record.
+#
+# A 2-second bound, because a stopped server (kill -STOP, a debugger) accepts the
+# connection and never answers, and `tmux display-message` then waits forever
+# (review round 1, reproduced). macOS ships no timeout(1), so the probe runs in
+# the background, is polled, and is killed if it overruns.
+roost_record_liveness() {
+  local sock="$1" parent pid rc i=0 out="" tmpd
+  ROOST_RECORD_LIVENESS=unknown
+  [ -n "$sock" ] || return 0
+  command -v tmux >/dev/null 2>&1 || return 0
+  parent="${sock%/*}"
+  [ -n "$parent" ] || parent=/
+  if [ ! -e "$sock" ] && [ ! -L "$sock" ]; then
+    if [ ! -d "$parent" ]; then
+      ROOST_RECORD_LIVENESS=gone
+    elif [ -x "$parent" ]; then
+      ROOST_RECORD_LIVENESS=gone
+    fi
+    return 0
+  fi
+  [ -S "$sock" ] || return 0
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/roost-live.XXXXXX" 2>/dev/null)" || return 0
+  tmux -S "$sock" display-message -p -t "$3" '#{start_time}-#{pid} #{pane_id}' \
+    > "$tmpd/out" 2> "$tmpd/err" &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -gt 40 ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rm -rf "$tmpd"
+      return 0
+    fi
+    sleep 0.05
+  done
+  rc=0
+  wait "$pid" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    IFS= read -r out < "$tmpd/out" || true
+    if [ "$out" = "$2 $3" ]; then
+      ROOST_RECORD_LIVENESS=live
+    else
+      ROOST_RECORD_LIVENESS=gone
+    fi
+  else
+    case "$(cat "$tmpd/err" 2>/dev/null)" in
+      "no server running on"*) ROOST_RECORD_LIVENESS=gone ;;
+    esac
+  fi
+  rm -rf "$tmpd"
+  return 0
+}
+
+# roost_record_is_record DIR -> 0 when DIR is a pane record roost wrote: its
+# name is a pane number, its parent's name is a boot key, and it holds a
+# `schema` file — the first thing a writer creates, and the one file every
+# record has. Anything that deletes checks this, so a directory that merely has
+# the right SHAPE under the root is left alone, even one holding a `replies/`
+# (review round 1 reproduced all three delete paths removing such directories).
+# A record whose schema file was lost is not removed by any `forget` form; its
+# directory is the user's to delete.
+roost_record_is_record() {
+  local dir="$1" n boot
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  n="${dir##*/}"
+  boot="${dir%/*}"; boot="${boot##*/}"
+  roost_record_pane_dir "$boot" "%$n" || return 1
+  [ "$ROOST_RECORD_PANE_DIR" = "$dir" ] || return 1
+  [ -f "$dir/schema" ] && [ ! -L "$dir/schema" ]
 }
 
 # roost_record__socket DIR -> ROOST_RECORD_SOCKET_SEEN, the recorded socket path.
@@ -255,6 +348,14 @@ roost_record_append() {
   # 0700 on the two directories this creates: a record holds what an agent
   # said. mktemp already makes every file 0600, and a hard link keeps it.
   if [ ! -d "$dir" ]; then
+    # The root is made 0700 only when this creates it — a ROOST_RECORD_DIR the
+    # user made keeps the mode they gave it. Its parents (…/state/roost is
+    # shared with extension state) are not touched. Review round 1 found the
+    # first version left the root 0755, so any local user could list boot keys.
+    if [ ! -d "$ROOST_RECORD_ROOT" ]; then
+      mkdir -p "$ROOST_RECORD_ROOT" 2>/dev/null || return 1
+      chmod 700 "$ROOST_RECORD_ROOT" 2>/dev/null || true
+    fi
     mkdir -p "${dir%/*}" 2>/dev/null || return 1
     chmod 700 "${dir%/*}" 2>/dev/null || true
     if mkdir -m 700 "$dir" 2>/dev/null; then
@@ -287,7 +388,10 @@ roost_record_append() {
   # other's file — the design prototype hung on exactly that. bash 3.2 has no
   # BASHPID to use instead.
   tmp="$(mktemp "$dir/replies/.tmp.XXXXXX" 2>/dev/null)" || return 1
-  if ! printf '%s' "$text" > "$tmp"; then
+  # The braces carry the 2>/dev/null to the redirection itself: a temp file
+  # removed under a writer (a racing `forget`) otherwise prints bash's own
+  # "No such file or directory" from inside the hook (review round 1).
+  if ! { printf '%s' "$text" > "$tmp"; } 2>/dev/null; then
     rm -f "$tmp"
     return 1
   fi
@@ -295,8 +399,23 @@ roost_record_append() {
   roost_record_scan "$dir/replies"
   n=$((ROOST_RECORD_MAX + 1))
   while :; do
+    # Past 15 digits every reader skips the name (roost_record_scan), so a turn
+    # written there could never be read, counted or pruned. Refuse instead.
+    if [ "${#n}" -gt 15 ]; then
+      rm -f "$tmp"
+      return 1
+    fi
     roost_record_turn_file "$dir" "$n"
     f="$ROOST_RECORD_FILE"
+    # A name that is already there and is not a turn roost can read — a
+    # directory, a symlink (dangling or not) — is stepped past BEFORE ln sees
+    # it. `ln TMP DIR` links INTO a directory and exits 0, so the first version
+    # reported the same turn number forever and, through a symlink, wrote the
+    # reply outside the record root (review round 1, reproduced).
+    if [ -e "$f" ] || [ -L "$f" ]; then
+      n=$((n + 1))
+      continue
+    fi
     if ln "$tmp" "$f" 2>/dev/null; then
       break
     fi
@@ -305,7 +424,7 @@ roost_record_append() {
     # links, and a loop that retried on those never ends — the prototype's
     # second hang. Every retry steps past a name that is really there, so the
     # loop ends: there are only so many.
-    if [ ! -e "$f" ]; then
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
       rm -f "$tmp"
       return 1
     fi
@@ -345,8 +464,12 @@ roost_record_prune() {
 #
 # Run only when a NEW pane record is created — once per pane, never once per
 # turn — so the find(1) fork is not on every Stop. replies/ is what is dated,
-# because linking a turn changes its mtime and not the pane directory's. A live
-# pane is never swept, however long ago it last replied.
+# because linking a turn changes its mtime and not the pane directory's. Only a
+# record roost_record_liveness calls gone is removed: a live pane is never swept,
+# however long ago it last replied, and neither is one that cannot be checked.
+# The check is bounded at 2 seconds per candidate, and candidates are only
+# records older than ROOST_RECORD_DAYS, so a wedged server costs a new pane's
+# first turn at most that.
 #
 # find's -mindepth, -maxdepth and -mtime exist in BSD, GNU and busybox find.
 roost_record_sweep() {
@@ -359,12 +482,12 @@ roost_record_sweep() {
     boot="${bootdir##*/}"
     n="${pane##*/}"
     case "$n" in ''|*[!0-9]*) continue ;; esac
-    roost_record_pane_dir "$boot" "%$n" || continue
-    [ "$ROOST_RECORD_PANE_DIR" = "$pane" ] || continue
+    roost_record_is_record "$pane" || continue
     roost_record__socket "$pane" || true
-    if roost_record_live "$ROOST_RECORD_SOCKET_SEEN" "$boot" "%$n"; then
-      continue
-    fi
+    # Only a record known to be gone. A live one is kept however old; one that
+    # cannot be checked is kept too, and `roost forget --gone` names it.
+    roost_record_liveness "$ROOST_RECORD_SOCKET_SEEN" "$boot" "%$n"
+    [ "$ROOST_RECORD_LIVENESS" = gone ] || continue
     rm -rf "$pane"
     rmdir "$bootdir" 2>/dev/null || true
   done < <(find "$ROOST_RECORD_ROOT" -mindepth 3 -maxdepth 3 -type d -name replies \
@@ -392,15 +515,21 @@ roost_record_read() {
 #
 #   - REPLY equals the file (trailing newlines aside), so printing the file is
 #     printing the same bytes; or
-#   - REPLY is what roost_reply_encode makes of a long reply — a head, a
-#     newline, and `[roost: reply truncated — M of N bytes]` — and N is the
-#     file's byte count and the head is a prefix of the file.
+#   - REPLY is EXACTLY what roost_reply_encode makes of the file's bytes: the
+#     same head, cut back to the same newline, and the same
+#     `[roost: reply truncated — M of N bytes]` marker.
 #
-# Anything else, including a value tmux 3.4/3.5a rewrote on the way in, keeps
-# the pane value: today's output. Byte lengths and slices under LC_ALL=C, the
-# reply channel's own rule.
+# The second is checked by re-encoding the file with the M the marker names and
+# comparing the whole value. The first version checked only N and that the head
+# was a prefix, so a pane value with a shorter head, or a marker whose M did not
+# match its head, still let the file through (review round 1, reproduced). M is
+# taken from the marker rather than from this process's ROOST_REPLY_MAX: a
+# writer with a different cap produced a head that is still exactly that file's.
+#
+# Anything else, including a value tmux rewrote on the way in, keeps the pane
+# value: today's output. Byte lengths under LC_ALL=C, the reply channel's rule.
 roost_record_match() {
-  local LC_ALL=C reply="$1" tail n head
+  local LC_ALL=C reply="$1" tail m ROOST_REPLY_MAX
   ROOST_RECORD_TEXT=""
   roost_record_read "$2" || return 1
   if [ "$reply" = "$ROOST_RECORD_TEXT" ]; then
@@ -411,11 +540,14 @@ roost_record_match() {
     "[roost: reply truncated — "*" of "*" bytes]") ;;
     *) return 1 ;;
   esac
-  n="${tail##* of }"
-  n="${n% bytes]}"
-  case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$n" = "${#ROOST_RECORD_RAW}" ] || return 1
-  head="${reply%$'\n'*}"
-  [ "${ROOST_RECORD_RAW:0:${#head}}" = "$head" ] || return 1
+  m="${tail#\[roost: reply truncated — }"
+  m="${m%% of *}"
+  case "$m" in ''|*[!0-9]*|0*) return 1 ;; esac
+  [ "${#m}" -le 9 ] || return 1
+  if ! command -v roost_reply_encode >/dev/null 2>&1; then
+    . "${BASH_SOURCE[0]%/*}/roost-reply.sh" 2>/dev/null || return 1
+  fi
+  ROOST_REPLY_MAX="$m"
+  [ "$(roost_reply_encode "$ROOST_RECORD_RAW")" = "$reply" ] || return 1
   return 0
 }
