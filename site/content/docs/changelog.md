@@ -14,6 +14,62 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0]
+
+An agent's replies are now kept on disk, one file per turn. A long reply is no
+longer cut short, an older turn can be read back, and a pane you closed still
+has its last answer. Nothing you already do changes: the pane is still the truth,
+and `roost read` on a pane with nothing kept prints exactly what it printed
+before.
+
+### Added
+
+- **Every reply is kept whole** (#74, #42). Each turn is written to
+  `${XDG_STATE_HOME:-~/.local/state}/roost/panes/`, beside the pane option roost
+  already set. A reply longer than the 12 KB pane limit now reads back in full
+  instead of being cut off without saying so.
+- **`roost read --turn N`** reads one earlier turn. `N` counts from the first
+  turn; `-N` counts back from the newest, so `-1` is the newest. The last **100**
+  turns per pane are kept (`ROOST_RECORD_KEEP`).
+- **A closed pane still answers.** `roost read %N` prints that pane's last reply,
+  with a note saying the pane is gone. It works by pane id, on the same server
+  boot that wrote it.
+- **`roost forget`** deletes kept replies: `roost forget TGT` for one pane,
+  `--gone` for every pane that is closed or whose server has stopped, `--all`
+  for all of them. A closed pane's replies also delete themselves **30 days**
+  after its last one (`ROOST_RECORD_DAYS`).
+- **`--json` gained `turn` and `source`** on `roost read`, so a program can tell
+  which turn it got and whether it came from the kept file or the pane. Existing
+  fields are unchanged.
+
+### Changed
+
+- `roost read` prints a kept file **only when the pane agrees with it**. If they
+  differ, the pane wins and you get today's output. Nothing kept on disk can
+  override what the live pane says.
+- Files roost writes are private to you: directories `0700`, files `0600`.
+
+### How to turn it off
+
+Set `ROOST_RECORD_DIR=""` and nothing is kept. Set it to a path to keep records
+somewhere else. Everything lives under one directory you can delete in one
+command.
+
+### Known limits
+
+Full list in `docs/known-gaps.md`. None of them reports a wrong reply as right —
+where a limit bites, you get today's behaviour.
+
+- A reply of **131,072 bytes or more** from opencode, pi or copilot is lost
+  before roost runs, because Linux refuses an argument that long. The largest
+  real reply measured was 24,675 bytes.
+- Trailing newlines and NUL bytes are still dropped, as before.
+- On tmux 3.4 and 3.5a, and on any tmux with no UTF-8 locale, tmux rewrites some
+  bytes in the pane value. The pane then disagrees with the file, so `read`
+  prints the pane value — capped, as before. `--turn N` and a closed pane read
+  the file, so those still come back whole.
+- A filesystem with no hard links keeps nothing.
+
 ## [0.4.1]
 
 ### Fixed
