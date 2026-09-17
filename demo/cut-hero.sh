@@ -48,7 +48,7 @@ graph+="${labels}concat=n=${i}:v=1:a=0,fps=15,scale=1440:-2[v]"
 mkdir -p "$OUT"
 # 1440 wide and 15 fps: the clip is mostly still text and is shown about 1070
 # wide, so this roughly halves the size with no visible loss. Measured on the
-# 2026-09-16 take: 648 KB at 1800/25fps, 320 KB as WebM and 444 KB as MP4 here.
+# 2026-09-16 take: 648 KB at 1800/25fps, 303 KB as WebM and 382 KB as MP4 here.
 # gzip is no help -- video is already compressed (3-4% on these files).
 ffmpeg -y -loglevel error -i "$SRC" -filter_complex "$graph" -map "[v]" -an \
   -c:v libvpx-vp9 -crf 40 -b:v 0 -row-mt 1 "$OUT/flock-hero.webm"
@@ -59,5 +59,6 @@ ffmpeg -y -loglevel error -i "$SRC" -filter_complex "$graph" -map "[v]" -an \
 ffmpeg -y -loglevel error -sseof -0.5 -i "$OUT/flock-hero.mp4" -frames:v 1 -q:v 4 "$OUT/flock-hero-poster.jpg"
 
 for f in "$OUT"/flock-hero.webm "$OUT"/flock-hero.mp4 "$OUT"/flock-hero-poster.jpg; do
-  printf '%-40s %s\n' "$f" "$(du -h "$f" | cut -f1)"
+  # wc -c, not du: du counts disk blocks and overstated these by up to 16%.
+  printf '%-40s %4d KB\n' "$f" "$(( $(wc -c < "$f") / 1024 ))"
 done

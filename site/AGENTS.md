@@ -125,24 +125,41 @@ browser actually downloads, not the TTF. JetBrains Mono looks like the obvious
 pick and is 63KB for the same two weights, because Google serves it as a
 variable font.
 
-## The landing-page hero is recorded, not screenshotted
+## The landing-page hero is a recording of live agents
 
-`public/roost-hero.png` comes out of [vhs](https://github.com/charmbracelet/vhs),
-from two files at the repository root:
+`public/demo/flock-hero.{webm,mp4}` and its poster are fifteen seconds cut from
+a [vhs](https://github.com/charmbracelet/vhs) recording of a real review flock:
+Claude Code leads, and Claude on Sonnet, Codex and opencode review its plan in
+parallel roost windows. Rebuild it from the repository root:
 
 ```sh
-./demo/seed-fleet.sh          # a throwaway roost server with a real fleet on it
-vhs demo/roost-hero.tape      # writes demo/roost-hero.{png,gif} and roost-agent.png
-cp demo/roost-hero.png site/public/roost-hero.png
+./demo/record.sh flock        # ~7 minutes of live agents -> demo/flock.mp4
+./demo/cut-hero.sh --sheet    # one frame per second, to find the four moments
+./demo/cut-hero.sh            # -> site/public/demo/flock-hero.* and the poster
 ```
 
-Both files carry the reasons for what look like odd choices in them — the socket
-path that has to end in `/roost`, the Nerd Font, the blanked Claude status line,
-the three turns. Read them before changing either.
+Live agents never take the same time twice, so after a new take, pick the four
+cuts again from the contact sheet and update `SEGMENTS` in `demo/cut-hero.sh`.
+Never hand-edit the video or the poster: the point of the scripts is that the
+hero can be rebuilt when roost's status line or switcher changes.
 
-Re-record rather than edit the PNG. The point of the tape is that the hero can
-be rebuilt when the status line or the switcher changes, and a hand-touched
-image quietly ends that.
+**Always record through `demo/record.sh`, never `vhs` directly.** It is where
+the privacy and isolation rules live, and each exists because the thing it
+prevents happened while building this:
+
+- It re-runs itself under `env -i`. A recording started from inside roost or
+  inside an agent otherwise hands its session variables to the demo agents.
+- Everything runs under `/tmp` on a throwaway roost server, with its own
+  `XDG_CONFIG_HOME` (or roost writes wiring into your real config) and its own
+  zsh config (or your shell history is suggested on camera).
+- Wrappers on `PATH` give every agent the demo flags, so no flag or home path is
+  ever typed where a frame can see it.
+- It refuses to finish if any pane's history shows the home path, the username
+  or an email address.
+
+`demo/lib.sh` explains each in place. `demo/first-run.tape` (a shorter,
+single-agent recording) and `demo/roost-hero.tape` (a still of a staged fleet)
+use the same machinery and are not on the site today.
 
 ## Rules
 

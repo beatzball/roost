@@ -98,3 +98,42 @@ test('headings, code and chrome are Fira Mono; prose is not', async ({ page }) =
   }
   await expectFont('p', 'ui-sans-serif', 'docs prose');
 });
+
+// The hero recording. What must stay true: the page load fetches no video
+// (preload="none", no autoplay attribute -- playback starts from script), a
+// visitor with reduced motion keeps the still poster, and everyone else gets
+// a recording that actually plays. The reduced-motion case and the playing
+// case are each other's control: a video that never plays would pass the first
+// and fail the second.
+test('hero recording loads nothing up front, stays still under reduced motion, plays otherwise', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+
+  for (const path of ['/demo/flock-hero.webm', '/demo/flock-hero.mp4', '/demo/flock-hero-poster.jpg']) {
+    expect((await request.get(path)).status(), `Expected 200 for ${path}`).toBe(200);
+  }
+
+  const video = page.locator('.hero-video');
+  const state = () =>
+    video
+      .evaluate((v: HTMLVideoElement) => ({ paused: v.paused, t: v.currentTime }), undefined, { timeout: 2_000 })
+      .catch(() => ({ paused: true, t: -1 }));
+
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/');
+  await expect(video).toHaveAttribute('preload', 'none');
+  expect(await video.getAttribute('autoplay'), 'no autoplay attribute').toBeNull();
+  await page.waitForTimeout(3_000);
+  expect(await state(), 'reduced motion: still on the poster').toMatchObject({ paused: true, t: 0 });
+
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goto('/');
+  await expect
+    .poll(async () => {
+      const s = await state();
+      return !s.paused && s.t > 0;
+    }, { message: 'playing, with time advancing', timeout: 30_000 })
+    .toBe(true);
+});
