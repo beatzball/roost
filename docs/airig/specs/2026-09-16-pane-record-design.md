@@ -638,11 +638,14 @@ built. The doctor line is left for a follow-up; the bounds are documented in
 |---|---|---|
 | `roost forget TGT` | that pane's record (live or gone, `%N` on this boot) | `roost forget: removed the record for '%5' (12 turns, 31 KB)`; no record: `roost forget: no record for '%5'.`, exit 1 |
 | `roost forget --gone` | every record whose liveness check fails, on every boot | `roost forget: removed <boot>/<N> (K turns)` per record, then `roost forget: removed R records, kept L live.` |
-| `roost forget --all` | every directory under the root shaped like a boot key, then the root if it is empty | `roost forget: removed N records under <root>` |
+| `roost forget --all` | every record under the root (`roost_record_is_record`: a pane-number directory under a boot-key directory, holding a `schema` file), then any boot directory and the root if they are left empty | `roost forget: removed N records under <root>` |
 
-**Changed while building:** `--all` removes only boot-key-shaped directories,
-not the whole root. A `ROOST_RECORD_DIR` pointed at the wrong directory by
-mistake then loses nothing roost did not write. No argument, or an unknown
+**Changed while building, and again in review round 1:** `--all` does not
+remove the whole root. The build removed boot-key-shaped directories; review
+round 1 showed that still deleted directories roost never wrote, so every form
+of `forget` now removes only what `roost_record_is_record` recognises (see
+Liveness). A `ROOST_RECORD_DIR` pointed at the wrong directory by mistake then
+loses nothing that is not a record. No argument, or an unknown
 flag: `usage: roost forget TGT | --gone | --all`, exit 1.
 
 `forget` never touches a pane option: the pane stays the truth, and its current

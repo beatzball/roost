@@ -2113,7 +2113,7 @@ JSON
     #
     # Every form removes only what roost_record_is_record recognises: a
     # pane-number directory under a boot-key directory, holding the `schema`
-    # file a writer creates first. A directory of the right shape with neither is
+    # file a writer creates first. A directory of the right shape without one is
     # left alone, and so is anything else under a ROOST_RECORD_DIR pointed
     # somewhere by mistake. What a user put INSIDE a record goes with it.
     . "$ROOST_HOME/scripts/lib/roost-record.sh"
