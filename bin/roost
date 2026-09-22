@@ -24,7 +24,8 @@
 #   roost forget TGT | --gone | --all
 #                            delete kept replies: one pane's, every pane's that is closed or on a server that has stopped, or all of them. They live in ${XDG_STATE_HOME:-~/.local/state}/roost/panes (ROOST_RECORD_DIR overrides; set it to "" to keep none), and a closed pane's are deleted on their own 30 days after its last reply (ROOST_RECORD_DAYS)
 #   roost screen [--json] TGT [N]  print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
-#   roost reply TEXT...      record TEXT as this pane's reply, for another agent's `roost read`
+#   roost reply TEXT... | roost reply -
+#                            record this pane's reply, for another agent's `roost read`. TEXT... is read from the command line; `-` (or `--stdin`, or no argument at all) reads the reply from STDIN instead. Use stdin for a reply of more than a few KB, and for any reply built from a file: Linux refuses a single argument of 131072 bytes or more, so the command-line form loses a long reply outright
 #   roost wait-done TGT [T]  block until TGT (a %N pane, or every agent pane in a window) is done/idle
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
 #   roost state STATE [--json]  report this pane's agent state (working|blocked|done|error|idle); --json then says whether it landed
@@ -1771,10 +1772,30 @@ JSON
     # `roost state` already tells a harness with no adapter — badge yourself,
     # and post your reply.
     #
-    # Text comes from argv, never stdin. `roost reply` is a documented public
-    # command a human can type, and an unconditional stdin read would block
-    # forever on a terminal. The Claude hook path reads stdin instead, but only
-    # behind an explicit flag — see scripts/roost-agent-state.
+    # TEXT COMES FROM ARGV OR FROM STDIN, and which one is decided below, after
+    # the guards. It used to be argv and never stdin, because `roost reply` is a
+    # documented public command a human can type and an unconditional stdin read
+    # would block forever on a terminal. The Claude hook path has always read
+    # stdin instead, but only behind an explicit flag — see
+    # scripts/roost-agent-state.
+    #
+    # That cost a bug (#86). Linux caps a SINGLE argument at 131072 bytes
+    # (MAX_ARG_STRLEN), separately from the far larger ARG_MAX total, so an
+    # adapter publishing a long turn as `execFile("roost", ["reply", text])`
+    # fails at exec: roost never runs, nothing is recorded, and a sibling's
+    # `roost read` scrapes the screen instead. Measured in ubuntu:24.04, kernel
+    # 6.11.11 aarch64, `getconf ARG_MAX` 2097152 — a 131071-byte argument exits
+    # 0 and a 131072-byte one exits 126 with "Argument list too long".
+    #
+    # macOS has no per-argument cap at all: only the ARG_MAX total applies.
+    # Measured on Darwin 25.3.0 arm64, `getconf ARG_MAX` 1048576, by binary
+    # search: 1041390 bytes accepted, 1041391 refused, the difference being the
+    # caller's own environment. So `roost reply <200 KB>` is fine here and dies
+    # on the CI image, which is exactly why this was not found by running it.
+    #
+    # Stdin has neither limit. That is the same reasoning `send` already uses
+    # when it loads its message into a tmux buffer over stdin rather than
+    # putting it on a command line — see the transport comment there.
     [ -n "${TMUX:-}" ] || exit 0
     [ -n "${TMUX_PANE:-}" ] || exit 0
     # Silent no-op unless the caller is a pane on THIS server — same contract as
@@ -1803,6 +1824,57 @@ JSON
     our="$(t display-message -p '#{pid} #{start_time}' 2>/dev/null || true)"
     our_pid="${our%% *}"
     [ -n "$our_pid" ] && [ "$caller_pid" = "$our_pid" ] || exit 0
+
+    # Now resolve the text, AFTER the guards. Order matters: a `roost reply`
+    # that is not in a pane on this server is a silent no-op by contract — an
+    # adapter is safe to leave installed when its agent runs somewhere else —
+    # and reaching a `cat` before those guards would turn that no-op into a
+    # wait on a stdin nobody is going to close. The cost is that a caller
+    # piping into a roost that no-ops sees EPIPE rather than a drained pipe;
+    # that is the cheaper failure, because it is loud and it is not a hang.
+    #
+    # Stdin is read when the first argument is `-` or `--stdin`, or when there
+    # is no argument at all. Three spellings rather than one because an adapter
+    # with a stream and no argv to build reaches for the bare form, and a shell
+    # caller reaches for `-`.
+    #
+    # Only the FIRST argument, and only exactly those two spellings. A reply
+    # that merely begins with a dash ("-- not a flag") is text. A reply that is
+    # literally "-" has to arrive on stdin, the same convention every other
+    # tool with a `-` argument keeps.
+    #
+    # The tty check is what keeps the old promise. A human who types `roost
+    # reply` and presses Enter gets the silent no-op they got before, not a
+    # `cat` waiting for ^D. Typing `-` or `--stdin` at a terminal is a
+    # different mistake — that caller asked for stdin in so many words — so it
+    # is refused out loud instead of quietly recording nothing.
+    #
+    # What is NOT covered: a bare `roost reply`, inside a roost pane, whose
+    # stdin is an open pipe nobody ever closes, waits. There is no check that
+    # tells that apart from a slow writer. Pass the text as an argument, or
+    # close the pipe.
+    reply_src=argv
+    if [ "$#" -eq 0 ]; then
+      reply_src=implicit
+    else
+      case "$1" in
+        -|--stdin) reply_src=flag; shift ;;
+      esac
+    fi
+    if [ "$reply_src" = argv ]; then
+      reply_text="$*"
+    else
+      if [ "$reply_src" = flag ] && [ "$#" -gt 0 ]; then
+        echo "usage: roost reply - < FILE   (with - or --stdin the reply is read from stdin, so no other argument is taken)" >&2; exit 2
+      fi
+      if [ ! -t 0 ]; then
+        reply_text="$(cat 2>/dev/null || true)"
+      elif [ "$reply_src" = flag ]; then
+        echo "roost reply: - and --stdin read the reply from stdin, and stdin here is a terminal. Pipe the text in, or pass it as an argument." >&2; exit 2
+      else
+        reply_text=""
+      fi
+    fi
     . "$ROOST_HOME/scripts/lib/roost-reply.sh"
     # The durable copy (#42), before the pane option — the Stop hook in
     # scripts/roost-agent-state does the same, and its comment says why. An
@@ -1814,20 +1886,20 @@ JSON
     . "$ROOST_HOME/scripts/lib/roost-record.sh"
     turn=""
     roost_record_root
-    if [ -n "$*" ] && [ -n "$ROOST_RECORD_ROOT" ] \
+    if [ -n "$reply_text" ] && [ -n "$ROOST_RECORD_ROOT" ] \
        && roost_record_pane_dir "${our#* }-$our_pid" "$TMUX_PANE" \
-       && roost_record_append "$ROOST_RECORD_PANE_DIR" "${TMUX%%,*}" "$*"; then
+       && roost_record_append "$ROOST_RECORD_PANE_DIR" "${TMUX%%,*}" "$reply_text"; then
       turn="$ROOST_RECORD_TURN"
     fi
     # One tmux command for both options and the read-back of what tmux stored,
     # kept as the turn's .pane sidecar — for the reasons given at the Stop hook.
     if [ -n "$turn" ]; then
-      stored="$(t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" \; \
+      stored="$(t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$reply_text")" \; \
         set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
         show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
       roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
     else
-      t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$*")" 2>/dev/null || true
+      t set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$reply_text")" 2>/dev/null || true
     fi
     ;;
   wait-done|wait)
