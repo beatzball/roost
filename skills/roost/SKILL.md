@@ -49,7 +49,8 @@ alone. See `AGENTS.md`; in particular, never run `tmux kill-server` without
 
 If you are going to PARSE the output, do not parse that text — it is for people
 and its wording can change. Pass `--json` instead: `roost status --json`,
-`roost whoami --json`, `roost read --json TARGET`, `roost screen --json TARGET`.
+`roost whoami --json`, `roost read --json TARGET`, `roost screen --json TARGET`,
+`roost send --json TARGET "text"`.
 Each prints one JSON document with `"schema": 1`; failures print nothing on
 stdout and keep their exit status. The fields are documented on the "Driving a
 Fleet" docs page.
@@ -76,9 +77,9 @@ a shell command, a log tail, or a pager is not an agent and never shows a state.
 ```sh
 me="$(roost whoami)"
 helper="$(roost spawn claude)"        # a co-agent in its own window → its %N
-roost send "$helper" "[from $me] review the diff and reply with issues"
-roost wait-done "$helper" 120
-roost read "$helper"                  # its actual reply
+turn="$(roost send "$helper" "[from $me] review the diff and reply with issues")"
+roost wait-done --turn "$turn" "$helper" 120
+roost read --turn "$turn" "$helper"   # its reply to THAT prompt
 ```
 
 `roost spawn NAME [CMD]` creates a window WITHOUT attaching and prints its
@@ -87,9 +88,27 @@ are real and cost tokens — only spawn what you need.
 
 ## Message an agent
 
-`roost send TARGET "text"` pastes the text and submits it reliably. Until roost
-adds sender attribution, prefix who you are so the receiver can reply (as
-above). Exit codes tell you WHAT to do next, so branch on `$?`:
+`roost send TARGET "text"` pastes the text, submits it, and then waits briefly
+for the target to actually BEGIN a turn. Until roost adds sender attribution,
+prefix who you are so the receiver can reply (as above).
+
+On an agent that was idle or finished, `send` prints the number of the turn your
+prompt started, and nothing else, on stdout:
+
+```sh
+turn="$(roost send "$helper" "[from $me] review the diff")"
+```
+
+Capture it. `wait-done --turn` and `read --turn` below use it to tie the wait and
+the reply to *your* prompt rather than to whatever the agent last said.
+
+**An empty capture is normal and means "you cannot use `--turn` here".** There is
+no turn number when the target is not an agent (a shell, a log tail, a pager —
+these have no badge and are not waited for either), when it was already mid-turn
+when you sent, or when its replies are not being recorded. Fall back to plain
+`wait-done` and `read` in that case.
+
+Exit codes tell you WHAT to do next, so branch on `$?`:
 
 - **exit 3** — the target's badge says BLOCKED: a permission dialog is open on
   it. Your text would be pasted into that dialog and the Enter would activate
@@ -122,14 +141,41 @@ above). Exit codes tell you WHAT to do next, so branch on `$?`:
   missing TARGET/TEXT argument also exits 1, but with a `usage:` message
   instead of a `roost send:` one — that's a caller bug, not a delivery
   failure; fix the call instead of retrying.
-- **exit 0** — delivered and submitted. Nothing to do.
+- **exit 4** — submitted, but the target never started a turn. **Your text WAS
+  delivered, so do NOT send it again** — that is the whole reason this is not
+  exit 1. The agent took the prompt and its badge never moved. `roost screen
+  TARGET 20` to see what it is showing, and tell the human if it is wedged.
+- **exit 0** — delivered, submitted, and a new turn began. Nothing to do.
 
 ## Wait for the reply, then read it
+
+When `send` gave you a turn number, use it. This is the only form that can
+*prove* the answer you get back is the answer to the prompt you sent:
+
+```sh
+turn="$(roost send "$helper" "[from $me] review the diff")"
+roost wait-done --turn "$turn" "$helper" 120
+roost read --turn "$turn" "$helper"
+```
+
+Without it, you are asking two questions that the PREVIOUS turn can answer:
 
 ```sh
 roost wait-done "$helper" 120     # block until $helper is done/idle (120s timeout)
 roost read "$helper"              # print the reply it just gave
 ```
+
+`wait-done` counts only `working` and `blocked` as busy, so an agent that has
+not yet stamped itself busy still reads `done` from its last turn and this
+returns at once — with the last turn's reply. `send` now waits for the turn to
+begin, which closes that gap for a healthy agent; `--turn` is what makes it
+provable rather than likely. Use `--turn` whenever you have a number, and
+especially when the reply will decide something.
+
+`--turn` needs a `%N` pane (turns are numbered per pane, so a window target has
+no single numbering) and needs the target's replies to be recorded. If either is
+missing, `wait-done --turn` says so and exits 1 rather than waiting for a turn
+that can never arrive.
 
 `roost read` returns **what the agent said**, not a screenshot of its terminal.
 Each agent records its last message on its own pane as the turn ends, and `read`
@@ -315,18 +361,20 @@ instead of your answer.
 
 1. `roost whoami` — confirm you're in roost and learn your address.
 2. `roost status` — find a target, or `roost spawn`/`roost split` a helper.
-3. `roost send TARGET "[from <you>] <task>"`.
-4. `roost wait-done TARGET [timeout]` — pane-precise on a `%N`, aggregates
-   the window's agent panes otherwise. Exits 0 when done; exits 1 on error
+3. `turn="$(roost send TARGET "[from <you>] <task>")"` — keep what it prints.
+   Exit 4 means the text landed but no turn began: do not resend it.
+4. `roost wait-done [--turn "$turn"] TARGET [timeout]` — pane-precise on a
+   `%N`, aggregates the window's agent panes otherwise. Pass `--turn` whenever
+   step 3 gave you a number. Exits 0 when done; exits 1 on error
    or timeout — check the message to know which; exits 2 when the agent
    died (its pane closed or its process exited mid-turn) or the target was
    already gone — re-resolve or respawn rather than waiting again. An
    already-gone target may have finished first: roost cannot tell. An agent
    you started from a shell prompt inside a pane is not caught when it dies;
    that still times out with exit 1.
-5. `roost read TARGET` — collect the result. If it warns that it fell back to
-   the screen, you did **not** get a reply; report that rather than guessing at
-   what came back.
+5. `roost read [--turn "$turn"] TARGET` — collect the result. If it warns that
+   it fell back to the screen, you did **not** get a reply; report that rather
+   than guessing at what came back.
 
 Send **one** prompt at a time, then wait — don't fire a second before the first
 completes. Don't message yourself. Don't spam.

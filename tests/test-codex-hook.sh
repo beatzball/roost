@@ -465,8 +465,17 @@ assert_eq "$(pstate "$ip")" "idle" "Interrupt after a declined dialog leaves blo
 assert_eq "$(preply "$ip")" "" "...and clears the previous turn's reply, which is not this turn's"
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$ip" @roost-error-reason)" "" \
   "...and is not an error: no reason is recorded"
+# What this pins is that the send is no longer REFUSED: before the Interrupt the
+# badge read `blocked` and `send` exited 3 having delivered nothing. It is now
+# `idle`, which is one of the two states #92 makes `send` watch for a new turn,
+# and this pane is a bare split that will never stamp one -- so it reports exit
+# 4, "submitted, but no turn started". The text still reaches the pane, which is
+# the fact this line has always been about. The bound is shortened so proving it
+# costs a second rather than ten.
+tmux -S "$s" set-option -g @roost-send-turn-timeout 1
 ROOST_SOCKET="$s" "$HERE/bin/roost" send "$ip" "true" >/dev/null 2>&1
-assert_eq "$?" "0" "send reaches the pane once Interrupt has fired"
+assert_eq "$?" "4" "send reaches the pane once Interrupt has fired (delivered; no turn to start)"
+tmux -S "$s" set-option -gu @roost-send-turn-timeout 2>/dev/null || true
 
 # An interrupt while the model is still streaming, with no dialog: the same
 # event, the same answer. Measured with no Stop after it.
