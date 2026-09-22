@@ -73,8 +73,19 @@ variable from the client into the session when it attaches, and removes it
 again when a local client attaches, so the answer follows you: attach from your
 laptop and the notification comes to your laptop's terminal.
 
+The question is asked **per client**, and only tmux's own view of that client
+counts. If you have two clients attached — one over SSH, one at the machine —
+the remote one is notified and the local one is not. Whether *roost itself* is
+running under SSH is deliberately ignored: a pane keeps `SSH_CONNECTION` for
+its whole life once the server was started over SSH, long after you have walked
+back to the machine.
+
 A local client is left alone by default because your desktop notifier already
 works there, and two banners for one blocked agent is worse than one.
+
+A client attached in control mode (`tmux -CC`, how some terminals integrate
+with tmux) is never written to. Its connection carries tmux's own protocol
+rather than a screen, and escape sequences pushed into it are read as protocol.
 
 roost writes to the tty of the attached **client**, which is the far end of the
 SSH connection, not to the agent's pane. Writing to the pane would mean asking
@@ -106,11 +117,17 @@ A terminal that does not understand a sequence prints nothing: it swallows the
 whole string. Some terminals need their own setting turned on first — Ghostty
 calls it `desktop-notifications` and has it on by default.
 
-If client discovery cannot see the right terminal, name the tty yourself:
+If client discovery cannot see the right terminal, name the tty yourself. It
+says *where* to write, not *whether* to: on its own it still waits for a remote
+client, so pair it with `on` if you want it unconditional.
 
 ```sh
+set -g @roost-notify-osc     on
 set -g @roost-notify-osc-tty /dev/ttys004
 ```
+
+A terminal that has stopped reading — a sleeping laptop, a dropped link —
+cannot hold anything up: each write is given one second and then abandoned.
 
 Select it as the only backend with `set -g @roost-notify-backend osc`. That
 sends the escape sequence and stops — no desktop notifier, no in-tmux message.

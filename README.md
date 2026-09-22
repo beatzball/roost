@@ -352,9 +352,16 @@ switcher (it degrades to a hint if missing).
   tty, which is the far end of the SSH connection. It has to be the client's tty
   and not the pane's — a pane write would need `allow-passthrough`, and tmux
   passes a sequence through only while that pane is *visible*, which is never
-  true when roost notifies. `tests/test-notify-osc.sh` carries the measurement
-  and the byte-exact expectations; [Notifications](https://roosting.dev/docs/notifications)
-  is the user-facing page.
+  true when roost notifies. Which clients get written to is decided per client
+  from tmux's own view of them — never from the notifier's own environment,
+  which keeps `SSH_CONNECTION` for the life of a pane — and a control-mode
+  (`-CC`) client is skipped, because its connection carries tmux's protocol
+  rather than a screen. Each write is bounded by a watchdog: a terminal that
+  has stopped reading fills its pty and would otherwise block the hook, and
+  the hook is on the agent's turn. `tests/test-notify-osc.sh` carries the
+  measurements and the byte-exact expectations;
+  [Notifications](https://roosting.dev/docs/notifications) is the user-facing
+  page.
 
 ## The extension seam
 
