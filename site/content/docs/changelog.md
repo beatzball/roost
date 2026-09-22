@@ -14,7 +14,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.0]
+
+roost now tells the truth faster and more often. A Claude Code permission
+dialog is badged 🛑 as it opens — 72 ms, not six seconds — so `roost send` can
+never paste into it, and a subagent's dialog, a failing tool after Yes, or a
+background agent's tool result no longer moves or strands the badge.
+`roost send` proves the target began a new turn and hands back its number, so
+`wait-done --turn` and `read --turn` answer the prompt you sent, not the one
+before it. A long reply from an adapter survives Linux by travelling on stdin.
+And when you are attached over SSH, a blocked or errored agent reaches your own
+terminal's notification, with nothing installed on the near side.
+
+Two things to know: `send` into a pane whose `done`/`idle` badge was set by
+hand, or whose agent has exited to a shell, now waits out a bound and exits 4
+rather than 0; and existing installs need `roost install` again (or a server
+restart for roost-owned wiring) to pick up the two new Claude hook entries —
+`roost doctor` says so.
 
 ### Added
 
