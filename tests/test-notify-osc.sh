@@ -85,19 +85,19 @@ T set-option -g @roost-notify-osc on
 
 f="$(mktemp)"; fake_tty "$f"
 notify "roost · api" "blocked"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;roost · api — blocked\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;roost · api — blocked\033\\')" \
   "OSC 9 by default, terminated with ST, byte for byte"
 
 f="$(mktemp)"; fake_tty "$f"
 T set-option -g @roost-notify-osc-codes "9 777"
 notify "T" "M"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;T — M\033\\\033]777;notify;T;M\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;T — M\033\\\033\\\033]777;notify;T;M\033\\')" \
   "codes \"9 777\" emits OSC 9 then OSC 777, both ST-terminated"
 
 f="$(mktemp)"; fake_tty "$f"
 T set-option -g @roost-notify-osc-codes "777"
 notify "T" "M"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]777;notify;T;M\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]777;notify;T;M\033\\')" \
   "codes \"777\" emits the rxvt form only, title and body in their own fields"
 
 # OSC 777's fields are delimited by ";", so a ";" in the title or the body
@@ -107,25 +107,25 @@ assert_eq "$(hexof "$f")" "$(hexpect '\033]777;notify;T;M\033\\')" \
 # text alone would mean showing the wrong text.
 f="$(mktemp)"; fake_tty "$f"
 notify "a;b" "c;d"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]777;notify;a,b;c,d\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]777;notify;a,b;c,d\033\\')" \
   "a semicolon in the title or body cannot shift OSC 777's fields"
 
 f="$(mktemp)"; fake_tty "$f"
 T set-option -g @roost-notify-osc-codes "9"
 notify "a;b" "c;d"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;a;b — c;d\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;a;b — c;d\033\\')" \
   "...and OSC 9, which has no fields to shift, keeps the semicolons"
 
 f="$(mktemp)"; fake_tty "$f"
 T set-option -g @roost-notify-osc-codes "99"
 notify "T" "M"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]99;i=roost:d=0:p=title;T\033\\\033]99;i=roost:d=1:p=body;M\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]99;i=roost:d=0:p=title;T\033\\\033\\\033]99;i=roost:d=1:p=body;M\033\\')" \
   "codes \"99\" emits the kitty two-chunk form, title then body"
 
 f="$(mktemp)"; fake_tty "$f"
 T set-option -g @roost-notify-osc-codes "9 bogus"
 notify "T" "M"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;T — M\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;T — M\033\\')" \
   "an unknown code is ignored rather than written out raw"
 T set-option -gu @roost-notify-osc-codes
 
@@ -136,7 +136,7 @@ T set-option -gu @roost-notify-osc-codes
 # outer terminal byte for byte).
 f="$(mktemp)"; fake_tty "$f"
 notify "$(printf 't\033[31mX')" "$(printf 'a\nb\ac"d\047e é')"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;t [31mX — a b c"d\047e é\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;t [31mX — a b c"d\047e é\033\\')" \
   "ESC, BEL and newline in the payload become spaces; quotes and UTF-8 survive"
 
 # C1 controls (U+0080-U+009F) matter because a lone U+009C can be read as an
@@ -148,7 +148,7 @@ assert_eq "$(hexof "$f")" "$(hexpect '\033]9;t [31mX — a b c"d\047e é\033\\')
 # "a<C2> b<C5> c", destroying both.
 f="$(mktemp)"; fake_tty "$f"
 notify "$(printf 'a\302\233b')" "$(printf '\305\202\302\237z')"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;a b — \0305\0202 z\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;a b — \0305\0202 z\033\\')" \
   "a C1 control becomes a space while a character whose UTF-8 contains 0x82 survives"
 
 # ConEmu's progress-bar sequence is OSC 9;4 — the same OSC 9, told apart only
@@ -156,7 +156,7 @@ assert_eq "$(hexof "$f")" "$(hexpect '\033]9;a b — \0305\0202 z\033\\')" \
 # instead of raising a banner.
 f="$(mktemp)"; fake_tty "$f"
 notify "4;50" "x"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9; 4;50 — x\033\\')" \
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9; 4;50 — x\033\\')" \
   "a payload starting \"4;\" is shifted so OSC 9 cannot read it as progress"
 
 # The OSC backend reaches the human's TERMINAL; every other backend reaches
@@ -167,7 +167,7 @@ cmdout="$(mktemp)"
 T set-option -g @roost-notify-cmd "printf \"%t|%s\" > $cmdout"
 notify "TITLE" "MSG"
 assert_eq "$(cat "$cmdout")" "TITLE|MSG" "@roost-notify-cmd still runs with the OSC backend live"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;TITLE — MSG\033\\')" "and the OSC write happened as well"
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;TITLE — MSG\033\\')" "and the OSC write happened as well"
 T set-option -gu @roost-notify-cmd
 
 # --- the option gates ------------------------------------------------------
@@ -184,7 +184,7 @@ T set-option -g @roost-notify-cmd "printf ran > $cmdout"
 marker="$(mktemp)"
 with_path_shim osascript "$marker" -- with_path_shim notify-send "$marker" -- \
   notify "t" "m"
-assert_eq "$(hexof "$f")" "$(hexpect '\033]9;t — m\033\\')" "backend=osc emits on its own"
+assert_eq "$(hexof "$f")" "$(hexpect '\033\\\033]9;t — m\033\\')" "backend=osc emits on its own"
 assert_eq "$(cat "$cmdout")" "" "backend=osc does not run @roost-notify-cmd"
 assert_eq "$(cat "$marker")" "" "backend=osc invokes no OS notifier"
 assert_eq "$("$NOTIFY" --which)" "osc" "--which reports osc"
@@ -221,6 +221,9 @@ import errno, fcntl, os, pty, subprocess, sys, threading, time
 
 sock, notify, remote = sys.argv[1], sys.argv[2], sys.argv[3]
 WANT = b"\x1b]9;roost \xc2\xb7 api \xe2\x80\x94 blocked\x1b\\"
+# Every sequence is preceded by an ST, which closes any OSC string a
+# previous truncated write left open on that terminal.
+WANT_FULL = b"\x1b\\" + WANT
 
 def tm(*a):
     return subprocess.run(["tmux", "-S", sock, *a], capture_output=True, text=True)
@@ -233,11 +236,45 @@ def clean_env(extra=None):
         e.update(extra)
     return e
 
-def attach(session, control=False, env_extra=None):
-    """A session with one client on a pty we own. Returns (master fd, buffer)."""
-    tm("new-session", "-d", "-s", session, "-x", "80", "-y", "24", "ENV= exec /bin/sh")
+def session_id(name):
+    """The $N id of the session with this exact name, or None."""
+    # A space, not a tab: tmux 3.4 and later rewrite a control character in a
+    # format result to an underscore, and a session id never contains a space.
+    for line in tm("list-sessions", "-F", "#{session_id} #{session_name}").stdout.splitlines():
+        sid, _sep, nm = line.partition(" ")
+        if nm == name:
+            return sid
+    return None
+
+def fill_tty(path, cap=8 * 1024 * 1024):
+    """Fill a tty's buffer so the next write to it blocks. Returns bytes written."""
+    fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+    n = 0
+    try:
+        while n < cap:
+            n += os.write(fd, b"x" * 4096)
+    except OSError as e:
+        if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+            raise
+    finally:
+        os.close(fd)
+    return n
+
+def attach(session, control=False, env_extra=None, create=True, drain=True):
+    """A session with one client on a pty we own. Returns (master fd, buffer).
+
+    drain=False leaves nobody reading the master, which is how a terminal that
+    has stopped listening is modelled: the pty buffer fills and stays full.
+    """
+    if create:
+        tm("new-session", "-d", "-P", "-F", "#{session_id}", "-s", session,
+           "-x", "80", "-y", "24", "ENV= exec /bin/sh")
+    # Attach by session ID. Targeting by NAME is exactly the ambiguity the
+    # dollar_client case below pins: `attach -t '$0'` resolves to the session
+    # whose ID is $0, not to the session NAMED "$0".
+    sid = session_id(session) or session
     master, slave = pty.openpty()
-    args = ["tmux", "-S", sock] + (["-CC"] if control else []) + ["attach", "-t", session]
+    args = ["tmux", "-S", sock] + (["-CC"] if control else []) + ["attach", "-t", sid]
     subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave,
                      start_new_session=True, env=clean_env(env_extra))
     os.close(slave)
@@ -251,7 +288,8 @@ def attach(session, control=False, env_extra=None):
             if not b:
                 return
             buf.extend(b)
-    threading.Thread(target=reader, daemon=True).start()
+    if drain:
+        threading.Thread(target=reader, daemon=True).start()
     # Poll for the client rather than sleeping a fixed time: a sleep decides
     # the result on a slow machine, and the case it decides in favour of is
     # "skipped", which is the one nobody reads.
@@ -271,6 +309,14 @@ def attached(session):
 rem_m, rem_buf = attach("rem", env_extra={"SSH_CONNECTION": remote})
 loc_m, loc_buf = attach("loc")
 cc_m,  cc_buf  = attach("cc", control=True, env_extra={"SSH_CONNECTION": remote})
+# A session whose NAME is another session's ID. tmux resolves a -t target as an
+# ID first — MEASURED: with a session named "$0" beside the session whose id IS
+# $0, `show-environment -t '$0'` reads the latter — so a client judged by
+# session NAME is judged against the wrong session's environment. Here the
+# session named "$0" is LOCAL and session "0" (whose id is $0) is REMOTE: judge
+# by name and the local client is written to.
+dollar_m, dollar_buf = attach("$0")
+zero_m, zero_buf = attach("0", create=False, env_extra={"SSH_CONNECTION": remote})
 
 skips = {}
 if not attached("rem"):
@@ -279,11 +325,13 @@ if not attached("loc"):
     skips["local_client"] = "SKIP no client attached to the local session"
 if not attached("cc"):
     skips["control_client"] = "SKIP no control-mode client attached"
+if not attached("$0") or not attached("0"):
+    skips["dollar_client"] = "SKIP could not attach the $0-named and the 0 session together"
 if tm("show-environment", "-t", "rem", "SSH_CONNECTION").stdout.strip() != "SSH_CONNECTION=" + remote:
     skips["remote_client"] = "SKIP tmux did not copy SSH_CONNECTION from the client"
 # A control-mode client that tmux does not report as one cannot be skipped by
 # the code under test either; say so rather than assert something else.
-cc_flags = tm("list-clients", "-F", "#{client_session} #{client_control_mode} #{client_flags}").stdout
+cc_flags = tm("list-clients", "-F", "#{client_session} #{client_control_mode} #{client_flags} #{session_id}").stdout
 print("NOTE clients:", " | ".join(cc_flags.split("\n")).strip())
 if not any(l.startswith("cc ") and (l.split()[1] == "1" or "control-mode" in l)
            for l in cc_flags.splitlines()):
@@ -297,54 +345,136 @@ subprocess.run([notify, "roost · api", "blocked"],
 # Poll for the bytes instead of sleeping: the remote client is the one case
 # where something IS expected, so wait for it and then judge the others.
 t0 = time.time()
-while time.time() - t0 < 5 and WANT not in bytes(rem_buf):
+while time.time() - t0 < 5 and WANT_FULL not in bytes(rem_buf):
     time.sleep(0.1)
-time.sleep(0.5)   # give a wrong write to the other two time to show up
+time.sleep(0.5)   # give a wrong write to the others time to show up
 
 def verdict(name, buf, want_bytes):
     if name in skips:
         return skips[name]
     raw = bytes(buf)
     if want_bytes:
-        return "EXACT" if WANT in raw else "MISSING"
+        return "EXACT" if WANT_FULL in raw else "MISSING"
     return "EMPTY" if b"\x1b]9;" not in raw else "WRITTEN"
 
 print("remote_client", verdict("remote_client", rem_buf, True))
 print("local_client", verdict("local_client", loc_buf, False))
 print("control_client", verdict("control_client", cc_buf, False))
+print("dollar_client", verdict("dollar_client", dollar_buf, False))
 
-# --- the write must be bounded ------------------------------------------
-# A terminal that has stopped reading (laptop asleep, wifi gone, sshd not
-# draining the pty) fills the pty buffer, and the next write to it blocks for
+# --- the fan-out must cost ONE deadline, not one per client ---------------
+# Several clients whose terminals have all stopped reading. Written in
+# sequence this costs one deadline EACH and the agent's turn waits for the sum;
+# started together it costs one deadline for the lot. One stuck tty cannot tell
+# those two apart, which is why this case exists.
+stuck = []
+for n in (1, 2, 3):
+    m, _b = attach("st%d" % n, env_extra={"SSH_CONNECTION": remote}, drain=False)
+    stuck.append(m)
+stuck_ttys = [l.split()[0] for l in
+              tm("list-clients", "-F", "#{client_tty} #{client_session}").stdout.splitlines()
+              if len(l.split()) > 1 and l.split()[1].startswith("st")]
+filled = [fill_tty(t) for t in stuck_ttys]
+if len(stuck_ttys) < 2:
+    print("fanout_bounded SKIP only %d stuck client(s) attached" % len(stuck_ttys))
+else:
+    t0 = time.time()
+    try:
+        subprocess.run([notify, "t", "m"], timeout=20,
+                       env={**clean_env(), "ROOST_NOTIFY_SOCK": sock})
+        dt = time.time() - t0
+        print("fanout_bounded %s %.2fs with %d stuck clients (filled %s)"
+              % ("RETURNED" if dt <= 2 else "SLOW", dt, len(stuck_ttys), filled))
+    except subprocess.TimeoutExpired:
+        print("fanout_bounded HUNG (still running after 20s) with %d stuck clients" % len(stuck_ttys))
+for m in stuck:
+    os.close(m)     # unblocks anything still writing: the write then fails EIO
+for n in (1, 2, 3):
+    tm("kill-session", "-t", "st%d" % n)
+
+# --- one stuck tty: the write must be bounded ----------------------------
+# A terminal that has stopped reading — laptop asleep, wifi gone, sshd not
+# draining the pty — fills the pty buffer, and the next write to it blocks for
 # ever. This runs inside the harness's hook, so "for ever" is the agent's turn
-# hanging. Fill a pty, read nothing from it, and time the notifier.
-m, s = pty.openpty()
-fl = fcntl.fcntl(s, fcntl.F_GETFL)
-fcntl.fcntl(s, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+# hanging. The bound promised in scripts/roost-notify is one second, so this
+# asserts two, not five: a deadline that quietly grew to four has to fail here.
+m, s_fd = pty.openpty()
+fl = fcntl.fcntl(s_fd, fcntl.F_GETFL)
+fcntl.fcntl(s_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 filled = 0
 try:
     while filled < 8 * 1024 * 1024:
-        filled += os.write(s, b"x" * 4096)
+        filled += os.write(s_fd, b"x" * 4096)
 except OSError as e:
     if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
         raise
-fcntl.fcntl(s, fcntl.F_SETFL, fl)
-stuck = os.ttyname(s)
+fcntl.fcntl(s_fd, fcntl.F_SETFL, fl)
 tm("set-option", "-g", "@roost-notify-osc", "on")
-tm("set-option", "-g", "@roost-notify-osc-tty", stuck)
+tm("set-option", "-g", "@roost-notify-osc-tty", os.ttyname(s_fd))
 t0 = time.time()
 try:
     subprocess.run([notify, "t", "m"], timeout=8,
                    env={**clean_env(), "ROOST_NOTIFY_SOCK": sock})
     dt = time.time() - t0
-    print("bounded_write %s %.1fs" % ("RETURNED" if dt <= 5 else "SLOW", dt))
+    print("bounded_write %s %.2fs (filled %d bytes)"
+          % ("RETURNED" if dt <= 2 else "SLOW", dt, filled))
 except subprocess.TimeoutExpired:
     print("bounded_write HUNG (still running after 8s), filled %d bytes" % filled)
+os.close(m); os.close(s_fd)
+
+# --- a SLOW terminal, not a dead one: the truncated string must be closed ---
+# With a little room left, the watchdog kills the write PART WAY THROUGH and the
+# terminal is left inside an OSC string, swallowing everything after it until it
+# sees a terminator. Every sequence therefore begins with its own ST, so the
+# first thing any write does is close whatever a previous one left open.
+m2, s2 = pty.openpty()
+fl2 = fcntl.fcntl(s2, fcntl.F_GETFL)
+fcntl.fcntl(s2, fcntl.F_SETFL, fl2 | os.O_NONBLOCK)
+try:
+    n = 0
+    while n < 8 * 1024 * 1024:
+        n += os.write(s2, b"x" * 4096)
+except OSError as e:
+    if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+        raise
+fcntl.fcntl(s2, fcntl.F_SETFL, fl2)
+fcntl.fcntl(m2, fcntl.F_SETFL, fcntl.fcntl(m2, fcntl.F_GETFL) | os.O_NONBLOCK)
+
+def drain(fd):
+    out = b""
+    while True:
+        try:
+            b = os.read(fd, 65536)
+        except OSError:
+            return out
+        if not b:
+            return out
+        out += b
+
+os.read(m2, 10)        # ten bytes of room, and nobody reading after that
+tm("set-option", "-g", "@roost-notify-osc-tty", os.ttyname(s2))
+try:
+    subprocess.run([notify, "roost · api", "blocked"], timeout=8,
+                   env={**clean_env(), "ROOST_NOTIFY_SOCK": sock})
+except subprocess.TimeoutExpired:
+    pass
+time.sleep(0.2)
+got = drain(m2).lstrip(b"x")     # the filler is all "x"; the payload has none
+print("heal_leading_st", "ST" if got.startswith(b"\x1b\\") else "RAW " + repr(got[:12]))
+# The pty is drained now, so the next notification has room for all of it: it
+# must arrive whole, and still lead with the ST that heals a truncated string.
+try:
+    subprocess.run([notify, "roost · api", "blocked"], timeout=8,
+                   env={**clean_env(), "ROOST_NOTIFY_SOCK": sock})
+except subprocess.TimeoutExpired:
+    pass
+time.sleep(0.3)
+got2 = drain(m2)
+print("heal_next_complete",
+      "EXACT" if WANT_FULL in got2 else "MISSING " + repr(got2[:48]))
 tm("set-option", "-gu", "@roost-notify-osc")
 tm("set-option", "-gu", "@roost-notify-osc-tty")
-# Closing the master unblocks anything still stuck writing to the slave (the
-# write then fails with EIO), so nothing is left behind holding a pty.
-os.close(m); os.close(s)
+os.close(m2); os.close(s2)
 PYEOF
   out="$(python3 "$pyf" "$sock" "$NOTIFY" "$REMOTE" 2>&1)"
   printf '%s\n' "$out" | grep -q '^NOTE' && printf '%s\n' "$out" | grep '^NOTE'
@@ -364,11 +494,63 @@ PYEOF
     SKIP*) skip "a control-mode client is skipped — $v" ;;
     *)     assert_eq "$v" "EMPTY" "a control-mode (-CC) client is skipped, remote session or not" ;;
   esac
+  v="$(verdict dollar_client)"
+  case "$v" in
+    SKIP*) skip "a session named \$0 is judged as itself — $v" ;;
+    *)     assert_eq "$v" "EMPTY" "a client on a session NAMED \$0 is judged by session id, not by that name" ;;
+  esac
+  v="$(verdict fanout_bounded)"
+  case "$v" in
+    SKIP*) skip "the fan-out costs one deadline — $v" ;;
+    *)     assert_prefix "$v" "RETURNED" "several stuck terminals cost ONE deadline between them, not one each — $v" ;;
+  esac
   v="$(verdict bounded_write)"
   case "$v" in
     SKIP*) skip "the write is bounded — $v" ;;
-    *)     assert_prefix "$v" "RETURNED" "a terminal that has stopped reading cannot hang the hook" ;;
+    *)     assert_prefix "$v" "RETURNED" "a terminal that has stopped reading cannot hang the hook — $v" ;;
+  esac
+  v="$(verdict heal_leading_st)"
+  case "$v" in
+    SKIP*) skip "a truncated sequence is closed — $v" ;;
+    *)     assert_eq "$v" "ST" "a write into a nearly-full terminal leads with ST, closing whatever was left open" ;;
+  esac
+  v="$(verdict heal_next_complete)"
+  case "$v" in
+    SKIP*) skip "the next notification heals and delivers — $v" ;;
+    *)     assert_eq "$v" "EXACT" "...and the next notification arrives whole behind that ST" ;;
   esac
 else
   skip "decision cases need python3 to attach a client through a pty"
 fi
+
+# --- the tmux 3.2 fallback: #{client_control_mode} unknown -----------------
+# roost supports tmux >= 3.2 and the oldest build measurable here is 3.3a, where
+# both #{client_control_mode} and #{client_flags} report a control-mode client.
+# On a build that knows neither format, each expands to EMPTY and the flags test
+# is all that is left. A `tmux` shim ahead of the real one on PATH produces
+# exactly that line — the control-mode field blank, "control-mode" still in the
+# flags — so the fallback is exercised rather than assumed. Everything that is
+# not the client list is handed to the real tmux, so the options still resolve.
+realtmux="$(command -v tmux)"
+shimdir="$(mktemp -d /tmp/amx.XXXX)"
+ccfile="$(mktemp)"
+cat > "$shimdir/tmux" <<SHIM
+#!/bin/sh
+for a in "\$@"; do
+  if [ "\$a" = list-clients ]; then
+    # tty, an EMPTY control-mode field, flags, session id
+    printf '%s  attached,focused,control-mode \$0\n' "$ccfile"
+    exit 0
+  fi
+done
+exec "$realtmux" "\$@"
+SHIM
+chmod +x "$shimdir/tmux"
+T set-option -g @roost-notify-osc on
+T set-option -gu @roost-notify-osc-tty
+: > "$ccfile"
+PATH="$shimdir:$PATH" "$NOTIFY" "t" "m"
+assert_eq "$(hexof "$ccfile")" "" \
+  "a client reported as control-mode only in #{client_flags} is still skipped"
+rm -rf "$shimdir"
+T set-option -gu @roost-notify-osc

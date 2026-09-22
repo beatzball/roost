@@ -122,6 +122,12 @@ osc_clean() { LC_ALL=C tr '\000-\037\177' ' ' | LC_ALL=C sed "$osc_c1_re"; }
 # window) was created over ssh — long after the human walked back to the
 # machine. A review caught it writing to a LOCAL client that tmux was correctly
 # reporting as local. Per client, from tmux, or not at all.
+# $1 is a session ID (`$0`, `$7`), never a session NAME. tmux resolves a -t
+# target as an ID FIRST, so a session whose NAME happens to be another session's
+# ID is read as that other session — MEASURED: with a session named "$0" beside
+# the session whose id IS $0, `show-environment -t '$0'` returns the latter's
+# environment. Judging by name would then call a local client remote and write
+# to it, which is why #{session_id} is in the list-clients format below.
 osc_session_remote() {
   for _v in SSH_CONNECTION SSH_TTY; do
     case "$(nt show-environment -t "$1" "$_v" 2>/dev/null)" in
@@ -135,8 +141,10 @@ osc_session_remote() {
 osc_targets() {
   # Fields are separated by a SPACE and split at the FIRST one, which looks lax
   # and is not: a tty path can never contain a space, #{client_control_mode} is
-  # 0 or 1, #{client_flags} is comma-separated with no spaces, and the session
-  # name comes LAST so `#* ` keeps it whole however many spaces it has. A tab
+  # 0 or 1, #{client_flags} is comma-separated with no spaces, and a
+  # #{session_id} is `$` and digits. The session ID is what is carried, not the
+  # session NAME — a name is ambiguous with an ID at any -t target, and a name
+  # can contain spaces where an ID cannot. A tab
   # would be the obvious separator and is version-dependent — MEASURED, with a
   # real tab in the -F string:
   #
@@ -150,13 +158,13 @@ osc_targets() {
   # An older tmux that does not know one of these formats expands it to EMPTY
   # rather than erroring (MEASURED: `-F '[#{client_no_such_format}]'` prints
   # `[]`), which leaves a run of spaces the split above absorbs, so the session
-  # name still lands in the last field.
-  nt list-clients -F '#{client_tty} #{client_control_mode} #{client_flags} #{client_session}' 2>/dev/null |
+  # ID still lands in the last field.
+  nt list-clients -F '#{client_tty} #{client_control_mode} #{client_flags} #{session_id}' 2>/dev/null |
   while IFS= read -r _line; do
     [ -n "$_line" ] || continue
     _ctty="${_line%% *}"; _rest="${_line#* }"
     _ccm="${_rest%% *}";  _rest="${_rest#* }"
-    _cflags="${_rest%% *}"; _csess="${_rest#* }"
+    _cflags="${_rest%% *}"; _csid="${_rest#* }"
     [ -n "$_ctty" ] || continue
     # A control-mode client (`tmux -CC`, what an integrating terminal attaches
     # with) is NOT an emulator: its tty carries tmux's own control protocol, a
@@ -169,7 +177,7 @@ osc_targets() {
     # both read empty and such a client would be written to.
     [ "$_ccm" = 1 ] && continue
     case ",$_cflags," in *,control-mode,*) continue ;; esac
-    if [ "$1" != force ] && ! osc_session_remote "$_csess"; then continue; fi
+    if [ "$1" != force ] && ! osc_session_remote "$_csid"; then continue; fi
     printf '%s\n' "$_ctty"
   done
 }
@@ -198,8 +206,12 @@ osc_write_one() {
   ( sleep 1; kill -9 "$_w" 2>/dev/null || true ) >/dev/null 2>&1 </dev/null &
   _k=$!
   wait "$_w" 2>/dev/null || true
-  # The writer finished on its own; retire the watchdog rather than leave it
-  # sleeping out its second.
+  # The writer is done, one way or the other. This kills the watchdog SUBSHELL,
+  # not the `sleep` it is currently blocked in: that sleep is a child of the
+  # subshell and is orphaned rather than killed, so one `sleep 1` per client can
+  # outlive this function by up to a second. It is reparented, exits on its own,
+  # and leaves no zombie — MEASURED: nothing of this script's making is still
+  # running 5 s after a wedged write.
   kill "$_k" 2>/dev/null || true
 }
 
@@ -244,22 +256,34 @@ osc_payload() {
   # there and the text is left exactly as the human wrote it.
   _t7="$(printf '%s' "$_t" | tr ';' ',')"
   _m7="$(printf '%s' "$_m" | tr ';' ',')"
+  # Every sequence is preceded by an ST (ESC \), and that is not decoration.
+  # A write can be cut PART WAY THROUGH — the watchdog below kills it when the
+  # terminal is slow rather than dead, leaving the terminal inside an OSC string
+  # with nothing to close it, swallowing everything printed after it until it
+  # sees a terminator. MEASURED, with ten bytes of room left in the pty: the
+  # bytes that landed were `ESC ] 9 ; r o o s t` and stopped there. A leading ST
+  # closes whatever the last write left open, so the next notification heals the
+  # terminal as well as delivering. Outside a control string an ST is ignored
+  # (ECMA-48), so it costs two bytes and changes nothing on a healthy terminal —
+  # that a real emulator visibly recovers is inferred from the standard, not
+  # measured, since it cannot be read back from a pty.
+  printf -v _st '\033\\'
   _p=""
   for _c in $osc_codes; do
     case "$_c" in
       # iTerm2's form, also read by Ghostty, WezTerm, Windows Terminal and
       # kitty. The widest reach of the three, which is why it is the default.
-      9)   printf -v _s '\033]9;%s\033\\' "$_b" ;;
+      9)   printf -v _s '%s\033]9;%s\033\\' "$_st" "$_b" ;;
       # rxvt-unicode's extension, read by Ghostty and foot. Title and body get
       # their own fields.
-      777) printf -v _s '\033]777;notify;%s;%s\033\\' "$_t7" "$_m7" ;;
+      777) printf -v _s '%s\033]777;notify;%s;%s\033\\' "$_st" "$_t7" "$_m7" ;;
       # kitty's own protocol: one escape per part, keyed by the same identifier
       # so the two chunks are one notification. NOT in the default set —
       # Ghostty 1.3.1 shows no sign of reading OSC 99 (MEASURED: its binary
       # carries "]777;notify;" and documents OSC 9 and OSC 777 for
       # `desktop-notifications`, and has no OSC 99 string at all), so on the
       # terminal measured here it would be a silent no-op.
-      99)  printf -v _s '\033]99;i=roost:d=0:p=title;%s\033\\\033]99;i=roost:d=1:p=body;%s\033\\' "$_t" "$_m" ;;
+      99)  printf -v _s '%s\033]99;i=roost:d=0:p=title;%s\033\\%s\033]99;i=roost:d=1:p=body;%s\033\\' "$_st" "$_t" "$_st" "$_m" ;;
       # Anything else is dropped rather than written out. A typo in
       # @roost-notify-osc-codes must never reach a terminal as raw text.
       *)   _s="" ;;
