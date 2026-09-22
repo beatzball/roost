@@ -43,7 +43,12 @@ trap cleanup EXIT
 
 tmux -S "$s" -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
 spid="$(tmux -S "$s" display -p '#{pid}')"
+boot="$(tmux -S "$s" display -p '#{start_time}-#{pid}')"
 export ROOST_SOCKET="$s"
+
+# The kept turn file for a pane's first turn. Block 6 asserts on the BYTES that
+# land on disk, which is the only place a trailing newline is still observable.
+recfile() { printf '%s/%s/%s/replies/000001' "$REC" "$boot" "${1#%}"; }
 
 # A fresh pane per scenario, in its own window: turn numbers belong to a pane,
 # and a split can run out of room and return an empty id (tests/lib.sh).
@@ -163,7 +168,71 @@ as_pane "$p8" "$ROOST" reply - < "$work/bigh"
 "$ROOST" read "$p8" > "$work/out" 2>/dev/null
 cmp -s "$work/out" "$work/wanth"; assert_true $? "a long hostile body on stdin reads back byte-identical"
 
-# --- 6. a human at a terminal is never left hanging -------------------------
+# --- 6. trailing newlines survive stdin exactly as they survive argv --------
+#
+# `$(...)` strips EVERY trailing newline, so the first version of the stdin read
+# silently shortened any reply ending in one — while the argv form, whose text
+# never passes through a `$(...)` inside roost, kept them. The same reply
+# published two ways landed on disk as two different files, and the adapters had
+# just been moved from the path that kept them to the path that did not.
+#
+# MEASURED FIRST, so this asserts the real guarantee rather than a larger one.
+# `roost read` and `roost read --json` drop trailing newlines on EVERY path,
+# deliberately and long before this change: roost_record_read
+# (scripts/lib/roost-record.sh) serves ROOST_RECORD_TEXT, which is RAW with them
+# stripped, because the pane option it must compare against went through a
+# `$(...)` of its own. Measured on tmux 3.6 with an 8-byte body `answer\n\n`:
+#
+#   argv, two trailing newlines   file 8 bytes   read 7 bytes   --json 6
+#   stdin, before the fix         file 6 bytes   read 7 bytes   --json 6
+#
+# So the defect is the FILE, and that is what is asserted here. The two read
+# paths are asserted to be unchanged and to agree with argv, not to start
+# returning newlines they have never returned.
+#
+# NUL bytes are still dropped, by the shell variable rather than by this read.
+# docs/known-gaps.md records that and this change does not alter it.
+
+NLBODY=$'answer line\n\n'   # 13 bytes; $'...' is the only way to get them through argv
+nlsrc="$work/nl.txt"
+printf '%s' "$NLBODY" > "$nlsrc"
+assert_eq "$(wc -c < "$nlsrc" | tr -d ' ')" "13" "the fixture really carries its two trailing newlines (control)"
+
+pna="$(new_pane)"; require_pane "$pna" "trailing newlines argv"
+as_pane "$pna" "$ROOST" reply "$NLBODY"
+pns="$(new_pane)"; require_pane "$pns" "trailing newlines stdin"
+as_pane "$pns" "$ROOST" reply - < "$nlsrc"
+
+assert_eq "$(wc -c < "$(recfile "$pna")" | tr -d ' ')" "13" "argv keeps all 13 bytes in the kept turn file (control)"
+assert_eq "$(wc -c < "$(recfile "$pns")" | tr -d ' ')" "13" "stdin keeps all 13 bytes in the kept turn file too"
+cmp -s "$(recfile "$pns")" "$nlsrc"; assert_true $? "...byte-identical to what was piped in"
+cmp -s "$(recfile "$pns")" "$(recfile "$pna")"; assert_true $? "...and identical to what the argv form stored"
+
+# The two read paths are unchanged, and that is asserted rather than assumed:
+# a fix that started returning the newlines would break every existing caller.
+json_len() { "$ROOST" read --json "$1" 2>/dev/null | python3 -c \
+  'import json,sys; sys.stdout.write(json.load(sys.stdin)["text"])' | wc -c | tr -d ' '; }
+assert_eq "$("$ROOST" read "$pns" 2>/dev/null | wc -c | tr -d ' ')" \
+          "$("$ROOST" read "$pna" 2>/dev/null | wc -c | tr -d ' ')" "read prints the same byte count for both paths"
+assert_eq "$("$ROOST" read "$pns" 2>/dev/null | wc -c | tr -d ' ')" "12" "...which is the text plus read's own newline, with the trailing pair dropped as always"
+assert_eq "$(json_len "$pns")" "$(json_len "$pna")" "read --json agrees between the two paths"
+assert_eq "$(json_len "$pns")" "11" "...and drops them there too"
+
+# Past the 12 KB cap the marker names a byte count, and roost_record_match
+# refuses to serve the file unless it equals the file's real size. Trailing
+# newlines counted on one side and not the other would silently drop `read`
+# back to the capped pane value, which is the shape of bug this repo keeps
+# catching late.
+bignl="$work/bignl.txt"
+{ cat "$big"; printf '\n\n'; } > "$bignl"
+expect_file "$bignl" "$work/wantnl"
+pnb="$(new_pane)"; require_pane "$pnb" "trailing newlines past the cap"
+as_pane "$pnb" "$ROOST" reply - < "$bignl"
+cmp -s "$(recfile "$pnb")" "$bignl"; assert_true $? "past the 12 KB cap the kept file still ends in both newlines"
+"$ROOST" read "$pnb" > "$work/out" 2>/dev/null
+cmp -s "$work/out" "$work/wantnl"; assert_true $? "...and read still serves that file, so the marker's byte count agrees with it"
+
+# --- 7. a human at a terminal is never left hanging -------------------------
 #
 # The reason `reply` read argv and never stdin in the first place: it is a
 # documented public command someone types, and an unconditional `cat` waits for
@@ -193,7 +262,7 @@ assert_true $? "\`roost reply -\` typed at a terminal returns instead of waiting
 assert_contains "$tty_out" "rc=2" "...refusing with exit 2 rather than recording nothing"
 assert_contains "$tty_out" "stdin" "...and saying stdin on stderr"
 
-# --- 7. nothing landed in the real state directory --------------------------
+# --- 8. nothing landed in the real state directory --------------------------
 
 assert_file_absent "$HOME/.local" "the run wrote nothing under the canary HOME"
 assert_file_absent "$XDG_STATE_HOME/roost" "the run wrote nothing under the canary XDG_STATE_HOME"

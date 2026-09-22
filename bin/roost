@@ -1868,7 +1868,23 @@ JSON
         echo "usage: roost reply - < FILE   (with - or --stdin the reply is read from stdin, so no other argument is taken)" >&2; exit 2
       fi
       if [ ! -t 0 ]; then
-        reply_text="$(cat 2>/dev/null || true)"
+        # The `printf x` sentinel is not decoration. A plain `$(cat)` strips
+        # EVERY trailing newline, and the argv form does not — `$*` is handed
+        # to the record untouched — so the same reply published the two ways
+        # landed on disk as two different files, and the adapters had just
+        # been moved from the path that kept them onto the path that did not.
+        # The sentinel is the idiom roost_record_read already uses for exactly
+        # this, in scripts/lib/roost-record.sh; measured on tmux 3.6 with an
+        # 8-byte body `answer\n\n`, the kept turn file went from 6 bytes to 8.
+        #
+        # This fixes the bytes that are STORED, and nothing else moves:
+        # `roost read` and `roost read --json` still drop trailing newlines on
+        # every path, deliberately, because roost_record_read serves the
+        # stripped form so that a file and the pane option it must agree with
+        # compare alike. NUL bytes are still dropped too — by the shell
+        # variable, not by this read — and docs/known-gaps.md records both.
+        reply_text="$(cat 2>/dev/null; printf x)"
+        reply_text="${reply_text%x}"
       elif [ "$reply_src" = flag ]; then
         echo "roost reply: - and --stdin read the reply from stdin, and stdin here is a terminal. Pipe the text in, or pass it as an argument." >&2; exit 2
       else
