@@ -87,25 +87,6 @@ one currently saved:
 
 ## Notifications
 
-When an agent you are *not* looking at becomes blocked (needs input), roost pings you with a native desktop notification. Only `blocked` notifies — `done` fires every turn and would be noise. `error` notifies too: an agent that has stopped making progress deserves your attention as much as one waiting for an answer.
-
-Delivery is cross-platform, tried in this order:
-
-1. macOS (`osascript`)
-2. WSL (`BurntToast` via `powershell.exe`)
-3. Linux (`notify-send`, when a display is present)
-4. Fallback: an in-tmux `display-message` if nothing else is available (for example a headless remote session with no OS notifier reachable)
-
-Set `@roost-notify-backend` to `tmux` to always use the in-tmux message, or `none` to disable notifications entirely. The default is `auto`.
-
-### Your own notifier
-
-For full control, set `@roost-notify-cmd` to your own command. `%t` is replaced with the title and `%s` with the message:
-
-```sh
-set -g @roost-notify-cmd 'notify-send "%t" "%s"'
-```
-
-Reference the placeholders double-quoted (`"%s"`) or bare — **never single-quoted**, since `%t` / `%s` are wired to shell positional parameters (`$1` / `$2`) before your command runs, and single quotes would suppress that substitution.
-
-Because the swap is textual, avoid combining the placeholders with a command that needs a *literal* `%t` or `%s` of its own (for example `date +%s`) — the two would collide.
+A blocked agent on a window you are not watching pings you. The backend chain,
+your own notifier, and the path that reaches your terminal when the fleet runs
+on another machine all live on one page: **[Notifications](/docs/notifications)**.

@@ -24,6 +24,197 @@ tmux_fallback() { nt display-message "$title — $msg" 2>/dev/null || true; }
 
 if [ "$backend" = tmux ]; then tmux_fallback; exit 0; fi
 
+# ---------------------------------------------------------------------------
+# OSC backend (#46) — a notification that reaches the HUMAN's terminal
+# ---------------------------------------------------------------------------
+# Every other backend here delivers to the desktop of the machine this script
+# runs on. When the fleet runs on another box, that desktop is the wrong one:
+# nobody is looking at it. A terminal notification escape sequence travels down
+# the SSH connection instead and is raised by whatever terminal the human is
+# actually sitting in front of. No daemon, no port, no account.
+#
+# MEASURED (tmux 3.6, macOS 25.3.0, 2026-09-21) — where the bytes have to go:
+#
+#   bare OSC 9 -> #{client_tty}                    ARRIVES at the outer terminal
+#   bare OSC 9 -> #{pane_tty}                      absent (tmux parses, drops it)
+#   DCS-wrapped, passthrough on, pane VISIBLE       ARRIVES
+#   DCS-wrapped, passthrough on, pane OFF-SCREEN    absent
+#   DCS-wrapped, passthrough off                    absent
+#
+# So this writes BARE sequences to the client's tty, not DCS-wrapped ones to
+# the pane. Two reasons, and the second is the decisive one:
+#
+#   1. The client's tty is the slave side of the pty whose master is the
+#      terminal emulator, so a write there bypasses tmux's parser altogether —
+#      no `allow-passthrough`, no wrapper, nothing to unwrap wrongly.
+#   2. tmux forwards a passthrough DCS only while the pane is VISIBLE, and
+#      scripts/roost-agent-state calls this script ONLY when the pane is
+#      off-screen (`#{window_active}` != 1). The passthrough route therefore
+#      drops exactly the notifications this feature exists to deliver. The
+#      issue's own suggestion was written from reading rather than running;
+#      tests/test-notify-osc.sh pins the measurement.
+#
+# Off unless the human is somewhere else: `@roost-notify-osc on` forces it,
+# `off` silences it, and unset means "only when a client is remote". Remote is
+# read from SSH_CONNECTION, which is in tmux's DEFAULT update-environment list
+# (MEASURED on tmux 3.6: DISPLAY KRB5CCNAME MSYSTEM SSH_ASKPASS SSH_AUTH_SOCK
+# SSH_AGENT_PID SSH_CONNECTION WINDOWID XAUTHORITY) — so tmux copies it from
+# the attaching client into that session's environment and removes it again
+# when a local client attaches. SSH_TTY is NOT in that list; it is checked too,
+# cheaply, for a user who added it, but nothing may rest on it alone.
+#
+# A terminal that does not know these sequences prints nothing: an unknown OSC
+# string is swallowed up to its terminator. A terminal that does not know OSC
+# *at all* would print the payload, which is the whole reason this is off for a
+# local client unless asked for.
+osc_mode="$(opt @roost-notify-osc)"
+osc_codes="$(opt @roost-notify-osc-codes)"; osc_codes="${osc_codes:-9}"
+# An explicit tty to write to instead of discovering clients. Its first job is
+# to be the seam tests/test-notify-osc.sh writes into — a test cannot attach a
+# real client from a plain shell, since attaching needs a pty — but it is also
+# the escape hatch for a setup where client discovery cannot see the right
+# terminal.
+osc_tty="$(opt @roost-notify-osc-tty)"
+
+# C0 controls out, everything else through. An ESC, a BEL or a newline inside
+# the payload TERMINATES the OSC string early, and the rest of the text is then
+# printed as garbage on the human's screen (#46 requirements 4 and 5). Window
+# names and agent messages are not trusted input. LC_ALL=C so tr works on
+# bytes: UTF-8 continuation bytes are 0x80-0xBF and so never in this range,
+# which is what keeps non-ASCII intact (MEASURED: a UTF-8 payload reaches the
+# outer terminal byte for byte). tr pads its second set with its last
+# character, so every control maps to one space.
+osc_clean() { LC_ALL=C tr '\000-\037\177' ' ' ; }
+
+# Is the client attached to session $1 a remote one?
+# `show-environment -t S VAR` prints "VAR=value" when set and "-VAR" — a
+# removal marker, not an error — when it is not, so the test has to be for the
+# assignment form with a non-empty value, never merely for non-empty output.
+osc_session_remote() {
+  for _v in SSH_CONNECTION SSH_TTY; do
+    case "$(nt show-environment -t "$1" "$_v" 2>/dev/null)" in
+      "$_v"=?*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# ... and this process's own environment. If the tmux server itself was started
+# from a remote shell, every pane inherits SSH_CONNECTION and the human is by
+# definition not at this machine.
+osc_self_remote() { [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; }
+
+osc_any_session_remote() {
+  # Only sessions that actually have a client attached: a detached session's
+  # environment can still carry SSH_CONNECTION from whoever created it, and
+  # nobody is looking at a detached session anyway.
+  #
+  # The loop runs in a subshell (it is the last stage of a pipeline), so it
+  # cannot set a variable the caller would see; it answers with its EXIT
+  # STATUS instead. The explicit `exit 1` after the loop is load-bearing: a
+  # `while` that reads to EOF without matching exits 0, so without it this
+  # function answered "yes, remote" on a server with NO clients at all —
+  # caught by tests/test-notify-osc.sh's local-client case, which is the whole
+  # reason that case is byte-exact rather than a smoke test.
+  nt list-clients -F '#{client_session}' 2>/dev/null | { while IFS= read -r _s; do
+    [ -n "$_s" ] || continue
+    osc_session_remote "$_s" && exit 0
+  done; exit 1; }
+}
+
+# Build the whole payload ONCE and write it with a single printf. A short
+# single write() to a tty will not be torn in half, so tmux's own output cannot
+# land in the middle of an escape sequence and corrupt the screen; one printf
+# per code, opened once, would leave that window open between codes.
+osc_payload() {
+  _t="$(printf '%s' "$title" | osc_clean)"
+  _m="$(printf '%s' "$msg" | osc_clean)"
+  _b="$_t — $_m"
+  # OSC 9 carries a body and no title, so the two are joined with the same
+  # em dash the in-tmux fallback uses.
+  #
+  # ConEmu's progress-bar sequence is OSC 9;4 — the same OSC 9, distinguished
+  # only by a leading "4;" (Ghostty 1.3.1 documents both forms). A title that
+  # began "4;" would drive a progress bar instead of raising a banner, so shift
+  # it by one space: invisible in a notification, and not a subcommand number.
+  case "$_b" in 4\;*) _b=" $_b" ;; esac
+  _p=""
+  for _c in $osc_codes; do
+    case "$_c" in
+      # iTerm2's form, also read by Ghostty, WezTerm, Windows Terminal and
+      # kitty. The widest reach of the three, which is why it is the default.
+      9)   printf -v _s '\033]9;%s\033\\' "$_b" ;;
+      # rxvt-unicode's extension, read by Ghostty and foot. Title and body get
+      # their own fields. A semicolon inside the title shifts the field
+      # boundary — harmless (the body starts early) and deliberately not
+      # rewritten, since mangling the text the human reads is worse.
+      777) printf -v _s '\033]777;notify;%s;%s\033\\' "$_t" "$_m" ;;
+      # kitty's own protocol: one escape per part, keyed by the same identifier
+      # so the two chunks are one notification. NOT in the default set —
+      # Ghostty 1.3.1 shows no sign of reading OSC 99 (MEASURED: its binary
+      # carries "]777;notify;" and documents OSC 9 and OSC 777 for
+      # `desktop-notifications`, and has no OSC 99 string at all), so on the
+      # terminal measured here it would be a silent no-op.
+      99)  printf -v _s '\033]99;i=roost:d=0:p=title;%s\033\\\033]99;i=roost:d=1:p=body;%s\033\\' "$_t" "$_m" ;;
+      # Anything else is dropped rather than written out. A typo in
+      # @roost-notify-osc-codes must never reach a terminal as raw text.
+      *)   _s="" ;;
+    esac
+    _p="$_p$_s"
+  done
+  printf '%s' "$_p"
+}
+
+# $1 = "force" to skip the remote test (an explicitly selected backend, or
+# `@roost-notify-osc on`). Never fails, like every other backend here: an
+# unwritable tty is a miss. `2>/dev/null` comes BEFORE the `>` so that a
+# failure to OPEN the target is silenced too — the shell reports that on
+# stderr, and redirections are applied left to right.
+osc_notify() {
+  _force="$1"
+  [ -n "$osc_codes" ] || return 0
+  _pay="$(osc_payload)"
+  [ -n "$_pay" ] || return 0
+  if [ -n "$osc_tty" ]; then
+    if [ "$_force" = force ] || osc_self_remote || osc_any_session_remote; then
+      printf '%s' "$_pay" 2>/dev/null > "$osc_tty" || true
+    fi
+    return 0
+  fi
+  # One line per attached client: its tty, and the session it is looking at.
+  # A tab separates them because a session name may contain spaces.
+  nt list-clients -F '#{client_tty}	#{client_session}' 2>/dev/null |
+  while IFS="$(printf '\t')" read -r _ctty _csess; do
+    [ -n "$_ctty" ] || continue
+    if [ "$_force" != force ] && ! osc_self_remote && ! osc_session_remote "$_csess"; then
+      continue
+    fi
+    printf '%s' "$_pay" 2>/dev/null > "$_ctty" || true
+  done
+  return 0
+}
+
+# Selected on its own: emit and stop, without asking whether anyone is remote.
+# That is what makes it testable and what "it must be selectable" (#46
+# requirement 2) means.
+if [ "$backend" = osc ]; then osc_notify force; exit 0; fi
+
+# The OSC backend is ADDITIVE, not an alternative: it reaches the human's
+# TERMINAL, where every backend below reaches some machine's DESKTOP. So it
+# runs first and the chain below still runs to its end, in its existing order,
+# down to the same in-tmux fallback (#46 requirement 6). It is off for a local
+# client unless asked for, so nothing changes for anyone not running a remote
+# fleet.
+# `on` is a decision already taken, so it skips the remote test outright; in
+# auto mode osc_notify does the deciding per CLIENT, since a server can have a
+# local client and a remote one attached at once and only the remote one needs
+# this.
+case "$osc_mode" in
+  off) ;;
+  on)  osc_notify force ;;
+  *)   osc_notify auto ;;
+esac
+
 # auto: user override first
 cmd="$(opt @roost-notify-cmd)"
 if [ -n "$cmd" ]; then
