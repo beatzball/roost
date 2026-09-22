@@ -14,6 +14,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A long reply from an adapter no longer dies on Linux** (#86). `roost reply`
+  now also reads the reply from stdin — `roost reply -`, `roost reply --stdin`,
+  or a pipe with no argument — and the opencode, pi and copilot adapters
+  publish that way. Linux refuses a single command-line argument of 128 KiB or
+  more, so a reply that long never reached roost there, while macOS carried it,
+  which is why it was never seen on the development machine. The one-argument
+  form is unchanged. A reply longer than a few KB, or one built from a file,
+  belongs on stdin. The kept turn file holds every byte, trailing newlines
+  included, on both paths.
+
 ## [0.5.0]
 
 An agent's replies are now kept on disk, one file per turn. A long reply is no

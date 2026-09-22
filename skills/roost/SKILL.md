@@ -281,6 +281,21 @@ roost reply "the tests pass; two lint warnings in src/api.ts"
 roost state done                # reply FIRST, then done — see below
 ```
 
+**A reply longer than a few KB goes on stdin, and so does any reply you built
+from a file.** Linux refuses a single command-line argument of 131072 bytes or
+more, and the command then fails before roost runs at all — nothing is
+recorded, and your coordinator reads your screen instead of your answer. Pass
+`-` (or `--stdin`, or no argument at all) and pipe the text in:
+
+```sh
+roost reply - < report.md
+printf '%s' "$answer" | roost reply -
+```
+
+There is no size cap on that form. The pane option that carries a reply still
+holds only the first 12 KB, but every turn is kept whole on disk, so a long
+reply comes back in full from `roost read`.
+
 Record the reply **before** you report `done`. `roost wait-done` returns the
 instant your badge stops being `working`, so a coordinator can read you in the
 gap between the two commands and get a screen scrape instead of your answer.

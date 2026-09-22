@@ -272,6 +272,35 @@ hang on a `cat` that never sees EOF. `scripts/roost-agent-state:36-40`, `:77-79`
 same point from the other side: the Claude hook reads stdin **only** behind an
 explicit `--stop-hook` flag, and skips even that when stdin is a tty.
 
+> **Amended by #86 (2026-09-22):** the reply may now also come from **stdin** —
+> `roost reply -`, or `--stdin`, or no argument at all — and all three shipped
+> adapters publish that way. Argv is unchanged, and the paragraph above is still
+> why stdin is not read unconditionally: the read is gated on the argument, and
+> a `-` or `--stdin` typed at a tty is refused with exit 2 rather than waited
+> on, so no public entry point blocks.
+>
+> What forced it: Linux caps a SINGLE argv entry at 131072 bytes
+> (`MAX_ARG_STRLEN`, which is separate from the far larger `ARG_MAX` total).
+> Measured in ubuntu:24.04, kernel 6.11.11 aarch64, `getconf ARG_MAX` 2097152 —
+> a 131071-byte argument execs and a 131072-byte one does not. A long reply
+> therefore failed inside `execFile` *before roost ran*, so the pane kept no
+> record and a sibling's `roost read` fell back to scraping the screen. macOS
+> has no per-argument cap at all (measured on Darwin 25.3.0 arm64: only the
+> 1048576-byte total applies), which is why this was only ever seen in CI and on
+> users' machines.
+>
+> **A new adapter publishes with `run(["reply", "-"], text)`** and writes the
+> body to the child's stdin. Two things go with that, and both are load-bearing:
+> always END that stream, including on the calls that send nothing, because
+> `execFile` hands the child a pipe it otherwise never closes; and attach an
+> `error` listener to it to swallow `EPIPE`. `roost reply` is a deliberate
+> silent no-op when the caller is not a pane on roost's own server — that is
+> what makes an adapter safe to leave installed — so it exits 0 without reading,
+> and the write lands on a closed pipe. Unhandled, that is not an exception the
+> adapter's `try`/`catch` can see: it is an `uncaughtException` a tick later
+> that takes the whole agent process down. Measured on Darwin 25.3.0 and on
+> Linux 6.11.11, with and without the listener.
+
 An adapter passes the text and stops there. **Truncation is not the adapter's
 decision** — `scripts/lib/roost-reply.sh` caps at 12288 bytes with a visible
 marker line, because tmux rejects an over-long *command* at ~16384 bytes
