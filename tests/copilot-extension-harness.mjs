@@ -28,9 +28,18 @@ const shim = join(dir, "roost")
 // reply is genuinely multi-line — that is most of the point of recording one
 // instead of scraping a screen — and a raw newline would split one call across
 // two log rows. replies() maps it back before any assertion sees it.
+// A fourth column records the TRANSPORT — argv or stdin — because that is the
+// whole of what #86 changed and an assertion on the reply TEXT alone cannot see
+// it. `roost reply -` means "the reply is on stdin", so the shim reads it from
+// there; every other call is argv exactly as before. Without this the adapters'
+// switch to stdin would have recorded every reply as the literal "-", which is
+// what the red run showed.
 writeFileSync(
   shim,
-  `#!/bin/sh\nesc=\`printf '%s' "$2" | tr '\\n' '\\036'\`\nprintf '%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" >> "${log}"\n`
+  `#!/bin/sh\n` +
+    `if [ "$1" = reply ] && [ "$2" = - ]; then via=stdin; arg=\`cat\`; else via=argv; arg="$2"; fi\n` +
+    `esc=\`printf '%s' "$arg" | tr '\\n' '\\036'\`\n` +
+    `printf '%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" >> "${log}"\n`
 )
 chmodSync(shim, 0o755)
 const REAL_PATH = process.env.PATH
@@ -55,6 +64,9 @@ const replies = () => cols().filter((c) => c[0] === "reply").map((c) => c[1].rep
 // The verbs in order, which is what the reply-before-done assertions are about.
 const verbs = () => cols().map((c) => c[0]).join(",")
 const envNames = () => cols().map((c) => c[2])
+// How each reply travelled, in order. "argv" here is the #86 regression: a
+// reply on the command line dies at exec on Linux past 131072 bytes.
+const replyVias = () => cols().filter((c) => c[0] === "reply").map((c) => c[3]).join(",")
 
 const { RoostState } = await import(join(HERE, "..", "adapters", "copilot", "extension.mjs"))
 
@@ -507,6 +519,57 @@ try {
 }
 check(threw, "", "a missing roost on PATH does not throw into copilot")
 process.env.PATH = `${dir}:${REAL_PATH}`
+
+// --- #86: the reply travels on stdin, and its size is no longer a limit -----
+//
+// Linux caps a SINGLE argv entry at 131072 bytes (MAX_ARG_STRLEN), separately
+// from the far larger ARG_MAX total. Measured in ubuntu:24.04, kernel 6.11.11
+// aarch64, getconf ARG_MAX 2097152: a 131071-byte argument execs and a
+// 131072-byte one fails with "Argument list too long" — inside execFile, before
+// the program runs, so the pane kept no record at all and a sibling's `roost
+// read` fell back to scraping the screen. macOS has no per-argument cap
+// (measured on Darwin 25.3.0 arm64: only the 1048576-byte TOTAL applies), which
+// is why this only ever appeared in CI and on users' machines.
+//
+// This is a REAL exec of a real program with the real body, not a mock, so on
+// Linux it is an end-to-end proof: a regression to argv cannot reach the shim
+// and leaves NO reply row, rather than a wrong one. On macOS argv would still
+// carry it, and the transport assertion is what catches the regression there.
+// Both are asserted, so neither platform is green for the wrong reason.
+const BIG = "line of a very long answer\n".repeat(7600) // 205200 bytes
+const WANT = BIG.trimEnd() // roost and the shim both read stdin through `$(cat)`
+// A short, diagnosable stand-in: a failing check must not print 200 KB.
+const digest = (s) => `${s.length} bytes ${s.slice(0, 20)}…${s.slice(-20)}`
+fire = fresh()
+await fire(ev("assistant.turn_start"), said(BIG, "m_big"), ev("session.idle"))
+check(replyVias(), "stdin", "the reply travels on stdin, not argv")
+check(digest(replies()[0] ?? ""), digest(WANT), "a 205200-byte reply survives the exec and arrives at the same length")
+check(replies()[0] === WANT, true, "...and byte for byte")
+check(verbs().endsWith("reply,state"), true, "...still published before done, as any other reply is")
+
+// #86, the other half: a roost that exits WITHOUT reading the reply.
+//
+// That is the normal case for an agent running outside roost — `roost reply` is
+// a deliberate silent no-op unless the caller is a pane on roost's own server,
+// which is what makes an adapter safe to leave installed. The 205200-byte write
+// then lands on a closed pipe, and the EPIPE arrives as an `error` event on the
+// child's stdin. Unhandled, that is not an exception the try/catch in run() can
+// see: it is an uncaughtException a tick later, and it takes the whole agent
+// process down. So the assertion is on the PROCESS, not on a return value.
+//
+// The shim is replaced here rather than earlier because it must not log: this
+// case is about what does NOT happen.
+let uncaught = ""
+process.on("uncaughtException", (e) => {
+  uncaught = String((e && e.code) || e)
+})
+writeFileSync(shim, "#!/bin/sh\nexit 0\n")
+chmodSync(shim, 0o755)
+fire = fresh()
+await fire(ev("assistant.turn_start"), said(BIG, "m_epipe"), ev("session.idle"))
+// The EPIPE lands after the child is reaped, so give the event loop a turn.
+await new Promise((r) => setTimeout(r, 300))
+check(uncaught, "", "a roost that exits without reading a 205200-byte reply does not crash the agent (EPIPE)")
 
 rmSync(dir, { recursive: true, force: true })
 console.log(`  (${pass} passed, ${fail} failed in the copilot extension harness)`)

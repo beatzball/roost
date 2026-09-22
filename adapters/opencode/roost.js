@@ -131,19 +131,35 @@ import { execFile } from "node:child_process"
 // Never throws. A missing roost, a dead tmux server, or a pane that went away
 // must leave the pane unbadged, never break the agent being badged — the same
 // discipline as the `|| true` on every tmux call in scripts/roost-agent-state.
-const run = (args) =>
+const run = (args, input) =>
   new Promise((resolve) => {
     try {
       // ROOST_AGENT_NAME tells roost-agent-state's sink what to label an
       // unnamed pane, instead of falling back to @roost-name-default's
       // Claude-flavoured "claude" — every opencode pane would otherwise
       // read "claude" on its border and in the switcher.
-      execFile(
+      const child = execFile(
         "roost",
         args,
         { env: { ...process.env, ROOST_AGENT_NAME: "opencode" }, timeout: 5000 },
         () => resolve()
       )
+      // The reply text goes on the child's STDIN. Two things have to be true
+      // for that to be as safe as the argv call it replaces:
+      //
+      // `roost reply` is a deliberate silent no-op when this process is not a
+      // pane on roost's own server — that is what makes an adapter safe to
+      // leave installed when its agent runs somewhere else. roost then exits 0
+      // WITHOUT reading, and the write lands on a closed pipe. The EPIPE that
+      // follows arrives as an `error` event on the stream, and an unhandled
+      // one on a child's stdin takes the whole agent down — the exact outcome
+      // this helper exists to prevent. So it is swallowed, like everything
+      // else here.
+      child.stdin?.on("error", () => {})
+      // And stdin is ALWAYS ended, including for the calls that send nothing.
+      // execFile hands the child a pipe that is otherwise never closed, so a
+      // roost subcommand that reads stdin would wait on it until the timeout.
+      child.stdin?.end(input ?? "")
     } catch {
       resolve()
     }
@@ -151,10 +167,25 @@ const run = (args) =>
 
 const report = (state) => run(["state", state])
 
-// The reply goes over argv, not stdin: `roost reply` takes argv precisely so
-// that no public entry point can block waiting for input. roost truncates to
-// its own byte budget, so nothing is capped here — one place decides that.
-const publish = (text) => run(["reply", text])
+// The reply goes over STDIN, not argv (#86). Linux caps a SINGLE argv entry at
+// 131072 bytes (MAX_ARG_STRLEN), separately from the far larger ARG_MAX total,
+// so a long reply failed inside execFile before roost ran at all: the pane kept
+// no record, and a sibling's `roost read` fell back to scraping the screen.
+// Measured in ubuntu:24.04, kernel 6.11.11 aarch64, getconf ARG_MAX 2097152 — a
+// 131071-byte argument exits 0 and a 131072-byte one exits 126 with "Argument
+// list too long". macOS has no per-argument cap at all: measured on Darwin
+// 25.3.0 arm64, only the 1048576-byte TOTAL applies, which is why this broke
+// only in CI and on users' machines and never on the one it was written on.
+//
+// The largest reply seen over 30 days on the design machine was 24675 bytes, so
+// this is rare rather than theoretical — and a reply built from a file is not
+// rare at all.
+//
+// `-` is roost's documented "the reply is on stdin" argument, and stdin has no
+// size limit. roost still truncates the PANE OPTION to its own byte budget and
+// keeps the turn whole on disk, so nothing is capped here — one place decides
+// that.
+const publish = (text) => run(["reply", "-"], text)
 
 // One copy of this plugin per opencode instance, however many places load it
 // (#58). roost can reach opencode two ways at once: the symlink `roost install`

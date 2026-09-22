@@ -916,13 +916,24 @@ The pane option stays the truth: a file is printed only when it agrees with
 What it does not cover. Each is low severity, and none reports a wrong reply as
 right — the failure is always today's output.
 
-- **A reply of 131,072 bytes or more from opencode, pi or copilot is lost.**
-  Those adapters pass the reply to `roost reply` as one argument, and Linux
-  refuses a single argument that long (measured in the Ubuntu CI image). The
-  spawn fails before roost runs, so neither the pane nor the record gets it, and
-  `read` falls back to the screen with its notice. macOS allows more (not
-  measured). The largest Claude reply seen on the design machine was 24,675
-  bytes. A `roost reply` stdin form would close it.
+- **A reply passed to `roost reply` as one ARGUMENT is still capped by the
+  operating system.** Linux refuses a single argument of 131,072 bytes or more
+  (`MAX_ARG_STRLEN`, which is separate from the far larger `ARG_MAX` total);
+  macOS has no per-argument cap and gives out at the total instead. Measured:
+  ubuntu:24.04, kernel 6.11.11 aarch64, `getconf ARG_MAX` 2,097,152 — 131,071
+  bytes execs and 131,072 does not; Darwin 25.3.0 arm64, `getconf ARG_MAX`
+  1,048,576 — 1,041,390 bytes accepted and 1,041,391 refused, the difference
+  being the caller's own environment, so that second figure moves with it. The
+  command fails before roost runs, so nothing is recorded and `read` falls back
+  to the screen with its notice.
+
+  `roost reply -` reads the reply from stdin and has no such limit. The
+  opencode, pi and copilot adapters publish that way (#86) — which is what the
+  cap used to break, since the largest Claude reply seen on the design machine
+  was 24,675 bytes but a reply built from a file is not rare — and both `roost
+  help` and the roost skill say to use stdin for anything past a few KB. What
+  is left is a human or a script that passes a long reply as an argument
+  anyway, and gets the kernel's message instead of roost's.
 - **Trailing newlines and NUL bytes are still dropped**, before either store,
   because the reply passes through `$(...)` and a bash variable. A kept reply is
   whole in content, not bit-exact at the end.
