@@ -181,10 +181,24 @@ osc_notify() {
     fi
     return 0
   fi
-  # One line per attached client: its tty, and the session it is looking at.
-  # A tab separates them because a session name may contain spaces.
-  nt list-clients -F '#{client_tty}	#{client_session}' 2>/dev/null |
-  while IFS="$(printf '\t')" read -r _ctty _csess; do
+  # One line per attached client: its tty, then the session it is looking at.
+  #
+  # Separated by a SPACE and split at the FIRST one, which looks lax and is not:
+  # a tty path can never contain a space, and `#* ` keeps everything after the
+  # first one, so a session name with spaces in it survives whole. A tab would
+  # be the obvious separator and is version-dependent — MEASURED, with a real
+  # tab in the -F string:
+  #
+  #   tmux 3.6 (macOS 25.3.0)   `0 \t $0`   tab preserved
+  #   tmux 3.4 / 3.5a / 3.7c    `0 _ $0`    tab rewritten to an UNDERSCORE
+  #
+  # tmux sanitises a control character out of a format result on those builds,
+  # so `read` saw one field, the session came back empty, and every attached
+  # client was skipped — on Linux only, while macOS stayed green. Caught by
+  # running tests/test-notify-osc.sh in a container per tmux version.
+  nt list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
+  while IFS= read -r _line; do
+    _ctty="${_line%% *}"; _csess="${_line#* }"
     [ -n "$_ctty" ] || continue
     if [ "$_force" != force ] && ! osc_self_remote && ! osc_session_remote "$_csess"; then
       continue
