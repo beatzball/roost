@@ -44,6 +44,9 @@
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working" } ] }
     ],
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state blocked --permission-request-hook" } ] }
+    ],
     "Notification": [
       { "matcher": "permission_prompt",
         "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state blocked --notification-hook" } ] }

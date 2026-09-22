@@ -65,11 +65,26 @@ _roost_hooks_root() {
 
 # roost_hooks_claude [TARGET_SCRIPT] -- TARGET_SCRIPT defaults to this
 # checkout's own scripts/roost-agent-state.
+#
+# PermissionRequest comes BEFORE Notification here, and the order is the one
+# thing about this object's shape that is worth a sentence. Nothing in Claude
+# reads it -- events fire when they fire -- but scripts/lib/roost-json.sh
+# walks the patch's events in ITS order when it merges, so a reader comparing
+# a wired settings.json against this block sees the two dialog hooks together.
+# PermissionRequest is the one that fires as the dialog opens; the
+# permission_prompt Notification arrives a flat six seconds later (measured on
+# 2.1.278, tests/test-claude-permission-request.sh) and stays wired as the
+# fallback for a Claude old enough not to have the event at all.
+#
+# PermissionRequest takes NO matcher. Its matcher would be a TOOL NAME, and
+# roost badges a dialog whatever asked for it: an MCP server's tool name is
+# not knowable in advance, and a list of the built-in ones would miss whichever
+# tool Claude Code adds next.
 roost_hooks_claude() {
   local target context
   if [ $# -ge 1 ]; then target="$1"
   else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
-  # SessionStart runs a DIFFERENT script from the other five, so it cannot use
+  # SessionStart runs a DIFFERENT script from the other six, so it cannot use
   # $target. It is derived as a sibling of $target rather than from
   # _roost_hooks_root because $target may have been injected by a caller (the
   # installer, or a test with a fixed path) and must stay the authority on
@@ -86,6 +101,9 @@ roost_hooks_claude() {
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "$target working" } ] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "$target blocked --permission-request-hook" } ] }
     ],
     "Notification": [
       { "matcher": "permission_prompt",

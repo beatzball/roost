@@ -58,6 +58,22 @@ assert_eq "$claude_out" "$bare_out" \
 # typed blind. The five existing objects are untouched, and `roost install`
 # adds the new one to a settings.json that has only those five
 # (tests/test-adapter-install.sh, "wired before StopFailure existed").
+#
+# One deliberate edit for #91, claude only: a SEVENTH event, PermissionRequest,
+# INSERTED before Notification rather than appended. Position is the one thing
+# that is free here and nowhere near free in the codex fixture: Claude stores
+# no hash of its hooks, so where an event sits changes nothing it can see, and
+# the two dialog hooks are worth reading together. Re-captured from
+# `roost hooks claude` and diffed, not typed: the diff is exactly three added
+# lines and no existing byte moved. `roost install` adds the new entry to a
+# settings.json that has only the other six, by the same generic merge
+# (scripts/lib/roost-json.sh) the StopFailure case above relies on, and
+# tests/test-claude-permission-request.sh holds the rest.
+#
+# The PROSE above the object still does not describe PermissionRequest. That
+# text lives in bin/roost, which #91's lane did not own; the entry is
+# explained in scripts/lib/roost-hooks.sh and in
+# tests/test-claude-permission-request.sh until it is.
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"

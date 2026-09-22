@@ -10,7 +10,7 @@
 # docs/airig/specs/2026-09-15-roost-owned-settings-design.md).
 #
 # What it adds is ONE argument pair, `--settings <file>`, and that file holds
-# nothing but `hooks` — the same six entries `roost install` writes, byte for
+# nothing but `hooks` — the same seven entries `roost install` writes, byte for
 # byte. `--settings` overrides only the keys it sets, so every other user
 # setting still applies; and Claude runs an identical hook command once when it
 # appears in two sources, so a machine that already ran `roost install` does

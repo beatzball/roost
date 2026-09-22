@@ -339,7 +339,7 @@ roost_json__jq_run() {
 
 # roost_json_merge FILE MODE [ARGS...] -> apply MODE to FILE (treated as "{}"
 # when FILE does not exist), writing the result atomically. Modes:
-#   claude-hooks TARGET_SCRIPT   add the six roost hook entries to .hooks
+#   claude-hooks TARGET_SCRIPT   add the seven roost hook entries to .hooks
 #   codex-hooks  TARGET_SCRIPT   add the four roost handlers to .hooks
 #   copilot-flag                 set .enabledFeatureFlags.EXTENSIONS = true
 #
@@ -451,7 +451,7 @@ roost_json_merge() {
         # from a stranger's (leave it exactly where it is).
         #
         # claude passes a SECOND target because its patch invokes two scripts:
-        # SessionStart runs scripts/roost-session-context, the other five run
+        # SessionStart runs scripts/roost-session-context, the other six run
         # scripts/roost-agent-state. It is derived as a sibling of $target for
         # the same reason roost_hooks_claude derives it that way — $target may
         # have been injected by a caller or a test, and it stays the single
