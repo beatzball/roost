@@ -91,9 +91,18 @@ assert_contains "$(as_pane "$ROOST" screen "$pane" 2>/dev/null)" "SCREEN-MARKER"
 # On the old code this typed into whatever pane carried the same id on the
 # production server and pressed Enter. Only $TMUX_TMPDIR above makes it safe to
 # run this assertion against unfixed code at all.
+# Exit 4, not 0, and for a reason that has nothing to do with the socket. This
+# pane's badge reads `done` (set by `roost state done` above), which is one of
+# the two states #92 makes `send` watch for a NEW turn after the submit, and a
+# plain shell pane will never stamp one — so it reports "submitted, but no turn
+# started". What this file is about is WHICH SERVER the keys landed on, and the
+# assertion below this one is the one that answers that. The bound is shortened
+# so proving it costs a second rather than ten.
+tmux -S "$s" set-option -g @roost-send-turn-timeout 1
 as_pane "$ROOST" send "$pane" "printf 'SENT-MARKER\\n'" >/dev/null 2>&1
 rc=$?
-assert_eq "$rc" "0" "roost send exits 0 against the caller's own server"
+tmux -S "$s" set-option -gu @roost-send-turn-timeout 2>/dev/null || true
+assert_eq "$rc" "4" "roost send reaches the caller's own server (delivered; no turn to start)"
 assert_contains "$(tmux -S "$s" capture-pane -p -t "$pane")" "SENT-MARKER" \
   "roost send pastes into the caller's own server with no ROOST_SOCKET"
 

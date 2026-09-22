@@ -97,11 +97,37 @@ T set-option -pu -t "$recvpane" @agent_state 2>/dev/null || true
 
 # every other state is fine to send into -- only `blocked` means a dialog.
 # Without this the guard could silently widen and break normal fleet driving.
+#
+# `done` and `idle` changed shape with #92 and the exit code here changed with
+# them. Those are the two states `send` now watches after the submit, because
+# they are the two that can hand a caller the PREVIOUS turn's reply; the pane
+# here is a plain shell wearing a badge set by hand, so nothing will ever stamp
+# it `working` and `send` reports exit 4 -- "submitted, but no turn started".
+#
+# That is NOT a refusal, and the refusal is what this block is about. The text
+# is delivered in every one of the four states, which is why the delivery is
+# now asserted directly rather than being read off the exit code: an exit code
+# that moved for a state is much weaker evidence than the command running.
+# `blocked` remains the only state that delivers nothing, and it is pinned
+# above.
+#
+# The bound is shortened to 1s for the two waiting states, so this block costs
+# about two seconds instead of twenty.
+T set-option -g @roost-send-turn-timeout 1
 for st in working done error idle; do
   T set-option -p -t "$recvpane" @agent_state "$st"
   "$ROOST" send "$recv" "printf 'ST-%s\n' $st" >/dev/null 2>&1; rc=$?
-  assert_eq "$rc" "0" "send into a '$st' pane is allowed"
+  case "$st" in
+    done|idle) want=4 ;;   # watched: a shell pane cannot start the turn
+    *)         want=0 ;;   # already busy, or errored: nothing to watch for
+  esac
+  assert_eq "$rc" "$want" "send into a '$st' pane is allowed (exit $want)"
+  # "ST-done" contiguous can only come from EXECUTION: the line that was typed
+  # holds "ST-%s", the same trick the MARK-DONE case at the top of this file uses.
+  wait_for "$recv" "ST-$st"
+  assert_true $? "...and the text really reached it, whatever the exit code"
 done
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
 T set-option -pu -t "$recvpane" @agent_state 2>/dev/null || true
 
 # an agent that has never reported has NO @agent_state at all; an empty value
