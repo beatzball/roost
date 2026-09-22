@@ -24,6 +24,24 @@ and this project uses [Semantic Versioning](https://semver.org/).
   are skipped. A new docs page, Notifications, covers the backend chain and
   the no-vendor phone recipe (`@roost-notify-cmd` plus SSH over a private
   mesh network).
+- **`roost send` proves the target began a new turn, and says which one**
+  (#92). After the verified submit, `send` waits — bounded, ten seconds by
+  default (`@roost-send-turn-timeout`, clamped to 120) — for the target to
+  leave its finished badge, and prints one line, `%N TURN`: the pane the text
+  reached and the turn it started. `roost wait-done --turn N` and
+  `roost read --turn N` then tie the wait and the reply to that exact prompt,
+  so a `wait-done` that begins before the target's hook has fired can no
+  longer hand back the previous turn's reply as if it were the answer. `send`
+  gained `--json` (`target`, `pane`, `turn`, `started`, `state`), and a new
+  exit code **4**: the text was submitted but no turn began inside the bound,
+  so do not send it again. A pane with no badge is not waited for and prints
+  nothing; an errored turn prints no number, because it is never recorded.
+
+### Changed
+
+- `send` into a pane whose `done` or `idle` badge was set by hand, or whose
+  agent has exited to a shell, now waits out the bound and exits 4 rather
+  than 0.
 
 ### Fixed
 
@@ -36,7 +54,6 @@ and this project uses [Semantic Versioning](https://semver.org/).
   form is unchanged. A reply longer than a few KB, or one built from a file,
   belongs on stdin. The kept turn file holds every byte, trailing newlines
   included, on both paths.
-
 - **A Claude Code permission dialog is badged 🛑 as it opens, not six seconds
   later** (#91). roost learned of a dialog from the `permission_prompt`
   Notification, which arrives 6.00 s after the dialog is drawn — and a dialog
