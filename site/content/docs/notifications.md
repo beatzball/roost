@@ -68,10 +68,13 @@ It is on by itself only when it is needed:
 | `on` | Always on, local or remote |
 | `off` | Never |
 
-"Remote" means the attached client has `SSH_CONNECTION` set. tmux copies that
-variable from the client into the session when it attaches, and removes it
-again when a local client attaches, so the answer follows you: attach from your
-laptop and the notification comes to your laptop's terminal.
+"Remote" means the attached client has `SSH_CONNECTION` — or `SSH_TTY` — set.
+tmux copies `SSH_CONNECTION` from the client into the session when it attaches,
+and removes it again when a local client attaches, so the answer follows you:
+attach from your laptop and the notification comes to your laptop's terminal.
+`SSH_TTY` is checked as well, for anyone who has added it to tmux's
+`update-environment`; it is not in tmux's default list, so nothing rests on it
+alone.
 
 The question is asked **per client**, and only tmux's own view of that client
 counts. If you have two clients attached — one over SSH, one at the machine —
