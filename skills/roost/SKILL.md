@@ -77,9 +77,10 @@ a shell command, a log tail, or a pager is not an agent and never shows a state.
 ```sh
 me="$(roost whoami)"
 helper="$(roost spawn claude)"        # a co-agent in its own window → its %N
-turn="$(roost send "$helper" "[from $me] review the diff and reply with issues")"
-roost wait-done --turn "$turn" "$helper" 120
-roost read --turn "$turn" "$helper"   # its reply to THAT prompt
+out="$(roost send "$helper" "[from $me] review the diff and reply with issues")"; rc=$?
+read -r pane turn <<<"$out"           # "%N TURN", or empty — see below
+roost wait-done --turn "$turn" "$pane" 120
+roost read --turn "$turn" "$pane"     # its reply to THAT prompt
 ```
 
 `roost spawn NAME [CMD]` creates a window WITHOUT attaching and prints its
@@ -92,21 +93,30 @@ are real and cost tokens — only spawn what you need.
 for the target to actually BEGIN a turn. Until roost adds sender attribution,
 prefix who you are so the receiver can reply (as above).
 
-On an agent that was idle or finished, `send` prints the number of the turn your
-prompt started, and nothing else, on stdout:
+On an agent that was idle or finished, `send` prints one line on stdout — **the
+pane it delivered to, and the turn your prompt started**:
 
 ```sh
-turn="$(roost send "$helper" "[from $me] review the diff")"
+out="$(roost send "$helper" "[from $me] review the diff")"; rc=$?
+read -r pane turn <<<"$out"
 ```
 
-Capture it. `wait-done --turn` and `read --turn` below use it to tie the wait and
-the reply to *your* prompt rather than to whatever the agent last said.
+**Take the exit status off `send` itself, not off the `read`.** `read` succeeds
+whatever `send` did, so `read -r pane turn <<<"$(roost send …)"` throws the code
+below away and leaves you with two empty fields and no idea why.
 
-**An empty capture is normal and means "you cannot use `--turn` here".** There is
-no turn number when the target is not an agent (a shell, a log tail, a pager —
-these have no badge and are not waited for either), when it was already mid-turn
-when you sent, or when its replies are not being recorded. Fall back to plain
-`wait-done` and `read` in that case.
+Capture both. `wait-done --turn` and `read --turn` below use them to tie the wait
+and the reply to *your* prompt rather than to whatever the agent last said.
+
+The pane matters even when you already have a target: a window target (`api`,
+`main:2`) covers every agent pane in that window, and `--turn` needs the one
+`%N` your text actually went into. `send` resolves that for you and names it.
+
+**An empty capture is normal and means "you cannot use `--turn` here".** You get
+both fields or neither. There is no turn number when the target is not an agent
+(a shell, a log tail, a pager — these have no badge and are not waited for
+either), when it was already mid-turn when you sent, or when its replies are not
+being recorded. Fall back to plain `wait-done` and `read` in that case.
 
 Exit codes tell you WHAT to do next, so branch on `$?`:
 
@@ -149,13 +159,14 @@ Exit codes tell you WHAT to do next, so branch on `$?`:
 
 ## Wait for the reply, then read it
 
-When `send` gave you a turn number, use it. This is the only form that can
+When `send` gave you a pane and a turn, use them. This is the only form that can
 *prove* the answer you get back is the answer to the prompt you sent:
 
 ```sh
-turn="$(roost send "$helper" "[from $me] review the diff")"
-roost wait-done --turn "$turn" "$helper" 120
-roost read --turn "$turn" "$helper"
+out="$(roost send "$helper" "[from $me] review the diff")"; rc=$?
+read -r pane turn <<<"$out"
+roost wait-done --turn "$turn" "$pane" 120
+roost read --turn "$turn" "$pane"
 ```
 
 Without it, you are asking two questions that the PREVIOUS turn can answer:
@@ -174,8 +185,15 @@ especially when the reply will decide something.
 
 `--turn` needs a `%N` pane (turns are numbered per pane, so a window target has
 no single numbering) and needs the target's replies to be recorded. If either is
-missing, `wait-done --turn` says so and exits 1 rather than waiting for a turn
-that can never arrive.
+missing, `wait-done --turn` refuses **before it waits at all**: it says which of
+the two is wrong and exits 1. That is the only thing it refuses up front — use
+the pane `send` printed and you will never see it.
+
+**Always pass a timeout.** Like plain `wait-done`, `--turn` with no
+`TIMEOUT_SEC` waits with no limit, and the turn it is waiting for may never be
+recorded — an agent that exited leaves a pane whose badge still reads `done`,
+which is not busy and is not an error, so nothing ends the wait. A timeout is
+what turns that into an exit 1 you can act on.
 
 `roost read` returns **what the agent said**, not a screenshot of its terminal.
 Each agent records its last message on its own pane as the turn ends, and `read`
@@ -361,20 +379,22 @@ instead of your answer.
 
 1. `roost whoami` — confirm you're in roost and learn your address.
 2. `roost status` — find a target, or `roost spawn`/`roost split` a helper.
-3. `turn="$(roost send TARGET "[from <you>] <task>")"` — keep what it prints.
-   Exit 4 means the text landed but no turn began: do not resend it.
-4. `roost wait-done [--turn "$turn"] TARGET [timeout]` — pane-precise on a
-   `%N`, aggregates the window's agent panes otherwise. Pass `--turn` whenever
-   step 3 gave you a number. Exits 0 when done; exits 1 on error
+3. `out="$(roost send TARGET "[from <you>] <task>")"; rc=$?` then
+   `read -r pane turn <<<"$out"` — keep both, and read `$rc` from `send`, not
+   from `read`. Exit 4 means the text landed but no turn began: do not resend.
+4. `roost wait-done [--turn "$turn"] "${pane:-TARGET}" [timeout]` — pane-precise
+   on a `%N`, aggregates the window's agent panes otherwise. When step 3 gave
+   you a pair, pass `--turn "$turn"` and use `"$pane"` as the target — `--turn`
+   needs the `%N`, not the name you typed. Exits 0 when done; exits 1 on error
    or timeout — check the message to know which; exits 2 when the agent
    died (its pane closed or its process exited mid-turn) or the target was
    already gone — re-resolve or respawn rather than waiting again. An
    already-gone target may have finished first: roost cannot tell. An agent
    you started from a shell prompt inside a pane is not caught when it dies;
    that still times out with exit 1.
-5. `roost read [--turn "$turn"] TARGET` — collect the result. If it warns that
-   it fell back to the screen, you did **not** get a reply; report that rather
-   than guessing at what came back.
+5. `roost read [--turn "$turn"] "${pane:-TARGET}"` — collect the result. If it
+   warns that it fell back to the screen, you did **not** get a reply; report
+   that rather than guessing at what came back.
 
 Send **one** prompt at a time, then wait — don't fire a second before the first
 completes. Don't message yourself. Don't spam.

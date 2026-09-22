@@ -78,6 +78,17 @@ wait_state() {
   return 1
 }
 
+# sent_pane / sent_turn — `roost send` prints ONE line, "%N TURN", on a target
+# that began a turn. Both fields or neither: a target with no turn to name
+# prints nothing at all, and then both of these are empty, which is exactly the
+# "you cannot use --turn here" signal a caller has to branch on.
+send_into() {   # send_into TARGET TEXT... -> $sent_rc, $sent_pane, $sent_turn
+  local out
+  out="$("$ROOST" send "$@" 2>/dev/null)"; sent_rc=$?
+  sent_pane="" sent_turn=""
+  read -r sent_pane sent_turn <<< "$out"
+}
+
 # --- detector proof: the fixture really does produce turns ------------------
 #
 # A probe whose own setup is broken records nothing and reports nothing, which
@@ -128,9 +139,10 @@ wait_state "$p" done
 # --- 1. send hands back the turn its prompt started -------------------------
 p="$(newagent 2 0.4)"
 "$ROOST" send "$p" "turn one" >/dev/null 2>&1; wait_state "$p" done
-turn="$("$ROOST" send "$p" "turn two" 2>/dev/null)"; rc=$?
-assert_eq "$rc" "0" "send into a healthy agent still exits 0"
-assert_eq "$turn" "2" "send prints the turn number its prompt started"
+send_into "$p" "turn two"
+assert_eq "$sent_rc" "0" "send into a healthy agent still exits 0"
+assert_eq "$sent_turn" "2" "send prints the turn number its prompt started"
+assert_eq "$sent_pane" "$p" "...beside the %N pane that started it"
 
 # --- 2. wait-done --turn N does not return on the OLD turn's done -----------
 #
@@ -149,9 +161,9 @@ assert_eq "$("$ROOST" read "$p" 2>/dev/null)" "REPLY-TO[turn two]" \
 # named, read that turn. It must not be able to return an older turn's answer.
 p="$(newagent 2 0.4)"
 "$ROOST" send "$p" "warm up" >/dev/null 2>&1; wait_state "$p" done
-n="$("$ROOST" send "$p" "the real question" 2>/dev/null)"
-"$ROOST" wait-done --turn "$n" "$p" 30 >/dev/null 2>&1
-assert_eq "$("$ROOST" read --turn "$n" "$p" 2>/dev/null)" "REPLY-TO[the real question]" \
+send_into "$p" "the real question"
+"$ROOST" wait-done --turn "$sent_turn" "$sent_pane" 30 >/dev/null 2>&1
+assert_eq "$("$ROOST" read --turn "$sent_turn" "$sent_pane" 2>/dev/null)" "REPLY-TO[the real question]" \
   "send | wait-done --turn | read --turn returns the reply to THIS prompt"
 
 # --- 4. a submit that never starts a turn gets its own exit code ------------
@@ -197,7 +209,7 @@ p="$(newagent 2 0.4)"
 "$ROOST" send "$p" "warm up" >/dev/null 2>&1; wait_state "$p" done
 out="$("$ROOST" send "$p" "no wait wanted" 2>/dev/null)"; rc=$?
 assert_eq "$rc" "0" "@roost-send-turn-timeout 0 turns the watch off: still exit 0"
-assert_eq "$out" "" "...and names no turn, because none was proven"
+assert_eq "$out" "" "...and names no pane and no turn, because none was proven"
 T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
 wait_state "$p" done
 
@@ -229,6 +241,76 @@ out="$("$ROOST" wait-done --turn abc "$p" 2>&1)"; rc=$?
 assert_eq "$rc" "1" "wait-done --turn with a non-number exits 1"
 assert_contains "$out" "roost wait-done: --turn needs a turn number" \
   "...and says what it wanted instead"
+
+# --- 8. a WINDOW target hands back the %N it resolved to ---------------------
+#
+# Found by review (flock round 1). `send` resolved a window to its active pane
+# and printed that pane's turn number, but `wait-done --turn` refuses anything
+# that is not a %N -- so the skill's own idiom ("pass --turn whenever send gave
+# you a number") broke on the target form the site docs use throughout:
+#
+#   roost send api "..."        -> turn=[2]
+#   roost wait-done --turn 2 api -> rc=1
+#
+# Printing the resolved pane beside the turn is what closes it, and it costs a
+# field the caller wanted anyway. `send-keys` and `display-message` resolve a
+# window target to the SAME active pane, so the id printed is the pane the text
+# really went into.
+p="$(newagent 2 0.4)"
+win="$(T display-message -p -t "$p" '#{session_name}:#{window_index}')"
+assert_true $? "setup: the agent's window has a SESSION:INDEX target"
+"$ROOST" send "$win" "warm up" >/dev/null 2>&1; wait_state "$p" done
+send_into "$win" "window prompt"
+assert_eq "$sent_rc" "0" "send into a window target exits 0"
+assert_eq "$sent_pane" "$p" "send on a WINDOW target names the %N it resolved to"
+assert_eq "$sent_turn" "2" "...and the turn that pane started"
+"$ROOST" wait-done --turn "$sent_turn" "$sent_pane" 30 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "the pair send printed can be handed straight to wait-done --turn"
+assert_eq "$("$ROOST" read --turn "$sent_turn" "$sent_pane" 2>/dev/null)" "REPLY-TO[window prompt]" \
+  "...and to read --turn, for the reply to THAT prompt"
+# --json must name the same pane the human line does. Two modes that disagree
+# about which pane was written to would be worse than either being wrong alone.
+wait_state "$p" done
+doc="$("$ROOST" send --json "$win" "window json" 2>/dev/null)"
+assert_contains "$doc" "\"pane\":\"$p\"" "send --json on a window target names the resolved %N too"
+assert_contains "$doc" '"target":"'"$win"'"' "...and still reports the target as it was typed"
+assert_contains "$doc" '"started":true' "...and says a turn really began"
+wait_state "$p" done
+
+# --- 9. recording OFF: a turn inside the Enter cushion is still seen ---------
+#
+# Found by review (flock round 1). `ROOST_RECORD_DIR=""` is a supported setting
+# -- tests/lib.sh sets it for the whole suite -- and with it there is no turn
+# numbering to watch. A turn that begins AND ends inside `send`'s ~340 ms Enter
+# cushion is then invisible to BOTH of the original signals: the badge is back
+# to `done` before the first poll, and the record check is skipped. Measured on
+# the unfixed code: rc=4 after the whole bound, with the reply sitting on the
+# pane the entire time.
+#
+# The fixture runs with no delay and no work, so its turn is two hook calls
+# (about 50 ms) and finishes long before `send` returns. Both the pane and the
+# `send` process have recording off, so nothing on disk can rescue this.
+T set-option -g @roost-send-turn-timeout 4
+p="$(T new-window -d -P -F '#{pane_id}' "exec env ROOST_RECORD_DIR= /bin/sh $AGENT $HOOK 0 0")"
+require_pane "$p" "recording-off agent"
+n=50
+while [ "$n" -gt 0 ]; do
+  T capture-pane -p -t "$p" 2>/dev/null | grep -q READY && break
+  sleep 0.1; n=$((n - 1))
+done
+env ROOST_RECORD_DIR="" "$ROOST" send "$p" "warm up" >/dev/null 2>&1
+wait_state "$p" done
+assert_eq "$("$ROOST" read "$p" 2>/dev/null)" "REPLY-TO[warm up]" \
+  "detector proof: the recording-off pane still publishes a reply on the pane"
+start="$(date +%s)"
+out="$(env ROOST_RECORD_DIR="" "$ROOST" send "$p" "fast turn" 2>/dev/null)"; rc=$?
+elapsed=$(( $(date +%s) - start ))
+assert_eq "$rc" "0" "recording off: a turn that finished inside the cushion is NOT reported as never started"
+[ "$elapsed" -lt 4 ]; assert_true $? "...and it does not burn the whole bound (${elapsed}s)"
+assert_eq "$out" "" "...and no turn is named, because recording off means there are no turn numbers"
+assert_eq "$("$ROOST" read "$p" 2>/dev/null)" "REPLY-TO[fast turn]" \
+  "...and the turn really did run"
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
 
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"

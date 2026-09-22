@@ -18,7 +18,7 @@
 #   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] [--json] TGT TEXT
-#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force. On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints that turn's number on stdout (exit 4 if none begins — the text WAS submitted, so do not resend); a pane with no badge is not an agent, so it is neither waited for nor numbered. --json prints one JSON document instead, for a program
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force. On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
@@ -1236,11 +1236,50 @@ JSON
     # record — recording off, a record a newer roost wrote — still gets the
     # badge wait; it just has no number to hand back, and says so by printing
     # nothing.
+    #
+    # FOUR baselines, not one, and three of them exist because a turn can begin
+    # AND END before the first poll. `send` returns about 340 ms after the
+    # Enter, and a short turn against a fast model fits inside that, so the
+    # badge is already back to `done` when the watch starts. Found by review
+    # (flock round 1) in exactly the configuration the suite itself runs in:
+    # with ROOST_RECORD_DIR="" there is no turn numbering either, and both of
+    # the original signals were blind. Measured on that code: exit 4 after the
+    # whole bound, with the reply sitting on the pane throughout.
+    #
+    #   turn_base   the recorded turn number. Absent when recording is off.
+    #   turn_since  @agent_since, which EVERY state stamp rewrites
+    #               (scripts/roost-agent-state). One second of resolution, so it
+    #               can miss a done->working->done inside one second — which is
+    #               why it is not alone.
+    #   turn_reply  @roost-reply, which the adapter rewrites at the end of every
+    #               turn. Read and compared as one opaque string, so whatever
+    #               tmux does to it on the way in (3.4/3.5a rewrite control
+    #               bytes; a non-UTF-8 client gets `_`) applies to both sides
+    #               equally and the comparison still holds.
+    #
+    # Being wrong in the FALSE-STARTED direction is the safe way round, and that
+    # is deliberate: it degrades one send to the behaviour it had before any of
+    # this existed, where being wrong the other way reports a turn that ran as
+    # one that never started — the caller then either re-sends a prompt that is
+    # already running, or tells a human the agent is wedged when it is not.
     turn_watch=0 turn_base=0 turn_dir="" turn_num="" turn_started=0 turn_have_base=0
-    turn_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+    turn_pane="" turn_since="" turn_reply=""
+    turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+    turn_pane="${turn_info%% *}"
+    turn_rest="${turn_info#* }"
+    turn_since="${turn_rest%% *}"
+    turn_state="${turn_rest#* }"
     case "$turn_state" in
       done|idle) turn_watch=1 ;;
     esac
+    # Only read when it will be compared: @roost-reply can be 12 KB, and a pane
+    # that is not being watched must pay nothing for a signal nobody looks at.
+    # show-options -p, never a #{@roost-reply} format, for the reason `read`
+    # gives: a format lookup falls back pane -> window -> global, and a stray
+    # outer-scope value would then be compared as if it were this pane's.
+    if [ "$turn_watch" = 1 ]; then
+      turn_reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+    fi
     # $turn_have_base, and not merely "$turn_base is 0": with recording off
     # there is no numbering at all, and base+1 would name a turn that will never
     # be written — a number a caller would then hand to `wait-done --turn`,
@@ -1426,25 +1465,61 @@ JSON
     if [ "$turn_watch" = 1 ]; then
       turn_ticks=0 turn_gone=0
       while [ "$turn_ticks" -lt $((turn_timeout * 4)) ]; do
-        # Same three-field call, same peel-one-at-a-time split, and the same
-        # reason the state is last: it is the only field that can be empty.
-        turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+        # Four fields now, peeled one at a time, and the state stays LAST
+        # because it is the field most often empty. @agent_since sits in the
+        # middle and can be empty too — a pane somebody badged by hand has a
+        # state and no stamp — and this split survives that: an empty middle
+        # field still occupies its place between two spaces, so `${r#* }` steps
+        # over it rather than swallowing the field after it.
+        #
+        # MEASURED on tmux 3.6, all four combinations, because "a middle empty
+        # field would not survive this split" is exactly the kind of claim the
+        # comment above the FIRST such call in this command warns about:
+        #
+        #   neither set   `%0 0  `            -> since [] state []
+        #   state only    `%0 0  done`        -> since [] state [done]
+        #   both          `%0 0 1790000000 done`
+        #   since only    `%0 0 1790000000 `  -> state []
+        turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
         turn_pid="${turn_info%% *}"
         turn_rest="${turn_info#* }"
         turn_dead="${turn_rest%% *}"
+        turn_rest="${turn_rest#* }"
+        turn_since_now="${turn_rest%% *}"
         turn_now="${turn_rest#* }"
         if [ -z "$turn_pid" ] || [ "$turn_dead" = "1" ]; then turn_gone=1; break; fi
+        # 1. the badge left done/idle: the prompt-submit hook fired. The
+        #    ordinary case, and the one the race is about.
         case "$turn_now" in
           ''|done|idle) ;;
           *) turn_started=1
              if [ "$turn_have_base" = 1 ]; then turn_num=$((turn_base + 1)); fi
              break ;;
         esac
+        # 2. the recorded turn number moved: a turn that began and ended between
+        #    two polls, or inside the Enter cushion before the first one. This
+        #    is the only signal that also NAMES the turn, so the number handed
+        #    back here is the observed one, not the prediction.
         if [ -n "$turn_dir" ]; then
           roost_record_scan "$turn_dir/replies"
           if [ "$ROOST_RECORD_MAX" -gt "$turn_base" ]; then
             turn_started=1; turn_num="$ROOST_RECORD_MAX"; break
           fi
+        fi
+        # 3. the stamp moved. Every state change rewrites @agent_since, so a
+        #    done -> working -> done that both of the above missed still shows
+        #    here — unless all of it happened inside one second, which is the
+        #    resolution `date +%s` gives it. Hence 4.
+        if [ -n "$turn_since_now" ] && [ "$turn_since_now" != "$turn_since" ]; then
+          turn_started=1; break
+        fi
+        # 4. the reply changed. The adapter rewrites @roost-reply at the end of
+        #    every turn, and clears it on one that errored, so either direction
+        #    is a turn that ran. Read LAST, and only once the three cheap
+        #    signals have all said nothing, so an ordinary send never pays for
+        #    a second tmux call or for moving 12 KB.
+        if [ "$turn_reply" != "$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)" ]; then
+          turn_started=1; break
         fi
         sleep 0.25 2>/dev/null || true
         turn_ticks=$((turn_ticks + 1))
@@ -1470,23 +1545,38 @@ JSON
       fi
     fi
 
-    # The turn goes to stdout on its own line, the way `spawn`, `split`, `view`
-    # and `whoami` each print the one id they created and nothing else — so
-    # `n="$(roost send "$p" "…")"` captures it and every existing caller, which
-    # ignores stdout, is unaffected. NOTHING is printed when there is no turn to
-    # name (a pane that is not an agent, a target already mid-turn, a record
-    # this roost cannot read), so an empty capture means exactly "you cannot
-    # use --turn here" rather than a number that was guessed.
+    # One line on stdout, "%N TURN": the pane this prompt went into, and the
+    # turn it started. Both fields or neither.
+    #
+    # THE PANE IS NOT DECORATION. Found by review (flock round 1): a WINDOW
+    # target — `roost send api …`, the form the site docs use throughout —
+    # resolved to that window's active pane and printed ITS turn number, while
+    # `wait-done --turn` refuses anything that is not a %N. So the documented
+    # idiom "pass --turn whatever send gave you" produced exit 1 on the commonest
+    # target form. Printing the pane beside the number closes that, and hands
+    # the caller the id it wanted next anyway. It is the pane read at baseline,
+    # which is the pane `send-keys` resolved the same target to, so it names
+    # where the text really went rather than where it might go now.
+    #
+    # NOTHING is printed when there is no turn to name — a pane that is not an
+    # agent, a target already mid-turn, recording off, a record this roost
+    # cannot read — so an empty capture means exactly "you cannot use --turn
+    # here" rather than a number that was guessed. Every existing caller ignores
+    # `send`'s stdout, so nothing that worked before sees this at all.
     if [ "$json" -eq 1 ]; then
       . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      # The SAME pane the human line names, not a fresh lookup: the two modes
+      # must not be able to disagree about which pane was written to, and a
+      # re-resolve a second later can answer differently if the window's active
+      # pane has moved.
       roost_jsonout_emit send target s "$raw" \
-        pane z "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" \
+        pane z "$turn_pane" \
         turn i "$turn_num" started b "$turn_started" \
         state z "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" \
         || roost_jsonout_fail send
       exit 0
     fi
-    if [ -n "$turn_num" ]; then printf '%s\n' "$turn_num"; fi
+    if [ -n "$turn_num" ]; then printf '%s %s\n' "$turn_pane" "$turn_num"; fi
     exit 0
     ;;
   read)

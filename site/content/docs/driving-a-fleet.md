@@ -157,16 +157,48 @@ Record the reply **before** reporting `done`. `wait-done` returns the moment the
 
 A reply longer than 12 KB is stored truncated, keeping the beginning, with a marker line saying how much was dropped.
 
+### `roost send` proves a new turn began, and names it
+
+Delivering the text is not the same as the agent acting on it. Between the Enter and the agent's prompt-submit hook stamping ⏳ `working`, its badge still reads ✅ from the **previous** turn — so `wait-done` returns at once and `read` hands back the previous turn's reply. A well-formed answer to somebody else's question, at exit 0, silently.
+
+So on a target whose badge reads ✅ `done` or 💤 `idle`, `send` waits — briefly, and bounded — for a new turn to begin, and prints one line naming it:
+
+```sh
+out="$(roost send api "run the tests")"; rc=$?
+read -r pane turn <<<"$out"
+roost wait-done --turn "$turn" "$pane" 300
+roost read --turn "$turn" "$pane"          # the reply to THIS prompt, provably
+```
+
+Take the exit status off `send`, not off the `read`: `read` succeeds whatever `send` did, so `read -r pane turn <<<"$(roost send …)"` discards the code in the table below.
+
+Two fields: **the `%N` pane the text went into**, and **the turn that prompt started**. The pane is not decoration — a window target such as `api` covers every agent pane in that window, and `--turn` needs the single pane your text reached. `send` resolves it for you.
+
+**You get both fields or neither.** Nothing is printed when there is no turn to name, and each case is ordinary:
+
+- the target is **not an agent** — a shell, a log tail, a pager. It has no badge, so it is not waited for either and `send` is exactly as fast as it always was;
+- the target was **already `working` or `blocked`** — it is mid-turn, the prompt queues inside the harness, and the turn it will take is not the next number;
+- its **replies are not being recorded** (`ROOST_RECORD_DIR=""`), so there are no turn numbers at all. `send` still proves a turn began; it just cannot name it.
+
+The wait is bounded by `@roost-send-turn-timeout`, in seconds, default `10`. Set it to `0` to turn the whole thing off and get the pre-existing behaviour back:
+
+```sh
+tmux -L roost set-option -g @roost-send-turn-timeout 0
+```
+
 ### Exit codes for `roost send`
 
 `roost send` verifies its own submit rather than trusting a fire-and-forget `send-keys`, and its exit code says what went wrong:
 
 | exit | meaning | what to do |
 |------|---------|------------|
+| `4` | **submitted, but no turn began** inside the bound — or the pane went away first. The text **was** delivered | do **not** send it again: the prompt may be running. `roost screen` it, and `roost doctor` if the badge never moves |
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
 | `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, or was delivered but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
 | `1` (`usage:` message) | a missing argument | caller bug, not a delivery failure |
+
+**`4` is not `1`, and the difference is the one that costs you.** `1` means nothing was submitted, so re-sending is safe. `4` means the text is already in the agent. A caller that treats them alike runs the prompt twice.
 
 ### Long messages, and why they used to arrive with the front missing
 
@@ -235,16 +267,33 @@ roost send --force api "run the tests"  # send anyway
 `--force` must come **before** the target. Anywhere later it would be
 indistinguishable from a message that happens to start with that word.
 
-In a loop, exit 3 is the one code worth retrying on:
+In a loop, exit 3 is the one code worth retrying on — and **4 must never be
+retried**, because the text is already in the agent:
 
 ```sh
 while :; do
   roost send api "run the tests" && break
   rc=$?
-  [ "$rc" -eq 3 ] || exit "$rc"   # 1 and 2 will not fix themselves
+  # 1 and 2 will not fix themselves, and 4 already delivered the text —
+  # resending it would run the prompt twice.
+  [ "$rc" -eq 3 ] || exit "$rc"
   sleep 10                        # blocked: wait for the human, then retry
 done
 ```
+
+### Wait for one turn: `roost wait-done --turn N`
+
+Plain `wait-done` asks "is this target still busy?". On a target that has not yet stamped itself busy the answer is no — from the **previous** turn — so it returns at once. `--turn N` asks the question that cannot be answered by an older turn: **has turn N been recorded?**
+
+```sh
+out="$(roost send api "run the tests")"; rc=$?
+read -r pane turn <<<"$out"
+roost wait-done --turn "$turn" "$pane" 300
+```
+
+It needs the `%N` pane, which is why `send` prints one. Turns are numbered per pane, so a window target covering several agent panes has no single numbering to wait on, and `wait-done --turn` refuses it rather than guessing at the active pane. It also refuses a target whose replies are not recorded: turn N would never be written, so the wait could only ever time out. Both refusals happen **before any waiting**, at exit 1, naming which one it is.
+
+**Pass a timeout.** As with plain `wait-done`, omitting `TIMEOUT_SEC` waits with no limit — and a turn that never arrives has nothing to end the wait. An agent that exited leaves a pane whose badge still reads ✅: not busy, not an error, and no turn coming.
 
 ### Exit codes for `roost wait-done`
 
@@ -256,6 +305,8 @@ done
 | `1` (`is in error state`) | an agent pane is 💥 **error**; a second line names the reason when the adapter recorded one | go and look, or re-prompt |
 | `1` (`timed out`) | still busy when the timeout ran out | wait longer, or `roost screen` it |
 | `1` (`usage:`) | the timeout is not a whole number of seconds — `abc`, `-5`, `1.5` or an empty string. Refused at once, before any waiting | fix the argument; omit it, or pass `0`, to wait with no limit |
+| `1` (`--turn` message) | `--turn` was given something it cannot answer: a value that is not a positive whole number, a target that is not a `%N` pane, or a pane with no usable reply record. Refused at once, before any waiting | pass the `%N` and the turn number that `roost send` printed |
+| `1` (`timed out waiting for turn N`) | the turn you named was still not recorded when the timeout ran out | `roost screen` the pane; the agent may never have started it |
 | `2` (`died`) | an agent pane closed, or its process exited, or an agent started from the pane's shell prompt exited, while its badge read `working` or `blocked` — the message names the pane | re-resolve or respawn; do not wait again |
 | `2` (`is gone`) | the target did not exist when `wait-done` started | re-resolve the target |
 
@@ -271,13 +322,14 @@ A target that was gone used to exit `0`. If a script relied on that, it now sees
 
 ## Machine-readable output: `--json`
 
-The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So five commands also print a JSON document when you pass `--json`:
+The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So six commands also print a JSON document when you pass `--json`:
 
 ```sh
 roost status --json
 roost whoami --json
 roost read --json api            # flags go before the target, as with --render
 roost screen --json api 20
+roost send --json api "run the tests"   # flags go before the target, as with --force
 roost state done --json          # the flag goes AFTER the state
 ```
 
@@ -355,6 +407,24 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 
 `{"schema":1,"command":"screen","target":"api","pane":"%3","lines":20,"text":"…","lossy":false}` — `target`, `pane`, `text` and `lossy` as for `read`. `lines` is the count you asked for (default 40), or `null` when you passed something other than a count, such as `+3`. A blank screen gives `"text": ""` and exits 0.
 
+### `roost send --json`
+
+```json
+{"schema":1,"command":"send","target":"api","pane":"%3","turn":7,"started":true,"state":"working"}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `target` | string | the target as you typed it |
+| `pane` | string or `null` | the `%N` the text was delivered to — for a window target, the pane it resolved to |
+| `turn` | integer or `null` | the turn this prompt started, for `wait-done --turn` and `read --turn`. `null` when there is no number to give: the target is not an agent, it was already mid-turn, or its replies are not recorded |
+| `started` | bool | `true` when roost proved a new turn began. `false` means it did not watch — the target had no badge, or was already `working`/`blocked`, or the bound is set to `0` |
+| `state` | string or `null` | the agent state just after the wait |
+
+A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began. Read the exit status first.
+
+A `turn` of `null` with `started` of `true` is the ordinary shape when replies are not being recorded: roost proved the agent acted, but has no numbering to name the turn with.
+
 ### `roost state STATE --json`
 
 For an adapter or a script that badges itself. It sets the state exactly as `roost state STATE` does, then tells you what landed:
@@ -370,7 +440,7 @@ For an adapter or a script that badges itself. It sets the state exactly as `roo
 
 It exits 0 even when `recorded` is `false`, as the plain command always has. Put `--json` **after** the state: `roost state --json` with the flag first still means "set idle", as it always did.
 
-`wait-done` does not take `--json` yet.
+`wait-done` does not take `--json` yet. `send --json` is new; `schema` did not change for it, because adding a command that takes `--json` is not a breaking change (see above).
 
 ## The agent skill
 
