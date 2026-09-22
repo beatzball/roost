@@ -1453,7 +1453,32 @@ JSON
     # that is the fact the caller must not lose.
     turn_timeout="$(t show-options -gqv @roost-send-turn-timeout 2>/dev/null)"
     case "$turn_timeout" in ''|*[!0-9]*) turn_timeout=10 ;; esac
-    [ "${#turn_timeout}" -gt 6 ] && turn_timeout=120
+    # Clamped by LENGTH first — an O(1) test, so this bound can never itself be
+    # slow, and it caps the work the strip loop below could ever be asked to do.
+    [ "${#turn_timeout}" -gt 40 ] && turn_timeout=120
+    # LEADING ZEROS ARE STRIPPED, and both of the bugs that earned this line were
+    # measured on the version without it (bash 3.2):
+    #
+    #   00, 000  every arithmetic context reads them as ZERO, but the `= 0` test
+    #            below is a STRING compare, so the off-switch did not fire and
+    #            `$((turn_timeout * 4))` did — the poll loop ran zero times and
+    #            EVERY send reported exit 4 on a target that was working fine.
+    #   08, 09   a leading zero makes `[ -gt ]` and `$(( ))` read octal, and
+    #            those two are not octal: `value too great for base (error token
+    #            is "08")`. The `[ -gt ]` carries 2>/dev/null, but the `$(( ))`
+    #            in the loop header does not and cannot — under `set -e` that
+    #            aborted `send` AFTER the text had been submitted, which is the
+    #            one outcome this whole branch exists to prevent.
+    #
+    # Bounded to length > 1 so "0" itself (and "000" once stripped) settles on a
+    # single "0" rather than the empty string. Same loop, same reason, as
+    # @roost-send-retries above.
+    while [ "${#turn_timeout}" -gt 1 ] && [ "${turn_timeout%${turn_timeout#?}}" = 0 ]; do
+      turn_timeout="${turn_timeout#0}"
+    done
+    # Zeros are gone, so 4+ digits is genuinely >= 1000 and over the cap. By
+    # pattern before value, so a long digit string never reaches the arithmetic.
+    case "$turn_timeout" in ????*) turn_timeout=120 ;; esac
     [ "$turn_timeout" -gt 120 ] 2>/dev/null && turn_timeout=120 || true
     # 0 turns the whole thing OFF, and it is the escape hatch rather than an
     # accident of the arithmetic. `$((0 * 4))` would make the loop below run
@@ -1490,8 +1515,26 @@ JSON
         if [ -z "$turn_pid" ] || [ "$turn_dead" = "1" ]; then turn_gone=1; break; fi
         # 1. the badge left done/idle: the prompt-submit hook fired. The
         #    ordinary case, and the one the race is about.
+        #
+        #    `error` is the one arm that starts a turn and gets NO number.
+        #    Found by review (flock round 2): an errored turn is never recorded
+        #    — scripts/roost-agent-state clears the half-built reply on that
+        #    path, and every adapter does the same, because a failed turn has no
+        #    answer to publish — so `turn_base + 1` would name a file that will
+        #    never be written, and `wait-done --turn` on it could only time out.
+        #    A turn DID begin, so this is still exit 0 with started true; there
+        #    is simply nothing to number.
+        #
+        #    `blocked` keeps its number: a turn that stopped at a dialog is not
+        #    over, and it records a reply once the human answers.
+        #
+        #    This fixes only the error roost can SEE. A turn that starts
+        #    `working` and errors later is numbered here and that number never
+        #    arrives — unavoidable without predicting the turn, and exactly what
+        #    `wait-done`'s timeout and its own `is in error state` exit are for.
         case "$turn_now" in
           ''|done|idle) ;;
+          error) turn_started=1; break ;;
           *) turn_started=1
              if [ "$turn_have_base" = 1 ]; then turn_num=$((turn_base + 1)); fi
              break ;;
@@ -1506,10 +1549,18 @@ JSON
             turn_started=1; turn_num="$ROOST_RECORD_MAX"; break
           fi
         fi
-        # 3. the stamp moved. Every state change rewrites @agent_since, so a
-        #    done -> working -> done that both of the above missed still shows
+        # 3. the stamp moved. @agent_since is rewritten by EVERY state stamp, so
+        #    a done -> working -> done that both of the above missed still shows
         #    here — unless all of it happened inside one second, which is the
         #    resolution `date +%s` gives it. Hence 4.
+        #
+        #    What it really says is "a stamp landed while the badge stayed
+        #    done/idle", which is WIDER than "a turn ran": codex's SessionEnd
+        #    rewrites the stamp on its way to `idle`, and any adapter that
+        #    re-reports a finished state does the same. So this can read
+        #    `started` for a stamp our prompt did not cause. That is the safe
+        #    direction on purpose — see the four-baseline note above — and it is
+        #    why no number is ever taken from here: only signal 2 names a turn.
         if [ -n "$turn_since_now" ] && [ "$turn_since_now" != "$turn_since" ]; then
           turn_started=1; break
         fi
@@ -1518,6 +1569,13 @@ JSON
         #    is a turn that ran. Read LAST, and only once the three cheap
         #    signals have all said nothing, so an ordinary send never pays for
         #    a second tmux call or for moving 12 KB.
+        #
+        #    It compares TEXT, so it is silent on a turn whose reply is
+        #    byte-identical to the previous one — "ok", "done", an empty answer
+        #    twice. That gap is real and is why this is the fourth signal rather
+        #    than the only one: 1 catches any turn slower than a poll, 2 catches
+        #    any turn at all when records are on, 3 catches any stamp inside the
+        #    same second. All four have to miss at once to reach exit 4.
         if [ "$turn_reply" != "$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)" ]; then
           turn_started=1; break
         fi

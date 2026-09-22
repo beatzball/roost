@@ -166,9 +166,16 @@ So on a target whose badge reads ✅ `done` or 💤 `idle`, `send` waits — bri
 ```sh
 out="$(roost send api "run the tests")"; rc=$?
 read -r pane turn <<<"$out"
-roost wait-done --turn "$turn" "$pane" 300
-roost read --turn "$turn" "$pane"          # the reply to THIS prompt, provably
+if [ -n "$turn" ]; then
+  roost wait-done --turn "$turn" "$pane" 300
+  roost read --turn "$turn" "$pane"        # the reply to THIS prompt, provably
+else
+  roost wait-done api 300                  # no turn numbers here; see below
+  roost read api
+fi
 ```
+
+**Branch on `$turn`.** An empty capture is a normal outcome, and `roost wait-done --turn "" …` is refused at exit 1 — so passing it straight through turns "this target has no turn numbers" into what looks like a failure of the agent.
 
 Take the exit status off `send`, not off the `read`: `read` succeeds whatever `send` did, so `read -r pane turn <<<"$(roost send …)"` discards the code in the table below.
 
@@ -178,9 +185,10 @@ Two fields: **the `%N` pane the text went into**, and **the turn that prompt sta
 
 - the target is **not an agent** — a shell, a log tail, a pager. It has no badge, so it is not waited for either and `send` is exactly as fast as it always was;
 - the target was **already `working` or `blocked`** — it is mid-turn, the prompt queues inside the harness, and the turn it will take is not the next number;
-- its **replies are not being recorded** (`ROOST_RECORD_DIR=""`), so there are no turn numbers at all. `send` still proves a turn began; it just cannot name it.
+- its **replies are not being recorded** (`ROOST_RECORD_DIR=""`), so there are no turn numbers at all. `send` still proves a turn began; it just cannot name it;
+- the turn **began and then errored**. An errored turn records nothing — the adapter drops the half-built reply, because a failed turn has no answer to publish — so a number would name a reply that will never exist. Still exit 0: a turn did begin.
 
-The wait is bounded by `@roost-send-turn-timeout`, in seconds, default `10`. Set it to `0` to turn the whole thing off and get the pre-existing behaviour back:
+The wait is bounded by `@roost-send-turn-timeout`, in seconds, default `10`. Anything that is not a whole number of seconds reads as `10`; anything over `120` is clamped to `120`; leading zeros are stripped, so `08` is eight seconds and `00` is the same as `0`. Set it to `0` to turn the whole thing off and get the pre-existing behaviour back:
 
 ```sh
 tmux -L roost set-option -g @roost-send-turn-timeout 0
@@ -288,7 +296,7 @@ Plain `wait-done` asks "is this target still busy?". On a target that has not ye
 ```sh
 out="$(roost send api "run the tests")"; rc=$?
 read -r pane turn <<<"$out"
-roost wait-done --turn "$turn" "$pane" 300
+[ -n "$turn" ] && roost wait-done --turn "$turn" "$pane" 300
 ```
 
 It needs the `%N` pane, which is why `send` prints one. Turns are numbered per pane, so a window target covering several agent panes has no single numbering to wait on, and `wait-done --turn` refuses it rather than guessing at the active pane. It also refuses a target whose replies are not recorded: turn N would never be written, so the wait could only ever time out. Both refusals happen **before any waiting**, at exit 1, naming which one it is.

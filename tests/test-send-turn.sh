@@ -312,6 +312,139 @@ assert_eq "$("$ROOST" read "$p" 2>/dev/null)" "REPLY-TO[fast turn]" \
   "...and the turn really did run"
 T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
 
+# --- 10. each record-independent signal, on its own -------------------------
+#
+# Found by review (flock round 2): signals 3 (@agent_since) and 4 (@roost-reply)
+# went in together, and case 9 above passes with EITHER of them short-circuited
+# to `if false` — three runs each, all green. A test that cannot tell two
+# mechanisms apart is not testing either of them.
+#
+# So each case below holds ONE of them still, through
+# tests/fixtures/turn-agent.sh's PIN mode, and then asserts afterwards that it
+# really did not move. Both run with recording off and a turn that finishes
+# inside the Enter cushion, so signals 1 and 2 cannot answer either — which
+# leaves exactly one.
+pin_agent() {   # pin_agent since|reply -> %N, recording off, an instant turn
+  local p n=50
+  p="$(T new-window -d -P -F '#{pane_id}' "exec env ROOST_RECORD_DIR= /bin/sh $AGENT $HOOK 0 0 $1")"
+  require_pane "$p" "pinned agent ($1)"
+  while [ "$n" -gt 0 ]; do
+    T capture-pane -p -t "$p" 2>/dev/null | grep -q READY && break
+    sleep 0.1; n=$((n - 1))
+  done
+  printf '%s' "$p"
+}
+opt() { T show-options -pqv -t "$1" "$2" 2>/dev/null; }
+
+T set-option -g @roost-send-turn-timeout 4
+
+# 10a. the stamp is frozen, so ONLY the reply can answer.
+p="$(pin_agent since)"
+env ROOST_RECORD_DIR="" "$ROOST" send "$p" "warm up" >/dev/null 2>&1
+wait_state "$p" done
+since_before="$(opt "$p" @agent_since)"
+reply_before="$(opt "$p" @roost-reply)"
+[ -n "$since_before" ]; assert_true $? "detector proof: the pinned pane has a stamp to freeze"
+start="$(date +%s)"
+env ROOST_RECORD_DIR="" "$ROOST" send "$p" "only the reply" >/dev/null 2>&1; rc=$?
+elapsed=$(( $(date +%s) - start ))
+assert_eq "$rc" "0" "stamp frozen: the reply alone is enough to prove a turn began"
+[ "$elapsed" -lt 4 ]; assert_true $? "...without burning the bound (${elapsed}s)"
+assert_eq "$(opt "$p" @agent_since)" "$since_before" \
+  "...and the stamp really was unchanged, so signal 3 could not have answered"
+[ "$(opt "$p" @roost-reply)" != "$reply_before" ]; assert_true $? \
+  "...while the reply really did change, which is the only signal left"
+
+# 10b. the reply is frozen, so ONLY the stamp can answer.
+#
+# The turn's own reply is written back, so `read` cannot prove the turn ran
+# here. The stamp moving does: nothing else writes @agent_since, and the restore
+# that left the reply untouched only runs AFTER the done hook — so the two
+# assertions together say the turn completed.
+p="$(pin_agent reply)"
+env ROOST_RECORD_DIR="" "$ROOST" send "$p" "warm up" >/dev/null 2>&1
+wait_state "$p" done
+since_before="$(opt "$p" @agent_since)"
+reply_before="$(opt "$p" @roost-reply)"
+[ -n "$reply_before" ]; assert_true $? "detector proof: the pinned pane has a reply to freeze"
+# A whole second, so the stamp this turn writes cannot collide with the last
+# one: @agent_since is `date +%s`, and the point of this case is that it MOVED.
+sleep 1.2
+start="$(date +%s)"
+env ROOST_RECORD_DIR="" "$ROOST" send "$p" "only the stamp" >/dev/null 2>&1; rc=$?
+elapsed=$(( $(date +%s) - start ))
+assert_eq "$rc" "0" "reply frozen: the stamp alone is enough to prove a turn began"
+[ "$elapsed" -lt 4 ]; assert_true $? "...without burning the bound (${elapsed}s)"
+assert_eq "$(opt "$p" @roost-reply)" "$reply_before" \
+  "...and the reply really was unchanged, so signal 4 could not have answered"
+[ "$(opt "$p" @agent_since)" != "$since_before" ]; assert_true $? \
+  "...while the stamp really did move, which is the only signal left"
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
+
+# --- 11. @roost-send-turn-timeout survives a leading zero -------------------
+#
+# Both of these were measured on the version without the strip loop, and both
+# are worse than the bad value they came from:
+#
+#   00   every arithmetic context reads it as zero, but the off-switch is a
+#        STRING compare — so the watch stayed on with a bound of zero ticks and
+#        EVERY send reported exit 4 against a healthy agent.
+#   08   a leading zero makes `[ -gt ]` and `$(( ))` read octal, and 08 is not
+#        octal. `$(( ))` in the loop header carries no 2>/dev/null and cannot,
+#        so under `set -e` it aborted `send` AFTER the text was submitted.
+p="$(newagent 2 0.4)"
+"$ROOST" send "$p" "warm up" >/dev/null 2>&1; wait_state "$p" done
+T set-option -g @roost-send-turn-timeout 00
+send_into "$p" "double zero"
+assert_eq "$sent_rc" "0" "@roost-send-turn-timeout 00 reads as 0 (off), not as a zero-tick watch"
+assert_eq "$sent_turn" "" "...so no turn is claimed, exactly as a plain 0 does"
+# `wait_state done` would return AT ONCE here -- the watch was off, so the badge
+# is still the previous turn's -- which is the very bug this file is about. Wait
+# on the turn instead, which is what `--turn` is for.
+"$ROOST" wait-done --turn 2 "$p" 30 >/dev/null 2>&1
+T set-option -g @roost-send-turn-timeout 08
+send_into "$p" "octal eight"
+assert_eq "$sent_rc" "0" "@roost-send-turn-timeout 08 is 8 seconds, not an arithmetic error"
+assert_eq "$sent_turn" "3" "...and the send still names the turn it started"
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
+wait_state "$p" done
+
+# --- 12. an ERRORED turn starts, but is never numbered ----------------------
+#
+# Found by review (flock round 2). An errored turn records nothing — the hook
+# and every adapter drop the half-built reply, because a failed turn has no
+# answer to publish — so a number handed back here could only ever time out
+# under `wait-done --turn`. The turn did begin, so this is still exit 0.
+p="$(T new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"
+require_pane "$p" "error pane"
+sleep 0.3
+spid="$(T display -p '#{pid}')"
+env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" working </dev/null
+printf '{"last_assistant_message":"first answer"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" done --stop-hook
+assert_eq "$(state "$p")" "done" "detector proof: the error pane has a finished turn to send into"
+assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "first answer" \
+  "detector proof: ...and that turn is numbered 1"
+# The next thing that happens to this pane is an error, not a turn.
+( sleep 1; env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" error </dev/null ) &
+send_into "$p" "this one errors"
+assert_eq "$sent_rc" "0" "a turn that begins and errors is still exit 0"
+assert_eq "$sent_turn" "" "...but is NOT numbered, because an errored turn records nothing"
+assert_eq "$sent_pane" "" "...and with no turn there is no pane either: both fields or neither"
+# The pane is now PARKED at `error`, which is not a state `send` watches at all,
+# so a second send there would report started false for an unrelated reason.
+# Put it back on a finished turn first, then arrange the same error again, so
+# --json is asked the same question the human line was.
+env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" working </dev/null
+printf '{"last_assistant_message":"second answer"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" done --stop-hook
+assert_eq "$(state "$p")" "done" "detector proof: the error pane is back on a finished turn"
+( sleep 1; env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" error </dev/null ) &
+doc="$("$ROOST" send --json "$p" "and again" 2>/dev/null)"
+assert_contains "$doc" '"turn":null' "send --json says turn null on a turn that errored"
+assert_contains "$doc" '"started":true' "...and started true, because a turn did begin"
+wait
+
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
 assert_eq "$found" "" "nothing was written into HOME/XDG during this file"
