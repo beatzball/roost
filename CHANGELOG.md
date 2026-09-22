@@ -36,7 +36,32 @@ and this project uses [Semantic Versioning](https://semver.org/).
   form is unchanged. A reply longer than a few KB, or one built from a file,
   belongs on stdin. The kept turn file holds every byte, trailing newlines
   included, on both paths.
-||||||| parent of 1ee9c8d (changelog: remote notifications over the terminal, under Unreleased (#46))
+
+- **A Claude Code permission dialog is badged 🛑 as it opens, not six seconds
+  later** (#91). roost learned of a dialog from the `permission_prompt`
+  Notification, which arrives 6.00 s after the dialog is drawn — and a dialog
+  answered sooner was never badged at all. In that window `roost send` could
+  not refuse, and pasted into the open dialog. Claude's `PermissionRequest`
+  hook event fires about 10–16 ms after the dialog is drawn; roost now wires
+  it (measured: `blocked` in 72 ms), keeps the Notification as the fallback
+  for an older Claude, and records what the dialog is asking in
+  `@roost-blocked-on` (`<tool>: <command or path>`, 120 characters) for a
+  later display. The hook prints nothing: `PermissionRequest` is an event
+  Claude acts on, and roost never answers for the human.
+- **A subagent's dialog no longer flips the pane to ✅ done while it is still
+  open.** A background agent's dialog ends the main turn with a `Stop` — 7 ms
+  after, or 0.3 ms before, the dialog event; the order swaps between runs.
+  Everything a dialog stamps is now one tmux command, and a `Stop` decides at
+  the write, inside tmux, whether the pane is blocked; the first `Stop` under
+  an open dialog is held back, a second always moves the pane.
+- **A tool that fails after the human answers Yes no longer strands the pane
+  at 🛑.** Claude sends `PostToolUseFailure`, not `PostToolUse`, for it; roost
+  now wires that event too (eight Claude hook entries). `roost doctor` warns
+  about a settings file or a roost-owned wiring file written before this
+  change; `roost install` adds the missing entries.
+- **A background agent's tool result no longer clears another agent's open
+  dialog.** `PostToolUse` and `PostToolUseFailure` read `agent_id` while the
+  pane is blocked, and a subagent's event leaves the badge alone.
 
 ## [0.5.0]
 
