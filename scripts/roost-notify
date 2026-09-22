@@ -37,9 +37,9 @@ if [ "$backend" = tmux ]; then tmux_fallback; exit 0; fi
 #
 #   bare OSC 9 -> #{client_tty}                    ARRIVES at the outer terminal
 #   bare OSC 9 -> #{pane_tty}                      absent (tmux parses, drops it)
-#   DCS-wrapped, passthrough on, pane VISIBLE       ARRIVES
-#   DCS-wrapped, passthrough on, pane OFF-SCREEN    absent
-#   DCS-wrapped, passthrough off                    absent
+#   DCS-wrapped, passthrough on, pane VISIBLE      ARRIVES
+#   DCS-wrapped, passthrough on, pane OFF-SCREEN   absent
+#   DCS-wrapped, passthrough off                   absent
 #
 # So this writes BARE sequences to the client's tty, not DCS-wrapped ones to
 # the pane. Two reasons, and the second is the decisive one:
@@ -55,41 +55,73 @@ if [ "$backend" = tmux ]; then tmux_fallback; exit 0; fi
 #      tests/test-notify-osc.sh pins the measurement.
 #
 # Off unless the human is somewhere else: `@roost-notify-osc on` forces it,
-# `off` silences it, and unset means "only when a client is remote". Remote is
-# read from SSH_CONNECTION, which is in tmux's DEFAULT update-environment list
-# (MEASURED on tmux 3.6: DISPLAY KRB5CCNAME MSYSTEM SSH_ASKPASS SSH_AUTH_SOCK
-# SSH_AGENT_PID SSH_CONNECTION WINDOWID XAUTHORITY) — so tmux copies it from
-# the attaching client into that session's environment and removes it again
-# when a local client attaches. SSH_TTY is NOT in that list; it is checked too,
-# cheaply, for a user who added it, but nothing may rest on it alone.
-#
-# A terminal that does not know these sequences prints nothing: an unknown OSC
-# string is swallowed up to its terminator. A terminal that does not know OSC
-# *at all* would print the payload, which is the whole reason this is off for a
-# local client unless asked for.
+# `off` silences it, and unset means "only for a client tmux reports as
+# remote". A terminal that does not know these sequences prints nothing: an
+# unknown OSC string is swallowed up to its terminator. A terminal that does
+# not know OSC *at all* would print the payload, which is the whole reason this
+# is off for a local client unless asked for.
 osc_mode="$(opt @roost-notify-osc)"
 osc_codes="$(opt @roost-notify-osc-codes)"; osc_codes="${osc_codes:-9}"
 # An explicit tty to write to instead of discovering clients. Its first job is
 # to be the seam tests/test-notify-osc.sh writes into — a test cannot attach a
 # real client from a plain shell, since attaching needs a pty — but it is also
 # the escape hatch for a setup where client discovery cannot see the right
-# terminal.
+# terminal. It names a DESTINATION and decides nothing: in auto mode tmux still
+# has to report a remote client before anything is written to it.
 osc_tty="$(opt @roost-notify-osc-tty)"
 
-# C0 controls out, everything else through. An ESC, a BEL or a newline inside
-# the payload TERMINATES the OSC string early, and the rest of the text is then
-# printed as garbage on the human's screen (#46 requirements 4 and 5). Window
-# names and agent messages are not trusted input. LC_ALL=C so tr works on
-# bytes: UTF-8 continuation bytes are 0x80-0xBF and so never in this range,
-# which is what keeps non-ASCII intact (MEASURED: a UTF-8 payload reaches the
-# outer terminal byte for byte). tr pads its second set with its last
-# character, so every control maps to one space.
-osc_clean() { LC_ALL=C tr '\000-\037\177' ' ' ; }
+# The C1 controls, U+0080-U+009F, as the TWO-byte UTF-8 sequences C2 80 .. C2 9F.
+# Built once, with printf, because a literal \x escape is not portable in sed:
+# BSD sed does not read \xNN, so the bytes go into the program itself and the
+# match runs under LC_ALL=C.
+osc_c1_re="$(printf 's/\302[\200-\237]/ /g')"
+
+# Payload sanitiser. Window names and agent messages are not trusted input.
+#
+#   C0 and DEL  an ESC, a BEL or a newline TERMINATES the OSC string early and
+#               the rest is printed as garbage on the human's screen (#46
+#               requirements 4 and 5). Byte-safe to strip: 0x00-0x1F and 0x7F
+#               never appear inside a UTF-8 multi-byte sequence.
+#   C1          a lone U+009C can be read as an 8-bit ST and end the string the
+#               same way. These are NOT byte-strippable, and getting that wrong
+#               corrupts ordinary text. MEASURED on the string "a<C2 9B>b ł c":
+#                 tr '\200-\237' ' '   -> "a<C2> b<C5> c"   both characters destroyed
+#                 sed on C2 80-C2 9F   -> "a b ł c"         correct
+#               U+0142 'ł' is C5 82 and 0x82 is in that byte range, which is
+#               exactly how a naive strip eats it.
+#
+# A payload that is not valid UTF-8 can still carry a bare 0x9C, and that is
+# deliberately left alone: telling "invalid byte" from "second byte of a real
+# character" needs a validity check, and iconv cannot be trusted to give one —
+# MEASURED, `iconv -f UTF-8 -t UTF-8` rejected a lone 0x9C on one image here and
+# ACCEPTED it on another. Corrupting every 'ł' to catch an invalid byte that a
+# UTF-8 terminal already replaces is the worse trade.
+#
+# LC_ALL=C throughout so both tools work on bytes: UTF-8 continuation bytes are
+# 0x80-0xBF and so never inside the C0 range, which is what keeps non-ASCII
+# intact (MEASURED: a UTF-8 payload reaches the outer terminal byte for byte).
+osc_clean() { LC_ALL=C tr '\000-\037\177' ' ' | LC_ALL=C sed "$osc_c1_re"; }
 
 # Is the client attached to session $1 a remote one?
-# `show-environment -t S VAR` prints "VAR=value" when set and "-VAR" — a
-# removal marker, not an error — when it is not, so the test has to be for the
+#
+# SSH_CONNECTION is in tmux's DEFAULT update-environment (MEASURED on tmux 3.6:
+# DISPLAY KRB5CCNAME MSYSTEM SSH_ASKPASS SSH_AUTH_SOCK SSH_AGENT_PID
+# SSH_CONNECTION WINDOWID XAUTHORITY), so tmux copies it from the attaching
+# client into that session's environment and REMOVES it again when a local
+# client attaches. That makes tmux's own view the only honest source here.
+# SSH_TTY is not in that list; it is checked too, cheaply, for a user who added
+# it, but nothing may rest on it alone.
+#
+# `show-environment -t S VAR` prints "VAR=value" when set and "-VAR" — a removal
+# marker, not an error — when it is not, so the test has to be for the
 # assignment form with a non-empty value, never merely for non-empty output.
+#
+# This process's OWN environment is deliberately NOT consulted. It looked like a
+# cheap extra signal and it is a bug: this script runs inside an agent's pane,
+# and a pane keeps SSH_CONNECTION for its whole life once the server (or the
+# window) was created over ssh — long after the human walked back to the
+# machine. A review caught it writing to a LOCAL client that tmux was correctly
+# reporting as local. Per client, from tmux, or not at all.
 osc_session_remote() {
   for _v in SSH_CONNECTION SSH_TTY; do
     case "$(nt show-environment -t "$1" "$_v" 2>/dev/null)" in
@@ -99,33 +131,100 @@ osc_session_remote() {
   return 1
 }
 
-# ... and this process's own environment. If the tmux server itself was started
-# from a remote shell, every pane inherits SSH_CONNECTION and the human is by
-# definition not at this machine.
-osc_self_remote() { [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; }
-
-osc_any_session_remote() {
-  # Only sessions that actually have a client attached: a detached session's
-  # environment can still carry SSH_CONNECTION from whoever created it, and
-  # nobody is looking at a detached session anyway.
+# The clients worth writing to, one tty per line. $1 = force | auto.
+osc_targets() {
+  # Fields are separated by a SPACE and split at the FIRST one, which looks lax
+  # and is not: a tty path can never contain a space, #{client_control_mode} is
+  # 0 or 1, #{client_flags} is comma-separated with no spaces, and the session
+  # name comes LAST so `#* ` keeps it whole however many spaces it has. A tab
+  # would be the obvious separator and is version-dependent — MEASURED, with a
+  # real tab in the -F string:
   #
-  # The loop runs in a subshell (it is the last stage of a pipeline), so it
-  # cannot set a variable the caller would see; it answers with its EXIT
-  # STATUS instead. The explicit `exit 1` after the loop is load-bearing: a
-  # `while` that reads to EOF without matching exits 0, so without it this
-  # function answered "yes, remote" on a server with NO clients at all —
-  # caught by tests/test-notify-osc.sh's local-client case, which is the whole
-  # reason that case is byte-exact rather than a smoke test.
-  nt list-clients -F '#{client_session}' 2>/dev/null | { while IFS= read -r _s; do
-    [ -n "$_s" ] || continue
-    osc_session_remote "$_s" && exit 0
-  done; exit 1; }
+  #   tmux 3.6 (macOS 25.3.0)   `0 \t $0`   tab preserved
+  #   tmux 3.4 / 3.5a / 3.7c    `0 _ $0`    tab rewritten to an UNDERSCORE
+  #
+  # Those builds sanitise a control character out of a format result, so `read`
+  # saw one field, the session came back empty, and every attached client was
+  # skipped — on Linux only, while macOS stayed green.
+  #
+  # An older tmux that does not know one of these formats expands it to EMPTY
+  # rather than erroring (MEASURED: `-F '[#{client_no_such_format}]'` prints
+  # `[]`), which leaves a run of spaces the split above absorbs, so the session
+  # name still lands in the last field.
+  nt list-clients -F '#{client_tty} #{client_control_mode} #{client_flags} #{client_session}' 2>/dev/null |
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _ctty="${_line%% *}"; _rest="${_line#* }"
+    _ccm="${_rest%% *}";  _rest="${_rest#* }"
+    _cflags="${_rest%% *}"; _csess="${_rest#* }"
+    [ -n "$_ctty" ] || continue
+    # A control-mode client (`tmux -CC`, what an integrating terminal attaches
+    # with) is NOT an emulator: its tty carries tmux's own control protocol, a
+    # line-based stream of %begin/%output blocks. Raw escape bytes shoved into
+    # it are read as protocol and can desync the parser on the other side.
+    # Skipped whatever its session says. Both spellings are checked because
+    # roost supports tmux >= 3.2 and only 3.3a upward could be measured here
+    # (MEASURED on 3.3a, 3.4, 3.5a, 3.6, 3.7c: #{client_control_mode} is 1 AND
+    # #{client_flags} contains control-mode); on a build that knows neither,
+    # both read empty and such a client would be written to.
+    [ "$_ccm" = 1 ] && continue
+    case ",$_cflags," in *,control-mode,*) continue ;; esac
+    if [ "$1" != force ] && ! osc_session_remote "$_csess"; then continue; fi
+    printf '%s\n' "$_ctty"
+  done
 }
 
-# Build the whole payload ONCE and write it with a single printf. A short
-# single write() to a tty will not be torn in half, so tmux's own output cannot
-# land in the middle of an escape sequence and corrupt the screen; one printf
-# per code, opened once, would leave that window open between codes.
+# One tty, one write, bounded. Runs as a background job of osc_write_all.
+#
+# The write MUST NOT be able to block for ever. This script is called
+# synchronously from scripts/roost-agent-state, which is a hook on the agent's
+# own turn, and the file's contract at the top is that it never fails. A
+# terminal that has stopped reading — laptop asleep, wifi gone, sshd not
+# draining the pty — leaves the pty buffer full, and the next write to it blocks
+# in the kernel with no timeout. MEASURED: a pty filled with 1 KiB on macOS and
+# never read made this hook still running after 8 s. There is no portable
+# non-blocking open in POSIX shell, so the bound is a watchdog: write in a
+# child, kill it if it is still there after the deadline.
+#
+# 1 second, and it is the longest a wedged terminal can hold up the agent's
+# turn. MEASURED on this machine: a healthy notification (the whole script, a
+# few tmux round trips included) takes 0.12-0.16 s wall, of which the write
+# itself is one small write() to a pty; the same call against a filled pty
+# that nobody reads returns in 1.14 s with exit 0, and leaves no process
+# behind 5 s later.
+osc_write_one() {
+  { printf '%s' "$_pay" >"$1" 2>/dev/null || true; } >/dev/null 2>&1 </dev/null &
+  _w=$!
+  ( sleep 1; kill -9 "$_w" 2>/dev/null || true ) >/dev/null 2>&1 </dev/null &
+  _k=$!
+  wait "$_w" 2>/dev/null || true
+  # The writer finished on its own; retire the watchdog rather than leave it
+  # sleeping out its second.
+  kill "$_k" 2>/dev/null || true
+}
+
+# $1 = newline-separated tty paths. Every write is started FIRST and waited for
+# afterwards, so one wedged terminal cannot delay the others and the whole
+# fan-out costs one deadline rather than one per client.
+osc_write_all() {
+  _pids=""
+  # A here-document feeds `read` without a pipeline, so this loop stays in the
+  # current shell and the job ids survive it.
+  while IFS= read -r _t; do
+    [ -n "$_t" ] || continue
+    osc_write_one "$_t" &
+    _pids="$_pids $!"
+  done <<OSC_TTYS
+$1
+OSC_TTYS
+  for _p in $_pids; do wait "$_p" 2>/dev/null || true; done
+  return 0
+}
+
+# Build the whole payload ONCE. A short single write() to a tty will not be
+# torn in half, so tmux's own output cannot land in the middle of an escape
+# sequence and corrupt the screen; one printf per code, opened once, would
+# leave that window open between codes.
 osc_payload() {
   _t="$(printf '%s' "$title" | osc_clean)"
   _m="$(printf '%s' "$msg" | osc_clean)"
@@ -138,6 +237,13 @@ osc_payload() {
   # began "4;" would drive a progress bar instead of raising a banner, so shift
   # it by one space: invisible in a notification, and not a subcommand number.
   case "$_b" in 4\;*) _b=" $_b" ;; esac
+  # OSC 777's fields are delimited by ";", so a ";" anywhere in the title or the
+  # body shifts every field after it — "a;b" as a title makes "b" the body and
+  # drops the real one. The substitution is applied to the 777 form ONLY: OSC
+  # 9's payload is everything after the first ";", so there is nothing to shift
+  # there and the text is left exactly as the human wrote it.
+  _t7="$(printf '%s' "$_t" | tr ';' ',')"
+  _m7="$(printf '%s' "$_m" | tr ';' ',')"
   _p=""
   for _c in $osc_codes; do
     case "$_c" in
@@ -145,10 +251,8 @@ osc_payload() {
       # kitty. The widest reach of the three, which is why it is the default.
       9)   printf -v _s '\033]9;%s\033\\' "$_b" ;;
       # rxvt-unicode's extension, read by Ghostty and foot. Title and body get
-      # their own fields. A semicolon inside the title shifts the field
-      # boundary — harmless (the body starts early) and deliberately not
-      # rewritten, since mangling the text the human reads is worse.
-      777) printf -v _s '\033]777;notify;%s;%s\033\\' "$_t" "$_m" ;;
+      # their own fields.
+      777) printf -v _s '\033]777;notify;%s;%s\033\\' "$_t7" "$_m7" ;;
       # kitty's own protocol: one escape per part, keyed by the same identifier
       # so the two chunks are one notification. NOT in the default set —
       # Ghostty 1.3.1 shows no sign of reading OSC 99 (MEASURED: its binary
@@ -165,47 +269,25 @@ osc_payload() {
   printf '%s' "$_p"
 }
 
-# $1 = "force" to skip the remote test (an explicitly selected backend, or
-# `@roost-notify-osc on`). Never fails, like every other backend here: an
-# unwritable tty is a miss. `2>/dev/null` comes BEFORE the `>` so that a
-# failure to OPEN the target is silenced too — the shell reports that on
-# stderr, and redirections are applied left to right.
+# $1 = "force" to write to every client without asking whether it is remote (an
+# explicitly selected backend, or `@roost-notify-osc on`). Never fails, like
+# every other backend here: an unwritable tty is a miss.
 osc_notify() {
   _force="$1"
   [ -n "$osc_codes" ] || return 0
   _pay="$(osc_payload)"
   [ -n "$_pay" ] || return 0
+  _targets="$(osc_targets "$_force")"
   if [ -n "$osc_tty" ]; then
-    if [ "$_force" = force ] || osc_self_remote || osc_any_session_remote; then
-      printf '%s' "$_pay" 2>/dev/null > "$osc_tty" || true
-    fi
+    # A destination override still needs a reason to fire. In auto that reason
+    # is the same one every other client is judged by: tmux reporting a remote
+    # client somewhere. Pair the override with `@roost-notify-osc on` to write
+    # unconditionally.
+    if [ "$_force" = force ] || [ -n "$_targets" ]; then osc_write_all "$osc_tty"; fi
     return 0
   fi
-  # One line per attached client: its tty, then the session it is looking at.
-  #
-  # Separated by a SPACE and split at the FIRST one, which looks lax and is not:
-  # a tty path can never contain a space, and `#* ` keeps everything after the
-  # first one, so a session name with spaces in it survives whole. A tab would
-  # be the obvious separator and is version-dependent — MEASURED, with a real
-  # tab in the -F string:
-  #
-  #   tmux 3.6 (macOS 25.3.0)   `0 \t $0`   tab preserved
-  #   tmux 3.4 / 3.5a / 3.7c    `0 _ $0`    tab rewritten to an UNDERSCORE
-  #
-  # tmux sanitises a control character out of a format result on those builds,
-  # so `read` saw one field, the session came back empty, and every attached
-  # client was skipped — on Linux only, while macOS stayed green. Caught by
-  # running tests/test-notify-osc.sh in a container per tmux version.
-  nt list-clients -F '#{client_tty} #{client_session}' 2>/dev/null |
-  while IFS= read -r _line; do
-    _ctty="${_line%% *}"; _csess="${_line#* }"
-    [ -n "$_ctty" ] || continue
-    if [ "$_force" != force ] && ! osc_self_remote && ! osc_session_remote "$_csess"; then
-      continue
-    fi
-    printf '%s' "$_pay" 2>/dev/null > "$_ctty" || true
-  done
-  return 0
+  [ -n "$_targets" ] || return 0
+  osc_write_all "$_targets"
 }
 
 # Selected on its own: emit and stop, without asking whether anyone is remote.
@@ -220,7 +302,7 @@ if [ "$backend" = osc ]; then osc_notify force; exit 0; fi
 # client unless asked for, so nothing changes for anyone not running a remote
 # fleet.
 # `on` is a decision already taken, so it skips the remote test outright; in
-# auto mode osc_notify does the deciding per CLIENT, since a server can have a
+# auto mode osc_targets does the deciding per CLIENT, since a server can have a
 # local client and a remote one attached at once and only the remote one needs
 # this.
 case "$osc_mode" in
