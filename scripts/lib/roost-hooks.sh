@@ -88,11 +88,18 @@ _roost_hooks_root() {
 # nothing to clear it and the turn ended with the pane still blocked
 # (tests/test-claude-permission-request.sh). It badges `working` for exactly
 # the reason PostToolUse does: a failed tool call does not end the turn.
+#
+# --tool-hook on both of them lets the hook read that event's payload, and it
+# reads it only when the pane already reads 🛑: a SUBAGENT's tool result must
+# not clear a dialog that a different agent opened on the same pane. Leave the
+# flag off and every badge is still correct except that one case, which is why
+# it is a flag rather than an always-on stdin read — this pair fires on every
+# tool call of every live agent.
 roost_hooks_claude() {
   local target context
   if [ $# -ge 1 ]; then target="$1"
   else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
-  # SessionStart runs a DIFFERENT script from the other seven, so it cannot use
+  # SessionStart runs a DIFFERENT script from the other eight, so it cannot use
   # $target. It is derived as a sibling of $target rather than from
   # _roost_hooks_root because $target may have been injected by a caller (the
   # installer, or a test with a fixed path) and must stay the authority on
@@ -118,10 +125,10 @@ roost_hooks_claude() {
         "hooks": [ { "type": "command", "command": "$target blocked --notification-hook" } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "$target working" } ] }
+      { "hooks": [ { "type": "command", "command": "$target working --tool-hook" } ] }
     ],
     "PostToolUseFailure": [
-      { "hooks": [ { "type": "command", "command": "$target working" } ] }
+      { "hooks": [ { "type": "command", "command": "$target working --tool-hook" } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "$target done --stop-hook" } ] }

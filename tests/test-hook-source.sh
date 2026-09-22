@@ -70,6 +70,12 @@ assert_eq "$claude_out" "$bare_out" \
 # (scripts/lib/roost-json.sh) the StopFailure case above relies on, and
 # tests/test-claude-permission-request.sh holds the rest.
 #
+# Round 2 added --tool-hook to both PostToolUse entries. It lets the hook read
+# that event's payload, and it reads it only when the pane already reads 🛑 —
+# a SUBAGENT's tool result must not clear a dialog a different agent opened on
+# the same pane. Re-captured, not typed; the JSON diff is those two argument
+# strings and nothing else.
+#
 # Round 1 of the flock then added the missing prose and an EIGHTH event,
 # PostToolUseFailure, beside PostToolUse. That one is an append, and it is the
 # event Claude actually sends when a tool fails after the human answered Yes —

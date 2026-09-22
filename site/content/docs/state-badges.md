@@ -75,8 +75,8 @@ Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
 | `UserPromptSubmit` | ⏳ working |
 | `PermissionRequest` | 🛑 blocked |
 | `Notification` (matcher: `permission_prompt`) | 🛑 blocked |
-| `PostToolUse` | ⏳ working |
-| `PostToolUseFailure` | ⏳ working |
+| `PostToolUse` (`--tool-hook`) | ⏳ working |
+| `PostToolUseFailure` (`--tool-hook`) | ⏳ working |
 | `Stop` | ✅ done |
 | `StopFailure` | 💥 error |
 
@@ -85,6 +85,7 @@ Some of those are subtler than they look:
 - **`PermissionRequest` is what paints 🛑, and it fires as the dialog opens.** Measured on Claude Code 2.1.278: 11–16 ms after the dialog appears. The hook prints nothing and decides nothing — an `allow` or a `deny` on this event would answer the dialog on your behalf, and roost never does that.
 - **`Notification` is the fallback, and it must be scoped to `permission_prompt`.** Unmatched, it also fires for `idle_prompt` and `auth_success` — so a *finished* agent would go red. It arrives a flat 6.00 s after `PermissionRequest`, and a dialog answered faster than that fires no `Notification` at all — which is why it is not enough on its own, and why it stays wired only for a Claude too old to have `PermissionRequest`.
 - **`PostToolUse` and `PostToolUseFailure` are what clear 🛑.** No hook fires when you answer a permission dialog, so they are the first observable events after you approve. You need **both**: `PostToolUse` fires only when the tool *succeeds*, so a command that exits non-zero after you said Yes would otherwise leave the window red for the rest of the turn.
+- **`--tool-hook` on those two is about background agents.** A background agent finishing a tool call fires `PostToolUse` on the *main* pane, and without the flag that cleared a 🛑 a **different** agent's dialog had put there. The flag lets the hook read the payload's `agent_id` — and it reads it only when the pane already shows 🛑, so the common case is still one lookup and an exit. Leave the flag off and every badge is still correct except that one.
 - **After No or Esc, Claude fires no hook at all.** `--permission-request-hook` and `--notification-hook` record the path of Claude's own transcript beside the 🛑, and `roost send`, `read` and `wait-done` read that transcript before believing the badge. When the newest records in it are Claude's own "request interrupted" records, written after the badge, they clear it. They never set a state, and anything they cannot prove leaves the badge red.
 - **`StopFailure` is what ends a failed turn.** When a turn ends on an API error — a rate limit, an overload, a model that does not exist — Claude fires `StopFailure` instead of `Stop`, and nothing after it. roost badges that 💥 error, and `roost wait-done` exits 1 with the reason, for example *Claude ended the turn on an API error (rate_limit)*. While Claude is still retrying, the pane stays ⏳ working, because it is. A subagent's API error does not change the badge: the main turn goes on.
 

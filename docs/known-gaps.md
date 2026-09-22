@@ -147,7 +147,9 @@ no dialog, also fires Interrupt and no Stop.
   `roost install` is re-run; one wired before #91 has no `PermissionRequest`
   entry at all and keeps the whole 6 s window, and no `PostToolUseFailure`
   entry, so a tool that fails after a Yes leaves the pane 🛑 for the rest of
-  the turn. `roost doctor` names each
+  the turn. `roost doctor` names each of those three by the flag or the event
+  name it looks for, and each of those checks now has a test that fails when
+  the check is removed (flock round 2 found two that did not). `roost doctor` names each
   missing entry by the flag it looks for, and `roost install` adds the entry
   and leaves everything else alone.
 - **copilot `No` is not measured.** On 1.0.83, `3` moved the cursor and neither
@@ -193,7 +195,7 @@ no dialog, also fires Interrupt and no Stop.
   is fine. Found by review (flock round 1). `roost doctor` now names that file
   too, and `roost wiring on` regenerates it; nothing detects it automatically.
 - **A subagent's dialog over a declined main dialog: measured, and the window
-  is now about 250 ms rather than about 6 s.** Found by review (flock round 2),
+  is now about 250 ms rather than about 6 s.** Found by review (flock round 1),
   and reproduced on 2.1.278 in the #91 rig. What happens: a background agent's
   dialog is drawn on the MAIN pane, `PermissionRequest` fires for it with
   `agent_id` and `agent_type` added, and its `transcript_path` still names the
@@ -244,6 +246,29 @@ no dialog, also fires Interrupt and no Stop.
   `blocked` before the real `Stop` arrives. The reviewers were right about the
   shape and the version does not have it; the bounded guard above covers it if
   that `UserPromptSubmit` ever stops arriving.
+- **The path that LEAVES `blocked` is the one writer left that is not atomic.**
+  Everything that stamps a dialog is now one tmux command — the transition and
+  the repeat, from one function — and the `Stop` is an `if-shell`. The clear
+  (`working`, `error`, `idle`) still reads `@agent_state` once near the top and
+  unsets `@roost-blocked-on` and `@roost-stop-swallowed` in separate calls
+  further down, so a dialog stamped in between would have its record cleared
+  under it. Round 2 of the flock bounded the window at single-digit
+  milliseconds and could NOT reproduce it at any gap, because the hook that
+  would have to win the race is systematically the slower of the two. Left
+  alone deliberately: the badge itself is written last and correctly, and
+  making it atomic costs the `PostToolUse` hot path a second round trip on
+  every tool call of every live agent.
+- **A SUBAGENT's tool result no longer clears another agent's dialog, but the
+  case behind it is not measured live.** Found by review (flock round 2) and
+  reproduced at hook level: a background agent finishing a tool fires
+  `PostToolUse` on the MAIN pane, and `working` cleared the 🛑 a DIFFERENT
+  agent's dialog had stamped there — badge gone, description gone, `send`
+  exit 0 into the open dialog. `--tool-hook` now reads `agent_id` and ignores
+  a subagent's tool event while the pane is blocked. What is NOT measured is
+  the live shape it needs: **two** background agents at once, one holding a
+  dialog while the other finishes a tool. The rig drives one subagent at a
+  time. Queued dialogs — a second dialog arriving while the first is still
+  open — are unmeasured for the same reason.
 - **A sibling tool's `PostToolUse` cannot clear a live dialog on 2.1.278.**
   Found by review (flock round 1): an auto-allowed `Read` in the same assistant
   message as a `Bash` that needs permission would badge `working` over the

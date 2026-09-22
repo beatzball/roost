@@ -66,10 +66,10 @@
         "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state blocked --notification-hook" } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working" } ] }
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working --tool-hook" } ] }
     ],
     "PostToolUseFailure": [
-      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working" } ] }
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working --tool-hook" } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state done --stop-hook" } ] }

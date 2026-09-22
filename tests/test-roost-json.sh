@@ -159,7 +159,7 @@ JSON
     ulen="$(jq '.hooks.PostToolUse | length' "$ud/settings.json" 2>/dev/null)"
     assert_eq "$ulen" "2" "[$tool] append: roost's entry joins the array rather than replacing it"
     ucmd="$(jq -r '.hooks.PostToolUse[1].hooks[0].command' "$ud/settings.json" 2>/dev/null)"
-    assert_eq "$ucmd" "/checkout/scripts/roost-agent-state working" \
+    assert_eq "$ucmd" "/checkout/scripts/roost-agent-state working --tool-hook" \
       "[$tool] append: roost's entry is the one that was added"
     # Idempotence asserted as a COUNT. "roost's hook is present" stays true
     # while duplicates pile up one per run, so presence alone cannot see this.

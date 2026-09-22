@@ -802,7 +802,7 @@ print(len(json.load(sys.stdin)))')" "2" \
     "claude beside a user's own hook: roost's entry joins it rather than replacing it"
   assert_eq "$(claude_event "$cset" PostToolUse | python3 -c 'import json,sys
 print(json.load(sys.stdin)[1]["hooks"][0]["command"])')" \
-    "$HERE/scripts/roost-agent-state working" \
+    "$HERE/scripts/roost-agent-state working --tool-hook" \
     "claude beside a user's own hook: roost's entry is the one that was added"
 fi
 assert_eq "$(bak_count "$cset")" "1" "claude beside a user's own hook: a backup was taken"

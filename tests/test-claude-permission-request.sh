@@ -67,11 +67,25 @@
 # API, and tests/live/ already holds the two live smoke tests that guard this
 # area against a Claude upgrade.
 #
+# ROUND 2 of the flock review found the rest of what is here. The stamp had two
+# call sites — a pane entering blocked and a pane already blocked — and only
+# one of them was atomic; @roost-stop-swallowed was reset only by the
+# PermissionRequest paths; and a SUBAGENT's tool result cleared a dialog that a
+# different agent had opened on the same pane. Each of those is a case below,
+# and each was red before the fix. Where a window is too small to hit on
+# demand, the case asserts the PROPERTY that closes it (one tmux command)
+# rather than the symptom.
+#
 # The payloads are the real captures with every id replaced by a fake of the
 # same shape and the home path dropped.
 set -u
 . "$(dirname "$0")/lib.sh"
-HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# `pwd -P`, not `pwd`: scripts/lib/roost-hooks.sh resolves its own root with
+# `cd -P`, so every path `roost hooks` prints is physical. On macOS /tmp is a
+# symlink to /private/tmp, so a logical $HERE made this file's command-string
+# assertions fail from any copy under /tmp — which is exactly where its own red
+# runs and the flock's temp copies live (flock round 2).
+HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
 ROOST="$HERE/bin/roost"
 HOOK="$HERE/scripts/roost-agent-state"
 DOC="$HERE/scripts/roost-doctor"
@@ -303,7 +317,7 @@ assert_contains "$hooks_out" '"PostToolUseFailure"' "roost hooks wires Claude's 
 ptuf_cmds="$(printf '%s' "$hooks_out" | sed -n '/^{/,$p' | python3 -c 'import json,sys
 h = json.load(sys.stdin)["hooks"]
 print(sorted(x["command"] for e in h.get("PostToolUseFailure", []) for x in e["hooks"]))' 2>/dev/null)"
-assert_eq "$ptuf_cmds" "['$HOOK working']" "...to roost-agent-state working, exactly as PostToolUse is"
+assert_eq "$ptuf_cmds" "['$HOOK working --tool-hook']" "...to roost-agent-state working, exactly as PostToolUse is"
 
 hook working <<< "$UPS"
 pr "$BASH_PR"
@@ -535,6 +549,148 @@ assert_eq "$(pstate)" "blocked" "a second dialog leaves the pane blocked"
 assert_eq "$(ptrans)" "$(psince) $tr_path" "...and the transcript record moved with it"
 assert_eq "$(pblocked)" "Edit: /tmp/roost-fixture/proj/edit-me.txt" "...and the record naming the NEW dialog"
 
+# --- the SECOND dialog's stamp is one command too -----------------------------
+# Round 2 of the flock found the repeat path — a dialog stamped on a pane that
+# already reads blocked — still writing four separate tmux calls and never
+# writing @agent_state at all, trusting the read taken dozens of lines earlier.
+# scripts/lib/roost-unblock.sh can land in that window: it sees `blocked`, the
+# OLD stamp and the decline records of the FIRST dialog, clears the badge, and
+# the hook then finishes stamping the second dialog around a pane that no
+# longer reads blocked. Reproduced: state=[] with the second dialog's
+# description still recorded, and `send` exiting 0 into an open dialog.
+#
+# Same counting shim as the fresh path above, and the same reason: a window
+# that small cannot be hit on demand, so this asserts the property that closes
+# it. The repeat path writes @agent_state too — idempotently, it is already
+# blocked — precisely so there is one group rather than four calls.
+hook working <<< "$UPS"
+pr "$BASH_PR"
+assert_eq "$(pstate)" "blocked" "control: the first dialog is stamped"
+: > "$calls"
+env PATH="$count:$PATH" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" blocked --permission-request-hook <<< "$EDIT_PR"
+assert_eq "$(pblocked)" "Edit: /tmp/roost-fixture/proj/edit-me.txt" "control: the second dialog replaced the description"
+r_together="$(grep -c 'set-option.*@agent_state.*@roost-blocked-on\|set-option.*@roost-blocked-on.*@agent_state' "$calls")"
+assert_eq "$r_together" "1" "a dialog on an ALREADY blocked pane is stamped by ONE tmux command too"
+r_state="$(grep -c 'set-option.*@agent_state' "$calls")"
+assert_eq "$r_state" "1" "...and it writes @agent_state itself, rather than trusting a read from before"
+
+# ...and the race it closes, driven with the slow shim. The hook's own state
+# read is held open, an unblock runs inside that window and clears the badge,
+# and the stamp that follows has to put it back — because it writes the state
+# rather than assuming it.
+unbr="$sdir/unblock-repeat.jsonl"
+cp "$HERE/tests/fixtures/claude-transcript-no.jsonl" "$unbr"
+NO_SINCE=1789398932
+tmux -S "$s" set-option -p -t "$pane" @agent_since "$NO_SINCE"
+tmux -S "$s" set-option -p -t "$pane" @agent_state blocked
+tmux -S "$s" set-option -p -t "$pane" @roost-transcript "$NO_SINCE $unbr"
+tmux -S "$s" set-option -p -t "$pane" @roost-blocked-on "Bash: the first dialog"
+{ env PATH="$slow:$PATH" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" blocked --permission-request-hook <<< "$EDIT_PR" ; } &
+repeatpid=$!
+sleep 0.15
+"$ROOST" send "$pane" "" >/dev/null 2>&1
+unblocked_mid=$?
+wait "$repeatpid"
+assert_eq "$unblocked_mid" "0" "control: the unblock really did clear the pane mid-stamp"
+assert_eq "$(pstate)" "blocked" "a dialog stamped over an unblock that landed mid-stamp still leaves the pane blocked"
+assert_eq "$(pblocked)" "Edit: /tmp/roost-fixture/proj/edit-me.txt" "...describing the dialog that is actually open"
+"$ROOST" send "$pane" "this must not be delivered" >/dev/null 2>&1
+assert_eq "$?" "3" "...so send refuses it, rather than typing into the second dialog"
+
+# --- one dialog, one Stop — on the second dialog as well ---------------------
+# The repeat path resets @roost-stop-swallowed, and round 2 found nothing that
+# noticed if it stopped: dialog A swallows the turn's Stop, dialog B opens on
+# the still-blocked pane, and the next Stop paints ✅ done under dialog B.
+hook working <<< "$UPS"
+pr "$BASH_PR"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "blocked" "dialog A swallows its Stop"
+pr "$EDIT_PR"
+assert_eq "$(pstate)" "blocked" "dialog B opens on the pane A is still holding"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-stop-swallowed)" "" \
+  "...and B starts with a Stop of its own to swallow, not A's spent mark"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "blocked" "...so B's Stop is swallowed too, rather than painting done under it"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "done" "...and B's SECOND Stop still moves the pane, so the bound holds"
+
+# --- leaving blocked clears the mark, so the NEXT dialog gets its own --------
+# The other unset round 2 found untested: a pane that leaves blocked by any
+# route must not carry a spent mark into the next dialog.
+hook working <<< "$UPS"
+pr "$BASH_PR"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-stop-swallowed)" "1" "control: this dialog has spent its Stop"
+hook working <<< "$(other PostToolUse '{"tool_name":"Bash"}')"
+assert_eq "$(pstate)" "working" "answering it leaves the pane working"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-stop-swallowed)" "" \
+  "...and the spent mark goes with the dialog"
+
+# --- every entry into blocked resets the mark, whatever stamped it -----------
+# @roost-stop-swallowed was reset only by the PermissionRequest paths, so a
+# codex dialog (`roost state blocked`, no flag) or an old Claude's
+# permission_prompt Notification landed on a pane that had already spent its
+# Stop — and the next Stop under that open dialog painted done (flock round 2).
+# It belongs to the BADGE, not to the flag that set it.
+# The mark is deliberately NOT cleared in between: the case is a stamp landing
+# on a pane that is STILL blocked and has already spent its Stop, which is the
+# repeat path — a codex dialog (adapters/codex/roost-codex-hook maps its own
+# PermissionRequest to a flagless `blocked`) or a second permission_prompt.
+for entry in flagless notification; do
+  hook working <<< "$UPS"
+  pr "$BASH_PR"
+  hook done --stop-hook <<< "$STOP"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-stop-swallowed)" "1" "control: the first dialog spent its Stop [$entry]"
+  case "$entry" in
+    flagless)     hook blocked </dev/null ;;
+    notification) hook blocked --notification-hook <<< "$(other Notification '{"message":"Claude needs your permission","notification_type":"permission_prompt"}')" ;;
+  esac
+  assert_eq "$(pstate)" "blocked" "a $entry stamp badges the pane blocked"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-stop-swallowed)" "" \
+    "...and resets the spent mark, so this dialog has a Stop of its own [$entry]"
+  hook done --stop-hook <<< "$STOP"
+  assert_eq "$(pstate)" "blocked" "...which it swallows, rather than painting done under it [$entry]"
+  hook done --stop-hook <<< "$STOP"
+  assert_eq "$(pstate)" "done" "...and the bound still holds [$entry]"
+done
+
+# --- a SUBAGENT's tool result must not clear the main pane's dialog ----------
+# The `working` call reads no payload, so a background agent finishing a tool
+# cleared a dialog that another agent had opened on the same pane: badge gone,
+# description gone, `send` exit 0 into the open dialog (flock round 2, measured
+# at hook level). The discriminator is the one StopFailure already uses —
+# `agent_id`, which Claude adds only for a subagent's loop.
+#
+# The payload is read ONLY when the pane already reads blocked. PostToolUse
+# fires on every tool call of every live agent and Claude waits for this hook
+# to exit, so the hot path must stay one tmux read and a bail; a pane with a
+# dialog open is a pane whose agent is waiting for a human anyway.
+SUB_PTU="$(other PostToolUse '{"tool_name":"Bash","agent_id":"a12cf0d033cc6c71d","agent_type":"general-purpose"}')"
+assert_contains "$SUB_PTU" '"agent_id": "a12cf0d033cc6c71d"' "the subagent tool fixture really carries an agent_id"
+hook working <<< "$UPS"
+pr "$SUB_PR"
+assert_eq "$(pstate)" "blocked" "one background agent's dialog holds the pane"
+hook working --tool-hook <<< "$SUB_PTU"; rc=$?
+assert_eq "$rc" "0" "another background agent's PostToolUse exits 0"
+assert_eq "$(pstate)" "blocked" "...and does NOT clear the dialog it knows nothing about"
+assert_eq "$(pblocked)" "Bash: mkdir /tmp/roost-probe-sub" "...nor its description"
+"$ROOST" send "$pane" "this must not be delivered" >/dev/null 2>&1
+assert_eq "$?" "3" "...so send still refuses the pane"
+# The same event for a subagent whose PostToolUseFailure arrives instead.
+hook working --tool-hook <<< "$(other PostToolUseFailure '{"tool_name":"Bash","agent_id":"a12cf0d033cc6c71d"}')"
+assert_eq "$(pstate)" "blocked" "a subagent's PostToolUseFailure does not clear it either"
+# ...and the MAIN turn's own tool result still clears it, which is the whole
+# point of the event: it is the first thing that fires after a human says Yes.
+hook working --tool-hook <<< "$(other PostToolUse '{"tool_name":"Bash"}')"
+assert_eq "$(pstate)" "working" "the MAIN turn's PostToolUse still clears the dialog"
+assert_eq "$(pblocked)" "" "...and its description"
+# On a pane that is NOT blocked, a subagent's tool result is an ordinary busy
+# stamp: the turn is alive and the badge should say so.
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "done" "control: the pane is not blocked"
+hook working --tool-hook <<< "$SUB_PTU"
+assert_eq "$(pstate)" "working" "a subagent's PostToolUse on a pane with no dialog still badges working"
+
 # --- the record is data, never something roost can be made to run ------------
 # tool_input is model output. It reaches a tmux option value, and `roost
 # status` renders pane options into tab-delimited rows, so a tab or a newline
@@ -655,7 +811,65 @@ prline="$(printf '%s\n' "$prout" | grep -F 'has no PermissionRequest hook' | hea
 [ -n "$prline" ]; assert_true $? "doctor warns about a settings.json with no PermissionRequest hook"
 assert_contains "$prline" "six seconds" "...saying how late the badge is without it"
 assert_contains "$prline" "or run: roost install" "...and pointing at roost install, which adds it"
+
+# The same for PostToolUseFailure, which docs/known-gaps.md claimed doctor
+# named before it did (flock round 2). Quiet on a file roost writes today,
+# loud on one without the entry.
+"$ROOST" hooks claude | sed -n '/^{/,$p' > "$prhome/.claude/settings.json"
+prout="$(run_doctor "$prhome")"
+case "$prout" in *"has no PostToolUseFailure hook"*) w=warned ;; *) w=quiet ;; esac
+assert_eq "$w" "quiet" "doctor does not warn about PostToolUseFailure on a settings.json roost wires today"
+python3 -c 'import json,sys
+d = json.load(open(sys.argv[1])); del d["hooks"]["PostToolUseFailure"]
+json.dump(d, open(sys.argv[1], "w"), indent=2)' "$prhome/.claude/settings.json"
+prout="$(run_doctor "$prhome")"
+ptline="$(printf '%s\n' "$prout" | grep -F 'has no PostToolUseFailure hook' | head -1)"
+[ -n "$ptline" ]; assert_true $? "doctor warns about a settings.json with no PostToolUseFailure hook"
+assert_contains "$ptline" "only on success" "...saying why PostToolUse alone is not enough"
+assert_contains "$ptline" "or run: roost install" "...and pointing at roost install, which adds it"
 rm -rf "$prhome"
+
+# --- doctor also checks the settings file roost generates for its panes ------
+# The second Claude settings file, the one the user never opens:
+# scripts/roost-wiring writes it at SERVER start, so a roost server that has
+# been up since before an upgrade keeps handing out the old hooks while every
+# other check is green. Round 2 found this check had no test — inverting it
+# left three files green.
+#
+# Driven at the doctor, not at a live server: the rows about wiring only run
+# inside a roost pane, so the fixture is a $TMUX naming a socket whose path
+# ends in /roost, plus the ROOST_WIRING_DIR that pane would carry.
+wdir="$sdir/wiring"; mkdir -p "$wdir/claude"
+whome="$(mktemp -d /tmp/amx.XXXX)"; mkdir -p "$whome/.claude"
+"$ROOST" hooks claude | sed -n '/^{/,$p' > "$whome/.claude/settings.json"
+run_wdoctor() {
+  env HOME="$whome" XDG_CONFIG_HOME="$whome/.config" XDG_DATA_HOME="$whome/.local/share" \
+      COPILOT_HOME="$whome/.copilot" PI_CODING_AGENT_DIR="$whome/.pi/agent" \
+      CODEX_HOME="$whome/.codex" CLAUDE_SETTINGS="$whome/.claude/settings.json" \
+      COLORTERM=truecolor ROOST_CONFIG_SOCK=/nonexistent/roost-pr-test-sock \
+      ROOST_NOTIFY_SOCK=/nonexistent/roost-pr-test-sock \
+      TMUX="$s,0,0" ROOST_WIRING_DIR="$wdir" ROOST_TMUX="$(command -v tmux)" \
+      "$DOC" 2>&1
+}
+tmux -S "$s" set-option -g @roost-wiring-active on
+"$ROOST" hooks claude | sed -n '/^{/,$p' > "$wdir/claude/settings.json"
+wout="$(run_wdoctor)"
+case "$wout" in *"generated before the PermissionRequest hook existed"*) w=warned ;; *) w=quiet ;; esac
+assert_eq "$w" "quiet" "doctor is quiet about a wiring file roost generates today"
+python3 -c 'import json,sys
+d = json.load(open(sys.argv[1])); del d["hooks"]["PermissionRequest"]
+json.dump(d, open(sys.argv[1], "w"), indent=2)' "$wdir/claude/settings.json"
+wout="$(run_wdoctor)"
+wline="$(printf '%s\n' "$wout" | grep -F 'generated before the PermissionRequest hook existed' | head -1)"
+[ -n "$wline" ]; assert_true $? "doctor warns about a wiring file generated before this change"
+assert_contains "$wline" "roost wiring on" "...and names the command that regenerates it, not roost install"
+# The control that matters: the USER's settings.json is untouched and perfect,
+# so nothing else in the report says anything is wrong. That is the whole
+# reason this check exists.
+case "$wout" in *"has no PermissionRequest hook"*) w=alsowarned ;; *) w=only ;; esac
+assert_eq "$w" "only" "...while the user's own settings.json is still reported as fine"
+tmux -S "$s" set-option -gu @roost-wiring-active
+rm -rf "$whome"
 
 # --- the decline path clears the description too -----------------------------
 # scripts/lib/roost-unblock.sh is the ONE place a 🛑 is cleared without running
@@ -708,7 +922,7 @@ def n(event, cmd):
     return sum(1 for e in h.get(event, []) for x in e.get("hooks", [])
                if x.get("command") == cmd)
 print(n("PermissionRequest", t + " blocked --permission-request-hook"),
-      n("PostToolUse", "my-own-formatter"), n("PostToolUse", t + " working"))
+      n("PostToolUse", "my-own-formatter"), n("PostToolUse", t + " working --tool-hook"))
 COUNT
 ( . "$HERE/scripts/lib/roost-hooks.sh"; . "$HERE/scripts/lib/roost-json.sh"
   roost_hooks_claude "$HOOK" | python3 "$inst/strip.py" "$inst/settings.json"
