@@ -166,7 +166,7 @@ Neither ever fails doctor.
 
 Only `blocked` and `error` notify. `done` fires every turn and would be noise, so it is deliberately silent.
 
-If neither fires, set `@roost-notify-backend` explicitly (`tmux` always uses the in-tmux message) or plug in your own `@roost-notify-cmd`. See [Notifications](/docs/setup).
+If neither fires, set `@roost-notify-backend` explicitly (`tmux` always uses the in-tmux message) or plug in your own `@roost-notify-cmd`. See [Notifications](/docs/notifications).
 
 ## Still stuck
 

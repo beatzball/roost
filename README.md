@@ -271,7 +271,9 @@ scripts/roost-agent-state   # hook target that records agent state
                             #    turn's reply from the Stop payload)
 scripts/roost-status        # status-bar roll-up of agent-pane counts
 scripts/roost-switch        # fzf agent switcher, panes grouped by window (prefix a)
-scripts/roost-notify        # cross-platform desktop notification delivery
+scripts/roost-notify        # notification delivery: the desktop chain per platform,
+                            #   plus the OSC backend that reaches the human's own
+                            #   terminal when the fleet is on another machine (#46)
 scripts/roost-doctor        # preflight checks (tmux version, truecolor, fzf, JSON
                             #   reader, hooks, adapter links, notifier)
 scripts/roost-init          # setup wizard (theme, glyphs, separator style, prints hooks)
@@ -343,6 +345,23 @@ switcher (it degrades to a hint if missing).
   lets two agents share one window — `roost split` puts a second agent beside
   the first without either clobbering the other's badge. A pane is an agent only
   if it has been stamped, so a plain shell or a `tail -f` never badges anything.
+- Notifications fire for `blocked` and `error` only, and only when the pane is
+  off-screen. Every backend in `scripts/roost-notify` delivers to the desktop of
+  the machine roost runs on, so a remote fleet had nowhere to deliver: the OSC
+  backend writes a terminal notification sequence to the attached **client's**
+  tty, which is the far end of the SSH connection. It has to be the client's tty
+  and not the pane's — a pane write would need `allow-passthrough`, and tmux
+  passes a sequence through only while that pane is *visible*, which is never
+  true when roost notifies. Which clients get written to is decided per client
+  from tmux's own view of them — never from the notifier's own environment,
+  which keeps `SSH_CONNECTION` for the life of a pane — and a control-mode
+  (`-CC`) client is skipped, because its connection carries tmux's protocol
+  rather than a screen. Each write is bounded by a watchdog: a terminal that
+  has stopped reading fills its pty and would otherwise block the hook, and
+  the hook is on the agent's turn. `tests/test-notify-osc.sh` carries the
+  measurements and the byte-exact expectations;
+  [Notifications](https://roosting.dev/docs/notifications) is the user-facing
+  page.
 
 ## The extension seam
 

@@ -16,6 +16,24 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Notifications reach a human attached over SSH** (#46). When an agent is
+  `blocked` or hits an `error`, roost now also writes the terminal's own
+  notification escape sequence (OSC 9 by default; `777` and `99` are
+  available) straight to each attached client's terminal, so a remote
+  terminal that reads it raises a desktop banner with no app, no daemon and
+  no account in the path. It is on by default only for a remote client (one
+  whose session carries `SSH_CONNECTION` or `SSH_TTY`), decided per client
+  from tmux's own record; `@roost-notify-osc on|off` overrides, and
+  `@roost-notify-osc-codes` picks the sequences. Every write is bounded to
+  one second and started in parallel, so a stalled link cannot hold up the
+  agent's hook, and each sequence leads with a terminator so a terminal left
+  mid-sequence by a killed write heals on the next one. Control-mode clients
+  are skipped. A new docs page, Notifications, covers the backend chain and
+  the no-vendor phone recipe (`@roost-notify-cmd` plus SSH over a private
+  mesh network).
+
 ### Fixed
 
 - **A long reply from an adapter no longer dies on Linux** (#86). `roost reply`
@@ -27,6 +45,7 @@ and this project uses [Semantic Versioning](https://semver.org/).
   form is unchanged. A reply longer than a few KB, or one built from a file,
   belongs on stdin. The kept turn file holds every byte, trailing newlines
   included, on both paths.
+||||||| parent of 1ee9c8d (changelog: remote notifications over the terminal, under Unreleased (#46))
 
 ## [0.5.0]
 

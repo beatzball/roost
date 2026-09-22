@@ -18,6 +18,7 @@ scriptable from a shell, from inside roost, or on another host.
 
 - [Using roost](https://roosting.dev/docs/using-roost): Sessions, windows, key bindings, and the at-a-glance status signals.
 - [Driving a Fleet](https://roosting.dev/docs/driving-a-fleet): Script your agents with send, read, screen and wait-done — from your shell, from inside roost, or over ssh.
+- [Notifications](https://roosting.dev/docs/notifications): How roost tells you an agent is blocked — on this machine, and over SSH when the fleet runs somewhere else.
 - [Extensions](https://roosting.dev/docs/extensions): Add commands to roost from a git repository — pinned to a commit, with what it asks for shown before you agree.
 - [Writing an Extension](https://roosting.dev/docs/writing-an-extension): The manifest, the environment your command is handed, and how to test one on your own machine before you publish it.
 
