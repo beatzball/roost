@@ -59,8 +59,9 @@
 # Only unsets, plus one record of its own. It UNSETS @agent_state (never writes
 # a value: setting state is the job of a harness event), @roost-reply (a
 # declined turn fired no Stop, so what is stored is the previous turn's answer),
-# @roost-transcript and @roost-blocked-on (the description of the dialog that
-# has just been declined, #91), and writes @roost-unblocked "<now>
+# @roost-transcript, @roost-blocked-on (the description of the dialog that has
+# just been declined, #91) and @roost-stop-swallowed (that dialog's one-Stop
+# allowance, spent or not), and writes @roost-unblocked "<now>
 # since=<stamp>" so a false clear can be found later. It never writes anything
 # under ~/.claude: the transcript is only ever opened for reading.
 #
@@ -244,7 +245,7 @@ roost_unblock_pane() {
   # command string.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
     2>/dev/null || return 1
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
     && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ]

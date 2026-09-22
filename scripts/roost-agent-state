@@ -87,6 +87,17 @@ stop_failure_hook=0
 # below cost the human nothing.
 permission_request_hook=0
 [ "${2:-}" = "--permission-request-hook" ] && permission_request_hook=1
+# Claude's Stop, and only Claude's: this call may have to be held back because
+# a dialog is open on the pane (#91). Whether it IS held back is decided by
+# tmux at the write, at the bottom of this file, never from a value read
+# earlier — that is what this flag's whole comment there is about.
+#
+# `done` alone, so the codex adapter's `error --stop-hook` and
+# `idle --stop-hook` (#39, #38) are untouched: those already mean "this turn
+# produced nothing", and neither is a turn that ended while waiting on a
+# background agent, which is the shape being guarded against.
+stop_while_blocked=0
+[ "$stop_hook" = 1 ] && [ "$state" = "done" ] && stop_while_blocked=1
 
 # Must be inside tmux, in a known pane.
 [ -n "${TMUX:-}" ] || exit 0
@@ -491,32 +502,12 @@ case "$raw" in
   *X) prev="${raw%X}"; has_name=1 ;;
   *)  prev="$raw";      has_name=0 ;;
 esac
-# A Stop that lands while a dialog is OPEN (#91). Measured on Claude Code
-# 2.1.278: a subagent's dialog is drawn on the main pane, and the MAIN turn's
-# Stop follows its PermissionRequest by 7 ms — the main turn has ended and is
-# waiting on the background agent, and its payload carries no agent_id to tell
-# it apart. Without this the pane would read ✅ done with a dialog on screen,
-# and `roost send` would paste straight into it: the one thing exit 3 exists to
-# prevent.
-#
-# Nothing else can reach this arm, and that is what makes it safe rather than
-# clever. Answering Yes fires PostToolUse first, so the pane already reads
-# working by the time Stop arrives; answering No or pressing Esc fires no Stop
-# at all (measured again on 2.1.278, unchanged from #38 on 2.1.270). So a Stop
-# on a pane that still reads blocked means a dialog nobody has answered.
-#
-# It cannot strand the pane either. When the background agent finishes, the
-# main loop starts a turn of its own and UserPromptSubmit stamps working, which
-# is a transition this bail never sees; and a dialog declined by hand is
-# cleared by scripts/lib/roost-unblock.sh from the transcript, as before.
-#
-# The reply was already recorded above, deliberately: the turn's answer is real
-# and `roost read` should still find it. What does not happen is the STATE
-# moving, so `wait-done` keeps waiting and `send` keeps refusing while the
-# dialog is up.
-if [ "$stop_hook" = 1 ] && [ "$state" = "done" ] && [ "$prev" = "blocked" ]; then
-  exit 0
-fi
+# A Stop that lands while a dialog is OPEN is handled at the WRITE, near the
+# bottom of this file, and NOT here where $prev is in hand (#91, flock round
+# 1). $prev was read above; the write happens dozens of lines later; and the
+# two events race. Deciding here reads the pane at one instant and acts on it
+# at another, which is the bug this guard exists to prevent, re-introduced
+# intermittently. See the `stop_while_blocked` write below.
 
 if [ "$state" = "$prev" ]; then
   # The one repeat that is NOT a no-op: a Notification for a NEW dialog on a
@@ -553,6 +544,10 @@ if [ "$state" = "$prev" ]; then
       else
         tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on 2>/dev/null || true
       fi
+      # A NEW dialog, so it gets a Stop of its own to swallow — see the write
+      # at the bottom of this file. Without this reset a second dialog in the
+      # same turn would inherit the first one's spent mark and lose its guard.
+      tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed 2>/dev/null || true
     fi
     tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
   fi
@@ -681,26 +676,120 @@ fi
 # clear, and this script runs on every PostToolUse of every live agent, so an
 # unconditional unset would be one more tmux call per transition spent clearing
 # nothing. $prev is already in hand from the single read above.
-if [ "$permission_request_hook" = 1 ] && [ "$state" = "blocked" ]; then
-  if [ -n "$blocked_on" ]; then
-    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-blocked-on "$blocked_on" 2>/dev/null || true
-  else
-    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on 2>/dev/null || true
-  fi
-elif [ "$state" != "blocked" ] && [ "$prev" = "blocked" ]; then
-  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on 2>/dev/null || true
-fi
+#
+# A NOTE FOR #93, which will display this: tool_input is whatever the model
+# asked for, so a Bash command that sets a secret on its own line
+# (`export TOKEN=sk-...`) lands here verbatim. Recording it is no worse than
+# the command already being on the pane's own screen; PUTTING IT ON A STATUS
+# BAR, in a switcher, or in a notification is a different exposure, and #93
+# has to decide that deliberately rather than inherit it from here.
 now="$(date +%s)"
-if [ -n "$transcript" ]; then
-  tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript" 2>/dev/null || true
-elif { [ "$notification_hook" = 1 ] || [ "$permission_request_hook" = 1 ]; } && [ "$state" = "blocked" ]; then
-  # A Notification whose path could not be recorded. An older record may still
-  # sit on the pane, and if it was written in this same second its stamp would
-  # match the one written below — so remove it rather than trust the clock.
-  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true
+if [ "$permission_request_hook" = 1 ] && [ "$state" = "blocked" ]; then
+  # EVERYTHING A DIALOG STAMPS, IN ONE TMUX COMMAND, and this is not tidiness.
+  # Written as separate calls, the first version left a window between
+  # @roost-blocked-on and @agent_state in which the racing Stop's own write ran
+  # — its condition read a pane that was not blocked YET, so it took the branch
+  # that unsets @roost-blocked-on, and the dialog's description was gone by the
+  # time the badge appeared. Measured live on 2.1.278, three subagent dialogs
+  # out of three: @agent_state blocked and @roost-transcript set, with
+  # @roost-blocked-on missing. One command, so no other hook can land inside
+  # the group at all, and the pair of orderings the separate writes had to
+  # reason about stops existing.
+  #
+  # `;` as its own argument is tmux's command separator in argv form — the same
+  # shape the @roost-reply write above uses, and the reason neither of these
+  # values needs the trailing-semicolon escape twice.
+  #
+  # A NOTE FOR #93, which will display @roost-blocked-on: tool_input is
+  # whatever the model asked for, so a Bash command that sets a secret
+  # (`export TOKEN=sk-...`) lands here verbatim. Recording it is no worse than
+  # the command already being on the pane's own screen; PUTTING IT ON A STATUS
+  # BAR, in a switcher or in a notification is a different exposure, and #93
+  # has to decide that deliberately rather than inherit it from here.
+  wr=(set-option -p -t "$TMUX_PANE" @agent_state "$state"
+      ';' set-option -p -t "$TMUX_PANE" @agent_since "$now")
+  if [ -n "$transcript" ]; then
+    wr+=(';' set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript")
+  else
+    # A dialog whose path could not be recorded. An older record may still sit
+    # on the pane, and if it was written in this same second its stamp would
+    # match the one written here — so remove it rather than trust the clock.
+    wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-transcript)
+  fi
+  if [ -n "$blocked_on" ]; then
+    wr+=(';' set-option -p -t "$TMUX_PANE" @roost-blocked-on "$blocked_on")
+  else
+    wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-blocked-on)
+  fi
+  # This dialog has not swallowed a Stop yet — see the Stop write below. It
+  # belongs to the DIALOG, not to the pane's state, so a second dialog resets
+  # it (the repeat path above) and leaving blocked clears it (below).
+  wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed)
+  tmux -S "$sock" "${wr[@]}" 2>/dev/null || true
+else
+  if [ "$state" != "blocked" ] && [ "$prev" = "blocked" ] && [ "$stop_while_blocked" = 0 ]; then
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on 2>/dev/null || true
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed 2>/dev/null || true
+  fi
+  if [ -n "$transcript" ]; then
+    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-transcript "$now $transcript" 2>/dev/null || true
+  elif [ "$notification_hook" = 1 ] && [ "$state" = "blocked" ]; then
+    # The same removal as above, for a Notification on a Claude too old to have
+    # fired a PermissionRequest at all.
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true
+  fi
+  if [ "$stop_while_blocked" = 1 ]; then
+    # A Stop while a dialog is OPEN (#91). ONE tmux command, and the condition is
+    # evaluated by tmux in the same command as the writes, so no other hook can
+    # land between the test and the act. That is the whole point: $prev was read
+    # dozens of lines ago and the two events race. Measured on 2.1.278, a real
+    # subagent dialog — PermissionRequest's hook ran at 1790058350.889319 and the
+    # main turn's Stop 7 ms later; on the very next run of the same case the two
+    # INVERTED, Stop at 1790062049.316559 and PermissionRequest at
+    # 1790062049.316824. Deciding from a value read earlier gave ✅ done under an
+    # open dialog in 28 of 40 runs when they started together (flock round 1).
+    #
+    # WHY THE MAIN TURN STOPS AT ALL: a background agent's dialog is drawn on the
+    # MAIN pane while the main turn has already finished and is waiting on that
+    # agent. The Stop payload carries no agent_id, so nothing in it tells the two
+    # apart — only the pane's own state does.
+    #
+    # BOUNDED: exactly one Stop per dialog. @roost-stop-swallowed is unset when a
+    # dialog is stamped and set here, so a SECOND Stop falls through to the else
+    # branch and the pane moves. Without that bound a turn whose only clearing
+    # event roost had not wired left the pane 🛑 for ever, with `send` refusing,
+    # `wait-done` burning its timeout and `read` calling the reply stale (flock
+    # round 1, both reviewers). The wired case is PostToolUseFailure — a tool
+    # that fails after a Yes fires that and no PostToolUse — and it is now an
+    # entry of its own; this is the belt to that braces, for whatever event is
+    # next.
+    #
+    # The reply was already recorded above, deliberately: the turn's answer is
+    # real and `roost read` should still find it. Only the STATE is held, so
+    # `wait-done` keeps waiting and `send` keeps refusing while the dialog is up.
+    #
+    # THIS APPLIES TO CODEX TOO, and deliberately. `done --stop-hook` is what
+    # adapters/codex/roost-codex-hook calls as well, and nothing in the call
+    # says which harness made it — but nothing needs to: the rule is about the
+    # PANE, and a codex pane reading blocked has a codex dialog open on it, so
+    # a Stop that arrives there must not paint it done either. It will rarely
+    # engage: codex fires Interrupt when a dialog is declined (#38), which
+    # leaves idle, and an approval fires PostToolUse first. And it is bounded
+    # the same way, so a codex pane cannot be stranded by it.
+    #
+    # The else branch carries the @roost-blocked-on and @roost-stop-swallowed
+    # unsets that the $prev-keyed clear above skips for this call: they describe
+    # the dialog, and whether there is still a dialog is decided here, not there.
+    tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+      "#{&&:#{==:#{@agent_state},blocked},#{==:#{@roost-stop-swallowed},}}" \
+      "set-option -p -t $TMUX_PANE @roost-stop-swallowed 1" \
+      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed" \
+      2>/dev/null || true
+  else
+    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
+    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
+  fi
 fi
-tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
-tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
 
 # Label the pane, but only to fill a gap: a name a human chose (`split -n`,
 # `spawn NAME`) always wins, so this never runs when $has_name is 1. Without

@@ -238,6 +238,19 @@ else
     warn "this pane has no ROOST_WIRING_DIR — it was opened before wiring was on, so claude here runs without roost's settings; open a new pane"
   elif [ ! -f "$w_dir/claude/settings.json" ]; then
     warn "wiring is on but $w_dir/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
+  elif ! grep -q -- --permission-request-hook "$w_dir/claude/settings.json" 2>/dev/null; then
+    # The SECOND place a Claude settings file lives, and the one the user
+    # cannot see (flock round 1 on #91). scripts/roost-wiring regenerates this
+    # file at SERVER START, so a `-L roost` server that has been up since
+    # before the upgrade still hands every claude in it the old entries —
+    # and the settings.json check further up says nothing, because that file
+    # is fine. The symptom is the #91 bug on a machine whose `roost doctor`
+    # is otherwise all ✓.
+    #
+    # Matched on the flag rather than on the JSON, for the reason every check
+    # above gives: matching a key's own array with grep is how a check ends
+    # up quietly wrong, and the false positive costs a line of advice.
+    warn "$w_dir/claude/settings.json was generated before the PermissionRequest hook existed — this roost server has been running since then, so a permission dialog in it is badged 🛑 six seconds late; run: roost wiring on"
   fi
   w_claude="$(command -v claude 2>/dev/null || true)"
   if [ -n "$w_claude" ]; then

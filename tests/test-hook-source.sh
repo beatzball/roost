@@ -70,10 +70,15 @@ assert_eq "$claude_out" "$bare_out" \
 # (scripts/lib/roost-json.sh) the StopFailure case above relies on, and
 # tests/test-claude-permission-request.sh holds the rest.
 #
-# The PROSE above the object still does not describe PermissionRequest. That
-# text lives in bin/roost, which #91's lane did not own; the entry is
-# explained in scripts/lib/roost-hooks.sh and in
-# tests/test-claude-permission-request.sh until it is.
+# Round 1 of the flock then added the missing prose and an EIGHTH event,
+# PostToolUseFailure, beside PostToolUse. That one is an append, and it is the
+# event Claude actually sends when a tool fails after the human answered Yes —
+# PostToolUse fires only on success, so without it the 🛑 PermissionRequest
+# stamped had nothing to clear it. Re-captured the same way; the JSON diff is
+# three added lines beside PostToolUse and nothing moved. The prose above the
+# object was rewritten in the same round, which is why this fixture's comment
+# half changed at once: the lane was granted that block in bin/roost
+# (comments and heredoc text only, nothing executable).
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"

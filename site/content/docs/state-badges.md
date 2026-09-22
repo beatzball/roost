@@ -73,19 +73,24 @@ Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
 | Claude hook | state |
 |-------------|-------|
 | `UserPromptSubmit` | ⏳ working |
+| `PermissionRequest` | 🛑 blocked |
 | `Notification` (matcher: `permission_prompt`) | 🛑 blocked |
 | `PostToolUse` | ⏳ working |
+| `PostToolUseFailure` | ⏳ working |
 | `Stop` | ✅ done |
 | `StopFailure` | 💥 error |
 
 Some of those are subtler than they look:
 
-- **`Notification` must be scoped to `permission_prompt`.** Unmatched, it also fires for `idle_prompt` and `auth_success` — so a *finished* agent would go red.
-- **`PostToolUse` is what clears 🛑.** No hook fires when you answer a permission dialog, so it is the first observable event after you approve. Without it a window stays red from your approval until the whole turn ends.
-- **After No or Esc, Claude fires no hook at all.** `--notification-hook` records the path of Claude's own transcript beside the 🛑, and `roost send`, `read` and `wait-done` read that transcript before believing the badge. When the newest records in it are Claude's own "request interrupted" records, written after the badge, they clear it. They never set a state, and anything they cannot prove leaves the badge red.
+- **`PermissionRequest` is what paints 🛑, and it fires as the dialog opens.** Measured on Claude Code 2.1.278: 11–16 ms after the dialog appears. The hook prints nothing and decides nothing — an `allow` or a `deny` on this event would answer the dialog on your behalf, and roost never does that.
+- **`Notification` is the fallback, and it must be scoped to `permission_prompt`.** Unmatched, it also fires for `idle_prompt` and `auth_success` — so a *finished* agent would go red. It arrives a flat 6.00 s after `PermissionRequest`, and a dialog answered faster than that fires no `Notification` at all — which is why it is not enough on its own, and why it stays wired only for a Claude too old to have `PermissionRequest`.
+- **`PostToolUse` and `PostToolUseFailure` are what clear 🛑.** No hook fires when you answer a permission dialog, so they are the first observable events after you approve. You need **both**: `PostToolUse` fires only when the tool *succeeds*, so a command that exits non-zero after you said Yes would otherwise leave the window red for the rest of the turn.
+- **After No or Esc, Claude fires no hook at all.** `--permission-request-hook` and `--notification-hook` record the path of Claude's own transcript beside the 🛑, and `roost send`, `read` and `wait-done` read that transcript before believing the badge. When the newest records in it are Claude's own "request interrupted" records, written after the badge, they clear it. They never set a state, and anything they cannot prove leaves the badge red.
 - **`StopFailure` is what ends a failed turn.** When a turn ends on an API error — a rate limit, an overload, a model that does not exist — Claude fires `StopFailure` instead of `Stop`, and nothing after it. roost badges that 💥 error, and `roost wait-done` exits 1 with the reason, for example *Claude ended the turn on an API error (rate_limit)*. While Claude is still retrying, the pane stays ⏳ working, because it is. A subagent's API error does not change the badge: the main turn goes on.
 
-**If you wired Claude before `StopFailure` was added, run `roost install` again.** Your other hooks keep working, so nothing looks wrong until a turn fails — and then the pane reads ⏳ working on an agent that has stopped. `roost doctor` warns about a `settings.json` with no `StopFailure` hook. `roost install` adds that one entry and leaves the rest as it found them.
+**If you wired Claude before `StopFailure` or `PermissionRequest` was added, run `roost install` again.** Your other hooks keep working, so nothing looks wrong for a while. Without `StopFailure`, a turn that fails leaves the pane reading ⏳ working on an agent that has stopped. Without `PermissionRequest`, a permission dialog is painted 🛑 six seconds late — and one answered faster than that is never painted at all, so `roost send` types into it. `roost doctor` warns about a `settings.json` missing either one, and `roost install` adds just that entry and leaves the rest as it found them.
+
+**A long-running roost server needs one more step.** roost also generates a settings file of its own for the panes it opens, and it does that when the *server* starts — so a `roost` server that has been up since before the upgrade keeps handing out the old hooks even after `roost install`. `roost doctor` names that file too. `roost wiring on` regenerates it.
 
 `scripts/roost-agent-state` is a **no-op unless it runs inside a roost pane**, so it is safe in your global Claude settings — running `claude` elsewhere does nothing. It also returns early when the state is already correct, which keeps it cheap on `PostToolUse` (that fires on every single tool call, and Claude waits for the hook to exit).
 

@@ -47,9 +47,11 @@
 # API error leaves the main turn running and must be ignored, and the reason is
 # the difference between the two events, not a preference: an error that does
 # not stop the pane must not badge it, and a dialog that does hold the pane
-# must. What also arrives is the main turn's own Stop, 7 ms later and carrying
-# no agent_id, because the main turn has ended and is waiting on the background
-# agent — see "a Stop while a dialog is open" below.
+# must. What also arrives is the main turn's own Stop, within a millisecond and
+# carrying no agent_id, because the main turn has ended and is waiting on the
+# background agent — see "the race" and "the guard is bounded" below. An
+# earlier version of this file said that Stop "cannot strand the pane"; round 1
+# of the flock review showed two ways it could, and both are cases here now.
 #
 # END TO END, with roost's own hooks rather than a logger, on the same rig:
 # from the frame where the dialog first appears to @agent_state reading
@@ -281,6 +283,244 @@ assert_eq "$(ptrans)" "$(psince) $tr_path" "...and moves the transcript record w
 assert_eq "$(pblocked)" "Bash: mkdir /tmp/roost-probe-dir" \
   "...and does NOT blank the description of the dialog that is still open"
 
+# --- Yes, and then the tool FAILS --------------------------------------------
+# Round 1 of the flock found the first version of this guard could leave a pane
+# 🛑 for ever with no dialog on screen. Re-measured on 2.1.278 on the
+# account-free rig, a Bash that exits non-zero after a Yes:
+#
+#   1790061918.885311  UserPromptSubmit
+#   1790061919.001582  PermissionRequest        <- 🛑
+#   ...the human answers Yes...
+#   1790061923.942409  PostToolUseFailure       <- the only event for the tool
+#   1790061924.056971  Stop                     (+114 ms)
+#
+# PostToolUse fires only on SUCCESS. So for a failing tool the pane never left
+# blocked, and then the one Stop of the turn was swallowed: `send` exited 3 for
+# ever, `wait-done` burned its whole timeout, `read` called the reply stale.
+# The fix is to wire the event Claude actually sends. It badges `working` for
+# the same reason PostToolUse does — the turn is still going.
+assert_contains "$hooks_out" '"PostToolUseFailure"' "roost hooks wires Claude's PostToolUseFailure event"
+ptuf_cmds="$(printf '%s' "$hooks_out" | sed -n '/^{/,$p' | python3 -c 'import json,sys
+h = json.load(sys.stdin)["hooks"]
+print(sorted(x["command"] for e in h.get("PostToolUseFailure", []) for x in e["hooks"]))' 2>/dev/null)"
+assert_eq "$ptuf_cmds" "['$HOOK working']" "...to roost-agent-state working, exactly as PostToolUse is"
+
+hook working <<< "$UPS"
+pr "$BASH_PR"
+assert_eq "$(pstate)" "blocked" "a dialog for a tool that will fail badges blocked"
+hook working <<< "$(other PostToolUseFailure '{"tool_name":"Bash","tool_response":{"success":false}}')"
+assert_eq "$(pstate)" "working" "answering Yes to a tool that then FAILS leaves the pane working"
+assert_eq "$(pblocked)" "" "...and clears the record of the dialog"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "done" "...and the turn reaches done rather than sticking at blocked"
+"$ROOST" send "$pane" "" >/dev/null 2>&1
+assert_eq "$?" "0" "...so send reaches the pane again"
+
+# --- the guard is bounded: only ONE Stop per dialog is ever swallowed --------
+# The belt to PostToolUseFailure's braces. Whatever event roost has not wired,
+# and whatever Claude adds next, a pane may lose exactly one Stop to an open
+# dialog — never every Stop that follows. Without this the guard had no way
+# out at all for a turn that fired no clearing event.
+hook working <<< "$UPS"
+pr "$BASH_PR"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "blocked" "the first Stop under an open dialog is swallowed"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "done" "the NEXT Stop is not — one dialog swallows one Stop, never two"
+assert_eq "$(pblocked)" "" "...and the second one clears the record"
+# ...and a NEW dialog gets its own one, rather than inheriting the spent mark.
+hook working <<< "$UPS"
+pr "$EDIT_PR"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "blocked" "a later dialog swallows a Stop of its own"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "done" "...and only one"
+
+# --- a subagent's dialog, DECLINED -------------------------------------------
+# The round-1 reviewers reasoned this left a pane stuck: the subagent's
+# PermissionRequest stamps @roost-transcript with the MAIN session file, the
+# decline records go somewhere roost-unblock.sh cannot match, and the main
+# turn's real Stop is swallowed. Re-measured on 2.1.278 on the rig, pressing 3
+# at a subagent dialog:
+#
+#   1790062069.510626  (the key)
+#   1790062069.562646  PostToolBatch      (+52 ms)
+#   1790062069.612588  SubagentStop
+#   1790062069.668211  UserPromptSubmit   (+158 ms)  <- this is the rescue
+#   1790062069.737361  Stop               (+227 ms)
+#
+# Claude re-enters the main loop with a prompt of its own, and roost already
+# wires UserPromptSubmit to `working`, so the pane leaves blocked BEFORE the
+# real Stop arrives and nothing is stuck. So the reviewers' sequence does not
+# occur on this version — but it was right about the shape, and the bounded
+# guard above means the pane would recover even if that UserPromptSubmit ever
+# stopped arriving. Both halves are asserted here.
+hook working <<< "$UPS"
+pr "$SUB_PR"
+hook done --stop-hook <<< "$STOP"     # the main turn's Stop, ~0 ms after
+assert_eq "$(pstate)" "blocked" "a subagent dialog holds the pane through the main turn's Stop"
+hook working <<< "$UPS"               # Claude's own prompt after the decline
+assert_eq "$(pstate)" "working" "...the prompt Claude submits after a decline releases it"
+assert_eq "$(pblocked)" "" "...and clears the record"
+hook done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "done" "...and the real Stop then lands"
+"$ROOST" send "$pane" "" >/dev/null 2>&1
+assert_eq "$?" "0" "...so the pane is not stuck"
+
+# --- the race: both hooks started together -----------------------------------
+# Round 1 of the flock caught the first version of the guard reading
+# @agent_state ~35 lines before the write it protected. Measured there, both
+# hooks as `roost hooks` runs them, 40 runs each: with the 7 ms gap this file's
+# header records, 40 of 40 stayed blocked; started at the SAME instant, 28 of
+# 40 came back `done` — the pane reading ✅ under an open dialog, which is the
+# #91 bug again and now intermittent.
+#
+# It is not a theoretical gap. Re-measured on 2.1.278 on a real subagent
+# dialog, the two events INVERTED: Stop's hook ran at 1790062049.316559 and
+# PermissionRequest's at 1790062049.316824 — Stop first, by 0.265 ms. Nothing
+# may depend on which arrives first.
+#
+# Two assertions, because each catches something the other does not.
+#
+# FIRST, deterministically: a tmux shim that answers the hot-path read with a
+# STALE value. That is precisely what losing the race looks like from inside
+# the hook — the pane is blocked, the read says otherwise — and it needs no
+# timing at all, so it cannot flake and it fails the moment the write stops
+# being conditional.
+shim="$sdir/stale-tmux"; mkdir -p "$shim"
+realtmux="$(command -v tmux)"
+cat > "$shim/tmux" <<SHIM
+#!/bin/sh
+# Answer ONE call with a stale value — the hook's hot-path read — and hand
+# everything else to the real tmux. Both conditions matter: the write this test
+# is about also names @agent_state, and a shim that swallowed it too would make
+# the assertion below pass without the pane ever being written to.
+# An exec wrapper, never a symlink: a later \`>\` into a shim entry would
+# follow a symlink and overwrite the real tool.
+_read=0 _state=0
+for a in "\$@"; do
+  case "\$a" in
+    display-message) _read=1 ;;
+    *@agent_state*)  _state=1 ;;
+  esac
+done
+[ "\$_read" = 1 ] && [ "\$_state" = 1 ] && { printf '1 working\n'; exit 0; }
+exec $realtmux "\$@"
+SHIM
+chmod +x "$shim/tmux"
+# Two controls, because this shim has to be wrong in exactly one way. It is
+# always pointed at THIS test's socket, never a bare tmux: a shim that stopped
+# matching would otherwise exec the real tmux against the default server.
+assert_eq "$(PATH="$shim:$PATH" tmux -S "$s" display-message -p -t "$pane" '#{@agent_state}')" "1 working" \
+  "control: the shim answers the hook's state READ with a stale value"
+PATH="$shim:$PATH" tmux -S "$s" set-option -p -t "$pane" @roost-shim-probe live 2>/dev/null
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-shim-probe)" "live" \
+  "control: ...and passes every other call through, so a write still lands"
+tmux -S "$s" set-option -pu -t "$pane" @roost-shim-probe 2>/dev/null
+
+hook working <<< "$UPS"
+pr "$BASH_PR"
+assert_eq "$(pstate)" "blocked" "the dialog is badged before the racing Stop"
+env PATH="$shim:$PATH" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" done --stop-hook <<< "$STOP"
+assert_eq "$(pstate)" "blocked" \
+  "a Stop whose read missed the dialog still does not move the pane — the write, not the read, decides"
+assert_eq "$(pblocked)" "Bash: mkdir /tmp/roost-probe-dir" "...and the description survives it"
+"$ROOST" send "$pane" "this must not be delivered" >/dev/null 2>&1
+assert_eq "$?" "3" "...so send still refuses"
+
+# SECOND, the real thing: both hooks running at once, with real payloads and
+# real values, and the window between the Stop hook's read and its write held
+# open so the result does not depend on how the machine happens to schedule
+# three processes. The shim here does NOT lie — it runs the real tmux, prints
+# the real answer, and only then waits. That is the one property a timing test
+# has to have to be worth keeping: it is red every run on the old code and
+# green every run on the new one, rather than red seven times in ten.
+slow="$sdir/slow-tmux"; mkdir -p "$slow"
+cat > "$slow/tmux" <<SLOW
+#!/bin/sh
+# Widen the gap between the hook's state READ and the write it guards. Real
+# answer, real exit status, then 0.4 s. Every other call is untouched, so the
+# writes this test is about happen at full speed.
+_read=0 _state=0
+for a in "\$@"; do
+  case "\$a" in
+    display-message) _read=1 ;;
+    *@agent_state*)  _state=1 ;;
+  esac
+done
+if [ "\$_read" = 1 ] && [ "\$_state" = 1 ]; then
+  out="\$($realtmux "\$@")"; rc=\$?
+  printf '%s\n' "\$out"
+  sleep 0.4
+  exit \$rc
+fi
+exec $realtmux "\$@"
+SLOW
+chmod +x "$slow/tmux"
+# Control: it still answers correctly, and it really does take its time.
+tmux -S "$s" set-option -p -t "$pane" @agent_state working
+slow_t0="$(python3 -c 'import time; print(time.time())')"
+assert_eq "$(PATH="$slow:$PATH" tmux -S "$s" display-message -p -t "$pane" '#{@agent_state}')" "working" \
+  "control: the slow shim gives the REAL value, not a made-up one"
+# Seconds with a fraction, not `date +%s`: a 0.4 s wait is usually 0 whole
+# seconds apart, so a whole-second check would pass for a shim that had
+# stopped waiting at all — and then the race below would prove nothing.
+python3 -c 'import sys, time; sys.exit(0 if time.time() - float(sys.argv[1]) >= 0.3 else 1)' "$slow_t0"
+assert_true $? "control: ...and it really does hold the call open"
+
+race_bad=0
+for i in 1 2 3; do
+  hook working <<< "$UPS"
+  # Stop first: it reads `working`, then waits inside the shim. The dialog
+  # opens during that wait, exactly as it does when the two events land
+  # within a millisecond of each other on a real pane.
+  { env PATH="$slow:$PATH" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" done --stop-hook <<< "$STOP" ; } &
+  stoppid=$!
+  sleep 0.15
+  pr "$BASH_PR"
+  wait "$stoppid"
+  case "$(pstate)" in blocked) ;; *) race_bad=$((race_bad+1)) ;; esac
+done
+assert_eq "$race_bad" "0" \
+  "3 rounds of a Stop and a PermissionRequest overlapping: the pane never left blocked"
+
+# --- a dialog is stamped in ONE tmux command ---------------------------------
+# The second half of the same race, and it is not hypothetical either: with the
+# stamp written as separate calls, the racing Stop's own write landed in the
+# window between @roost-blocked-on and @agent_state, read a pane that was not
+# blocked YET, and took the branch that unsets the description. Measured live
+# on 2.1.278, three subagent dialogs out of three came back with @agent_state
+# blocked, @roost-transcript set and @roost-blocked-on GONE.
+#
+# A window that small cannot be hit on demand, so this asserts the property
+# that closes it instead of the symptom: every option a dialog stamps is
+# written by ONE tmux invocation. A counting shim records each call's whole
+# argv; splitting the group again puts @agent_state and @roost-blocked-on on
+# different lines and this fails.
+count="$sdir/count-tmux"; mkdir -p "$count"
+calls="$sdir/tmux-calls.log"
+cat > "$count/tmux" <<COUNT
+#!/bin/sh
+# One line per invocation, then the real tmux. An exec wrapper, never a
+# symlink: a later \`>\` into a shim entry would follow a symlink and
+# overwrite the real tool.
+printf '%s\\n' "\$*" >> $calls
+exec $realtmux "\$@"
+COUNT
+chmod +x "$count/tmux"
+hook working <<< "$UPS"
+: > "$calls"
+env PATH="$count:$PATH" TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" blocked --permission-request-hook <<< "$BASH_PR"
+assert_eq "$(pstate)" "blocked" "control: the counted run really stamped the dialog"
+assert_eq "$(pblocked)" "Bash: mkdir /tmp/roost-probe-dir" "control: ...description and all"
+[ "$(grep -c . "$calls")" -gt 0 ]; assert_true $? "control: the counting shim really saw the hook's tmux calls"
+together="$(grep -c '@agent_state.*@roost-blocked-on\|@roost-blocked-on.*@agent_state' "$calls")"
+assert_eq "$together" "1" "the badge and the dialog's description are written by ONE tmux command"
+# set-option only: the hot-path READ names @agent_state too, and counting it
+# would make this assertion about the wrong thing.
+split_state="$(grep -c 'set-option.*@agent_state' "$calls")"
+assert_eq "$split_state" "1" "...and @agent_state is WRITTEN exactly once, so there is no second write to race with"
+
 # --- a second dialog on a pane that still reads blocked ----------------------
 # The same case the Notification hook already handles (flock round 1 on #38):
 # the stamp must move and the record must follow, or roost-unblock.sh would
@@ -364,6 +604,29 @@ hook working <<< "$UPS"
 out="$(pr "$BASH_PR" 2>/dev/null)"
 assert_eq "$out" "" "the PermissionRequest hook prints nothing at all, so it can decide nothing"
 
+# And again on the path that has a CHILD PROCESS. roost-agent-state pings
+# roost-notify when a pane goes blocked in a window that is not on screen, and
+# that child inherits the hook's stdout — so it is the one way a byte could
+# reach Claude without this file's own code printing it (flock round 1). The
+# assertion above ran with the pane's window active, which is exactly the case
+# where that child never starts.
+#
+# The backend is pinned to `tmux` rather than left on `auto`: auto on macOS
+# raises a real desktop notification, and `none` would exit before the child
+# did anything at all, so the case would test nothing. `tmux` makes it do real
+# work — a display-message on this test's own server — with nothing on stdout.
+tmux -S "$s" set-option -g @roost-notify-backend tmux
+notifwin="$(tmux -S "$s" new-window -d -P -F '#{window_id}' 'sh -c "while :; do sleep 5; done"')"
+tmux -S "$s" select-window -t "$notifwin"
+assert_eq "$(tmux -S "$s" display-message -p -t "$pane" '#{window_active}')" "0" \
+  "control: the badged pane is now in a window that is not on screen, so the notify child runs"
+hook working <<< "$UPS"
+out="$(pr "$BASH_PR" 2>/dev/null)"
+assert_eq "$(pstate)" "blocked" "...the off-screen dialog is still badged"
+assert_eq "$out" "" "...and the hook still prints nothing, notify child and all"
+tmux -S "$s" kill-window -t "$notifwin" 2>/dev/null
+tmux -S "$s" set-option -gu @roost-notify-backend
+
 # --- roost doctor names an install wired before this change ------------------
 # Same shape as the StopFailure check (#55): a settings.json copied from
 # `roost hooks` before #91 badges every other event correctly, so the only
@@ -393,6 +656,34 @@ prline="$(printf '%s\n' "$prout" | grep -F 'has no PermissionRequest hook' | hea
 assert_contains "$prline" "six seconds" "...saying how late the badge is without it"
 assert_contains "$prline" "or run: roost install" "...and pointing at roost install, which adds it"
 rm -rf "$prhome"
+
+# --- the decline path clears the description too -----------------------------
+# scripts/lib/roost-unblock.sh is the ONE place a 🛑 is cleared without running
+# this script, so it is the one place that could leave @roost-blocked-on
+# describing a dialog that is gone. It unsets it inside the same compare-and-
+# clear as the rest — and until round 1 of the flock said so, deleting that
+# unset left the whole suite green, which is not a test.
+#
+# Driven through `roost send`, not by calling the function, because that is the
+# path a caller takes: send is what reads `blocked`, proves the decline from
+# the transcript and clears. The fixture is the real `3. No` capture that
+# tests/test-claude-decline.sh pins, with the stamp those records were taken
+# under.
+unb="$sdir/unblock-no.jsonl"
+cp "$HERE/tests/fixtures/claude-transcript-no.jsonl" "$unb"
+NO_SINCE=1789398932
+tmux -S "$s" set-option -p -t "$pane" @agent_since "$NO_SINCE"
+tmux -S "$s" set-option -p -t "$pane" @agent_state blocked
+tmux -S "$s" set-option -p -t "$pane" @roost-transcript "$NO_SINCE $unb"
+tmux -S "$s" set-option -p -t "$pane" @roost-blocked-on "Bash: mkdir /tmp/roost-probe-dir"
+tmux -S "$s" set-option -p -t "$pane" @roost-stop-swallowed 1
+assert_eq "$(pblocked)" "Bash: mkdir /tmp/roost-probe-dir" "control: the declined pane really carries a description"
+"$ROOST" send "$pane" "" >/dev/null 2>&1
+assert_eq "$?" "0" "send clears a pane whose dialog was declined"
+assert_eq "$(pstate)" "" "...the badge is unset, not written"
+assert_eq "$(pblocked)" "" "...and the description of the dialog that is gone is unset with it"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pane" @roost-stop-swallowed)" "" \
+  "...as is the mark that says this dialog has already swallowed a Stop"
 
 # --- roost install adds the one missing entry, and only that ----------------
 # The merge is generic (scripts/lib/roost-json.sh walks whatever

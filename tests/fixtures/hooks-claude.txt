@@ -1,15 +1,29 @@
 # Add this to ~/.claude/settings.json (merge into an existing "hooks" block).
 # Then run `claude` inside a `roost` window and its badge tracks its state.
 # Outside roost these hooks are silent no-ops.
-# "matcher": "permission_prompt" matters — an unmatched Notification hook also
-# fires for idle_prompt/auth_success, which would paint a finished agent red.
-# PostToolUse is what clears the red: no hook fires when you answer a permission
-# dialog, so without it the window stays blocked until the whole turn ends.
-# --notification-hook on the Notification entry is what clears it after "No" or
-# Esc, when no hook fires at all: it records the payload's transcript_path, and
-# `roost send`, `read` and `wait-done` read Claude's own transcript to prove
-# the dialog was declined. Leave it off and a declined dialog keeps its red
-# until your next prompt.
+# PermissionRequest is what paints the red, and it fires as the dialog opens.
+# Measured on Claude Code 2.1.278: 11-16 ms after the dialog appears, where the
+# permission_prompt Notification below arrives a flat 6.00 s after it — and a
+# dialog answered inside those six seconds fires no Notification at all, so it
+# was never painted and `roost send` typed into it. The hook prints nothing and
+# decides nothing: an `allow` or a `deny` on this event would answer the dialog
+# on your behalf, and roost never does that.
+# "matcher": "permission_prompt" matters on the Notification entry — an
+# unmatched Notification hook also fires for idle_prompt/auth_success, which
+# would paint a finished agent red. That entry stays as the fallback for a
+# Claude too old for PermissionRequest; on a current one it only moves the
+# stamp for a dialog that is still open.
+# PostToolUse and PostToolUseFailure are what clear the red: no hook fires when
+# you answer a permission dialog, so without them the window stays blocked
+# until the whole turn ends. BOTH are needed — PostToolUse fires only when the
+# tool SUCCEEDS, so a command that exits non-zero after you said Yes would
+# otherwise leave the window red for the rest of the turn.
+# --notification-hook on the Notification entry, and
+# --permission-request-hook on the PermissionRequest entry, are what clear the
+# red after "No" or Esc, when no hook fires at all: they record the payload's
+# transcript_path, and `roost send`, `read` and `wait-done` read Claude's own
+# transcript to prove the dialog was declined. Leave them off and a declined
+# dialog keeps its red until your next prompt.
 # --stop-hook on the Stop entry is what powers `roost read`: it lets the hook
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — `roost
@@ -21,7 +35,7 @@
 # `roost wait-done` and `read` to print. It has no matcher on purpose: every
 # kind Claude reports is a turn that did not finish.
 #
-# SessionStart is the odd one out: the other five report state OUTWARD, and it
+# SessionStart is the odd one out: the other seven report state OUTWARD, and it
 # is the only one that feeds context IN. It tells the agent it is inside roost
 # and gives it its own pane id, so it reaches for `roost split` rather than a
 # bare `tmux split-window` that would target the user's ordinary tmux server.
@@ -52,6 +66,9 @@
         "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state blocked --notification-hook" } ] }
     ],
     "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working" } ] }
+    ],
+    "PostToolUseFailure": [
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state working" } ] }
     ],
     "Stop": [

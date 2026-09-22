@@ -80,11 +80,19 @@ _roost_hooks_root() {
 # roost badges a dialog whatever asked for it: an MCP server's tool name is
 # not knowable in advance, and a list of the built-in ones would miss whichever
 # tool Claude Code adds next.
+#
+# PostToolUseFailure sits beside PostToolUse and runs the same command, because
+# PostToolUse fires only on SUCCESS. Measured on 2.1.278: a Bash that exits
+# non-zero after the human answered Yes fires PostToolUseFailure and no
+# PostToolUse, so without this entry the 🛑 that PermissionRequest stamped had
+# nothing to clear it and the turn ended with the pane still blocked
+# (tests/test-claude-permission-request.sh). It badges `working` for exactly
+# the reason PostToolUse does: a failed tool call does not end the turn.
 roost_hooks_claude() {
   local target context
   if [ $# -ge 1 ]; then target="$1"
   else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
-  # SessionStart runs a DIFFERENT script from the other six, so it cannot use
+  # SessionStart runs a DIFFERENT script from the other seven, so it cannot use
   # $target. It is derived as a sibling of $target rather than from
   # _roost_hooks_root because $target may have been injected by a caller (the
   # installer, or a test with a fixed path) and must stay the authority on
@@ -110,6 +118,9 @@ roost_hooks_claude() {
         "hooks": [ { "type": "command", "command": "$target blocked --notification-hook" } ] }
     ],
     "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "$target working" } ] }
+    ],
+    "PostToolUseFailure": [
       { "hooks": [ { "type": "command", "command": "$target working" } ] }
     ],
     "Stop": [
