@@ -177,7 +177,15 @@ printf '%s' "$STOP2_PAYLOAD" | env PATH="$shimdir:$PATH" TMUX="$s,0,0" TMUX_PANE
 # Only set-option lines: the state READ is a display-message whose format
 # string contains the literal "#{@agent_state}", and counting that as a write
 # would make this assertion pass no matter which order the writes happened in.
-order="$(grep 'set-option' "$tmuxlog" | grep -oE '@roost-reply|@agent_state' | paste -sd, -)"
+#
+# `uniq` collapses ADJACENT repeats, and only those. Since #91 the state write
+# can be a single `if-shell` whose argv names @agent_state twice — once in the
+# condition it is tested against, once in the branch that writes it — and that
+# is still one write, in one place, at one instant. Collapsing adjacent repeats
+# keeps this assertion about ORDER: the failure it exists to catch is
+# state,reply,state, and neither that nor reply,state,reply has adjacent
+# repeats to lose.
+order="$(grep 'set-option' "$tmuxlog" | grep -oE '@roost-reply|@agent_state' | uniq | paste -sd, -)"
 assert_eq "$order" "@roost-reply,@agent_state" "Stop writes the reply BEFORE the state"
 # The same log, read for what must NOT be there. A healthy working -> done
 # transition on a pane that was never error has no @roost-error-reason to

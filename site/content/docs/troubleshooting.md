@@ -72,7 +72,7 @@ Your `Notification` hook is missing the `permission_prompt` matcher. Unmatched, 
 
 ## A window stays red after you approve a permission
 
-Your `PostToolUse` hook is missing. No hook fires when you answer a permission dialog, so `PostToolUse` is the first observable event after approval — it is what clears 🛑.
+A `PostToolUse` or `PostToolUseFailure` hook is missing. No hook fires when you answer a permission dialog, so those two are the first observable events after approval — they are what clears 🛑. You need **both**: `PostToolUse` fires only when the tool *succeeds*, so with it alone a command that exits non-zero after you approved it leaves the window red for the rest of the turn. `roost doctor` tells you when either is missing; `roost install` adds the missing entry and leaves the rest alone.
 
 ## A Claude pane stays working after an API error
 

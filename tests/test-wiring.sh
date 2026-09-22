@@ -160,16 +160,23 @@ keys="$(python3 -c 'import json,sys; print(",".join(sorted(json.load(open(sys.ar
 assert_eq "$keys" "hooks" "the generated file has exactly one top-level key, hooks — it overrides no user setting"
 
 # The upgrade path from a machine that already ran `roost install`: the same
-# six (event, matcher, command) triples, byte for byte. Claude runs an
+# eight (event, matcher, command) triples, byte for byte. Claude runs an
 # identical command once when it appears in two sources (design M4b), so this
 # equality is what makes "hooks fire once" true — a single differing byte
 # makes every hook run twice.
+#
+# The COUNT is asserted as well as the equality, and it is a literal on
+# purpose: two empty lists are equal too, and a `roost hooks claude` that
+# silently stopped emitting an event would keep this pair green. It moved from
+# six to seven with #91's PermissionRequest entry, and to eight with the
+# PostToolUseFailure entry that round 1 of #91's flock review added beside
+# PostToolUse.
 install_claude
 want="$(triples "$B/home/.claude/settings.json")"
 got="$(triples "$gen")"
 [ -n "$want" ]; assert_true $? "roost install wrote claude hooks into the sandbox (the comparison below is not two empty strings)"
 assert_eq "$got" "$want" "upgrade: every generated hook command is identical to the one roost install wrote, so each runs once"
-assert_eq "$(printf '%s\n' "$got" | grep -c .)" "6" "the generated file carries all six roost hook entries"
+assert_eq "$(printf '%s\n' "$got" | grep -c .)" "8" "the generated file carries all eight roost hook entries"
 
 oc="$(wdir_of "$B/xdg")/opencode/plugin/roost.js"
 [ -L "$oc" ] && [ "$oc" -ef "$HERE/adapters/opencode/roost.js" ]

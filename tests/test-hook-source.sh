@@ -58,6 +58,33 @@ assert_eq "$claude_out" "$bare_out" \
 # typed blind. The five existing objects are untouched, and `roost install`
 # adds the new one to a settings.json that has only those five
 # (tests/test-adapter-install.sh, "wired before StopFailure existed").
+#
+# One deliberate edit for #91, claude only: a SEVENTH event, PermissionRequest,
+# INSERTED before Notification rather than appended. Position is the one thing
+# that is free here and nowhere near free in the codex fixture: Claude stores
+# no hash of its hooks, so where an event sits changes nothing it can see, and
+# the two dialog hooks are worth reading together. Re-captured from
+# `roost hooks claude` and diffed, not typed: the diff is exactly three added
+# lines and no existing byte moved. `roost install` adds the new entry to a
+# settings.json that has only the other six, by the same generic merge
+# (scripts/lib/roost-json.sh) the StopFailure case above relies on, and
+# tests/test-claude-permission-request.sh holds the rest.
+#
+# Round 2 added --tool-hook to both PostToolUse entries. It lets the hook read
+# that event's payload, and it reads it only when the pane already reads 🛑 —
+# a SUBAGENT's tool result must not clear a dialog a different agent opened on
+# the same pane. Re-captured, not typed; the JSON diff is those two argument
+# strings and nothing else.
+#
+# Round 1 of the flock then added the missing prose and an EIGHTH event,
+# PostToolUseFailure, beside PostToolUse. That one is an append, and it is the
+# event Claude actually sends when a tool fails after the human answered Yes —
+# PostToolUse fires only on success, so without it the 🛑 PermissionRequest
+# stamped had nothing to clear it. Re-captured the same way; the JSON diff is
+# three added lines beside PostToolUse and nothing moved. The prose above the
+# object was rewritten in the same round, which is why this fixture's comment
+# half changed at once: the lane was granted that block in bin/roost
+# (comments and heredoc text only, nothing executable).
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"

@@ -160,6 +160,33 @@ case "$(_settings_state "$settings")" in
       # (tests/test-adapter-install.sh), so the tail names it.
       grep -q -- --stop-failure-hook "$settings" 2>/dev/null \
         || warn "$settings has no StopFailure hook — a Claude turn that ends on an API error (a rate limit, an overload) stays ⏳ working instead of 💥 error; re-run: roost hooks, or run: roost install"
+      # And again for the PermissionRequest hook (#91). A config wired before
+      # it existed still badges every dialog — six seconds late, off the
+      # permission_prompt Notification — so nothing looks broken until an agent
+      # answers a dialog faster than that, and then the pane never reads 🛑 at
+      # all and `roost send` pastes into the open dialog. That is invisible
+      # from the reader's end and hard to connect to a missing entry, so it is
+      # named here, on the terminal of the person who can re-run the command.
+      #
+      # Matched on the flag anywhere in the file, for the reason the three
+      # checks above give: matching a JSON key's own array with grep is how a
+      # check ends up quietly wrong, and the false positive costs a line of
+      # advice while the false negative costs the feature.
+      grep -q -- --permission-request-hook "$settings" 2>/dev/null \
+        || warn "$settings has no PermissionRequest hook — a Claude permission dialog is badged 🛑 six seconds late, and one answered faster than that is never badged at all; re-run: roost hooks, or run: roost install"
+      # And the event that clears that 🛑 when the tool FAILS. PostToolUse
+      # fires only on success, so without this entry a command that exits
+      # non-zero after the human said Yes leaves the pane blocked for the rest
+      # of the turn (#91, measured). docs/known-gaps.md claimed doctor named
+      # this before it did (flock round 2); now it does.
+      #
+      # Matched on the event NAME, not on a flag: both PostToolUse entries
+      # carry --tool-hook, so a flag cannot tell the two apart. Same shape as
+      # the roost-session-context check above, and the same caveat — a name
+      # anywhere in the file counts, which costs a line of advice in the false
+      # positive and the whole feature in the false negative.
+      grep -q PostToolUseFailure "$settings" 2>/dev/null \
+        || warn "$settings has no PostToolUseFailure hook — a Claude tool that FAILS after you approved it leaves the pane 🛑 blocked for the rest of the turn, because PostToolUse fires only on success; re-run: roost hooks, or run: roost install"
     fi
     ;;
   unreadable) warn "$settings exists but is not readable — could not check whether Claude hooks are wired" ;;
@@ -224,6 +251,19 @@ else
     warn "this pane has no ROOST_WIRING_DIR — it was opened before wiring was on, so claude here runs without roost's settings; open a new pane"
   elif [ ! -f "$w_dir/claude/settings.json" ]; then
     warn "wiring is on but $w_dir/claude/settings.json is missing — claude runs without roost's settings; run: roost wiring on"
+  elif ! grep -q -- --permission-request-hook "$w_dir/claude/settings.json" 2>/dev/null; then
+    # The SECOND place a Claude settings file lives, and the one the user
+    # cannot see (flock round 1 on #91). scripts/roost-wiring regenerates this
+    # file at SERVER START, so a `-L roost` server that has been up since
+    # before the upgrade still hands every claude in it the old entries —
+    # and the settings.json check further up says nothing, because that file
+    # is fine. The symptom is the #91 bug on a machine whose `roost doctor`
+    # is otherwise all ✓.
+    #
+    # Matched on the flag rather than on the JSON, for the reason every check
+    # above gives: matching a key's own array with grep is how a check ends
+    # up quietly wrong, and the false positive costs a line of advice.
+    warn "$w_dir/claude/settings.json was generated before the PermissionRequest hook existed — this roost server has been running since then, so a permission dialog in it is badged 🛑 six seconds late; run: roost wiring on"
   fi
   w_claude="$(command -v claude 2>/dev/null || true)"
   if [ -n "$w_claude" ]; then

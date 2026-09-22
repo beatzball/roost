@@ -43,7 +43,7 @@ banner, not a reply. Claude's schema also has an optional `error_details`; it
 was absent in all seven captures, and roost does not read it. Raw logs were
 kept with the #55 work, not committed.
 
-**What is wired.** A sixth Claude hook, `StopFailure` with no matcher, runs
+**What is wired.** A Claude hook of its own, `StopFailure` with no matcher, runs
 `roost-agent-state error --stop-failure-hook`. It badges 💥 error, clears the
 previous turn's reply, and records `@roost-error-reason` as *Claude ended the
 turn on an API error (<kind>)* — the same path codex uses (#53), so
@@ -116,16 +116,16 @@ no dialog, also fires Interrupt and no Stop.
 
 - **codex** registers a fifth hook, `Interrupt`, which badges `idle` and clears
   the previous turn's reply. It is an event, so it sets state.
-- **Claude Code** has no event to wire. It does write the decline into its own
-  transcript — `tool_result` "The user doesn't want to proceed with this tool
-  use…" with `toolDenialKind: "user-rejected"`, then
+- **Claude Code** has no event for the ANSWER. It does write the decline into
+  its own transcript — `tool_result` "The user doesn't want to proceed with this
+  tool use…" with `toolDenialKind: "user-rejected"`, then
   `[Request interrupted by user for tool use]`, then `system turn_duration` —
-  so the Notification hook now records `transcript_path` beside its stamp
-  (`--notification-hook`), and `send`, `read` and `wait-done` call
-  `scripts/lib/roost-unblock.sh` before believing `blocked`. It clears only when
-  those three records are the newest conversation records in the transcript
-  and none is older than the stamp; it only ever UNSETS, and records
-  `@roost-unblocked`. An old decline under a newer prompt — the screen-based
+  so the dialog hooks record `transcript_path` beside their stamp
+  (`--permission-request-hook`, `--notification-hook`), and `send`, `read` and
+  `wait-done` call `scripts/lib/roost-unblock.sh` before believing `blocked`.
+  It clears only when those three records are the newest conversation records
+  in the transcript and none is older than the stamp; it only ever UNSETS, and
+  records `@roost-unblocked`. An old decline under a newer prompt — the screen-based
   first attempt's fatal case — stays blocked, and is a test.
 - **copilot** needed nothing for Esc: 1.0.83 fires `permission.completed` with
   `cancelled`, which the adapter already clears on.
@@ -144,7 +144,14 @@ no dialog, also fires Interrupt and no Stop.
   someone answers "Trust all and continue" once more (`roost doctor` names
   exactly this). Claude: a `settings.json` wired before #38 has no
   `--notification-hook`, records no transcript, and never recovers until
-  `roost install` is re-run.
+  `roost install` is re-run; one wired before #91 has no `PermissionRequest`
+  entry at all and keeps the whole 6 s window, and no `PostToolUseFailure`
+  entry, so a tool that fails after a Yes leaves the pane 🛑 for the rest of
+  the turn. `roost doctor` names each of those three by the flag or the event
+  name it looks for, and each of those checks now has a test that fails when
+  the check is removed (flock round 2 found two that did not). `roost doctor` names each
+  missing entry by the flag it looks for, and `roost install` adds the entry
+  and leaves everything else alone.
 - **copilot `No` is not measured.** On 1.0.83, `3` moved the cursor and neither
   Enter nor `C-m` sent through `tmux send-keys` closed the dialog, three tries.
   Esc recovers; whether No does is unknown.
@@ -158,24 +165,134 @@ no dialog, also fires Interrupt and no Stop.
   `wait-done` is a behaviour change left for its own task.
 - **Claude with no python3 and no jq** cannot read a transcript, so it never
   recovers there. Same fail-closed shape.
-- **A Claude dialog answered within about 6 s is never badged at all.**
-  Measured: the `permission_prompt` Notification arrives ~6 s after the dialog
-  opens, and a faster answer skips it. That is the old, narrow version of the
-  unbadged-dialog hazard, not a stuck badge.
-- **A Claude subagent's dialog, in its first ~6 s, over a declined main
-  dialog, is not measured — and could be cleared.** Found by review (flock
-  round 2), not reproduced. Input: the main turn's dialog is declined, so the
-  recorded transcript ends in the decline records; a background subagent
-  started earlier in that turn then opens its own dialog; a `roost send`
-  arrives before that dialog's Notification (~6 s). The reader sees only the
-  MAIN transcript — a subagent writes its records to a separate file — so the
-  decline still looks newest, the badge is cleared, and the text is pasted
-  into the subagent's dialog. Once the subagent's Notification fires, the
-  repeat-Notification path moves the stamp and it fails closed again. Before
-  #38 the stale 🛑 accidentally protected this window. It is the same class
-  as the unbadged first ~6 s of ANY Claude dialog (bullet above), but it is a
-  wrong clear, not a missing badge. To measure: one background Agent that
-  needs permission after a declined main dialog, and a `send` inside 6 s.
+- **A Claude too old for `PermissionRequest` still has the whole 6 s window,
+  and roost cannot tell.** Fixed for current Claude by #91: a seventh hook,
+  `PermissionRequest` with no matcher, badges 🛑 as the dialog opens.
+  Re-measured on 2.1.278 with a logger on all 18 hook events, an isolated HOME
+  and a local stand-in for the Messages API: `PermissionRequest` lands 11–16 ms
+  after the dialog is drawn (four samples, polling `capture-pane` at ~5–9 ms a
+  frame), and the `permission_prompt` Notification lands a flat **6.00 s after
+  it** — 6.002, 6.001, 5.996, 6.003 and 5.997 s for a Bash, an Edit, a Write, a
+  WebFetch and an MCP tool. A dialog answered inside those six seconds fires no
+  Notification at all, which is why a fast answer was never badged. The
+  Notification entry stays wired as the fallback, so a Claude without the event
+  keeps exactly the old behaviour — and roost does not detect the version, so
+  on such a Claude the 6 s window is still open and nothing says so.
+- **Nothing but its own test keeps the hook silent.** `PermissionRequest` is an
+  event Claude ACTS on: a hook that prints a `decision` of `allow` answers the
+  dialog on the human's behalf. roost prints nothing, which was measured to
+  leave the dialog for the human (as does `{}`), and
+  `tests/test-claude-permission-request.sh` asserts the hook's stdout is empty
+  — on the active-window path and on the one that starts a `roost-notify`
+  child, the only process that inherits the hook's stdout. That pair of
+  assertions is the only thing between a future edit and roost approving a
+  tool call nobody saw.
+- **A long-running roost server keeps the old hooks after an upgrade.**
+  `scripts/roost-wiring` generates a second Claude settings file, and it does
+  so when the SERVER starts — so a `-L roost` server that has been up since
+  before #91 hands every pane the old entries even after `roost install` has
+  run, and the user's own `settings.json` check says nothing because that file
+  is fine. Found by review (flock round 1). `roost doctor` now names that file
+  too, and `roost wiring on` regenerates it; nothing detects it automatically.
+- **A subagent's dialog over a declined main dialog: measured, and the window
+  is now about 250 ms rather than about 6 s.** Found by review (flock round 1),
+  and reproduced on 2.1.278 in the #91 rig. What happens: a background agent's
+  dialog is drawn on the MAIN pane, `PermissionRequest` fires for it with
+  `agent_id` and `agent_type` added, and its `transcript_path` still names the
+  main session file. So the stamp moves to the new dialog, and
+  `roost-unblock.sh`'s rule 4 — every record no older than `@agent_since` —
+  then refuses to read the older decline as current, which is what closes the
+  wrong clear. What is LEFT is the gap between the main decline and the
+  subagent's `PermissionRequest`: 259 ms from the prompt in the rig. A `roost
+  send` inside that gap still clears correctly, because no dialog is open yet,
+  and can then land in the dialog that opens next. That is a race, not a stuck
+  badge, and it is the same shape on any harness.
+- **A Claude subagent's dialog ends the main turn, and the main turn's `Stop`
+  races the dialog.** Measured on 2.1.278, twice, and the two runs DISAGREED:
+  first `PermissionRequest` (with `agent_id`) at 1790058350.889319 and the main
+  turn's `Stop` (with NO `agent_id`, so nothing in the payload tells them
+  apart) 7 ms later; then, on the same case, `Stop` at 1790062049.316559 and
+  `PermissionRequest` at 1790062049.316824 — `Stop` first, by 0.265 ms. So
+  nothing may depend on which arrives first, and the first version of this
+  guard did: it read `@agent_state` and acted on that read dozens of lines
+  later, which gave ✅ done under an open dialog in 28 of 40 runs when the two
+  hooks started together (flock round 1, measured). `scripts/roost-agent-state`
+  now holds the `Stop` back with a single `if-shell`, so tmux tests and writes
+  in one command. What is LEFT: the rule is still that a pane reading `blocked`
+  keeps its badge through a `Stop`, so anything that badges a pane `blocked`
+  and never clears it costs that pane one `Stop` — see the bullet below.
+- **The `Stop` guard swallows exactly one `Stop` per dialog, and that bound is
+  the only thing keeping a pane from sticking at 🛑 for ever.** The first
+  version had no bound, and two reviewers found panes stuck with `send`
+  refusing, `wait-done` burning its timeout and `read` calling the reply stale
+  (flock round 1). One of the two inputs reproduces live and is now wired:
+  a tool that FAILS after a Yes fires `PostToolUseFailure` and no `PostToolUse`
+  (measured on 2.1.278 — `PermissionRequest` at 1790061919.001582, Yes,
+  `PostToolUseFailure` at 1790061923.942409, `Stop` 114 ms later), so
+  `PostToolUseFailure` is now an entry of its own and clears the badge. The
+  bound is the belt to that: `@roost-stop-swallowed` is unset when a dialog is
+  stamped and set when a `Stop` is held back, so a second `Stop` always moves
+  the pane. A turn that fires exactly one `Stop` and no clearing event still
+  loses that `Stop` — the pane then reads 🛑 until the next prompt, which is
+  the pre-#38 shape and fails closed.
+- **A declined SUBAGENT dialog was reasoned to strand a pane; measured, it does
+  not.** The review's input: the subagent's `PermissionRequest` stamps
+  `@roost-transcript` with the MAIN session file, the decline records go
+  somewhere `roost-unblock.sh` cannot match, and the main turn's real `Stop` is
+  swallowed. Measured on 2.1.278, pressing `3` at a subagent dialog:
+  `PostToolBatch` +52 ms, `SubagentStop` +102 ms, **`UserPromptSubmit` +158 ms**
+  and `Stop` +227 ms. Claude re-enters the main loop with a prompt of its own,
+  and roost already wires `UserPromptSubmit` to `working`, so the pane leaves
+  `blocked` before the real `Stop` arrives. The reviewers were right about the
+  shape and the version does not have it; the bounded guard above covers it if
+  that `UserPromptSubmit` ever stops arriving.
+- **The path that LEAVES `blocked` is the one writer left that is not atomic.**
+  Everything that stamps a dialog is now one tmux command — the transition and
+  the repeat, from one function — and the `Stop` is an `if-shell`. The clear
+  (`working`, `error`, `idle`) still reads `@agent_state` once near the top and
+  unsets `@roost-blocked-on` and `@roost-stop-swallowed` in separate calls
+  further down, so a dialog stamped in between would have its record cleared
+  under it. Round 2 of the flock bounded the window at single-digit
+  milliseconds and could NOT reproduce it at any gap, because the hook that
+  would have to win the race is systematically the slower of the two. Left
+  alone deliberately: the badge itself is written last and correctly, and
+  making it atomic costs the `PostToolUse` hot path a second round trip on
+  every tool call of every live agent.
+- **A SUBAGENT's tool result no longer clears another agent's dialog, but the
+  case behind it is not measured live.** Found by review (flock round 2) and
+  reproduced at hook level: a background agent finishing a tool fires
+  `PostToolUse` on the MAIN pane, and `working` cleared the 🛑 a DIFFERENT
+  agent's dialog had stamped there — badge gone, description gone, `send`
+  exit 0 into the open dialog. `--tool-hook` now reads `agent_id` and ignores
+  a subagent's tool event while the pane is blocked. What is NOT measured is
+  the live shape it needs: **two** background agents at once, one holding a
+  dialog while the other finishes a tool. The rig drives one subagent at a
+  time. Queued dialogs — a second dialog arriving while the first is still
+  open — are unmeasured for the same reason.
+- **A sibling tool's `PostToolUse` cannot clear a live dialog on 2.1.278.**
+  Found by review (flock round 1): an auto-allowed `Read` in the same assistant
+  message as a `Bash` that needs permission would badge `working` over the
+  dialog's 🛑. Measured both orders on the account-free rig. Read first:
+  `PostToolUse` for the Read at 1790061947.304801, then `PermissionRequest` at
+  1790061947.407430 — the badge is set last and survives. Bash first: only
+  `PreToolUse` and `PermissionRequest`, and the Read's `PostToolUse` does not
+  arrive until after the dialog is answered. Claude runs a batch up to the
+  first tool that needs permission and then stops, so there is no sibling event
+  while a dialog is open. Not defended against in code; it would come back if
+  that changed.
+- **`acceptEdits` is clean; `bypassPermissions` is not measured.** The event
+  fires only when a dialog would actually be drawn, so it cannot badge a pane
+  🛑 with nothing on screen: measured on 2.1.278 with
+  `--permission-mode acceptEdits`, an Edit ran with `PreToolUse` and
+  `PostToolUse` and **no** `PermissionRequest`, and no dialog. The same check
+  for `bypassPermissions` was not completed — its one-time "Yes, I accept"
+  screen did not take a `send-keys Down` in the rig — and it is the mode whose
+  whole point is that no dialog is shown, so the expected answer is the same.
+- **The third dialog answer is the one #38 already measured.** On 2.1.278 the
+  options are `1. Yes`, `2. Yes, and …`, `3. No` — there is no "No, and tell
+  Claude what to do differently". `3` fires NO hook at all, on a Bash dialog
+  and on an Edit dialog, and no `Stop` either, so the badge is cleared by
+  `roost-unblock.sh` from the transcript exactly as an Esc is.
 - **A codex subagent's Interrupt is not measured.** If codex fires
   `Interrupt` for a child while the parent turn continues, the parent pane
   would read 💤 idle mid-turn. Measured and ruled out: Esc at an idle codex
