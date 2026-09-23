@@ -142,7 +142,12 @@ no dialog, also fires Interrupt and no Stop.
 - **Existing installs need one step each.** codex: the `Interrupt` handler is
   new, so codex asks at "Hooks need review" again and nothing works until
   someone answers "Trust all and continue" once more (`roost doctor` names
-  exactly this). Claude: a `settings.json` wired before #38 has no
+  exactly this). The same handler's timeout has since moved from 10 to 3 —
+  codex's own cap, which it was clamping the 10 down to while warning with the
+  hooks.json path on every start — so a machine installed before that change
+  needs `roost install` and then one more trust answer. Nothing the hook does
+  changes; `roost doctor` reads the timeout out of `hooks.json` and says so
+  when it is still the old one. Claude: a `settings.json` wired before #38 has no
   `--notification-hook`, records no transcript, and never recovers until
   `roost install` is re-run; one wired before #91 has no `PermissionRequest`
   entry at all and keeps the whole 6 s window, and no `PostToolUseFailure`
@@ -398,7 +403,10 @@ alpha
 ```
 
 Warnings about timeouts. A warning about model metadata. Nothing about four
-hooks being skipped. Codex's own docs promise a startup warning pointing at
+hooks being skipped. (The `Interrupt` line is gone now — roost asks for the 3
+codex was clamping it to. The `SessionEnd` line came from the twelve-event
+probe file that capture used, not from roost's five. Both are kept above
+because they are what the cap was measured from.) Codex's own docs promise a startup warning pointing at
 `/hooks` — true of the TUI, false of `codex exec`, which is where automation
 lives.
 
@@ -420,8 +428,17 @@ are reported as the different claims they are.
 normalised handler. roost does not know codex's normalisation, so four present
 entries are not proof that four hooks will fire: a `hooks.json` hand-edited
 after trust was granted keeps its entries and loses its hooks. roost's own
-answer is upstream of doctor — `roost hooks codex` emits handler objects frozen
-at v1 that never change again, so a roost upgrade can never be the cause.
+answer is upstream of doctor — `roost hooks codex` emits handler objects that
+are frozen, so a roost upgrade is almost never the cause.
+
+"Almost never" because it has happened once: the `Interrupt` timeout moved from
+10 to 3, and that upgrade is the one that can leave a machine with five trust
+entries and four working hooks. It is not left undetected. Doctor reads the
+timeout out of `hooks.json` and warns while it is still the old number, which
+catches every machine that has not run `roost install` yet; the installer then
+prints the trust step, as it does on every run. The window is between those two,
+and the change was accepted only because the behaviour on both sides of it is
+the same 3 seconds — codex was clamping the 10 down all along.
 
 ### A copilot pane can be badge-less, and nothing says so
 

@@ -571,6 +571,29 @@ if command -v codex >/dev/null 2>&1; then
     fi
   else
     ok "codex hooks wired in $cxhooks"
+    # --- the Interrupt handler still carrying the old timeout ---------------
+    # The one roost upgrade that changes a handler codex has already hashed,
+    # and therefore the one an install can leave half-applied. A hooks.json
+    # written before the change asks for 10, codex clamps it to 3 and warns
+    # with this file's full path on every start; the fix is `roost install`,
+    # which replaces roost's own entry, followed by one more trust answer.
+    #
+    # Worth detecting rather than trusting the installer to have run, because
+    # the two failures look identical from the badge's side and have opposite
+    # fixes: an un-rewritten hooks.json still works (codex clamps and warns),
+    # while a rewritten-but-untrusted one silently runs no Interrupt hook at
+    # all. The trust count below reports the second; this reports the first.
+    #
+    # Whitespace is normalised away before matching because both layouts are
+    # legitimate: `roost hooks codex` prints the handler on one line, and the
+    # installer's JSON writer indents it over five. The terminator is part of
+    # the needle so that a timeout of 30 can never read as a 3.
+    cxint="$(grep -F -A3 "$cxwant Interrupt\"" "$cxhooks" 2>/dev/null | tr -d ' \t\n')"
+    case "$cxint" in
+      *'"timeout":3,'*|*'"timeout":3}'*) : ;;
+      *'"timeout":'*)
+        warn "the Interrupt handler in $cxhooks still asks for a timeout codex will not honour — codex caps it at 3s, clamps it, and warns with this path on every start. Run: roost install, then answer \"Trust all and continue\" at codex's \"Hooks need review\" once more" ;;
+    esac
     # The trust key is "<absolute hooks.json path>:<snake_case event>:<group>:<handler>",
     # one entry per handler, verified live. Counting the four roost registers
     # separates "never trusted" (0) from "trusted, then hooks.json was edited by
@@ -611,10 +634,17 @@ if command -v codex >/dev/null 2>&1; then
     # can tell those two apart from the outside.
     #
     # It is left as a comment because roost's answer to it is upstream of
-    # doctor: `roost hooks codex` emits handler objects frozen at v1 that never
-    # change again, so a roost upgrade can never be the cause — and a standing
-    # warning on a correct install is the "cries wolf" failure this file's own
-    # error-glyph check was split in two to avoid.
+    # doctor: `roost hooks codex` emits handler objects that are frozen, so a
+    # roost upgrade is almost never the cause — and a standing warning on a
+    # correct install is the "cries wolf" failure this file's own error-glyph
+    # check was split in two to avoid.
+    #
+    # "Almost never" rather than "never" since the Interrupt timeout moved from
+    # 10 to 3. That is the one upgrade that can leave a machine with five trust
+    # entries and four working hooks, which is exactly the state this check
+    # cannot see. It is not left undetected, though: the timeout check above
+    # catches the half of it roost CAN read — a hooks.json still carrying the
+    # old number — and the installer prints the trust step on every run.
   fi
 fi
 

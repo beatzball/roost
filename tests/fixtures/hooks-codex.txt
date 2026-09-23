@@ -26,6 +26,15 @@
 # again for that one handler: answer "Trust all and continue" once more. Until
 # you do, a declined dialog leaves 🛑 stamped, and `roost doctor` says so.
 #
+# Interrupt asks for 3 seconds where the other four ask for 10, and that is
+# codex's own cap, not a roost preference: codex clamps an Interrupt hook to 3s
+# and used to print `warning: clamping Interrupt hook timeout to 3s` — naming
+# this file's full path — on every start. The hook always ran with 3 seconds;
+# only the warning has gone. If you trusted a roost hooks.json that still said
+# 10, codex asks at "Hooks need review" once more for Interrupt alone, because
+# the number it hashed has moved. Answer "Trust all and continue"; until you
+# do, a declined dialog leaves 🛑 stamped, and `roost doctor` says so.
+#
 # There is no error EVENT. Codex has twelve hook events and none of them reports
 # an error, so 💥 is inferred: a Stop that carries no reply means the turn most
 # likely never reached the model. Some dead turns still end ✅ done. See
@@ -45,6 +54,12 @@
 # the handlers already trusted kept firing); editing one that is already here is
 # not.
 #
+# Interrupt's timeout is the single exception ever made, and it cleared a bar
+# no other edit has: codex was already clamping that number, so the edit cost
+# one re-trust and changed nothing the hook does. An edit that also changed
+# behaviour would trade a working badge on every trusted machine for the fix,
+# and does not clear it.
+#
 # The trust prompt vouches for a PATH, not for the code at that path. Anyone who
 # can write adapters/codex/roost-codex-hook changes what runs, with no second
 # review. That is codex's model, not something roost adds.
@@ -63,7 +78,7 @@
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook Stop", "timeout": 10 } ] }
     ],
     "Interrupt": [
-      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook Interrupt", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/adapters/codex/roost-codex-hook Interrupt", "timeout": 3 } ] }
     ]
   }
 }

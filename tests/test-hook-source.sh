@@ -138,12 +138,31 @@ assert_eq "${bin_claude_copies:-0}" "0" \
 # (the path and the timeout), so a regression in either survives being caught
 # even if it only hits one of them. Interrupt joined the four in #38 and is
 # held the same way.
-for ev in UserPromptSubmit PostToolUse PermissionRequest Stop Interrupt; do
+for ev in UserPromptSubmit PostToolUse PermissionRequest Stop; do
   line="$(printf '%s\n' "$codex_out" | grep "\"$ev\"" -A 1 | tail -n 1)"
   assert_contains "$line" "adapters/codex/roost-codex-hook" \
     "the $ev codex handler still names roost-codex-hook"
   assert_contains "$line" '"timeout": 10' \
     "the $ev codex handler still has timeout 10"
 done
+
+# Interrupt is the ONE handler whose timeout is not 10, and it is not a style
+# choice either. Codex caps an Interrupt hook at 3 seconds and clamps anything
+# larger, printing `warning: clamping Interrupt hook timeout to 3s in
+# <path>/hooks.json` on every start — the path being a home directory, which
+# AGENTS.md §1 keeps off a user's screen as much as out of a commit. The
+# warning is already in the record: docs/known-gaps.md quotes it verbatim from
+# an unedited `codex exec` stderr. Asking for 10 therefore bought nothing (the
+# hook ran with 3 either way) and cost a warning per start, so roost asks for
+# the 3 codex would have given it. Writing the real cap here also makes the
+# value a measurement rather than a preference: if codex ever raises the cap,
+# this assertion is where the next person finds out what the old one was.
+line="$(printf '%s\n' "$codex_out" | grep '"Interrupt"' -A 1 | tail -n 1)"
+assert_contains "$line" "adapters/codex/roost-codex-hook" \
+  "the Interrupt codex handler still names roost-codex-hook"
+assert_contains "$line" '"timeout": 3' \
+  "the Interrupt codex handler asks for codex's own 3s cap, so nothing is clamped"
+assert_eq "$(printf '%s\n' "$codex_out" | grep -c '"timeout": 10')" "4" \
+  "only the four uncapped handlers ask for 10"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

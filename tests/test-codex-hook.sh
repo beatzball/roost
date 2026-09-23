@@ -306,11 +306,24 @@ hooks_out="$("$HERE/bin/roost" hooks codex)"
 # #38 grew the registration by one, Interrupt, in exactly the shape of the other
 # four: the event name as the only argument, timeout 10. The four already
 # trusted are asserted unchanged below, which is what keeps their trust.
-for ev in UserPromptSubmit PostToolUse PermissionRequest Stop Interrupt; do
+for ev in UserPromptSubmit PostToolUse PermissionRequest Stop; do
   assert_contains "$hooks_out" \
     "{ \"type\": \"command\", \"command\": \"$HERE/adapters/codex/roost-codex-hook $ev\", \"timeout\": 10 }" \
     "the frozen $ev handler object is byte-for-byte what it always was"
 done
+# Interrupt is the single exception, and the only handler object roost has ever
+# edited after shipping it. Codex caps an Interrupt hook at 3 seconds: it
+# clamps a larger number down and prints `warning: clamping Interrupt hook
+# timeout to 3s in <path>/hooks.json` on every start, naming a home directory
+# on the user's screen. docs/known-gaps.md quotes that warning verbatim out of
+# an unedited `codex exec` stderr, so the cap is measured, not inferred. 10 was
+# never the value codex used, which is what makes this edit worth its one-time
+# re-trust: the behaviour does not change, only the warning stops.
+assert_contains "$hooks_out" \
+  "{ \"type\": \"command\", \"command\": \"$HERE/adapters/codex/roost-codex-hook Interrupt\", \"timeout\": 3 }" \
+  "the Interrupt handler asks for codex's own 3s cap, so nothing is clamped"
+assert_eq "$(printf '%s' "$hooks_out" | grep -c '"timeout": 10')" "4" \
+  "the other four handler objects are byte-for-byte what they always were"
 assert_eq "$(printf '%s' "$hooks_out" | grep -c '"timeout"')" "5" \
   "exactly five handlers are registered"
 # The comment block above the JSON is prose for the human, so the JSON has to be

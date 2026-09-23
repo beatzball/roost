@@ -1220,7 +1220,11 @@ $(roost_hooks_codex)" ;;
     # would justify leaving it out.
     add_manual "codex: start \`codex\` and answer \"Trust all and continue\" at its
   \"Hooks need review\" prompt. Until then codex silently runs no hook at all
-  and its pane will not badge."
+  and its pane will not badge.
+  If codex asks again on a machine that was already trusted, it is asking
+  about Interrupt alone: its timeout is now 3, the cap codex was clamping the
+  old 10 down to anyway. The hook does what it always did; the warning codex
+  printed with your hooks.json path on every start does not come back."
   ;; esac
 
   case " $DETECTED " in *" copilot "*)

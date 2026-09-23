@@ -14,6 +14,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **codex no longer warns about the `Interrupt` hook timeout on every start**
+  (#123). Codex caps an Interrupt hook at 3 seconds. roost asked for 10, so
+  codex clamped it and printed `warning: clamping Interrupt hook timeout to 3s
+  in <your home>/.codex/hooks.json` every time it started — your home path on
+  your screen, on a correct install. roost now asks for the 3 codex was giving
+  it anyway.
+
+  **This one needs a step, and it is the only handler roost has ever changed.**
+  Codex stores a hash of each hook entry when you trust it, so a changed number
+  means a changed hash. Run `roost install`, then answer "Trust all and
+  continue" at codex's "Hooks need review" once more — it is asking about
+  `Interrupt` alone. Until you do, a codex dialog answered No or Esc leaves the
+  pane 🛑. `roost doctor` reads the timeout out of your `hooks.json` and says so
+  while the old number is still there. What the hook *does* is unchanged: three
+  seconds before, three seconds now.
+
 ## [0.6.0]
 
 roost now tells the truth faster and more often. A Claude Code permission

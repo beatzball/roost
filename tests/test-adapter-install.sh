@@ -1246,6 +1246,40 @@ assert_eq "$s" "absent" "codex re-run: no write is even PLANNED for it"
 assert_contains "$out" "Trust all and continue" \
   "codex re-run: the trust step is printed anyway -- nothing can detect it"
 
+# --- this checkout, but the Interrupt timeout roost used to write ----------
+# The migration the timeout change depends on, and the only one roost has ever
+# needed for a codex handler. A machine wired before the change has roost's own
+# command string with "timeout": 10 on Interrupt; codex caps that event at 3s,
+# clamps it, and warns with the hooks.json path on every start. The entry is
+# roost's OWN -- same checkout, same command -- so the merge replaces it rather
+# than refusing, which is what separates this case from the foreign-checkout
+# one below. Without this, nothing in the suite proves an existing install ever
+# picks the new number up, and every user would keep the warning for ever.
+box="$TMP/codexoldtimeout"
+chooks="$box/home/.codex/hooks.json"
+run_install "$box" "$CODEX_SHIM" --yes >/dev/null
+sed 's/"timeout": 3$/"timeout": 10/' "$chooks" > "$chooks.old" && mv "$chooks.old" "$chooks"
+assert_contains "$(cat "$chooks")" '"timeout": 10' \
+  "codex old timeout: setup planted the pre-change value"
+out="$(run_install "$box" "$CODEX_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex old timeout: exits 0"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(codex_event_of "$chooks" Interrupt)" \
+    "$(codex_hooks_want | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)["Interrupt"]))')" \
+    "codex old timeout: the Interrupt handler is rewritten to roost-hooks.sh's own"
+  for ev in UserPromptSubmit PostToolUse PermissionRequest Stop; do
+    assert_eq "$(codex_event_of "$chooks" "$ev")" \
+      "$(codex_hooks_want | python3 -c 'import json,sys
+print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))' "$ev")" \
+      "codex old timeout: the $ev handler is untouched"
+  done
+fi
+assert_eq "$(bak_count "$chooks")" "1" \
+  "codex old timeout: the pre-change file is backed up before it is rewritten"
+assert_contains "$out" "Trust all and continue" \
+  "codex old timeout: the trust answer the rewrite makes necessary is printed"
+
 # --- a roost entry pointing at a DIFFERENT checkout -> refuse --------------
 # This is the one place in this command where helpfully fixing something is
 # worse than doing nothing. Rewriting the command string re-hashes the
