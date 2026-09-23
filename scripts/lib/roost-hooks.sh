@@ -35,6 +35,25 @@
 # or a changed timeout still takes the handler down silently. Reflow freely;
 # edit nothing.
 #
+# THE ONE EDIT EVER MADE, and the bar the next one has to clear. Interrupt
+# asks for 3, not 10, because 10 was never a number codex honoured: codex caps
+# an Interrupt hook at 3 seconds, clamps anything larger, and prints
+# `warning: clamping Interrupt hook timeout to 3s in <path>/hooks.json` on
+# every single start — naming a home directory on the user's screen, which is
+# the same thing AGENTS.md §1 keeps out of commits. docs/known-gaps.md quotes
+# that warning verbatim from an unedited `codex exec` stderr, so the cap is
+# measured rather than inferred, and SessionEnd is capped the same way.
+#
+# What made it worth the one-time re-trust is that the BEHAVIOUR was already
+# 3s. The hook fired with a 3-second budget before this change and fires with
+# one after it; only the warning stops. An edit that also changed what the
+# hook does would not clear this bar, because it would trade a working badge
+# on every already-trusted machine for the fix. The cost is real and is paid
+# once: codex asks "Hooks need review" for Interrupt after `roost install`
+# rewrites it, and until that is answered a declined dialog leaves the pane
+# stamped. scripts/roost-install says so, scripts/roost-doctor detects the old
+# value and says so, and CHANGELOG.md carries it as a behaviour-change note.
+#
 # Resolves its own checkout root rather than trusting an inherited
 # $ROOST_HOME, for the same reason scripts/lib/roost-adapters.sh does (see its
 # _roost_adapter_root comment): bin/roost exports ROOST_HOME into every pane
@@ -163,7 +182,7 @@ roost_hooks_codex() {
       { "hooks": [ { "type": "command", "command": "$target Stop", "timeout": 10 } ] }
     ],
     "Interrupt": [
-      { "hooks": [ { "type": "command", "command": "$target Interrupt", "timeout": 10 } ] }
+      { "hooks": [ { "type": "command", "command": "$target Interrupt", "timeout": 3 } ] }
     ]
   }
 }

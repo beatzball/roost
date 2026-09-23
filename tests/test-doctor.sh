@@ -665,6 +665,52 @@ assert_contains "$out" "once more" "...and says the fix is to trust once more"
 } > "$cxhome/config.toml"
 out="$(rdoctor)"
 assert_contains "$out" "trusted all five" "doctor confirms a fully trusted codex install"
+case "$out" in
+  *"still asks for a timeout codex will not honour"*) s=cries ;;
+  *) s=quiet ;;
+esac
+assert_eq "$s" "quiet" "a current hooks.json draws no timeout warning"
+
+# 6b. the pre-fix hooks.json — roost's own handlers, but Interrupt still asking
+# for the 10 that codex clamps to 3. This is every machine installed before the
+# timeout moved, and it is the one upgrade that leaves a handler codex has
+# already hashed out of step with the file. The config.toml from step 6 is left
+# in place on purpose: five trust entries and a stale timeout is exactly the
+# state that otherwise reports as healthy.
+sed 's/Interrupt", "timeout": 3/Interrupt", "timeout": 10/' \
+  "$cxhome/hooks.json" > "$cxhome/hooks.old" && mv "$cxhome/hooks.old" "$cxhome/hooks.json"
+out="$(rdoctor)"
+assert_contains "$out" "still asks for a timeout codex will not honour" \
+  "doctor spots an Interrupt handler left on the old timeout"
+assert_contains "$out" "roost install" "...and names the command that rewrites it"
+assert_contains "$out" "Trust all and continue" "...and the trust answer that has to follow"
+
+# 6c. the same file as the INSTALLER writes it — one handler over five indented
+# lines rather than one. Both layouts are legitimate (the merge runs the JSON
+# through jq or python3, `roost hooks codex` prints it flat), so a check that
+# only read the flat one would miss every machine that ran `roost install`.
+{
+  printf '{\n  "hooks": {\n    "Interrupt": [\n      {\n        "hooks": [\n          {\n'
+  printf '            "type": "command",\n'
+  printf '            "command": "%s Interrupt",\n' "$HERE/adapters/codex/roost-codex-hook"
+  printf '            "timeout": 10\n'
+  printf '          }\n        ]\n      }\n    ]\n  }\n}\n'
+} > "$cxhome/hooks.json"
+out="$(rdoctor)"
+assert_contains "$out" "still asks for a timeout codex will not honour" \
+  "doctor spots the old timeout in the installer's indented layout too"
+
+# ...and a 30 is not a 3: the terminator is part of the needle, so a number
+# that merely starts with 3 must still be reported.
+sed 's/"timeout": 10/"timeout": 30/' \
+  "$cxhome/hooks.json" > "$cxhome/hooks.new" && mv "$cxhome/hooks.new" "$cxhome/hooks.json"
+out="$(rdoctor)"
+assert_contains "$out" "still asks for a timeout codex will not honour" \
+  "a timeout of 30 is not mistaken for the 3 codex allows"
+
+# Put the current file back, so the closing exit-status check below runs
+# against a healthy install rather than this deliberately broken one.
+"$HERE/bin/roost" hooks codex | sed -n '/^{/,$p' > "$cxhome/hooks.json"
 
 # ...and none of it is ever a hard failure: most users do not have codex, and a
 # missing adapter for a harness you do not run is not a broken roost.

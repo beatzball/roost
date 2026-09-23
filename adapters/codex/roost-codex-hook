@@ -54,6 +54,16 @@
 #     user, a changed timeout and a changed command are the same silent
 #     breakage.
 #
+# That second rule has been broken exactly once, and the exception is the
+# clearest statement of the rule. `Interrupt` asks for 3 rather than 10,
+# because codex caps an Interrupt hook at 3s: it clamped the 10 down and
+# printed `warning: clamping Interrupt hook timeout to 3s in <path>/hooks.json`
+# on every start, naming a home directory on the user's screen. The behaviour
+# was already 3s before the edit and is 3s after it — only the warning stopped.
+# That is the bar: an edit that changes nothing the hook does, in exchange for
+# one re-trust. An edit that would also change behaviour does not clear it,
+# because it trades a working badge on every trusted machine for the fix.
+#
 # Adding a NEW event to hooks.json later is safe: measured on 0.151.0, a
 # four-event file was trusted, a fifth event was added, and the four already
 # trusted kept firing on the next run (the new one did not, until trusted).
