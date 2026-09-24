@@ -270,6 +270,25 @@ roost_record_live() {
 # (review round 1, reproduced). macOS ships no timeout(1), so the probe runs in
 # the background beside a watchdog that kills it.
 #
+# THE WATCHDOG ESCALATES, and a plain `kill` is why it had to (#125). Against a
+# SIGSTOPped server the client does not block — it spins, and a spinning tmux
+# client does not act on the SIGTERM a bare `kill` sends. Measured on tmux 3.6 /
+# macOS 26.3 by calling this function directly against a stopped throwaway
+# server: the client sat at 100% CPU for 2 minutes 21 seconds against a
+# 2-second watchdog, still in state R; an explicit SIGTERM afterwards left it R
+# a second later, and only SIGKILL ended it. So the bound was not a bound —
+# `roost forget --gone` never returned and a core stayed pegged until something
+# else killed the client. SIGTERM first is kept because a client that CAN
+# answer a signal should exit its own way; SIGKILL one second later is what
+# makes the 2 seconds a promise. Worst case is therefore 3 seconds, not 2, and
+# tests/test-reply-record.sh holds it to 8.
+#
+# A SIGKILLed probe leaves `status` at 137 with no output, which the shape check
+# below reads as unknown — "could not ask", never "gone". That direction
+# matters: a record is kept when roost cannot reach the server, and the
+# assertions around the stopped-server case in tests/test-reply-record.sh pin
+# exactly that.
+#
 # Its output goes to a FILE, not to the command substitution's pipe. A tmux
 # client hands its stdout to the server, so a stopped server holds a pipe's
 # write end open and `$(...)` waits for it forever — the watchdog killed the
@@ -291,7 +310,8 @@ roost_record_liveness() {
     env -u LC_ALL LC_MESSAGES=C tmux -S "$sock" display-message -p -t "$3" \
       '#{start_time}-#{pid} #{pane_id}' </dev/null >&3 2>&3 3>&- 4<&- &
     probe=$!
-    { sleep 2; kill "$probe"; } </dev/null >/dev/null 2>&1 3>&- 4<&- &
+    { sleep 2; kill "$probe"; sleep 1; kill -9 "$probe"; } \
+      </dev/null >/dev/null 2>&1 3>&- 4<&- &
     dog=$!
     status=0
     wait "$probe" || status=$?
