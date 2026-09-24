@@ -157,6 +157,23 @@ export class DocPage extends LitroPage {
     }
     hr { border: none; border-top: 1px solid var(--sl-color-border, #e8e8e8); margin: 2rem 0; }
     img { max-width: 100%; height: auto; }
+    /* A recording set in a doc as raw HTML (see getting-started.md). The
+       width/height attributes reserve its space; this only lets it shrink. */
+    figure { margin: 1.5rem 0; }
+    video {
+      display: block;
+      width: 100%;
+      height: auto;
+      background-color: #0d0e11;
+      border: 1px solid var(--sl-color-border, #e8e8e8);
+      border-radius: 0.375rem;
+    }
+    figcaption {
+      margin-top: 0.75rem;
+      font-size: var(--sl-text-sm, 0.875rem);
+      line-height: 1.6;
+      color: var(--sl-color-gray-4, #757575);
+    }
     table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: var(--sl-text-sm, 0.875rem); }
     th, td { border: 1px solid var(--sl-color-border, #e8e8e8); padding: 0.5rem 0.75rem; text-align: left; }
     th { background-color: var(--sl-color-gray-1, #f6f6f6); font-weight: 600; }
