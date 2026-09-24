@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Docs pages are no longer blank at a trailing-slash URL** (#129). Every page
+  under `/docs/` rendered as an empty dark screen if the address ended in a
+  slash — `roosting.dev/docs/setup/` showed nothing, while
+  `roosting.dev/docs/setup` was fine. The page answered 200, loaded every
+  asset, logged no error and held the whole document in the DOM; it was simply
+  never drawn, because the client router matches `/docs/:slug` exactly, so the
+  page's own code was never loaded and the rule that hides an element until its
+  code arrives never released it. The site now redirects the trailing-slash form
+  to the clean one, and the client canonicalises the path as well, for hosts
+  that do not. `scripts/verify-site.sh` asserts the redirect against the real
+  container image on every CI run — a check that needs no browser, which
+  matters, because nothing else CI runs could tell a rendered page from a blank
+  one.
+
 ## [0.6.1]
 
 Two things that were wasting your machine's time. `roost forget --gone` could

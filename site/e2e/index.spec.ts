@@ -27,6 +27,21 @@ test('/docs/getting-started renders', async ({ page }) => {
   await expect(page.locator('page-docs-slug')).toBeVisible();
 });
 
+// The trailing-slash regression (#129) is deliberately NOT tested here, and the
+// reason is worth writing down so the next person does not re-add it and watch
+// it fail.
+//
+// This suite runs against `pnpm dev`, and the dev server answers
+// /docs/getting-started/ with its own "No page matched" body — served, oddly,
+// as 200. So a browser test at that URL fails for a reason that has nothing to
+// do with the bug it would be guarding, and no client-side fix can reach it.
+// That dev-server behaviour is its own defect, filed separately.
+//
+// The guard lives in scripts/verify-site.sh instead: it asserts nginx returns
+// 301 for the trailing-slash form, it runs against the real container image on
+// every CI run, and it needs no browser — which matters, because CI does not
+// run this suite at all (see the comment in .github/workflows/ci.yml).
+
 // roost is a tool for driving agents, so an agent that lands here should find
 // the docs in one fetch. A 404 would be silent otherwise: nothing on the site
 // links to it.
