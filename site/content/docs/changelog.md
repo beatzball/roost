@@ -18,6 +18,19 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`roost forget --gone` no longer hangs for ever on a suspended server**
+  (#125). Checking whether a recorded server is still alive asks tmux and gives
+  up after two seconds. It gave up by sending the polite signal — and a tmux
+  client talking to a *suspended* server (`kill -STOP`, a debugger, a laptop
+  resumed mid-connection) does not block; it spins, and while it spins it never
+  acts on that signal. So the two-second bound was not a bound: the command
+  never returned, and a CPU core stayed pinned at 100% until something else
+  killed the client. Measured at 2 minutes 21 seconds of CPU and still running.
+  The bound now escalates — polite signal, one second, then the one that cannot
+  be ignored — so the worst case is three seconds. A server roost could not
+  reach is still reported as "could not ask", never as gone, so no record is
+  deleted on the strength of a timeout.
+
 - **codex no longer warns about the `Interrupt` hook timeout on every start**
   (#123). Codex caps an Interrupt hook at 3 seconds. roost asked for 10, so
   codex clamped it and printed `warning: clamping Interrupt hook timeout to 3s

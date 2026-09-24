@@ -485,9 +485,36 @@ kill -STOP "$sbpid"
 t0="$(date +%s)"
 watch 15 "$ROOST" forget --gone > "$work/out" 2>&1; rc=$?
 t1="$(date +%s)"
+# Counted BEFORE the server is resumed. Once it answers, any client still
+# spinning exits on its own, and the leak this asserts against would heal
+# itself a line too early to be seen.
+# pgrep, not `ps | grep`: in a pipeline the grep runs alongside ps and its own
+# command line carries the pattern, so it can match itself and report a probe
+# that is not there. The socket path is spelled before `display-message`
+# because that is the order tmux's own argv has it in — the pattern was written
+# the other way round first, matched nothing, and passed against the unfixed
+# code, which is the failure the mutation run below exists to catch.
+if command -v pgrep >/dev/null 2>&1; then
+  sbclients="$(pgrep -f -- "-S $sb display-message" 2>/dev/null | wc -l | tr -d ' ')"
+else
+  sbclients=skip
+fi
 kill -CONT "$sbpid"
 assert_eq "$rc" 0 "forget --gone finishes when a recorded server is stopped (no hang)"
 [ $((t1 - t0)) -le 8 ]; assert_true $? "...within the liveness bound, not a hang ($((t1 - t0)) s)"
+# The second half of #125, and the half the exit code cannot show. A bare
+# `kill` sends SIGTERM, which a tmux client spinning against a stopped server
+# does not act on: the probe outlived its own watchdog at 100% CPU (2m21s and
+# still in state R, tmux 3.6 / macOS 26.3) and only SIGKILL ended it. So a
+# `forget` that returned on time could still leave a pegged core behind, and a
+# bound that does not actually end the process is not a bound. Reverting the
+# escalation turns this assertion red on its own, without the timing one.
+if [ "$sbclients" = skip ]; then
+  echo "  SKIP: pgrep not found — the leftover-probe count needs it"
+else
+  assert_eq "$sbclients" "0" \
+    "...and leaves no probe client still running against the stopped server"
+fi
 [ -d "$REC/$sbboot/0" ]; assert_true $? "...and keeps that server's record"
 roost_record_liveness "$sb" "$sbboot" "%0"
 assert_eq "$ROOST_RECORD_LIVENESS" live "the resumed server's record is live again (control)"
