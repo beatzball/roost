@@ -15,6 +15,41 @@ It runs on its **own isolated tmux server** with its own config, so your everyda
 
 State comes from **each agent's own lifecycle events** — Claude Code hooks, the opencode plugin, the GitHub Copilot CLI extension, or one `roost state` call from anything else — not from scraping process names or terminal output, so it is accurate rather than guessed. No compiled binary, nothing that reaches into `~/.tmux.conf`.
 
+This is what a session looks like:
+
+<!-- The full take behind the homepage hero: demo/flock.tape, recorded through
+     demo/record.sh against live agents on a throwaway roost server, then cut
+     to 52 seconds. Same encode as the hero (1440x736, 15 fps).
+
+     Plain HTML on purpose. The markdown pipeline passes raw HTML through
+     (rehype-raw), but the page inserts it with unsafeHTML, so a <script> here
+     would never run. Nothing needs one: preload="none" and no autoplay mean
+     only the poster loads until someone presses play, and a reader who asked
+     for reduced motion sees nothing move unless they start it. -->
+<figure>
+  <video
+    width="1440"
+    height="736"
+    poster="/demo/flock-full-poster.jpg"
+    controls
+    muted
+    playsinline
+    preload="none"
+    aria-label="A recorded roost session. Claude Code writes a plan, opens three reviewer windows and sends each one the plan. The agent switcher lists all four agents working. Codex searches the web and opencode reads the plan. Claude folds the reviews into the plan and opens it, rendered, in a pane on the right."
+  >
+    <source src="/demo/flock-full.webm" type="video/webm" />
+    <source src="/demo/flock-full.mp4" type="video/mp4" />
+  </video>
+  <figcaption>
+    A real review flock, about eight minutes of live agents cut to 52 seconds.
+    Claude Code leads: it writes a plan and asks three agents in their own roost
+    windows to review it at once — Claude on Sonnet, Codex on gpt-5.6-terra and
+    opencode on Nemotron. Each tab shows its agent's state as the work runs.
+    Then the lead folds in the reviews and opens the plan with
+    <code>roost view</code>, rendered by preen.
+  </figcaption>
+</figure>
+
 ## Requirements
 
 - `tmux` ≥ 3.2 (needs pane options, `#{P:}` pane loops, and `display-popup`)

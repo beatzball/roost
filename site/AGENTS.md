@@ -143,6 +143,28 @@ cuts again from the contact sheet and update `SEGMENTS` in `demo/cut-hero.sh`.
 Never hand-edit the video or the poster: the point of the scripts is that the
 hero can be rebuilt when roost's status line or switcher changes.
 
+### The whole take is on the page too, click to play
+
+The same recording, uncut, is `public/demo/flock-full.{webm,mp4}` and its
+poster. Two blocks use it — the homepage below the fold, and Getting Started —
+and both point at the same three files, so shipping both costs one download and
+only after a reader clicks. Nothing is fetched before that: `preload="none"`,
+no autoplay, poster only.
+
+```sh
+./demo/encode-full.sh         # -> site/public/demo/flock-full.* and the poster
+```
+
+No segments to pick, so there is nothing to update after a new take — run it
+and commit. It uses the hero's own 1440-wide, 15 fps, crf 40 / crf 28 recipe,
+deliberately: two videos on one page encoded differently would show.
+
+Re-running it leaves the MP4 and the poster byte for byte identical and the
+**WebM changed** — same 867392 bytes, different bytes inside, because
+`libvpx-vp9 -row-mt` is not deterministic across runs. A dirty WebM after a
+re-run on an unchanged take is expected; `git checkout -- site/public/demo/`
+is the right answer, not an investigation.
+
 **Always record through `demo/record.sh`, never `vhs` directly.** It is where
 the privacy and isolation rules live, and each exists because the thing it
 prevents happened while building this:

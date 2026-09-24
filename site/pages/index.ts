@@ -241,6 +241,7 @@ export class SplashPage extends LitroPage {
   static override properties = {
     copied: { state: true },
     playing: { state: true },
+    fullStarted: { state: true },
   };
 
   /** Which install box last copied, so only that one says so. */
@@ -248,6 +249,9 @@ export class SplashPage extends LitroPage {
 
   /** Whether the hero recording is playing; drives its Play/Pause label. */
   playing = false;
+
+  /** Whether the visitor has started the full recording; until then it is a poster and a Play button. */
+  fullStarted = false;
 
   override firstUpdated() {
     const video = this.renderRoot.querySelector<HTMLVideoElement>('.hero-video');
@@ -266,6 +270,17 @@ export class SplashPage extends LitroPage {
     if (!video) return;
     if (video.paused) video.play().catch(() => {});
     else video.pause();
+  };
+
+  // The full recording never starts on its own, so reduced motion needs no
+  // branch here: a click is the visitor asking for it. play() runs inside the
+  // click, before the re-render, so the browser counts it as a gesture. From
+  // then on the native controls take over, and the Play button goes away.
+  private startFull = () => {
+    const video = this.renderRoot.querySelector<HTMLVideoElement>('.full-video');
+    if (!video) return;
+    video.play().catch(() => {});
+    this.fullStarted = true;
   };
 
   // typography first: headings, code and kbd take the mono face from it, and
@@ -709,6 +724,35 @@ export class SplashPage extends LitroPage {
         cursor: pointer;
       }
       .video-toggle:hover {
+        background: var(--violet);
+        color: #fff;
+      }
+      /* The full recording: poster until clicked. The button covers the whole
+         frame, so a click anywhere on the poster starts it; the visible part
+         is a pill in the middle, drawn like the hero's toggle. */
+      .full-start {
+        position: absolute;
+        inset: 0;
+        z-index: 2;
+        display: grid;
+        place-items: center;
+        padding: 0;
+        background: none;
+        border: 0;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .full-start span {
+        padding: 0.7rem 1.4rem;
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--ink);
+        background: color-mix(in srgb, var(--night) 85%, transparent);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      .full-start:hover span,
+      .full-start:focus-visible span {
         background: var(--violet);
         color: #fff;
       }
@@ -1344,6 +1388,57 @@ export class SplashPage extends LitroPage {
                 ? html`<p class="agents-note">Dedicated adapters planned for ${AGENTS_PLANNED.join(', ')}.</p>`
                 : ''
             }
+          </div>
+        </section>
+
+        <!-- The whole take the hero is cut from: 52 seconds of demo/flock.mp4,
+             re-encoded at the hero's settings (1440x736, 15 fps; 867 KB WebM,
+             705 KB MP4). The status-line clock runs 19:00 to 19:08, so vhs's
+             hidden waits are cut and the caption says so.
+
+             Unlike the hero it never plays by itself. preload="none" and no
+             autoplay mean the poster is the only request until a click, so
+             this section costs a visitor who scrolls past it one JPEG. It has
+             no loop: a 52-second take watched on purpose should stop at the
+             end, and the native controls appear once it has started. -->
+        <section class="block shot">
+          <div class="wrap">
+            <h2>Watch the whole review</h2>
+            <p class="section-lede">
+              The full recording the clip at the top is cut from, from the first
+              prompt to the reviewed plan.
+            </p>
+            <div class="frame">
+              <video
+                class="full-video"
+                width="1440"
+                height="736"
+                poster="/demo/flock-full-poster.jpg"
+                muted
+                playsinline
+                preload="none"
+                ?controls=${this.fullStarted}
+                aria-label="A review flock in roost, recorded in full: Claude writes PLAN.md and opens three reviewer windows; the switcher lists four agents working; Codex searches the web; opencode on Nemotron gets the review prompt; every tab turns done; Claude folds in the feedback and opens the plan, rendered, in a pane on the right."
+              >
+                <source src="/demo/flock-full.webm" type="video/webm" />
+                <source src="/demo/flock-full.mp4" type="video/mp4" />
+              </video>
+              ${this.fullStarted
+                ? ''
+                : html`<button
+                    type="button"
+                    class="full-start mono"
+                    aria-label="Play the full recording, 52 seconds"
+                    @click=${this.startFull}
+                  ><span aria-hidden="true">Play · 0:52</span></button>`}
+            </div>
+            <p class="caption">
+              Claude on Opus leads. It writes a plan and asks three reviewers in
+              their own windows: Claude on Sonnet, Codex on gpt-5.6-terra, and
+              opencode on Nemotron. It folds their feedback into the plan and
+              opens it with <code>roost view</code> and preen. The waits are cut:
+              the real run took about eight minutes.
+            </p>
           </div>
         </section>
 
