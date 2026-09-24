@@ -105,5 +105,27 @@ code=$(status "$BASE/definitely-not-a-page")
 if [ "$code" = "404" ]; then note "404  /definitely-not-a-page (as expected)"
 else bad "unknown path returned $code, expected 404"; fi
 
+# A trailing slash must REDIRECT, not render (#129). It used to answer 200 with
+# the correct HTML and then show a blank page: the client router matches the
+# generated route `/docs/:slug` exactly, so `/docs/setup/` matched nothing, the
+# page module was never imported, its element was never defined, and the
+# `:not(:defined) { visibility: hidden }` rule hid the entire document. Every
+# signal this script can see was green — 200, assets present, no error — which
+# is exactly why the check has to be for the REDIRECT rather than for a 200.
+#
+# This is the only thing standing between that bug and production: CI does not
+# run the site's browser suite, so nothing else here can tell a rendered page
+# from a blank one.
+printf '%s\n' "$PAGES" | while IFS= read -r page; do
+  [ "$page" = "/" ] && continue
+  [ -n "$page" ] || continue
+  code=$(status "$BASE$page/")
+  if [ "$code" = "301" ]; then note "301  $page/ → $page"
+  else bad "$code  $page/ — expected 301; a 200 here is the blank-page bug"; fi
+done > /tmp/verify-site-slash.$$ 2>&1 || true
+cat /tmp/verify-site-slash.$$
+grep -q '✗' /tmp/verify-site-slash.$$ && fail=1
+rm -f /tmp/verify-site-slash.$$
+
 [ "$fail" -eq 0 ] || { printf 'verify-site: FAILED\n' >&2; exit 1; }
 printf 'verify-site: OK\n'
