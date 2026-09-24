@@ -14,7 +14,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.6.1]
+
+Two things that were wasting your machine's time. `roost forget --gone` could
+hang for ever against a suspended tmux server while pinning a CPU core, because
+the two-second bound it enforced gave up by asking politely — and a tmux client
+spinning against a stopped server never hears that. And a codex pane printed a
+warning naming your own `hooks.json` path on every single start, because roost
+asked for a hook timeout codex was quietly clamping down anyway.
+
+One thing to know, and only if you run codex: **run `roost install`** to pick up
+the new `Interrupt` timeout, and `roost doctor` will keep saying so until you
+do. On codex 0.154.0 that is the whole step. An older codex hashes a hook's
+timeout, so it may ask "Hooks need review" once — answer "Trust all and
+continue", for `Interrupt` alone. If it asks you nothing, the install worked.
 
 ### Fixed
 
