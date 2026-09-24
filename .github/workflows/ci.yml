@@ -1,5 +1,34 @@
 name: ci
-on: [push, pull_request]
+
+# `on: [push, pull_request]` ran this whole matrix TWICE for every push to a
+# branch with a PR open: both events fire, and each starts its own run against
+# the same commit. Measured over the last fourteen successful test jobs (#133) —
+# two run ids, one sha, four test jobs, ~32 minutes of runner time where ~16
+# would do:
+#
+#   35971988662  475ebb0  test (ubuntu-latest)  6.4
+#   35971988662  475ebb0  test (macos-latest)   9.7
+#   35971983144  475ebb0  test (ubuntu-latest)  5.8
+#   35971983144  475ebb0  test (macos-latest)   9.6
+#
+# So `pull_request` covers branches and `push` is narrowed to main. Nothing is
+# lost: every push-gated job in this file — tag, deploy, verify-prod — already
+# required `github.ref == 'refs/heads/main'`, and version-changelog already
+# required `pull_request`. What does change is that a branch with NO pull
+# request open gets no CI, which is the intended trade here: this repo lands
+# nothing on main outside a PR, so a branch without one is work in progress.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push supersedes the first rather than queueing behind it. Not on
+# main, though: a run there tags a release and deploys the site, and cancelling
+# one half-way could leave a tag without the deploy that belongs to it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     strategy:
