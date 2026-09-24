@@ -16,10 +16,10 @@ This page is for the person writing one. If you are deciding whether to *install
 Here is one, whole. Copy it and it works.
 
 ```
-roost-mark/
+roost-note/
 ├── roost-ext.json
 ├── bin/
-│   └── roost-mark        # executable; runs as `roost mark`
+│   └── roost-note        # executable; runs as `roost note`
 └── README.md
 ```
 
@@ -27,16 +27,16 @@ roost-mark/
 
 ```json
 {
-  "name": "mark",
+  "name": "note",
   "contract": 1,
   "roost": ">=0.1.0 <0.2.0",
   "needs": ["fleet"],
-  "commands": ["mark"],
-  "description": "Bookmark a spot in an agent pane, with a note."
+  "commands": ["note"],
+  "description": "Leave a note against an agent pane."
 }
 ```
 
-`bin/roost-mark`, with the executable bit set:
+`bin/roost-note`, with the executable bit set:
 
 ```sh
 #!/usr/bin/env bash
@@ -50,7 +50,7 @@ notes="$ROOST_EXT_STATE/notes"
 pane="$(tmux "$ROOST_SOCKET_FLAG" "$ROOST_SOCKET" display-message -p '#{pane_id}')"
 
 printf '%s\t%s\n' "$pane" "$*" >> "$notes"
-echo "marked $pane"
+echo "noted $pane"
 ```
 
 Roost keeps a larger working example in its own repository, at `tests/fixtures/ext-status/`: a full command rebuilt from scratch on this contract, using nothing but the variables below. It is a test fixture and is deliberately never published — it re-implements a command roost already ships, which is exactly the duplication the extension seam exists to avoid. It is there to prove the contract is rich enough to build on, and to read when you want a longer example than the one above.
@@ -78,7 +78,7 @@ Six fields. Two are required.
 
 Two of those carry a trap worth spelling out.
 
-**`name` is not your repository path.** A user installs `you/roost-mark` and then manages it as `mark`, because `name` is what roost writes into its lockfile and what every other verb takes: `roost ext info mark`, `roost ext update mark`, `roost ext remove mark`. If those two differ, your users will type the repository name first and be told there is no such extension. Roost prints the name to type after a successful install, but say it in your README too, and consider simply naming the manifest after the repository.
+**`name` is not your repository path.** A user installs `example.invalid/roost-note` and then manages it as `note`, because `name` is what roost writes into its lockfile and what every other verb takes: `roost ext info note`, `roost ext update note`, `roost ext remove note`. If those two differ, your users will type the repository name first and be told there is no such extension. Roost prints the name to type after a successful install, but say it in your README too, and consider simply naming the manifest after the repository.
 
 **`description` is quieter than it looks.** It is one line in `roost ext info` and nowhere else. Nobody reads it while deciding to install you; put what matters in your README, which they can read on the repository page before they type anything.
 
@@ -89,34 +89,34 @@ Two of those carry a trap worth spelling out.
 Roost validates your manifest after cloning and before it asks the user anything, so a mistake here surfaces as a refusal at install time rather than as a command that breaks weeks later. These are the refusals, in roost's own words, so you recognise yours when you meet it.
 
 ```
-roost ext install: you/roost-mark at 3f9a1c2 has no roost-ext.json
+roost ext install: example.invalid/roost-note at 3f9a1c2 has no roost-ext.json
 roost ext install: that file, at the repository root, is what makes a repository an extension
 ```
 
 ```
-roost ext install: refusing: the manifest name Mark is not usable
+roost ext install: refusing: the manifest name Note is not usable
 roost ext install: a name is [a-z][a-z0-9-]*, at most 32 characters — it is the install directory
 ```
 
 ```
-roost ext install: refusing mark: it speaks contract 2, this roost speaks 1
+roost ext install: refusing note: it speaks contract 2, this roost speaks 1
 ```
 
 ```
-roost ext install: refusing mark: it asks for an authority this roost does not know: network
+roost ext install: refusing note: it asks for an authority this roost does not know: network
 roost ext install: contract 1 knows one authority: fleet
 ```
 
 An unknown value in `needs` is refused rather than ignored, so a future authority can never be quietly dropped by an older roost.
 
 ```
-roost ext install: refusing mark: it claims mark but has no executable bin/roost-mark
+roost ext install: refusing note: it claims note but has no executable bin/roost-note
 ```
 
 The commonest one, and it means either the file is missing or its executable bit is not committed.
 
 ```
-roost ext install: refusing mark: it claims send, which is a roost command
+roost ext install: refusing note: it claims send, which is a roost command
 roost ext install: core commands can never be shadowed by an extension
 ```
 
@@ -189,19 +189,19 @@ You do not have to push anything anywhere to install your own extension. Roost t
 
 ```sh
 # 1. Commit your extension.
-cd ~/src/roost-mark
-git init -q && git add -A && git commit -m "roost-mark"
+cd ~/src/roost-note
+git init -q && git add -A && git commit -m "roost-note"
 
 # 2. Publish it as a BARE repository, at the <org>/<repo> path
 #    you want to install it by.
-mkdir -p /tmp/roost-remotes/you
-git clone --bare ~/src/roost-mark /tmp/roost-remotes/you/roost-mark
+mkdir -p /tmp/roost-remotes/example.invalid
+git clone --bare ~/src/roost-note /tmp/roost-remotes/example.invalid/roost-note
 
 # 3. Install from that base instead of from github.com.
-ROOST_EXT_GIT_BASE="file:///tmp/roost-remotes/" roost ext install you/roost-mark
+ROOST_EXT_GIT_BASE="file:///tmp/roost-remotes/" roost ext install example.invalid/roost-note
 
 # 4. Run it.
-roost mark "a note"
+roost note "a note"
 ```
 
 `ROOST_EXT_GIT_BASE` replaces `https://github.com/`, and roost appends the `<org>/<repo>` you typed. Bare and over `file://` is what makes `git` take the same transfer path it takes against a real remote; a plain directory clone hardlinks the objects and would prove less.
@@ -209,18 +209,18 @@ roost mark "a note"
 To iterate, commit again, refresh the bare copy, and move the pin — roost shows you the diff, the same one your users would see:
 
 ```sh
-git -C ~/src/roost-mark commit -am "fix the socket call"
-rm -rf /tmp/roost-remotes/you/roost-mark
-git clone --bare ~/src/roost-mark /tmp/roost-remotes/you/roost-mark
-ROOST_EXT_GIT_BASE="file:///tmp/roost-remotes/" roost ext update mark
+git -C ~/src/roost-note commit -am "fix the socket call"
+rm -rf /tmp/roost-remotes/example.invalid/roost-note
+git clone --bare ~/src/roost-note /tmp/roost-remotes/example.invalid/roost-note
+ROOST_EXT_GIT_BASE="file:///tmp/roost-remotes/" roost ext update note
 ```
 
-Test the negative case too, because it is the one you cannot see by running your command on your own machine: take `needs` out of your manifest, install it again, and make sure your extension fails loudly on the line that reads `ROOST_SOCKET` instead of silently talking to your own tmux. Then `roost ext remove mark --purge` puts the machine back.
+Test the negative case too, because it is the one you cannot see by running your command on your own machine: take `needs` out of your manifest, install it again, and make sure your extension fails loudly on the line that reads `ROOST_SOCKET` instead of silently talking to your own tmux. Then `roost ext remove note --purge` puts the machine back.
 
 ## Publishing
 
 Publishing is just pushing the repository somewhere a user's `git` can reach. `roost ext install <org>/<repo>` reaches `https://github.com/` by default, so a public repository there needs nothing further from you.
 
-Tag your releases. A user can pin any reference — `roost ext install you/roost-mark --ref v0.1.0` — and a tag is what lets them pin something they can read a changelog for, rather than whatever your default branch happened to be that afternoon. Roost resolves whatever they give it to a full commit SHA and pins that, so a moved tag never moves an installation; your users see the diff and are asked again.
+Tag your releases. A user can pin any reference — `roost ext install example.invalid/roost-note --ref v0.1.0` — and a tag is what lets them pin something they can read a changelog for, rather than whatever your default branch happened to be that afternoon. Roost resolves whatever they give it to a full commit SHA and pins that, so a moved tag never moves an installation; your users see the diff and are asked again.
 
 One thing to get right in your own README, and it is not a style note: **do not describe your extension as checked, screened, reviewed or vouched for.** Roost makes no such claim about any extension, and it cannot — there is no scanner and no verdict anywhere in it. What roost gives your users is that they got the exact commit they agreed to, and that they were told what you declared. What they are extending to you is the trust they would extend to anyone handing them a shell script. Earn it the ordinary way: a README that says what your code does, releases they can read, and a repository they can look at before they type yes.

@@ -10,9 +10,11 @@ sidebar:
 An extension is a git repository that adds subcommands to `roost`. Install one and its commands work like any built-in:
 
 ```sh
-roost ext install beatzball/roost-mark
-roost mark            # a command that did not exist before
+roost ext install example.invalid/roost-note
+roost note            # a command that did not exist before
 ```
+
+`example.invalid/roost-note` is an illustration, used throughout these pages, and not an extension you can install.
 
 Roost's own commands always win. An extension can never take over `send`, `read`, `status` or any other built-in — a manifest claiming one is refused at install time, naming the collision. Two extensions claiming the same command are refused for the same reason.
 
@@ -43,12 +45,12 @@ roost ext install <org>/<repo> --ref v0.1.0 # a tag, branch, or SHA
 Roost resolves the reference, clones that commit into a temporary directory, reads the manifest, and then stops and shows you what it found:
 
 ```
-  repo     github.com/beatzball/roost-mark
+  repo     github.com/example.invalid/roost-note
   ref      v0.1.0
   commit   a3f91c2...  (pinned)
   contract 1                       (roost speaks 1)     ok
   roost    >=0.1.0 <0.2.0          (you have 0.1.0)     ok
-  claims   roost mark, roost marks
+  claims   roost note, roost notes
 
   This extension asks to drive your agents. If you install it, the code
   in it can read any pane's screen and send prompts to any agent, the
@@ -98,10 +100,10 @@ An unknown value in `needs` refuses the install rather than being ignored, so a 
 
 ```sh
 roost ext list              # what is installed, the commit each is pinned to, what it claims
-roost ext info mark         # the lockfile entry, the manifest, and both directories
+roost ext info note         # the lockfile entry, the manifest, and both directories
 roost ext verify            # does what is on disk still match what you agreed to?
-roost ext update mark       # move the pin — shows the diff and asks again
-roost ext remove mark       # take it off
+roost ext update note       # move the pin — shows the diff and asks again
+roost ext remove note       # take it off
 ```
 
 `roost ext verify` re-computes the hash of each installed tree and compares it with what was recorded at install. It prints `ok` per extension, or names every file that differs, and exits non-zero if any do. `ok` means *this matches what was recorded* — nothing more. It does not cover the clone's own `.git` directory, which is excluded so that ordinary git operations inside an extension do not report a change that is not one.
@@ -132,7 +134,7 @@ Three switches, cheapest first. The first two make the dispatcher inert, so roos
 **1. For one command, or one shell.**
 
 ```sh
-ROOST_NO_EXT=1 roost mark          # this command only
+ROOST_NO_EXT=1 roost note          # this command only
 export ROOST_NO_EXT=1              # this shell, or from your profile
 ```
 
@@ -144,7 +146,7 @@ export ROOST_NO_EXT=1              # this shell, or from your profile
 set -g @roost-ext-enabled off
 ```
 
-**3. Take one off the machine.** `roost ext remove mark --purge` leaves nothing of it behind, and the roost checkout never held any of it in the first place.
+**3. Take one off the machine.** `roost ext remove note --purge` leaves nothing of it behind, and the roost checkout never held any of it in the first place.
 
 The seam itself can also be taken out of roost altogether. That is a contributor's job rather than a setting, and it is [one revert](https://github.com/beatzball/roost#the-extension-seam).
 
