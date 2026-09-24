@@ -31,9 +31,30 @@
 # which is the mechanism behind the measurement.
 #
 # This narrows the rule above; it does not soften it. What is hashed is every
-# VALUE in the parsed struct, so a changed command string, a changed argument
-# or a changed timeout still takes the handler down silently. Reflow freely;
-# edit nothing.
+# VALUE in the parsed struct, so a changed command string or a changed argument
+# still takes the handler down silently. Reflow freely; edit nothing.
+#
+# THE TIMEOUT STOPPED BEING HASHED SOMEWHERE BETWEEN 0.151.0 AND 0.154.0, and
+# the two measurements above are both still right about the version each names.
+# Re-measured on codex-cli 0.154.0 the same way — `hooks/list` over the
+# app-server, one scratch $CODEX_HOME, one field changed at a time, a two-event
+# hooks.json whose Stop handler never moves and is the negative control:
+#
+#   A  command "/bin/true Interrupt"      timeout 10  -> 06e8ee7caa7ca69f664e4a...
+#   B  command "/bin/true Interrupt"      timeout  3  -> 06e8ee7caa7ca69f664e4a...
+#   C  command "/bin/true Interrupt --x"  timeout  3  -> 0db7877522cf5461c283b3...
+#      Stop, untouched throughout                     -> 5e9fc7fe549e9f615c9353...
+#
+# B is A with one digit changed and the hash does not move. C is the positive
+# control: one appended argument moves it, so the probe is not blind. The
+# command is still hashed; the timeout is not, on this version.
+#
+# What that does NOT license. The rule stands, because the rule is about what
+# roost can PROMISE across versions: an old codex hashes the timeout, a new one
+# does not, and roost does not get to pick which one a user runs. A timeout
+# edit is safe on 0.154.0 and silently un-badges 0.151.0. Treat every value in
+# here as frozen, and if a later version must differ, measure it again — in
+# both directions, with the control — rather than trusting this note.
 #
 # THE ONE EDIT EVER MADE, and the bar the next one has to clear. Interrupt
 # asks for 3, not 10, because 10 was never a number codex honoured: codex caps
@@ -44,15 +65,20 @@
 # that warning verbatim from an unedited `codex exec` stderr, so the cap is
 # measured rather than inferred, and SessionEnd is capped the same way.
 #
-# What made it worth the one-time re-trust is that the BEHAVIOUR was already
-# 3s. The hook fired with a 3-second budget before this change and fires with
-# one after it; only the warning stops. An edit that also changed what the
-# hook does would not clear this bar, because it would trade a working badge
-# on every already-trusted machine for the fix. The cost is real and is paid
-# once: codex asks "Hooks need review" for Interrupt after `roost install`
-# rewrites it, and until that is answered a declined dialog leaves the pane
-# stamped. scripts/roost-install says so, scripts/roost-doctor detects the old
-# value and says so, and CHANGELOG.md carries it as a behaviour-change note.
+# What made it worth making is that the BEHAVIOUR was already 3s. The hook
+# fired with a 3-second budget before this change and fires with one after it;
+# only the warning stops. An edit that also changed what the hook does would
+# not clear that bar, because it would trade a working badge on every
+# already-trusted machine for the fix.
+#
+# It was shipped expecting to cost every codex user one "Hooks need review",
+# and on 0.154.0 it costs nothing at all: the timeout is not hashed there, so
+# `roost install` rewrites the number and the trust entry still matches. On an
+# older codex, which does hash it, the re-trust is real. So the user-facing
+# wording says "if codex asks" rather than "codex will ask" — which is the only
+# form true on both. scripts/roost-doctor still detects the old value, because
+# the stale number is what brings the warning back whatever the version does
+# about hashing.
 #
 # Resolves its own checkout root rather than trusting an inherited
 # $ROOST_HOME, for the same reason scripts/lib/roost-adapters.sh does (see its

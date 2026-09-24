@@ -145,9 +145,11 @@ no dialog, also fires Interrupt and no Stop.
   exactly this). The same handler's timeout has since moved from 10 to 3 —
   codex's own cap, which it was clamping the 10 down to while warning with the
   hooks.json path on every start — so a machine installed before that change
-  needs `roost install` and then one more trust answer. Nothing the hook does
-  changes; `roost doctor` reads the timeout out of `hooks.json` and says so
-  when it is still the old one. Claude: a `settings.json` wired before #38 has no
+  needs `roost install`. Whether a trust answer has to follow depends on the
+  version: 0.154.0 does not hash a timeout, so the rewrite lands under the
+  existing trust entry and codex asks nothing; 0.151.0 did, and there it asks
+  once. Nothing the hook does changes either way, and `roost doctor` reads the
+  timeout out of `hooks.json` and says so when it is still the old one. Claude: a `settings.json` wired before #38 has no
   `--notification-hook`, records no transcript, and never recovers until
   `roost install` is re-run; one wired before #91 has no `PermissionRequest`
   entry at all and keeps the whole 6 s window, and no `PostToolUseFailure`
@@ -432,13 +434,33 @@ answer is upstream of doctor — `roost hooks codex` emits handler objects that
 are frozen, so a roost upgrade is almost never the cause.
 
 "Almost never" because it has happened once: the `Interrupt` timeout moved from
-10 to 3, and that upgrade is the one that can leave a machine with five trust
-entries and four working hooks. It is not left undetected. Doctor reads the
-timeout out of `hooks.json` and warns while it is still the old number, which
-catches every machine that has not run `roost install` yet; the installer then
-prints the trust step, as it does on every run. The window is between those two,
-and the change was accepted only because the behaviour on both sides of it is
-the same 3 seconds — codex was clamping the 10 down all along.
+10 to 3. On a codex that hashes timeouts that upgrade is the one that can leave
+a machine with five trust entries and four working hooks. It is not left
+undetected — doctor reads the timeout out of `hooks.json` and warns while it is
+still the old number, which catches every machine that has not run
+`roost install` yet, and the installer then prints the trust step, as it does on
+every run. The change was accepted because the behaviour on both sides of it is
+the same 3 seconds: codex was clamping the 10 down all along.
+
+**What codex hashes moved between versions, so measure it rather than quote
+this.** `roost hooks codex`'s handler bytes were frozen on the strength of
+0.150.1 and 0.151.0, where changing a single timeout from 10 to 11 took
+handlers down. Re-measured on **0.154.0** through the `hooks/list` app-server
+method, one scratch `$CODEX_HOME`, one field changed at a time, with a `Stop`
+handler left untouched as a negative control:
+
+| handler | change | `currentHash` |
+|---|---|---|
+| `Interrupt` | `timeout: 10` | `06e8ee7caa7ca69f664e4a…` |
+| `Interrupt` | `timeout: 3` — one digit | `06e8ee7caa7ca69f664e4a…` (unmoved) |
+| `Interrupt` | one argument appended to the command | `0db7877522cf5461c283b3…` (moved) |
+| `Stop` | none | `5e9fc7fe549e9f615c9353…` throughout |
+
+The third row is the positive control: the probe can still see a real change,
+so the second row's stability is a fact about codex and not about the probe. So
+on 0.154.0 a timeout is **not** hashed and a command **is**. That does not make
+timeouts editable: roost cannot choose which codex a user runs, and a value that
+is free on one version and silently fatal on another is not one to edit twice.
 
 ### A copilot pane can be badge-less, and nothing says so
 

@@ -60,9 +60,16 @@
 # printed `warning: clamping Interrupt hook timeout to 3s in <path>/hooks.json`
 # on every start, naming a home directory on the user's screen. The behaviour
 # was already 3s before the edit and is 3s after it — only the warning stopped.
-# That is the bar: an edit that changes nothing the hook does, in exchange for
-# one re-trust. An edit that would also change behaviour does not clear it,
-# because it trades a working badge on every trusted machine for the fix.
+# That is the bar: an edit that changes nothing the hook does. An edit that
+# would also change behaviour does not clear it, because it trades a working
+# badge on every trusted machine for the fix.
+#
+# It turned out to cost no re-trust at all on 0.154.0: re-measuring through
+# `hooks/list` found the timeout is not part of the hash there, while an
+# appended argument still moves it (the control). 0.151.0 did hash it. Keep
+# the rule anyway. It is not "timeouts are safe" — it is that roost cannot
+# choose which codex a user runs, so a value that is free on one version and
+# silently fatal on another is not a value to edit twice.
 #
 # Adding a NEW event to hooks.json later is safe: measured on 0.151.0, a
 # four-event file was trusted, a fifth event was added, and the four already

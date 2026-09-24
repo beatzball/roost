@@ -576,7 +576,15 @@ if command -v codex >/dev/null 2>&1; then
     # and therefore the one an install can leave half-applied. A hooks.json
     # written before the change asks for 10, codex clamps it to 3 and warns
     # with this file's full path on every start; the fix is `roost install`,
-    # which replaces roost's own entry, followed by one more trust answer.
+    # which replaces roost's own entry.
+    #
+    # Whether a trust answer has to follow depends on the codex version, which
+    # is why the message says "if codex asks". Measured through `hooks/list`:
+    # 0.154.0 leaves the timeout out of the hash (10 and 3 give the same
+    # currentHash, while an appended argument moves it — the control), so the
+    # rewrite lands under the existing trust entry and codex asks nothing.
+    # 0.151.0 did hash it. The stale number is worth reporting either way,
+    # because it is the number that brings the warning back.
     #
     # Worth detecting rather than trusting the installer to have run, because
     # the two failures look identical from the badge's side and have opposite
@@ -592,7 +600,7 @@ if command -v codex >/dev/null 2>&1; then
     case "$cxint" in
       *'"timeout":3,'*|*'"timeout":3}'*) : ;;
       *'"timeout":'*)
-        warn "the Interrupt handler in $cxhooks still asks for a timeout codex will not honour — codex caps it at 3s, clamps it, and warns with this path on every start. Run: roost install, then answer \"Trust all and continue\" at codex's \"Hooks need review\" once more" ;;
+        warn "the Interrupt handler in $cxhooks still asks for a timeout codex will not honour — codex caps it at 3s, clamps it, and warns with this path on every start. Run: roost install, and if codex then asks \"Hooks need review\", answer \"Trust all and continue\" once (0.154.0 does not ask)" ;;
     esac
     # The trust key is "<absolute hooks.json path>:<snake_case event>:<group>:<handler>",
     # one entry per handler, verified live. Counting the four roost registers
@@ -640,11 +648,13 @@ if command -v codex >/dev/null 2>&1; then
     # check was split in two to avoid.
     #
     # "Almost never" rather than "never" since the Interrupt timeout moved from
-    # 10 to 3. That is the one upgrade that can leave a machine with five trust
-    # entries and four working hooks, which is exactly the state this check
-    # cannot see. It is not left undetected, though: the timeout check above
-    # catches the half of it roost CAN read — a hooks.json still carrying the
-    # old number — and the installer prints the trust step on every run.
+    # 10 to 3. On a codex that hashes timeouts (0.151.0 did) that upgrade can
+    # leave a machine with five trust entries and four working hooks, which is
+    # exactly the state this check cannot see; on 0.154.0 it cannot, because
+    # the timeout is not hashed there and the rewrite lands under the existing
+    # entry. Either way it is not left undetected: the timeout check above
+    # catches the half roost CAN read — a hooks.json still carrying the old
+    # number — and the installer prints the trust step on every run.
   fi
 fi
 

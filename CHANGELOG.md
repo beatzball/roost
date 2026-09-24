@@ -16,14 +16,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
   your screen, on a correct install. roost now asks for the 3 codex was giving
   it anyway.
 
-  **This one needs a step, and it is the only handler roost has ever changed.**
-  Codex stores a hash of each hook entry when you trust it, so a changed number
-  means a changed hash. Run `roost install`, then answer "Trust all and
-  continue" at codex's "Hooks need review" once more — it is asking about
-  `Interrupt` alone. Until you do, a codex dialog answered No or Esc leaves the
-  pane 🛑. `roost doctor` reads the timeout out of your `hooks.json` and says so
-  while the old number is still there. What the hook *does* is unchanged: three
-  seconds before, three seconds now.
+  **Run `roost install` to pick it up.** On codex 0.154.0 that is the whole
+  step: a `timeout` is not part of the hash codex stores when you trust a hook,
+  so the new number lands under your existing trust entry and codex asks you
+  nothing. An older codex does hash it — if "Hooks need review" appears, answer
+  "Trust all and continue" once, for `Interrupt` alone, and until you do a codex
+  dialog answered No or Esc leaves the pane 🛑. `roost doctor` reads the timeout
+  out of your `hooks.json` and says so while the old number is still there. What
+  the hook *does* is unchanged: three seconds before, three seconds now.
+
+  (The first cut of this entry said the re-trust was certain. It was written
+  from measurements on codex 0.150.1 and 0.151.0, where a timeout *was* hashed.
+  Re-measured on 0.154.0 — with an appended command argument as the control, to
+  prove the probe still sees a real change — it is not. `docs/known-gaps.md`
+  carries the hashes.)
 
 ## [0.6.0]
 

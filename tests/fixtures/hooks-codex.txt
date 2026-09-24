@@ -30,10 +30,12 @@
 # codex's own cap, not a roost preference: codex clamps an Interrupt hook to 3s
 # and used to print `warning: clamping Interrupt hook timeout to 3s` — naming
 # this file's full path — on every start. The hook always ran with 3 seconds;
-# only the warning has gone. If you trusted a roost hooks.json that still said
-# 10, codex asks at "Hooks need review" once more for Interrupt alone, because
-# the number it hashed has moved. Answer "Trust all and continue"; until you
-# do, a declined dialog leaves 🛑 stamped, and `roost doctor` says so.
+# only the warning has gone. Codex 0.154.0 does not include a timeout in the
+# hash it stores when you trust a hook, so on that version the number changes
+# under an existing trust entry and codex asks you nothing. An older codex does
+# hash it; if yours asks at "Hooks need review" for Interrupt, answer "Trust all
+# and continue" once. Until that is answered a declined dialog leaves 🛑
+# stamped, and `roost doctor` says so.
 #
 # There is no error EVENT. Codex has twelve hook events and none of them reports
 # an error, so 💥 is inferred: a Stop that carries no reply means the turn most
@@ -55,10 +57,12 @@
 # not.
 #
 # Interrupt's timeout is the single exception ever made, and it cleared a bar
-# no other edit has: codex was already clamping that number, so the edit cost
-# one re-trust and changed nothing the hook does. An edit that also changed
-# behaviour would trade a working badge on every trusted machine for the fix,
-# and does not clear it.
+# no other edit has: codex was already clamping that number, so the edit
+# changed nothing the hook does. An edit that also changed behaviour would
+# trade a working badge on every trusted machine for the fix, and does not
+# clear it. Timeouts in particular are no longer hashed on 0.154.0, measured
+# with a control; they were on 0.151.0, so which codex you run decides whether
+# an edit costs a re-trust, and the command string is hashed on both.
 #
 # The trust prompt vouches for a PATH, not for the code at that path. Anyone who
 # can write adapters/codex/roost-codex-hook changes what runs, with no second
