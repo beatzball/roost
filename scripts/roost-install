@@ -1224,7 +1224,9 @@ $(roost_hooks_codex)" ;;
   If codex asks again on a machine that was already trusted, it is asking
   about Interrupt alone: its timeout is now 3, the cap codex was clamping the
   old 10 down to anyway. The hook does what it always did; the warning codex
-  printed with your hooks.json path on every start does not come back."
+  printed with your hooks.json path on every start does not come back.
+  Codex 0.154.0 leaves a timeout out of the hash it trusts, so there it does
+  not ask at all -- nothing is wrong if you see no prompt."
   ;; esac
 
   case " $DETECTED " in *" copilot "*)

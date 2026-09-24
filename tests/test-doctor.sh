@@ -683,7 +683,9 @@ out="$(rdoctor)"
 assert_contains "$out" "still asks for a timeout codex will not honour" \
   "doctor spots an Interrupt handler left on the old timeout"
 assert_contains "$out" "roost install" "...and names the command that rewrites it"
-assert_contains "$out" "Trust all and continue" "...and the trust answer that has to follow"
+assert_contains "$out" "Trust all and continue" "...and the trust answer, for a codex version that asks for one"
+assert_contains "$out" "0.154.0 does not ask" \
+  "...and says which version does not ask, so no prompt is not read as a failed install"
 
 # 6c. the same file as the INSTALLER writes it — one handler over five indented
 # lines rather than one. Both layouts are legitimate (the merge runs the JSON
