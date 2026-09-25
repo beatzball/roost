@@ -19,7 +19,7 @@
     "check:typography": "node scripts/check-typography.mjs"
   },
   "dependencies": {
-    "@beatzball/litro": "latest",
+    "@beatzball/litro": "0.16.3",
     "@shoelace-style/shoelace": "^2.19.0",
     "highlight.js": "^11.10.0",
     "lit": "^3.2.1",

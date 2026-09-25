@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@beatzball/litro':
-        specifier: latest
-        version: 0.13.1(esbuild@0.28.2)(rolldown@1.2.5)(terser@5.50.0)(typescript@5.9.3)
+        specifier: 0.16.3
+        version: 0.16.3(esbuild@0.28.2)(rolldown@1.2.5)(terser@5.50.0)(typescript@5.9.3)
       '@lit-labs/ssr':
         specifier: ^3.3.0
         version: 3.3.1
@@ -65,8 +65,8 @@ packages:
   '@beatzball/litro-router@0.2.1':
     resolution: {integrity: sha512-wpOa+cZlM1XXAJZJYgNzFFIKGm0I7rOaWUhSslHn4i4V9lF8ozvySuHXy9I1jW5yC+KGpeukyEDypVdv5g9EAg==}
 
-  '@beatzball/litro@0.13.1':
-    resolution: {integrity: sha512-zy0I+PUTJELeOkmuzh9B8kmuyafGzuddorduDHDFwQD76AltZ2RFaobKYgQLsjl6l/0uxMfD32DeSrsMNVtthg==}
+  '@beatzball/litro@0.16.3':
+    resolution: {integrity: sha512-7XItvTtxueys/xjijaNOla4RbVPZSlsxYr48AuaOXoHrbVbO8Cy1n78HG1lAIj8/G9UIJetOnKT7cVNcL36DhQ==}
     hasBin: true
     peerDependencies:
       '@elenajs/core': ^1.0.0
@@ -2734,7 +2734,7 @@ snapshots:
 
   '@beatzball/litro-router@0.2.1': {}
 
-  '@beatzball/litro@0.13.1(esbuild@0.28.2)(rolldown@1.2.5)(terser@5.50.0)(typescript@5.9.3)':
+  '@beatzball/litro@0.16.3(esbuild@0.28.2)(rolldown@1.2.5)(terser@5.50.0)(typescript@5.9.3)':
     dependencies:
       '@beatzball/litro-router': 0.2.1
       '@lit-labs/ssr': 3.3.1
