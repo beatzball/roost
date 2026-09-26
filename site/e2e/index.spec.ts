@@ -27,20 +27,32 @@ test('/docs/getting-started renders', async ({ page }) => {
   await expect(page.locator('page-docs-slug')).toBeVisible();
 });
 
-// The trailing-slash regression (#129) is deliberately NOT tested here, and the
-// reason is worth writing down so the next person does not re-add it and watch
-// it fail.
+// The trailing-slash regression (#129). Every docs page went BLANK at a URL
+// ending in `/`: 200, every asset loaded, no console error, the content all in
+// the DOM -- and not drawn, because page-docs-slug never upgraded and the host
+// sat under `:not(:defined) { visibility: hidden }`.
 //
-// This suite runs against `pnpm dev`, and the dev server answers
-// /docs/getting-started/ with its own "No page matched" body — served, oddly,
-// as 200. So a browser test at that URL fails for a reason that has nothing to
-// do with the bug it would be guarding, and no client-side fix can reach it.
-// That dev-server behaviour is its own defect, filed separately.
+// So this asserts on what a reader would see, the page's own h1, and not on the
+// things that stayed green through the bug. Not the response status: that was
+// 200. Not the host element: it keeps its height and its declarative shadow
+// root even while undefined. getByRole also skips a heading hidden by
+// visibility, so a hidden page cannot satisfy it.
 //
-// The guard lives in scripts/verify-site.sh instead: it asserts nginx returns
-// 301 for the trailing-slash form, it runs against the real container image on
-// every CI run, and it needs no browser — which matters, because CI does not
-// run this suite at all (see the comment in .github/workflows/ci.yml).
+// This test used to be impossible here, because this suite runs against
+// `pnpm dev` and the dev server's own route matcher answered the trailing-slash
+// form with a "No page matched" body before any client code ran (#130). That
+// matcher now canonicalises the path first -- site/server/routes/[...].ts.
+//
+// The production half is guarded separately, in scripts/verify-site.sh: it
+// asserts nginx returns 301 for the trailing-slash form against the real
+// container image on every CI run, and needs no browser -- which matters,
+// because CI does not run this suite at all (see .github/workflows/ci.yml).
+test('/docs/getting-started/ with a trailing slash shows the page (#129)', async ({ page }) => {
+  await page.goto('/docs/getting-started/');
+  await expect(page.getByRole('heading', { level: 1, name: 'Getting Started' })).toBeVisible({
+    timeout: 30_000,
+  });
+});
 
 // roost is a tool for driving agents, so an agent that lands here should find
 // the docs in one fetch. A 404 would be silent otherwise: nothing on the site
