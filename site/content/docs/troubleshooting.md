@@ -146,6 +146,8 @@ Exit 1 means **error or timeout**, distinguished by the message. An errored pane
 
 The agent switcher needs `fzf`. Without it, the binding degrades to a hint. Install `fzf` and it works.
 
+If it opens as a plain list — no preview, no reload — your `fzf` is older than the live switcher needs. `roost doctor` names this; upgrading `fzf` fixes it.
+
 ## The tab separators look wrong
 
 You need a powerline or Nerd Font. Or run `roost settings` and pick the plain-separator style — it applies live, no restart.

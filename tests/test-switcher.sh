@@ -140,3 +140,106 @@ assert_eq "$(T display-message -p -t "$pf" '#{pane_current_command}')" "sleep" \
 rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
 assert_contains "$(printf '%s\n' "$rows" | awk -F'\t' -v p="$pf" '$3==p')" "·sleep" \
   "an unnamed pane's switcher row falls back to the command"
+
+# --- colour: the state word is painted, and NO_COLOR turns it off ---
+# printf builds the escape byte, so this file never has to hold a raw one.
+esc="$(printf '\033')"
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
+assert_contains "$(prows "$p0")" "${esc}[31m" "a blocked pane's row is painted red"
+assert_contains "$(prows "$p1")" "${esc}[33m" "a working pane's row is painted yellow"
+rows="$(NO_COLOR=1 ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
+case "$rows" in
+  *"$esc"*) assert_eq "has-escapes" "none" "NO_COLOR leaves no escape codes in any row" ;;
+  *) assert_eq ok ok "NO_COLOR leaves no escape codes in any row" ;;
+esac
+# The control for the assertion above: the pane's row is still there, so "no
+# escape codes" is not just "no rows".
+assert_eq "$(prows "$p0" | wc -l | tr -d ' ')" "1" "NO_COLOR still emits the pane's row"
+
+# --- the state filter and the agents-only switch ---
+# These go through the same two helper commands and the same state directory
+# the popup's keys use, rather than a test-only variable: the keys are the
+# thing that must work.
+sw_state="$(mktemp -d)"
+sw() { ROOST_SWITCH_STATE="$sw_state" ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" "$HERE/scripts/roost-switch" "$@"; }
+sw_rows() { rows="$(ROOST_SWITCH_DUMP=1 sw)"; }
+npanes() { printf '%s\n' "$rows" | awk -F'\t' '$3!=""' | wc -l | tr -d ' '; }
+
+sw_rows; all_n="$(npanes)"
+sw --cycle-filter; sw_rows
+assert_eq "$(npanes)" "1" "the first filter step shows only panes that need you"
+assert_eq "$(prows "$p0" | wc -l | tr -d ' ')" "1" "the blocked pane is the one the needs-you filter keeps"
+# w0 holds three panes but only one is shown, so it collapses to a flat row —
+# a header above a single row is the doubling the layout exists to avoid.
+assert_eq "$(hdrs "$w0")" "0" "a window showing one of its panes under a filter emits no header"
+assert_contains "$(sw --rows status | head -1)" "needs you" "the sticky header names the filter in force"
+
+T set-option -p -t "$p0b" @agent_state error
+sw_rows
+assert_eq "$(npanes)" "2" "an errored pane needs you too"
+T set-option -p -t "$p0b" @agent_state idle
+
+sw --cycle-filter; sw_rows
+assert_eq "$(npanes)" "1" "the second filter step shows only working panes"
+assert_eq "$(prows "$p1" | wc -l | tr -d ' ')" "1" "the working pane is the one the working filter keeps"
+sw --cycle-filter; sw_rows
+assert_eq "$(npanes)" "0" "the third filter step shows only done panes, and none is done"
+sw --cycle-filter; sw_rows
+assert_eq "$(npanes)" "$all_n" "the fourth filter step is back to every pane"
+
+sw --toggle-agents; sw_rows
+assert_eq "$(prows "$plain" | wc -l | tr -d ' ')" "0" "agents-only hides a pane that has no state"
+assert_eq "$(prows "$p0b" | wc -l | tr -d ' ')" "1" "agents-only keeps an idle AGENT pane"
+sw --toggle-agents; sw_rows
+assert_eq "$(npanes)" "$all_n" "toggling agents-only again shows every pane"
+rm -rf "$sw_state"
+
+# With no state directory (a person or a script calling a helper by hand), the
+# helper must write nowhere and the rows must stay unfiltered.
+ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" "$HERE/scripts/roost-switch" --cycle-filter
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
+assert_eq "$(npanes)" "$all_n" "a filter step with no state directory changes nothing"
+
+# --- preview: the screen of the row under the cursor ---
+pv="$(T new-window -d -P -F '#{pane_id}' 'sh -c "echo PREVIEW-MARK; exec sleep 600"')"
+# Bounded gate on the echo landing — deterministic, unlike racing it.
+for _ in $(seq 1 50); do
+  T capture-pane -p -t "$pv" | grep -q PREVIEW-MARK && break
+  sleep 0.05
+done
+pvw="$(T display-message -p -t "$pv" '#{window_id}')"
+pvs="$(T display-message -p -t "$pv" '#{session_id}')"
+out="$(sw --preview "$pvs" "$pvw" "$pv")"
+assert_contains "$out" "PREVIEW-MARK" "the preview shows the pane's screen"
+# The pane printed one line; the rest of its screen is blank and must be cut,
+# or the preview (which follows the bottom) would show only the blank part.
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "the preview drops the blank lines under the output"
+T select-window -t "$pvw"
+assert_contains "$(sw --preview "$pvs" "$pvw" "")" "PREVIEW-MARK" "a window header previews the window's active pane"
+assert_eq "$(sw --preview "" "" "")" "" "a row with no ids previews nothing"
+
+# --- what the installed fzf can do, asked of fzf itself ---
+# Stand-in fzf programs that answer the probe the three possible ways. PATH is
+# ONLY the stand-in directory, so the real fzf on this machine cannot answer
+# instead; bash is named by path because nothing else is on that PATH.
+fz="$(mktemp -d)"
+tier() { PATH="$1" "$BASH" "$HERE/scripts/roost-switch" --fzf-tier; }
+assert_eq "$(tier "$fz")" "none" "no fzf on PATH reads as tier none"
+printf '#!/bin/sh\nexit 2\n' > "$fz/fzf"; chmod +x "$fz/fzf"
+assert_eq "$(tier "$fz")" "basic" "an fzf that rejects the live bindings reads as tier basic"
+printf '#!/bin/sh\nexit 1\n' > "$fz/fzf"; chmod +x "$fz/fzf"
+assert_eq "$(tier "$fz")" "live" "an fzf that accepts the live bindings reads as tier live"
+rm -rf "$fz"
+
+# --- sessions: a header per session, but only when there is more than one ---
+# Last in the file on purpose: a second session changes every row above it.
+shdr_rows() { printf '%s\n' "$rows" | awk -F'\t' '$1!="" && $2=="" && $3==""'; }
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
+assert_eq "$(shdr_rows | grep -c .)" "0" "one session emits no session header"
+T new-session -d -s second
+rows="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 "$HERE/scripts/roost-switch")"
+assert_eq "$(shdr_rows | grep -c .)" "2" "two sessions emit one header each"
+assert_contains "$(shdr_rows)" "second" "a session header names its session"
+# each session's rows form one contiguous run, its header first
+assert_eq "$(printf '%s\n' "$rows" | cut -f1 | uniq | wc -l | tr -d ' ')" "2" \
+  "each session's rows form one contiguous run"

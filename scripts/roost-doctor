@@ -52,8 +52,15 @@ case "${COLORTERM:-}" in
   *) warn "COLORTERM not truecolor — the palette is #rrggbb and may band" ;;
 esac
 
-command -v fzf >/dev/null 2>&1 && ok "fzf present (prefix a switcher)" \
-  || warn "fzf missing — the prefix a switcher will be unavailable"
+# Asked of roost-switch, which asks fzf itself what it accepts — so doctor and
+# the switcher cannot disagree about which fzf is new enough. Three answers,
+# because an old fzf is neither present-and-fine nor missing: the switcher
+# still opens, as a plain list.
+case "$("$(dirname "$0")/roost-switch" --fzf-tier 2>/dev/null)" in
+  live)  ok "fzf present (prefix a switcher)" ;;
+  basic) warn "fzf is too old for the live switcher — prefix a lists agents, without refresh, preview or filters (upgrade fzf)" ;;
+  *)     warn "fzf missing — the prefix a switcher will be unavailable" ;;
+esac
 : # python3 is not required at runtime — roost init prints the hooks for you to
   # merge by hand; only the test suite uses python3.
   #

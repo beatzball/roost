@@ -1504,6 +1504,18 @@ has already produced a real bug here.
 
 ## Small deferred items
 
+- **The `prefix a` switcher's cursor keeps its position across a reload, not
+  its row.** The list reloads every two seconds. If a pane opens or closes
+  above the cursor in the moment before `Enter`, the jump lands on a
+  neighbouring pane. Low severity: it needs that timing, the preview shows the
+  row `Enter` will take, and a wrong jump costs one more `prefix a`. Left on
+  purpose — fzf can follow a row by id (`--track --id-nth`), and on fzf 0.74.4
+  that dropped `Enter` in 3 of 30 scripted tries, twice, against 0 of 30
+  without it and 0 of 30 with no reload at all. Method: a throwaway `-S`
+  server, the popup in a detached session, `Down` then `Enter` sent at a random
+  0–1 s offset, success = the popup exited and the target pane was selected.
+  Worth re-measuring on a later fzf; `scripts/roost-switch` holds the comment.
+
 - **`--json` (#41): what shipped and what did not.** Shipped: `status`, `read`,
   `screen`, `whoami`, and `state STATE --json`, schema 1, specified in
   `docs/airig/specs/2026-09-15-json-output-design.md`. Not covered:
