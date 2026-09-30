@@ -30,6 +30,7 @@
 #                            block until TGT (a %N pane, or every agent pane in a window) is done/idle. --turn N waits until TGT has recorded turn N — the number `roost send` printed — so the wait cannot be satisfied by the PREVIOUS turn's ✅; it needs a %N
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
 #   roost state STATE [--json]  report this pane's agent state (working|blocked|done|error|idle); --json then says whether it landed
+#   roost identify --session ID --cwd DIR --harness NAME [--transcript PATH]  record who the agent in this pane is, for `status --json` (an adapter calls it at session start); a no-op outside roost
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
 #   roost validate [--quick] run every check a tester would run by hand -- suites, live drives, known bugs -- and write the report itself
 #   roost ext SUBCOMMAND     add subcommands from a git repository: install, list, info, verify, update, remove
@@ -469,6 +470,71 @@ case "${1:-up}" in
       exit 0
     fi
     exec "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
+    ;;
+  identify)
+    # The public identity-reporting contract (#141), in the shape of `state`
+    # above: an adapter calls it, it finds the pane from $TMUX and $TMUX_PANE,
+    # and it is a silent no-op outside a roost server. opencode, copilot and pi
+    # call it at their session start; Claude Code and codex are identified from
+    # their hook payloads instead (scripts/lib/roost-identity.sh has both
+    # paths, and the rules every value must pass).
+    #
+    # Flags, not positions: the transcript is optional, and a harness that
+    # later learns a fifth fact must not shift the meaning of the first four.
+    #
+    # A refused value is exit 2 and one line on stderr, INSIDE roost or out. It
+    # is checked before the "am I in roost?" test on purpose: an adapter
+    # author's bug should show the first time they run it, not only once it is
+    # installed in a pane. Adapters discard both, so a harness never sees it.
+    shift
+    id_session="" id_cwd="" id_harness="" id_transcript="" id_seen=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --session|--cwd|--harness|--transcript)
+          if [ "$#" -lt 2 ]; then
+            echo "roost identify: $1 needs a value" >&2
+            exit 2
+          fi
+          case "$1" in
+            --session) id_session="$2" ;;
+            --cwd) id_cwd="$2" ;;
+            --harness) id_harness="$2" ;;
+            --transcript) id_transcript="$2" ;;
+          esac
+          id_seen="$id_seen ${1#--}"
+          shift 2
+          ;;
+        *)
+          echo "usage: roost identify --session ID --cwd DIR --harness NAME [--transcript PATH]" >&2
+          exit 2
+          ;;
+      esac
+    done
+    for id_need in session cwd harness; do
+      case "$id_seen " in
+        *" $id_need "*) ;;
+        *)
+          echo "usage: roost identify --session ID --cwd DIR --harness NAME [--transcript PATH]" >&2
+          exit 2
+          ;;
+      esac
+    done
+    . "$ROOST_HOME/scripts/lib/roost-identity.sh"
+    if ! roost_identity_valid "$id_session" "$id_cwd" "$id_harness" "$id_transcript"; then
+      case "$ROOST_IDENTITY_BAD" in
+        session) echo "roost identify: refused --session: 1-128 letters, digits, '.', '_', ':' or '-', not starting with '-'" >&2 ;;
+        harness) echo "roost identify: refused --harness: 1-32 lower-case letters, digits, '_' or '-', not starting with '-'" >&2 ;;
+        *) echo "roost identify: refused --$ROOST_IDENTITY_BAD: an absolute path of at most 1024 bytes, one line, no control characters, not ending in ';'" >&2 ;;
+      esac
+      exit 2
+    fi
+    # The same three conditions roost-agent-state checks, and the same server:
+    # the one this process is INSIDE (ROOST_SELF_SOCK), never $SOCKET, which
+    # $ROOST_SOCKET can point at a server this pane is not on.
+    [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && [ -n "${ROOST_SELF_SOCK:-}" ] || exit 0
+    roost_identity_stamp "$ROOST_SELF_SOCK" "$TMUX_PANE" \
+      "$id_session" "$id_cwd" "$id_harness" "$id_transcript" || true
+    exit 0
     ;;
   help|--help|-h)
     # The command list is read back out of this file's own header comment

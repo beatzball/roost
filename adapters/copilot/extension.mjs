@@ -153,6 +153,23 @@ const publish = (text) => run(["reply", "-"], text)
 // pinned the pane on `blocked` for good.
 const fromSubagent = (event) => event?.agentId != null
 
+// Who this agent is (#141), for `roost status --json`: the id of the session
+// this extension joined, and the directory copilot runs in, through the public
+// `roost identify` — no tmux knowledge here. Called once, right after the join
+// below; a session object with no id reports nothing.
+//
+// The directory is this process's own. The extension is a fork of copilot, and
+// a fork starts in its parent's directory. No transcript: copilot's session
+// history is not a documented single file. Both read from copilot's shipped SDK
+// types (session.sessionId) and NOT measured against a live copilot for this
+// change — including what a new conversation inside one copilot does to the
+// id, which is why a later session.start is not listened for either.
+export const identifySession = async (session) => {
+  const id = session?.sessionId
+  if (typeof id !== "string" || !id) return
+  await run(["identify", "--session", id, "--cwd", process.cwd(), "--harness", "copilot"])
+}
+
 export const RoostState = () => {
   // Copilot opens a new assistant.turn_start after every tool call, so one user
   // prompt emits several. Holding the last reported state keeps a turn to one
@@ -463,6 +480,7 @@ try {
     onPermissionRequest: adapter.onPermissionRequest,
   })
   session.on(adapter.event)
+  await identifySession(session)
 } catch {
   // Nothing to report to: outside copilot there is no session to badge, and
   // inside copilot a failure to join must leave the agent working rather than

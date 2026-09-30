@@ -408,6 +408,7 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
+  local -a p_sid p_cwd p_harness p_tr
   local ns=0 np=0 j
   case "$_SOCKET_FLAG" in -L) kind=name ;; esac
   strs=(status "$SOCKET" "$kind")
@@ -440,11 +441,17 @@ roost_jsonout_status() {
     ns=$((ns + 1)); k=$((k + 1))
   done
 
-  # Panes: the ten fields of the design, in its order. The free-form ones --
-  # state, command, name -- sit at the end only for readability; the tab check
+  # Panes: the ten fields of the design, in its order, then the agent's
+  # identity (#141). The free-form ones -- state, command, name and the four
+  # identity values -- sit at the end only for readability; the tab check
   # guards every field wherever it is.
+  #
+  # The identity is read from @roost-transcript-path, NOT @roost-transcript:
+  # the second is "<stamp> <path>", owned by the dialog hooks and removed after
+  # every declined dialog (scripts/lib/roost-identity.sh's header says why the
+  # two cannot be one option).
   trusted=0
-  roost_jsonout_list 10 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 14 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -462,11 +469,17 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[7]="$(t display-message -p -t "$id" '#{@agent_since}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[8]="$(t display-message -p -t "$id" '#{pane_current_command}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[9]="$(t display-message -p -t "$id" '#{@roost-name}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[10]="$(t display-message -p -t "$id" '#{@roost-session}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[11]="$(t display-message -p -t "$id" '#{@roost-cwd}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[12]="$(t display-message -p -t "$id" '#{@roost-harness}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[13]="$(t display-message -p -t "$id" '#{@roost-transcript-path}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
     p_state[np]="${ROOST_JSONOUT_F[6]}"; p_since[np]="${ROOST_JSONOUT_F[7]}"; p_cmd[np]="${ROOST_JSONOUT_F[8]}"
     p_name[np]="${ROOST_JSONOUT_F[9]}"
+    p_sid[np]="${ROOST_JSONOUT_F[10]}"; p_cwd[np]="${ROOST_JSONOUT_F[11]}"
+    p_harness[np]="${ROOST_JSONOUT_F[12]}"; p_tr[np]="${ROOST_JSONOUT_F[13]}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -474,7 +487,8 @@ roost_jsonout_status() {
   k=0; while [ "$k" -lt "$ns" ]; do strs+=("${s_name[k]}"); k=$((k + 1)); done
   k=0
   while [ "$k" -lt "$np" ]; do
-    strs+=("${p_id[k]}" "${p_sess[k]}" "${p_wid[k]}" "${p_wname[k]}" "${p_state[k]}" "${p_cmd[k]}" "${p_name[k]}")
+    strs+=("${p_id[k]}" "${p_sess[k]}" "${p_wid[k]}" "${p_wname[k]}" "${p_state[k]}" "${p_cmd[k]}" "${p_name[k]}"
+      "${p_sid[k]}" "${p_cwd[k]}" "${p_harness[k]}" "${p_tr[k]}")
     k=$((k + 1))
   done
   roost_jsonout_encode "${strs[@]}" || roost_jsonout_fail status
@@ -498,8 +512,18 @@ roost_jsonout_status() {
     if [ -n "${p_name[k]}" ]; then doc="$doc,\"name\":${ROOST_JSONOUT_STR[j + 6]}"; else doc="$doc,\"name\":null"; fi
     doc="$doc,\"command\":${ROOST_JSONOUT_STR[j + 5]}"
     if [ -n "${p_state[k]}" ]; then doc="$doc,\"state\":${ROOST_JSONOUT_STR[j + 4]}"; else doc="$doc,\"state\":null"; fi
-    roost_jsonout_int "${p_since[k]}"; doc="$doc,\"since\":$ROOST_JSONOUT_INT}"
-    j=$((j + 7)); sep=","; k=$((k + 1))
+    roost_jsonout_int "${p_since[k]}"; doc="$doc,\"since\":$ROOST_JSONOUT_INT"
+    # The agent's identity (#141): always present, null when unknown -- a plain
+    # shell pane has four nulls. `session_id`, not `session`: `session` above
+    # is the TMUX session's name and has been since schema 1, so reusing the
+    # key would change a field's meaning, which is a schema bump by the rule
+    # in docs/airig/specs/2026-09-15-json-output-design.md. The record file
+    # carries the same name.
+    if [ -n "${p_sid[k]}" ]; then doc="$doc,\"session_id\":${ROOST_JSONOUT_STR[j + 7]}"; else doc="$doc,\"session_id\":null"; fi
+    if [ -n "${p_cwd[k]}" ]; then doc="$doc,\"cwd\":${ROOST_JSONOUT_STR[j + 8]}"; else doc="$doc,\"cwd\":null"; fi
+    if [ -n "${p_harness[k]}" ]; then doc="$doc,\"harness\":${ROOST_JSONOUT_STR[j + 9]}"; else doc="$doc,\"harness\":null"; fi
+    if [ -n "${p_tr[k]}" ]; then doc="$doc,\"transcript\":${ROOST_JSONOUT_STR[j + 10]}}"; else doc="$doc,\"transcript\":null}"; fi
+    j=$((j + 11)); sep=","; k=$((k + 1))
   done
   printf '%s]}\n' "$doc"
 }

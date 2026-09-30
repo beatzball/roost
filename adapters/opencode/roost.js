@@ -264,6 +264,23 @@ export const RoostState = async (input) => {
   // — see the case comments below.
   let assistantID = null
   let pending = null
+  // Who this agent is (#141), for `roost status --json`: the session id and the
+  // directory, sent through `roost identify` — the public command, so this
+  // file carries no tmux knowledge of its own. No transcript: opencode keeps
+  // its conversations in its own storage, not in one file per session.
+  //
+  // The directory is the plugin input's, the project opencode was opened on.
+  // The session id comes from the first `session.*` event that names one,
+  // because opencode creates the pane's session on the first prompt, after the
+  // plugin has loaded. A child session never gets here: its session.* events
+  // are muted above, and `children` is checked again below for any event type
+  // that is not. `identified` is the one we last reported, so a turn costs one
+  // spawn only when the session changes — /new, or a session switched to.
+  //
+  // Read from opencode's own event types and the plugin input, NOT measured
+  // against a live opencode for this change.
+  const directory = typeof input?.directory === "string" ? input.directory : null
+  let identified = null
 
   const set = async (state) => {
     if (state === last) return
@@ -279,6 +296,13 @@ export const RoostState = async (input) => {
       // (92ms apart in the run above), so the set is populated in time.
       learnChild(event, children)
       if (CHILD_MUTED.has(event?.type) && children.has(event?.properties?.sessionID)) return
+      // Before the mapping, so the pane is identified before its first badge.
+      const sid = event?.properties?.sessionID
+      if (directory && typeof sid === "string" && sid && sid !== identified
+          && !children.has(sid) && String(event?.type).startsWith("session.")) {
+        identified = sid
+        await run(["identify", "--session", sid, "--cwd", directory, "--harness", "opencode"])
+      }
       switch (event?.type) {
         // Which event carries what was VERIFIED against a live opencode 1.18.20
         // turn (isolated XDG dirs, a spy plugin, a real model call), not read

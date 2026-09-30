@@ -157,6 +157,14 @@ Record the reply **before** reporting `done`. `wait-done` returns the moment the
 
 A reply longer than 12 KB is stored truncated, keeping the beginning, with a marker line saying how much was dropped.
 
+To appear in `roost status --json` with a session and a directory, it can say who it is once, when its session starts:
+
+```sh
+roost identify --session "$MY_SESSION_ID" --cwd "$PWD" --harness mytool --transcript "$MY_LOG"
+```
+
+`--transcript` is optional. The session id is 1–128 letters, digits, `.`, `_`, `:` or `-`; the harness name is 1–32 lower-case letters, digits, `_` or `-`; the two paths must be absolute, one line, and at most 1024 bytes. Anything else is refused with exit `2` and a line on stderr, and nothing is recorded. Calling it again with the same values costs one tmux read and writes nothing. Outside roost it does nothing and exits `0`, like `roost state`.
+
 ### `roost send` proves a new turn began, and names it
 
 Delivering the text is not the same as the agent acting on it. Between the Enter and the agent's prompt-submit hook stamping ⏳ `working`, its badge still reads ✅ from the **previous** turn — so `wait-done` returns at once and `read` hands back the previous turn's reply. A well-formed answer to somebody else's question, at exit 0, silently.
@@ -365,7 +373,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 ### `roost status --json`
 
 ```json
-{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100}]}
+{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl"}]}
 ```
 
 | field | type | meaning |
@@ -385,6 +393,14 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `panes[].command` | string | what the pane is running |
 | `panes[].state` | string or `null` | the agent state; `null` for a pane no hook has stamped (a plain shell) |
 | `panes[].since` | integer or `null` | epoch seconds when that state was set |
+| `panes[].session_id` | string or `null` | the agent's own session id — the one its harness resumes by. Not the same as `session`, which is the tmux session |
+| `panes[].cwd` | string or `null` | the directory the agent's session started in, absolute |
+| `panes[].harness` | string or `null` | which agent it is: `claude`, `codex`, `opencode`, `copilot`, `pi`, or the name an adapter passed to `roost identify` |
+| `panes[].transcript` | string or `null` | the path of the agent's transcript, when its harness keeps one file per session (Claude Code, codex, pi) |
+
+The last four are always present, and `null` until the agent's first event says who it is — a pane that has never run an agent has four `null`s. Nothing clears them when the agent exits, so they stay until another agent in the pane says who it is: a pane back at its shell prompt still names the last agent that ran there. They follow the agent, not the pane: clearing a conversation gives it a new `session_id`, and resuming one brings its old `session_id` back in a new pane. roost records what the harness says now and never links the two.
+
+Two names are not the obvious ones, on purpose. The key is `session_id`, not `session`, because `session` has meant the tmux session since schema 1, and giving a key a new meaning would be a breaking change. And roost keeps the transcript in the tmux option `@roost-transcript-path`, not `@roost-transcript`: that older option holds a different record (the time a permission dialog opened, then a path), and it is removed each time a dialog is declined, so the transcript would disappear with it. A codex pane is identified at its first prompt, because that is when codex first says anything. On codex-cli 0.157.1 it is not identified at all: that version runs every agent's hooks in one shared background process, which cannot tell roost which pane is whose, so a codex pane's four fields stay `null` rather than risk naming another agent's session.
 
 ### `roost whoami --json`
 

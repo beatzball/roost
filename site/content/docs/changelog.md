@@ -16,6 +16,30 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`roost status --json` says who the agent in each pane is** (#141). roost
+  keys everything on the pane, so a program that wanted to show a
+  conversation, find its transcript or bring it back had nothing to go on:
+  `command` for a Claude Code pane is a version string. Each pane now carries
+  `session_id` (the harness's own session id), `cwd`, `harness` and
+  `transcript`. They are `null` until an agent in the pane says who it is, and
+  they stay until another one does, so a pane back at its shell prompt still
+  names the last agent that ran there. `schema` stays 1. Claude Code panes are
+  identified at session start; the opencode, copilot and pi adapters report it
+  themselves. Clearing a conversation shows its new id; resuming one shows the
+  old id. `cwd` is the directory the session started in. The key is
+  `session_id` because `session` was already the tmux session name. Nothing to
+  do to get it: no hook configuration changed, and nothing needs a re-install.
+- **`roost identify --session ID --cwd DIR --harness NAME [--transcript PATH]`**
+  (#141), for an agent with no adapter, in the shape of `roost state`. It does
+  nothing outside roost, and a value that is not one line, or a path that is
+  not absolute, exits 2 and writes nothing.
+- **Known issue: codex is not identified on codex-cli 0.157.1** (#145). That
+  version runs every agent's hooks in one shared process, which cannot say
+  which pane is whose. roost writes no identity from it rather than the wrong
+  one, so a codex pane's four fields stay `null`.
+
 ### Changed
 
 - **The `prefix a` switcher is live.** It used to be a snapshot: a list taken
