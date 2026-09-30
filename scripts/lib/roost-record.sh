@@ -26,9 +26,12 @@
 # every server start (measured on tmux 3.3a, 3.4 and 3.6): keyed by socket and
 # pane alone, a restarted server's %0 would overwrite the dead server's %0.
 #
-# Names reserved for later work, which nothing here writes (see the spec):
-# name, session, window, cwd, state, harness, session_id, and further per-turn
-# sidecars `replies/NNNNNN.<field>` (`.pane` is the one #42 uses). A reader here counts a turn only when its name is
+# Names reserved for later work (see the spec): name, session, window, cwd,
+# state, harness, session_id, and further per-turn sidecars
+# `replies/NNNNNN.<field>` (`.pane` is the one #42 uses). Three of them are
+# written now, and not from this file: `session_id`, `cwd` and `harness`, by
+# scripts/lib/roost-identity.sh (#141), which creates the directory the way
+# roost_record_append does. Nothing here writes them. A reader here counts a turn only when its name is
 # digits alone, which is what keeps those sidecars — and `.tmp.*` files —
 # invisible to it.
 #

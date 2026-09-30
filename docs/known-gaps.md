@@ -473,6 +473,47 @@ no dialog, also fires Interrupt and no Stop.
   does a message queued mid-turn; either makes the tail unrecognisable. That is
   the intended answer to "cannot tell", and a new prompt clears it anyway.
 
+### codex 0.157.1 runs every hook in one shared process: a second codex pane's badges land on the first (#141)
+
+**Severity: high, and older than #141.** It affects every codex badge, not only
+identity, on any machine running two codex agents at once on this version.
+
+**What was measured** (codex-cli 0.157.1, tmux 3.6, macOS, 2026-09-30): one
+throwaway `-S` server, its own `CODEX_HOME`, `HOME` and XDG dirs, a local model
+through `tests/live/codex-tool-proxy.py`, and a logger on SessionStart,
+UserPromptSubmit and Stop that wrote each payload's `session_id` and `cwd`, the
+hook's `$TMUX_PANE`, and its process ancestry. Two codex TUIs in two windows —
+panes `%1` and `%2`, the second started in a subdirectory — each sent one
+prompt. The second TUI's three events carried ITS session id and ITS
+subdirectory, and all three ran with `TMUX_PANE=%1`. Every hook's parent was
+one `codex app-server --listen unix:// --managed-daemon` process, a child of the
+FIRST TUI. So codex's hooks inherit the environment of whichever codex started
+that app-server, and `roost state` badges that pane, whatever pane the turn
+belongs to. One run; the mechanism (one parent process for both TUIs' hooks) is
+what makes it more than a one-off.
+
+**Two things seen around it**, recorded because the next person to measure will
+trip on them: the app-server outlives `tmux kill-server` and needed `SIGKILL`
+after a `SIGTERM`; and in one run it downloaded a NEWER app-server (0.159.2)
+into the throwaway `CODEX_HOME/packages/` despite
+`check_for_update_on_startup = false`. The real `~/.codex` on the measuring
+machine had a 0.159.2 app-server running too, with parent pid 1 — detached, so
+its `$TMUX_PANE` is whatever pane first started it, or none.
+
+**What #141 did about it:** only the identity. `adapters/codex/roost-codex-hook`
+skips identity when its parent's command line names `app-server`. So a codex
+pane on this version should read four `null`s in `status --json` instead of
+another agent's session — **inferred, not seen**: the guard is tested against a
+stand-in parent script named `app-server`, and no live codex has run the final
+hook. The badge is sent exactly as before. The upshot is that codex identity is
+delivered for no version measured so far.
+
+**What would close it:** a way for a hook to learn its own TUI's pane. Nothing in
+the payload names the TUI or its terminal. Candidates to measure: whether the
+TUI passes anything per-session to the app-server that a hook can see; whether
+codex can be run without the shared app-server; or keying the pane from the
+session id — the pane whose codex process owns that session's rollout file.
+
 ### A codex pane's 💥 error is inferred, and some dead turns still read ✅ done
 
 Codex has exactly twelve hook events — `PreToolUse`, `PermissionRequest`,
@@ -1313,6 +1354,73 @@ right — the failure is always today's output.
   between one writer's listing and its link. Not reachable with one agent per
   pane; not tested.
 
+### The agent's identity (#141): what it does not cover
+
+**Severity: low, except the first two items, which are medium.** Most items
+leave a field `null`, stale or less precise. The first two DO put a wrong
+identity on a pane — a session that is not the pane's agent's, or a harness
+that is no longer running — which is the failure the design set out to refuse.
+The codex entry above is a third case, and there the refusal was built.
+
+- **A nested headless agent replaces the pane's identity (medium).** An agent
+  that starts another one from its own shell — a `claude -p ...` run by its
+  Bash tool — passes on `TMUX` and `TMUX_PANE`, so that child's SessionStart
+  is stamped on the parent's pane: its session id, its directory, its
+  transcript. Nothing puts the parent's back, because the parent's own
+  SessionStart does not fire again; `status --json` and the pane record name
+  the child until the parent's next `/clear`. Reproduced by feeding the two
+  payloads through `scripts/roost-session-context` in that order; that a real
+  `claude -p` fires SessionStart with the inherited pane is from Claude Code's
+  documented hook behaviour, not from a live run. Only `agent_id` (a
+  subagent inside the same process) is filtered. #77 — one environment switch
+  that silences a nested agent's hooks on every harness — is what would close
+  it; checking that the hook's harness is the pane's own process is the other
+  route.
+- **The identity outlives the agent (medium).** Nothing clears the four
+  options when the agent exits: Claude's generated hooks have no SessionEnd,
+  and the other adapters send nothing at exit. A pane that went back to its
+  shell keeps reporting the last agent's `harness`, `session_id` and
+  `transcript`, and a codex started there next on 0.157.1 — which writes no
+  identity (the entry above) — reads as the Claude that ran before it for its
+  whole life. Found in review by reading the options after the last event; no
+  real harness was exited. Closing it needs an exit signal per harness, or a
+  check at read time that the pane still runs the recorded harness.
+- **A pane identified before its first turn and never answering leaves a
+  record with no `replies/`** (`schema`, `socket`, `session_id`, `cwd`,
+  `harness`). The 30-day sweep finds its candidates by dating `replies/`, so
+  such a record is never swept by age; only `roost forget` removes it. The
+  sweep itself does run when identity makes a directory (fixed in review).
+  Closing it: date the pane directory too, or make `replies/` at identify.
+
+- **`cwd` is where the session started, not where the agent is now.** Measured
+  on Claude Code 2.1.283: after a Bash `cd sub`, every later payload's `cwd`
+  reads `sub`, but SessionStart does not fire again, and /clear's SessionStart
+  reads the launch directory. The launch directory is also where the transcript
+  is filed and where `claude --resume` must run, which is why it was chosen.
+  Tracking the current one would need a stdin read on UserPromptSubmit — a new
+  flag in the generated settings file and in `tests/fixtures/hooks-claude.txt`.
+- **A codex pane is identified at its first prompt**, not at launch: roost
+  registers no SessionStart for codex, and codex 0.157.1 fires its SessionStart
+  only with the first prompt anyway.
+- **opencode, copilot and pi were not measured live.** Their adapters read the
+  session id and directory from each harness's documented API (opencode's
+  `session.*` events and plugin `directory`, copilot's `session.sessionId`, pi's
+  `ctx.sessionManager` and `ctx.cwd`), and `tests/test-identity-adapters.sh`
+  drives them offline. What a new conversation inside one copilot does to the id
+  is unknown, and copilot is identified once, at join.
+- **Only a changed identity rewrites the pane record.** A record removed by
+  `roost forget` while the pane lives is written again only when the session,
+  directory, harness or transcript next changes.
+- **No python3 and no jq: no identity for Claude Code or codex.** The same
+  degradation every payload reader in the hooks has; badges are untouched.
+- **A path that is not UTF-8** is stored rewritten as `\ooo` by tmux 3.4 and
+  3.5a (scripts/lib/roost-jsonout.sh's header), so it never compares equal and
+  every event rewrites it. Harmless, but not the one-read cost the rule promises.
+- **The record directory is created by a copy** of `roost_record_append`'s
+  lines in `scripts/lib/roost-identity.sh`, because that function also writes a
+  turn. A shared `roost_record_ensure` in `scripts/lib/roost-record.sh` would
+  close it.
+
 ## Behaviour changes
 
 ### Replies are kept on disk, and `read` prints long ones whole (#42)
@@ -1503,6 +1611,11 @@ in exchange for a dependency on upstream's numbering, in the one code path that
 has already produced a real bug here.
 
 ## Small deferred items
+
+- **`roost identify` is not in the one-line usage string (#141).** It is in
+  `roost help`, but the pinned usage line at the bottom of `bin/roost` (printed
+  for an unknown command) does not list it yet: tests/test-ext.sh pins that
+  line byte for byte, so the two change together.
 
 - **The `prefix a` switcher's cursor keeps its position across a reload, not
   its row.** The list reloads every two seconds. If a pane opens or closes

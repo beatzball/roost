@@ -158,6 +158,10 @@ captured scenario above written out by hand — no code emits it yet.)
 | `panes[].command` | string | `#{pane_current_command}` |
 | `panes[].state` | string \| null | `@agent_state`. One of `working`, `blocked`, `done`, `error`, `idle`; `null` when unset (the human `[-]`). Something other than roost can write another string; consumers treat any other value as unknown |
 | `panes[].since` | integer \| null | `@agent_since`, epoch seconds, when the badge was last stamped. `null` when unset or not all digits |
+| `panes[].session_id` | string \| null | `@roost-session`: the harness's own session id (#141). `null` when unset. Not `session`, which is already the tmux session's name — reusing that key would change a field's meaning, a schema bump |
+| `panes[].cwd` | string \| null | `@roost-cwd`: the directory the agent's session started in, absolute (#141) |
+| `panes[].harness` | string \| null | `@roost-harness`: `claude`, `codex`, `opencode`, `copilot`, `pi`, or another adapter's name (#141) |
+| `panes[].transcript` | string \| null | `@roost-transcript-path`: the transcript, absolute (#141). Not `@roost-transcript`, which is the dialog hooks' `"<stamp> <path>"` record and is removed after every declined dialog |
 
 The human `LABEL` is not a field: it is `name ?? command`, and the suffix rule
 is presentation.

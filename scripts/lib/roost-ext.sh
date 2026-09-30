@@ -313,6 +313,7 @@ roost_ext_core_commands() {
     session s \
     new \
     state \
+    identify \
     help --help -h \
     doctor \
     validate \

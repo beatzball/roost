@@ -303,6 +303,7 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # --stop-hook` makes the sink clear the previous turn's reply rather than record
 # one; ROOST_ERROR_REASON is the sentence `roost wait-done` prints.
 sink="$SELF_DIR/../../scripts/roost-agent-state"
+
 # Interrupt: `idle --stop-hook` with stdin from /dev/null, which is not a tty,
 # so the sink's reply-clearing arm runs and nothing waits on codex's pipe.
 if [ "$interrupt" = 1 ]; then
@@ -315,4 +316,62 @@ elif [ "$stop_hook" = 1 ]; then
 else
   ROOST_AGENT_NAME=codex "$sink" "$state" || true
 fi
+
+# --- UserPromptSubmit: who this agent is (#141) -------------------------------
+#
+# roost registers no SessionStart for codex, and adding one would change what
+# `roost hooks codex` prints — see the top of this file for what that costs. It
+# does not need one: measured on codex-cli 0.157.1 with a logger on SessionStart,
+# UserPromptSubmit and Stop, codex fires SessionStart LAZILY, with the first
+# prompt and just ahead of its UserPromptSubmit, and both carry the same
+# session_id, transcript_path and cwd. So the first UserPromptSubmit is the
+# first moment either event could have said anything. Also measured there:
+#
+#   /clear            SessionStart source=clear with a NEW id and a new rollout
+#                     file, and the next UserPromptSubmit carries them
+#   codex resume ID   SessionStart source=resume with the OLD id and the old
+#                     rollout path
+#   cwd               the directory codex was launched in
+#
+# Every UserPromptSubmit is checked, so a /clear is picked up on the prompt
+# after it. That costs one reader process and one tmux read per PROMPT, and an
+# unchanged identity writes nothing (scripts/lib/roost-identity.sh). PostToolUse
+# never reaches here: it fires per tool call.
+#
+# THE SHARED APP-SERVER, and why a hook run by it writes nothing. Measured on
+# the same 0.157.1: codex runs every hook inside ONE background
+# `codex app-server` process, started by whichever codex TUI came first, and a
+# hook inherits THAT process's environment. Two TUIs in two windows of one
+# throwaway server, each sent one prompt: the second TUI's SessionStart,
+# UserPromptSubmit and Stop — its own session id, its own cwd — all ran with
+# TMUX_PANE naming the FIRST TUI's pane, parent process the app-server. A hook
+# there cannot know which pane it belongs to, and writing one agent's identity
+# onto another agent's pane is worse than writing none. So when this script's
+# parent is the app-server, identity is skipped. (The badge below is sent the
+# same wrong way, and that is older than this change: docs/known-gaps.md.)
+#
+# One `ps` per prompt. The check reads the parent's COMMAND LINE, not its name:
+# the app-server binary is named `codex`, like the TUI. It matches anywhere in
+# that line, so a parent whose path merely contains `app-server` is skipped
+# too — the safe direction: no identity, the badge untouched.
+#
+# AFTER the badge, not before it (review). The `working` a human is watching
+# for must not wait on a `cat`, a `ps`, a reader and a tmux read. The sink does
+# not read stdin for `working`, so the payload is still here to read.
+if [ "$event" = "UserPromptSubmit" ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+  identity_payload="$(cat 2>/dev/null || true)"
+  case "$(ps -o command= -p "$PPID" 2>/dev/null || true)" in
+    *app-server*) ;;
+    *)
+      # The same socket rule the sink applies before it writes anything.
+      . "$SELF_DIR/../../scripts/lib/roost-socket.sh"
+      roost_self_socket
+      if [ -n "$ROOST_SELF_SOCK" ]; then
+        . "$SELF_DIR/../../scripts/lib/roost-identity.sh"
+        roost_identity_from_payload "$ROOST_SELF_SOCK" "$TMUX_PANE" codex "$identity_payload" || true
+      fi
+      ;;
+  esac
+fi
+
 exit 0
