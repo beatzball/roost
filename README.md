@@ -305,6 +305,12 @@ scripts/lib/roost-jsonout.sh # `--json` output (#41): the awk byte encoder, and
                             #   only inside a --json branch. Its header records two
                             #   bash 5 traps that silently corrupt bytes -- read it
                             #   before touching a value it encodes
+scripts/lib/roost-events.sh # the event log (#98): one JSON line per state change,
+                            #   written with no lock, rotated in segments, read
+                            #   back with cursors by `roost events`. Sourced by
+                            #   the hook, by `events` and `forget`, and by
+                            #   roost-unblock.sh; tmux/roost.conf's close hooks
+                            #   reach it through `events --reconcile`
 scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
                             #   in?", for bin/roost and roost-agent-state alike
 scripts/lib/roost-ext.sh    # the extension seam's helpers: XDG paths, manifest
