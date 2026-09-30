@@ -275,6 +275,12 @@ roost send "$logs" "…" ; roost screen "$logs"
 `screen`, not `read`, for a shell helper: it has no reply channel to record
 into, so `read` would fall back to the same scrape and add a notice each time.
 
+**A long-lived process — a dev server, a watcher — goes in its own pane**
+(`roost split` or `roost spawn`), not in a background shell. A pane answers
+only for work that lives in it, and today not even for that: your badge can
+read ✅ done while a background job of yours still runs. A plain command's
+pane has no badge of its own; check it with `roost screen`.
+
 Compose layouts by splitting a specific pane with `-t`:
 
 ```sh

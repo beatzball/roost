@@ -13,6 +13,167 @@ Keep it short. When an entry is fixed, delete it.
 
 ## Live risks
 
+### When a Claude turn is over: measured on 2.1.283, and two wrong answers still live (#95, #97)
+
+**Nothing here is fixed.** #95 (an interrupted turn), #97 (background work
+that outlives the turn) and #105 (who may report a pane's state) are one
+question: when is a turn over, and who may say so? These are the measurements
+taken for their design, so the next design starts from them rather than from a
+guess. Every behaviour described is today's.
+
+**How it was measured** (Claude Code 2.1.283, tmux 3.6, macOS, 2026-09-26): one
+throwaway `-S` server whose socket path ended in `/roost`, so roost's own hooks
+acted on it; a local stand-in for the Messages API that scripted each reply (a
+plain answer, a background `Bash`, an `Agent` call, a slow stream); one logger
+on 31 of Claude's 33 hook events (all but `WorktreeCreate` and
+`WorktreeRemove`, which act on the answer) beside this checkout's
+`roost hooks claude`; `--setting-sources local`, `--model haiku`. The logger
+kept every payload and each hook's process ancestry. Raw logs were kept with
+the design work, not committed. `~/.claude/settings.json` was hashed before
+and after, and did not change. **"Once" below means one run**: it shows the
+shape can happen, not that it always does.
+
+- **M1. `Stop` lists the background work still running.** Every `Stop` carried
+  `background_tasks` and `session_crons`, both `[]` on a plain turn. With work
+  still running, one item per task: `{"id", "type": "shell", "status":
+  "running", "description", "command"}` or `{"id", "type": "subagent",
+  "status": "running", "description", "agent_type"}`. No pid, pane or terminal.
+  `prompt_id` is the same on a turn's `UserPromptSubmit` and its `Stop`. Only
+  `running` was seen as a `status`. **Not known:** which older Claude versions
+  send the key. The #55 captures on 2.1.272 were not committed.
+- **M2. A background shell: the pane read ✅ done for about 30 s while it ran**
+  (once). `Stop` at 0.749 s with `[shell, running]` badged done. When the job
+  ended, Claude **started a turn by itself**: at 30.698 s a `UserPromptSubmit`
+  whose prompt is a `<task-notification>` record, which badged `working` 58 ms
+  later, then a `Stop` with `[]` at 30.756 s. roost counted that as a turn of
+  its own: `@roost-reply-turn` reached 3 with two prompts sent.
+- **M3. A background agent: ✅ done for 30.56 s** (once, a clean run; an
+  earlier attempt on another pane was not clean and is not counted). `Stop` at
+  0.273 s with `[subagent, running]` badged done. The pane went back to ⏳ at
+  30.908 s only because the subagent's own `PostToolUse` fired on the main pane
+  (the shape in "A SUBAGENT's tool result…", below), and `--tool-hook` ignores
+  `agent_id` only while the pane is `blocked`. That is an accident, not a
+  design. Reasoned, not measured: a subagent that makes no tool call after the
+  main `Stop` would not do it.
+- **M4. `SubagentStop` is not a sign that background work ended.** After
+  every `Stop` logged, 5–15 ms later, a `SubagentStop` fired with a fresh
+  `agent_id` and `agent_type: ""`, after plain turns too. Its API request
+  carried `[SUGGESTION MODE: …]`: it is Claude's prompt-suggestion fork, not
+  the user's work. In the M3 run one more `SubagentStop` with `agent_type: ""`
+  fired 30.2 s in with no `Stop` before it; not examined. Only a `Stop` whose
+  `background_tasks` is empty says the work is done.
+- **M5. Esc while the model streams: no hook at all for 170 s** (once). No
+  `Stop`, no `StopFailure`, no `Notification`; the badge stayed `working`. So
+  the Esc bullet in the #55 entry below, measured on 2.1.272, still holds. The
+  transcript ends with the partial answer, then a user record
+  `[Request interrupted by user]`, and **no** `system turn_duration` after it.
+  **Treating `idle_prompt` as "turn over" does not work here.** After a normal
+  `Stop` an `idle_prompt` Notification arrived 60.1 s later (once); after the
+  Esc, none came within 170 s. Not measured beyond 170 s.
+- **M6. Esc while a foreground tool runs: no hook for 20 s** (once). A 30 s
+  `sleep` in `Bash`, auto-allowed, no dialog, Esc after 4 s. No
+  `PostToolUseFailure`, no `Stop`. The transcript ends with a `tool_result`
+  "The user doesn't want to proceed with this tool use. …", then
+  `[Request interrupted by user for tool use]`, and again **no**
+  `turn_duration`. `scripts/lib/roost-unblock.sh` requires `turn_duration`
+  after the marker, so it would not match this shape even if it were run on
+  the pane.
+- **M7. A declined dialog still recovers, and `wait-done` calls it success**
+  (once). Esc at a `Write` dialog: `PermissionRequest` 0.235 s after the
+  prompt, the `permission_prompt` Notification 5.955 s after that, then the
+  three #38 records **with** `turn_duration`. `roost wait-done %3 3` cleared
+  the 🛑 and **exited 0**, with the badge unset — the "`wait-done` exits 0 on
+  an interrupted turn" bullet in the #38 entry below, seen live.
+- **M8. Every Claude hook call ran inside the pane's process tree.** 45 of 45
+  logged calls, on the two panes of the clean runs, main-loop and subagent
+  events alike, had the pane's `#{pane_pid}` in their parent chain: the hook's
+  parent was `claude`, and `claude`'s parent was the pane's process. Only
+  Claude was measured in this run, and only on tmux 3.6. The other harnesses'
+  hook parents come from the #64 design
+  (`docs/airig/specs/2026-09-15-agent-identity-design.md`, §3.1), not from
+  this run.
+- **M9. Walking that ancestry is cheap.** 100 calls each, with 1,294 processes
+  running on this machine: `ps -A -o pid=,ppid=` took 26 ms a call and
+  `ps -o ppid= -p PID` 2.4 ms a level. Claude's hook is 2 levels below the
+  pane's process, so a walk is about 5 ms. That last figure is arithmetic,
+  not a timed walk.
+
+**Not measured:** background work on codex, opencode, pi and copilot (codex
+has `SubagentStart` and `SubagentStop`; whether any of their turn-end events
+carries background state is unknown). A human prompt sent **while**
+background work runs, and where the `<task-notification>` turn goes then. A
+background task that never ends (a dev server, the `Monitor` tool), and a
+non-empty `session_crons`. `claude -p` with background work. `pane_pid` on
+tmux 3.4 and 3.5a (CI's Ubuntu runs 3.4). A container. `opencode attach` to a
+detached `opencode serve`. Whether a `run_in_background` shell is a child of
+`claude` at all, and whether Claude's agent-team teammates, which can run in
+other panes, appear in `background_tasks`.
+
+**What that leaves live, most serious first.**
+
+- **A Claude pane reads ✅ done while its background work still runs (#97).**
+  Measured at about 30 s in M2 and M3; in general, for as long as the work
+  runs. `wait-done` exits 0 and a coordinator moves on while files may still
+  change. It is a false `done`, the dangerous direction.
+- **An Esc mid-answer or mid-tool leaves ⏳ `working` for ever (#95).** No
+  hook fires (M5, M6), and no transcript reader runs on a `working` pane.
+- **An Esc at a dialog is reported as success (#95).** The badge is
+  recovered, but `wait-done` exits 0 (M7).
+- **The turn Claude starts by itself is counted as a turn** (M2), so after
+  background work "turn N" is no longer the Nth prompt sent.
+
+**Process ancestry (#105) is not a fix for #77 or #102.** M8 shows a report
+from Claude's own hooks passes an ancestry test. Reasoned from that, not
+measured: a nested agent that the pane's agent starts (#77) is a descendant
+too, so it passes as well; and #102 is about a pane that reports nothing, so a
+test on the sender has nothing to refuse. Ancestry can help #78, as a way to
+*find* a pane rather than to refuse a report.
+
+### Two places "could not tell" is reported as done on purpose
+
+The rule behind every false-`done` entry in this file is that "could not
+tell" is never reported as done. **That rule is not absolute.** The human
+decided on 2026-09-28 to bend it in two places, for #97 and #105, because in
+each the strict answer would remove something that works today. Neither is
+built yet. Each is recorded here so nobody reads the rule as absolute and is
+surprised.
+
+- **A Claude too old to report background work keeps reading ✅ done.** When
+  #97 is built, a Claude `Stop` with **no** `background_tasks` key keeps
+  today's `done`. Holding `working` there instead would break every older
+  Claude install. **Cost:** on such a Claude the false ✅ of M2 and M3 stays —
+  about 30 s per task in those runs, and as long as the task runs in general —
+  and `wait-done` exits 0 while files may still change. That is no worse than
+  today: it is today's #97 bug, kept on those installs. Two more inputs reach
+  the same branch: a machine with no working JSON reader, which cannot see the
+  key at all, and a future Claude that renames or drops the key, where the
+  false ✅ comes back **silently** and only a live smoke test after the upgrade
+  would catch it. The design proposes two limits to keep it narrow; they are
+  design, not part of what the human decided: the exception covers an
+  **absent** key only (a key that is present
+  but malformed holds `working`), and the JSON reports `background: null`,
+  never `0`, so a coordinator can tell "no background work" from "could not
+  see".
+- **A report whose sender cannot be verified is accepted and marked
+  unverified.** When #105's report filter is built, a report whose ancestry
+  walk cannot run — a container whose pid namespace hides the host
+  `pane_pid`, or a `ps` that fails — is accepted, not refused. Refusing would
+  turn "could not check" into a silent badge loss. **Cost:** in those cases
+  the filter protects nothing, and any process there can stamp any state,
+  `done` included, exactly as today, when nothing is checked. The real risk is
+  false confidence: once the filter ships, readers will assume every badge was
+  checked. The limits the design proposes: "cannot check" means the walk could not **run** — a walk
+  that reaches pid 1 without meeting the pane is a refusal, not "unverified" —
+  and "unverified" is visible, in `verified: false` in the JSON and in
+  `roost doctor`.
+
+An older exception of the same shape is already live: a codex adapter on a
+machine with no working JSON reader badges a dead turn ✅ done (see the codex
+entry below). The rule as it really stands: **"could not tell" is never
+reported as done, except where the only alternative removes behaviour that
+works today, and every such place is listed in this file.** Add any new one
+here.
+
 ### A Claude Code turn that fails on an API error: fixed by #55, with holes left
 
 **Fixed by #55.** Before it, a Claude turn that ended on a rate limit, an
@@ -59,7 +220,8 @@ the healthy turn after a failed one, still reach `done`.
   not change that.** The same measurement shows it fires no hook at all — not
   `Stop`, not `StopFailure` — so nothing moves the badge, and `wait-done`
   waits out its timeout on an idle pane. It was true before #55. Unlike a
-  declined dialog, no transcript record is read to recover it.
+  declined dialog, no transcript record is read to recover it. Re-measured on
+  2.1.283: still no hook for 170 s — see "When a Claude turn is over" above.
 - **Existing installs need `roost install` again.** A `settings.json` wired
   before #55 has no `StopFailure` entry, so a failed turn still reads
   `working` there. `roost doctor` warns about exactly this, and the installer
@@ -169,7 +331,8 @@ no dialog, also fires Interrupt and no Stop.
   waiting on any of them is told the wait succeeded, for a turn the human
   stopped. copilot is the worst of the three, because its badge also says done.
   Found by review (flock round 1); telling "interrupted" from "finished" in
-  `wait-done` is a behaviour change left for its own task.
+  `wait-done` is a behaviour change left for its own task (#95). Seen live on
+  Claude 2.1.283 — M7 in "When a Claude turn is over" above.
 - **Claude with no python3 and no jq** cannot read a transcript, so it never
   recovers there. Same fail-closed shape.
 - **A Claude too old for `PermissionRequest` still has the whole 6 s window,
