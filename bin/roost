@@ -28,6 +28,8 @@
 #                            record this pane's reply, for another agent's `roost read`. TEXT... is read from the command line; `-` (or `--stdin`, or no argument at all) reads the reply from STDIN instead. Use stdin for a reply of more than a few KB, and for any reply built from a file: Linux refuses a single argument of 131072 bytes or more, so the command-line form loses a long reply outright
 #   roost wait-done [--turn N] TGT [T]
 #                            block until TGT (a %N pane, or every agent pane in a window) is done/idle. --turn N waits until TGT has recorded turn N — the number `roost send` printed — so the wait cannot be satisfied by the PREVIOUS turn's ✅; it needs a %N
+#   roost close [--force] [--json] TGT [T]
+#                            end ONE agent its harness's own way (/exit, /quit), wait up to T seconds (default 10) for it to leave, then close that pane and no other. Refuses a ⏳ working or 🛑 blocked pane unless --force, which skips the exit command; a window of more than one pane; and a session's last pane. If the harness opens a dialog on the way out, it stops and answers nothing. Kept replies stay, so `roost read %N` still works. Exit 0 closed, 1 refused or timed out, 2 already gone
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
 #   roost state STATE [--json]  report this pane's agent state (working|blocked|done|error|idle); --json then says whether it landed
 #   roost doctor             run preflight checks (tmux version, truecolor, hooks, ...)
@@ -269,6 +271,44 @@ record_warn() {
 
 # plural N WORD — "1 turn", "2 turns".
 plural() { if [ "$1" = 1 ]; then printf '%s %s' "$1" "$2"; else printf '%s %ss' "$1" "$2"; fi; }
+
+# job_gone is shared by `wait-done` and `close` (#143): both need to know
+# whether the agent a pane recorded has left it, and a second definition in
+# `close` would be a second answer to one question. Moved here unchanged from
+# the `wait-done` branch; its comment below still speaks from there.
+# job_gone PANE_PID jJOB: true when the agent this busy pane recorded has
+# died inside the pane's shell (#64). Both facts are needed, and both are
+# read from the kernel, not inferred:
+#
+#   1. `kill -0 -- -PGID` fails: no process of the recorded job is left. A
+#      live wrapper, a child the agent restarted as, or a background process
+#      it left in its job all keep this true, so none of them reads as died.
+#      (A wrapper that outlives its agent is therefore missed, and times
+#      out: docs/known-gaps.md. So, for up to about 300 s, is a Claude killed
+#      mid-reply: it runs `caffeinate -i -t 300` inside its own job, and
+#      that helper outlives it — measured 305 s. Kept on purpose: "the
+#      leader is gone" would answer at once but calls an agent that restarts
+#      itself as a child died.) A pgid that has been reused can only make a
+#      dead job look alive, never a live one look dead.
+#   2. the pane's shell holds the terminal again (its tpgid is PANE_PID). If
+#      another job holds it, that may be a new agent typed at the same
+#      prompt that has not stamped yet — the record is stale, not a death.
+#
+# No record, a malformed one, or one whose PANE_PID is not the pane's
+# current process (respawn-pane -k keeps pane options) → false: exactly the
+# pre-#64 behaviour. Step 1 is a builtin and runs every poll; the `ps` of
+# step 2 forks only once step 1 has failed.
+job_gone() {
+  local _j="${2#j}" _pg _jp _fg
+  [ -n "$_j" ] || return 1
+  _pg="${_j%%:*}"; _jp="${_j#*:}"
+  case "$_pg:$_jp" in *[!0-9:]*|:*|*:) return 1 ;; esac
+  [ "$_jp" = "$1" ] && [ "$_pg" != "$1" ] && [ "$_pg" -gt 1 ] || return 1
+  kill -0 -- "-$_pg" 2>/dev/null && return 1
+  _fg="$(ps -o tpgid= -p "$1" 2>/dev/null)" || return 1
+  _fg="${_fg//[[:space:]]/}"
+  [ "$_fg" = "$1" ]
+}
 
 # A pane/window NAME containing a tab or newline corrupts every consumer that
 # treats a line as one record: `roost status` emits one line PER pane, so a
@@ -2527,39 +2567,11 @@ JSON
         esac
       done <<< "$busy_seen"
     }
-    # job_gone PANE_PID jJOB: true when the agent this busy pane recorded has
-    # died inside the pane's shell (#64). Both facts are needed, and both are
-    # read from the kernel, not inferred:
-    #
-    #   1. `kill -0 -- -PGID` fails: no process of the recorded job is left. A
-    #      live wrapper, a child the agent restarted as, or a background process
-    #      it left in its job all keep this true, so none of them reads as died.
-    #      (A wrapper that outlives its agent is therefore missed, and times
-    #      out: docs/known-gaps.md. So, for up to about 300 s, is a Claude killed
-    #      mid-reply: it runs `caffeinate -i -t 300` inside its own job, and
-    #      that helper outlives it — measured 305 s. Kept on purpose: "the
-    #      leader is gone" would answer at once but calls an agent that restarts
-    #      itself as a child died.) A pgid that has been reused can only make a
-    #      dead job look alive, never a live one look dead.
-    #   2. the pane's shell holds the terminal again (its tpgid is PANE_PID). If
-    #      another job holds it, that may be a new agent typed at the same
-    #      prompt that has not stamped yet — the record is stale, not a death.
-    #
-    # No record, a malformed one, or one whose PANE_PID is not the pane's
-    # current process (respawn-pane -k keeps pane options) → false: exactly the
-    # pre-#64 behaviour. Step 1 is a builtin and runs every poll; the `ps` of
-    # step 2 forks only once step 1 has failed.
-    job_gone() {
-      local _j="${2#j}" _pg _jp _fg
-      [ -n "$_j" ] || return 1
-      _pg="${_j%%:*}"; _jp="${_j#*:}"
-      case "$_pg:$_jp" in *[!0-9:]*|:*|*:) return 1 ;; esac
-      [ "$_jp" = "$1" ] && [ "$_pg" != "$1" ] && [ "$_pg" -gt 1 ] || return 1
-      kill -0 -- "-$_pg" 2>/dev/null && return 1
-      _fg="$(ps -o tpgid= -p "$1" 2>/dev/null)" || return 1
-      _fg="${_fg//[[:space:]]/}"
-      [ "$_fg" = "$1" ]
-    }
+    # job_gone (#64) lives near the top of this file, after plural(), and is
+    # called below exactly as it was when it was defined here. `roost close`
+    # (#143) asks the same question — has the agent left this pane? — of the
+    # same facts, and one definition is what keeps the two commands from
+    # disagreeing about it.
     busy_seen=""; first=1; ticks=0
     while :; do
       if ! rows="$(snapshot)"; then
@@ -2796,6 +2808,290 @@ JSON
     else
       t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     fi
+    ;;
+  close)
+    # roost close [--force] [--json] TGT [TIMEOUT_SEC] (#143): end ONE agent the
+    # harness's own way, then close its pane. Until this existed the only way
+    # to end a single agent was `tmux kill-pane` by hand, which kills the
+    # process mid-write and skips whatever the harness does on a clean exit.
+    #
+    # The order, and why each step is where it is:
+    #
+    #   1. resolve TGT to exactly one pane. A window with more than one pane is
+    #      refused: guessing its active pane would close the wrong agent.
+    #   2. refuse the last pane of a session, even with --force. Closing it ends
+    #      the session, and with it maybe the server; `roost kill` is the
+    #      command for that, and it says so.
+    #   3. refuse `working` and `blocked` unless --force. A working agent would
+    #      be cut off mid-turn, and a blocked one is showing a human a dialog.
+    #      With --force, steps 4 and 5 are skipped and the pane is closed.
+    #   4. a pane with a badge is asked to leave: its harness's own exit
+    #      command, from the one table in scripts/lib/roost-close.sh. A pane with
+    #      no badge (a shell, a log tail) has nothing to ask.
+    #   5. wait, bounded, for the agent to leave. If the pane goes `blocked`
+    #      meanwhile, the harness opened a dialog on exit ("background work is
+    #      running"): stop, say so, and leave it for a human. Never answer it.
+    #   6. close that pane, by %N, and nothing else.
+    #
+    # The pane record (#74) is NOT touched: kept replies stay on disk for
+    # `roost read` and for bringing the same conversation back (#57), and
+    # `roost forget` is still the only thing that deletes them.
+    #
+    # Exit codes in the shape of wait-done: 0 closed, 1 refused or timed out
+    # (the pane is still there), 2 the target was already gone.
+    #
+    # --force and --json go in front of the target, in either order, under
+    # send's rule: a repeat is not consumed, so it falls into the target slot
+    # and fails there rather than being quietly accepted.
+    force=0
+    json=0
+    while [ "${2:-}" = "--force" ] || [ "${2:-}" = "--json" ]; do
+      if [ "$2" = "--force" ]; then
+        if [ "$force" -eq 1 ]; then break; fi
+        force=1
+      else
+        if [ "$json" -eq 1 ]; then break; fi
+        json=1
+      fi
+      shift 2
+      set -- close "$@"
+    done
+    need_arg "${2:-}" "usage: roost close [--force] [--json] TGT [TIMEOUT_SEC]"; raw="$2"
+    # One target, one bound, nothing after. A second target typed by mistake
+    # would otherwise be dropped in silence while the first one is closed.
+    # Found by review.
+    if [ "$#" -gt 3 ]; then
+      echo "roost close: too many arguments — close takes one target and one timeout" >&2
+      echo "usage: roost close [--force] [--json] TGT [TIMEOUT_SEC]" >&2
+      exit 1
+    fi
+    # TIMEOUT_SEC bounds step 5 only. Short by default: a harness at rest
+    # leaves in under a second (measured for four of the five; the table in
+    # scripts/lib/roost-close.sh has the numbers), so ten seconds is room for a
+    # slow machine and not for a harness that has decided not to go. Validated the way wait-done validates its own — whole
+    # seconds, leading zeros stripped so 08 is eight — except that 0 is refused:
+    # wait-done reads 0 as "no limit", and a close that could wait for ever is
+    # the one thing step 5 promises not to be.
+    timeout=10
+    if [ "$#" -ge 3 ]; then
+      timeout="$3"
+      case "$timeout" in
+        ''|*[!0-9]*) timeout=bad ;;
+        *) timeout="${timeout#"${timeout%%[!0]*}"}"
+           case "$timeout" in ''|?????*) timeout=bad ;; esac ;;
+      esac
+      if [ "$timeout" = bad ]; then
+        echo "roost close: TIMEOUT_SEC must be a whole number of seconds from 1 to 9999, got '$3'" >&2
+        echo "usage: roost close [--force] [--json] TGT [TIMEOUT_SEC]" >&2
+        exit 1
+      fi
+    fi
+    . "$ROOST_HOME/scripts/lib/roost-close.sh"
+    tgt="$(target "$raw")"
+    # Step 1. A %N is matched by id out of `list-panes -a`, as wait-done's
+    # snapshot does and for its reason: tmux 3.6 answers display-message for a
+    # pane that is gone with exit 0 and every format empty, and `list-panes -t
+    # %N` lists that pane's whole window. Anything else is a window, and has to
+    # hold exactly one pane.
+    #
+    # Every tmux error goes to /dev/null and is replaced by one line of ours: a
+    # target that is gone is an answer (exit 2), not a failure, and tmux's own
+    # "can't find pane" says less than this does.
+    #
+    # The row: id, window, dead, pane pid, the window's pane count, the
+    # session's window count, the recorded job and the state. State is last
+    # because it is the only field that can be EMPTY (a pane no hook has
+    # stamped), and the job carries a fixed `j` prefix so an unrecorded pane
+    # never shifts it — both for the reasons wait-done's snapshot gives.
+    cl_fmt='#{pane_id} #{window_id} #{pane_dead} #{pane_pid} #{window_panes} #{session_windows} j#{@roost-agent-job} #{@agent_state}'
+    cl_row() {
+      local _all _r
+      _all="$(t list-panes -a -F "$cl_fmt" 2>/dev/null)" || return 1
+      while IFS= read -r _r; do
+        case "$_r" in "$1 "*) printf '%s\n' "$_r"; return 0 ;; esac
+      done <<< "$_all"
+      return 1
+    }
+    case "$tgt" in
+      %*) pane="$tgt" ;;
+      *)
+        panes="$(t list-panes -t "$tgt" -F '#{pane_id}' 2>/dev/null || true)"
+        if [ -z "$panes" ]; then
+          echo "roost close: '$raw' is gone: no such pane or window" >&2; exit 2
+        fi
+        case "$panes" in
+          *$'\n'*)
+            n="$(printf '%s\n' "$panes" | grep -c .)"
+            echo "roost close: '$raw' names a window with $n panes, and close takes one — pass the %N of the pane to close (roost status lists them)" >&2
+            exit 1 ;;
+        esac
+        pane="$panes"
+        ;;
+    esac
+    if ! row="$(cl_row "$pane")"; then
+      echo "roost close: '$raw' is gone: no such pane or window" >&2; exit 2
+    fi
+    read -r _id cl_win cl_dead cl_pid cl_wpanes cl_swins cl_job cl_state <<< "$row"
+    # Step 2. The session's last pane is its last window's only pane.
+    if [ "$cl_wpanes" = 1 ] && [ "$cl_swins" = 1 ]; then
+      cl_sess="$(t display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+      echo "roost close: '$raw' is the last pane of session '$cl_sess' — closing it would end the session. close takes one pane; roost kill $cl_sess ends a session" >&2
+      exit 1
+    fi
+    # The harness, for every pane with a badge — even under --force, where
+    # nothing is typed, because --json reports it and a reader deciding
+    # whether to force needs to know what was there.
+    cl_harness="" cl_exit="" cl_cmd=""
+    if [ -n "$cl_state" ]; then
+      cl_cmd="$(t display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
+      roost_close_harness \
+        "$(t show-options -p -t "$pane" -qv @roost-harness 2>/dev/null || true)" \
+        "$cl_cmd" \
+        "$(t show-options -p -t "$pane" -qv @roost-name 2>/dev/null || true)"
+      cl_harness="$ROOST_CLOSE_HARNESS"
+    fi
+    # cl_done HOW: close the pane, report, exit 0. kill-pane by %N, never a
+    # window or session target, so nothing but this pane can go. It failing
+    # means the pane closed on its own in the meantime, which is the same
+    # answer.
+    cl_done() {
+      t kill-pane -t "$pane" 2>/dev/null || true
+      if [ "$json" -eq 1 ]; then
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        roost_jsonout_emit close target s "$raw" pane s "$pane" state z "$cl_state" \
+          harness z "$cl_harness" exit_command z "$cl_exit" forced b "$force" \
+          || roost_jsonout_fail close
+      else
+        echo "roost close: closed $pane — $1"
+      fi
+      exit 0
+    }
+    # Its process has already exited (remain-on-exit): nothing is left to ask.
+    if [ "$cl_dead" = 1 ]; then cl_done "its process had already exited"; fi
+    # Step 3. A `blocked` badge is offered to roost_unblock_pane first, as send
+    # and wait-done do: a declined Claude dialog fires no event, and a badge
+    # that outlived it must not make this refusal last for ever (#38).
+    case "$cl_state" in
+      working|blocked)
+        # A cleared badge is NOT read back. roost_unblock_pane clears by
+        # UNSETTING @agent_state, and an empty state below means "no badge, not
+        # an agent" — which would kill a live agent at rest without asking it
+        # first (found by review). The pane is an agent whose dialog is over,
+        # so it goes on to step 4, and the document reports the badge it had.
+        if [ "$cl_state" = blocked ] && roost_unblock_pane "$pane"; then
+          :
+        elif [ "$force" -eq 0 ]; then
+          if [ "$cl_state" = working ]; then
+            echo "roost close: '$raw' is working — closing it now would cut its turn off mid-write" >&2
+          else
+            echo "roost close: '$raw' is blocked — a dialog is open, and roost does not answer it" >&2
+          fi
+          echo "roost close: wait for it (roost wait-done), or pass --force to close the pane anyway" >&2
+          exit 1
+        fi
+        ;;
+    esac
+    if [ "$force" -eq 1 ]; then cl_done "--force: nothing was asked of it"; fi
+    if [ -z "$cl_state" ]; then cl_done "no badge, so no agent to ask"; fi
+    # Step 4.
+    if ! roost_close_exit_command "$cl_harness"; then
+      if [ -n "$cl_harness" ]; then
+        echo "roost close: no exit command is known for harness '$cl_harness' in '$raw' — pass --force to close the pane without asking it" >&2
+      else
+        echo "roost close: cannot tell which harness runs in '$raw', so there is no exit command to send — pass --force to close the pane without asking it" >&2
+      fi
+      exit 1
+    fi
+    # Which job to watch leave. job_gone (#64) is the definition of "the agent
+    # has left", shared with wait-done, and it needs a job: the one the hook
+    # recorded in @roost-agent-job when the pane last went busy, or — when there
+    # is none, or it belongs to an earlier pane process — the job holding the
+    # pane's terminal right now. With neither (the agent IS the pane's process,
+    # as under `roost spawn NAME CMD`), the only way it can leave is the pane
+    # closing or going dead, which the loop below watches for anyway.
+    #
+    # The foreground job is read BEFORE anything is typed. After the exit
+    # command lands it is the shell again, and a job read then would name the
+    # shell, which job_gone rightly refuses to watch.
+    cl_rec="${cl_job#j}"
+    case "$cl_rec" in *":$cl_pid") ;; *) cl_rec="" ;; esac
+    if [ -z "$cl_rec" ]; then
+      cl_fg="$(ps -o tpgid= -p "$cl_pid" 2>/dev/null || true)"
+      cl_fg="${cl_fg//[[:space:]]/}"
+      case "$cl_fg" in ''|*[!0-9]*) cl_fg="" ;; esac
+      if [ -n "$cl_fg" ] && [ "$cl_fg" -gt 1 ] && [ "$cl_fg" != "$cl_pid" ]; then
+        cl_rec="$cl_fg:$cl_pid"
+      fi
+      # No job, and the pane's own process holds its terminal. If that process
+      # is a BARE shell, the badge is left over from an agent that has gone:
+      # only a shell is there, and /exit typed into it runs as a command and
+      # then waits out the whole bound (found by review). So it is closed
+      # without typing.
+      #
+      # A shell's NAME is not enough, and the first version of this check
+      # trusted it: an agent that is itself a shell script, run as the pane's
+      # own process (`roost spawn NAME ./agent.sh`), is named sh too, and it
+      # was killed without being asked. So the process's whole command line is
+      # read as well (one `ps`, only on this path), and the shell counts as
+      # bare only when every word after its name is a flag: `sh -i`, `zsh -l`,
+      # a login shell's `-zsh`, what roost-pane-shell starts. A script, a
+      # `-c` command, or a word with a space in it all read as not bare, and
+      # are asked — the side to be wrong on, since the worst a needless /exit
+      # costs is the bound.
+      if [ -z "$cl_rec" ] && [ "$cl_fg" = "$cl_pid" ]; then
+        case "${cl_cmd#-}" in
+          sh|bash|zsh|dash|ash|ksh|mksh|fish|tcsh|csh)
+            cl_args="$(ps -o args= -p "$cl_pid" 2>/dev/null || true)"
+            cl_bare=1
+            set -f
+            # shellcheck disable=SC2086 # split into words on purpose
+            set -- $cl_args
+            set +f
+            if [ "$#" -eq 0 ]; then cl_bare=0; else shift; fi
+            for cl_w in "$@"; do
+              case "$cl_w" in -*) ;; *) cl_bare=0 ;; esac
+            done
+            if [ "$cl_bare" = 1 ]; then
+              cl_done "only a shell holds it, so nothing was typed"
+            fi
+            ;;
+        esac
+      fi
+    fi
+    cl_job="j$cl_rec"
+    # A badge with no agent behind it — the recorded job has already left and
+    # the shell has its terminal back — is closed without typing the exit
+    # command into that shell, where it would be run as a command.
+    if job_gone "$cl_pid" "$cl_job"; then
+      cl_done "its agent had already left, so nothing was typed"
+    fi
+    # Typed the way send types: the text literally, a beat, then Enter, so a
+    # full-screen TUI's input box sees a paste settle before the submit. Not
+    # through `roost send` itself: send waits for a new turn to begin, and an
+    # exit command begins none.
+    delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null || true)"
+    case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
+    cl_exit="$ROOST_CLOSE_EXIT"
+    t send-keys -t "$pane" -l "$cl_exit" 2>/dev/null || true
+    sleep "$delay" 2>/dev/null || sleep 0.3
+    t send-keys -t "$pane" Enter 2>/dev/null || true
+    # Step 5, a quarter-second poll, as wait-done's.
+    ticks=0
+    while [ "$ticks" -lt $((timeout * 4)) ]; do
+      sleep 0.25; ticks=$((ticks + 1))
+      # Gone on its own: an agent that was the pane's process took the pane
+      # with it. That is the clean exit this command asked for.
+      row="$(cl_row "$pane")" || cl_done "$cl_harness left after $cl_exit"
+      read -r _id _w cl_dead _pp _wp _sw _jb cl_now <<< "$row"
+      if [ "$cl_dead" = 1 ]; then cl_done "$cl_harness left after $cl_exit"; fi
+      if [ "$cl_now" = blocked ]; then
+        echo "roost close: '$raw' went blocked after $cl_exit — $cl_harness is asking something before it exits. Nothing was answered, and the pane is still open: answer it there, or run roost close --force" >&2
+        exit 1
+      fi
+      if job_gone "$cl_pid" "$cl_job"; then cl_done "$cl_harness left after $cl_exit"; fi
+    done
+    echo "roost close: timed out after ${timeout}s waiting for $cl_harness in '$raw' to leave after $cl_exit — the pane is still open" >&2
+    exit 1
     ;;
   --version|-V|version)
     printf '%s\n' "$ROOST_VERSION"

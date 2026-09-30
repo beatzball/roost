@@ -333,6 +333,7 @@ roost_ext_core_commands() {
     reply \
     forget \
     wait-done wait \
+    close \
     status \
     kill down stop \
     --version -V version

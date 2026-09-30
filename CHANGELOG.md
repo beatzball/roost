@@ -7,6 +7,25 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`roost close`: end one agent and close its pane** (#143). roost could open
+  an agent and could not close one: `roost kill` takes a session or the whole
+  server, so ending a single agent meant `tmux kill-pane` by hand, which kills
+  the process mid-write and skips whatever the harness does on a clean exit.
+  `roost close [--force] [--json] TGT [TIMEOUT_SEC]` types the harness's own
+  exit command (`/exit` for Claude Code, opencode and copilot, `/quit` for
+  codex and pi), waits up to 10 seconds for the agent to leave, then closes
+  that pane and no other. It refuses a `working` or `blocked` agent unless you
+  pass `--force`, which closes the pane without typing anything. It refuses a
+  window with more than one pane as a target, and the last pane of a session
+  (that is `roost kill SESSION`). If the harness opens a dialog while it
+  exits, `close` stops and leaves the dialog for you; it never answers one. A
+  pane where only a shell is left under an old badge is closed without typing
+  anything. Kept replies stay, so `roost read %N` still works after a close.
+  Exit 0 closed, 1 refused or timed out, 2 already gone. Nothing to do to get
+  it.
+
 ### Changed
 
 - **The `prefix a` switcher is live.** It used to be a snapshot: a list taken
