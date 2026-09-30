@@ -1313,6 +1313,59 @@ right — the failure is always today's output.
   between one writer's listing and its link. Not reachable with one agent per
   pane; not tested.
 
+### `roost close` (#143): what it cannot see yet
+
+`close` types a harness's exit command into a pane, waits for the agent to
+leave, then kills that one pane. Four things it cannot do, and one it may get
+wrong. None of them closes the wrong pane or answers a dialog: the worst case
+of each is a refusal or a timeout (exit 1, the pane left open), or, for the
+last one, a keypress into the wrong screen.
+
+- **An exit dialog is caught only if the harness badges it `blocked`.** The
+  stop-and-say-so rule reads `@agent_state`. The tests prove it with a
+  stand-in that stamps `blocked`. No real harness was driven into an exit
+  dialog: Claude Code 2.1.285 and codex 0.157.1 both quit at once even
+  mid-turn (measured; scripts/lib/roost-close.sh has the numbers). A harness
+  whose exit dialog fires no hook leaves `close` waiting out its bound, then
+  exiting 1 with the pane open. Severity: low — slow, not wrong. What would
+  close it: drive Claude with a background shell running and see whether
+  `/exit` asks, and whether a hook fires.
+- **Three rows of the table are not fully measured.** copilot's `/exit` is
+  read from `copilot help commands` (1.0.83), not run: it needs a signed-in
+  account. opencode (1.18.30) and pi (0.81.1) were measured at rest only;
+  what they do mid-turn is not known. `close` refuses a working pane, so
+  this matters only under `--force`, which types nothing anyway. Severity:
+  low. What would close it: run each with a model configured.
+- **The harness is guessed until `@roost-harness` exists.** #141 adds the
+  option and `close` already prefers it. Until then it is the process name
+  (Claude Code's is its own version, such as `2.1.285`; codex and opencode use
+  their own names) and then the pane name the adapters give an unnamed pane.
+  pi and copilot run as `node`, so a pi or copilot pane that a human renamed
+  is refused as "cannot tell" unless `--force`. Severity: low — a refusal
+  that names its way out. What closes it: #141.
+- **A turn that starts between the check and the keypress.** `close` reads the
+  badge, then types. Another agent's `roost send` landing in that gap would
+  get `/exit` typed into a working agent, which (measured above) quits at
+  once and loses the turn. The gap is the ~0.3 s of the two-step type.
+  Severity: low, and the same race `send` has with a human typing.
+- **A startup screen can take the Enter.** Measured by accident while
+  building this: codex 0.157.1 showed an update prompt at start, and an
+  Enter meant for its input box chose "update now" and began a real package
+  upgrade (killed before it finished; nothing changed). `close` only types
+  into a pane with a badge, and a badge normally means the harness is past
+  its start screens, but nothing proves that. Severity: low, and real. What
+  would close it: the harness's own session-start signal (#141) as the gate
+  instead of any badge.
+- **A job stopped with ctrl-z is killed with its pane, unasked.** An
+  interactive shell that holds the terminal, a leftover `done` badge, no
+  recorded job, and an agent suspended in the background: `close` sees only a
+  shell, types nothing, and closes the pane, which ends the stopped job too.
+  "Only a shell holds it" is true of the terminal, not of the pane. Found in
+  review, on a throwaway server with a stopped `sleep`. Severity: low — a
+  stopped agent cannot read an exit command anyway, and the case needs three
+  unusual things at once. What would close it: count the shell's child
+  processes before deciding nothing is there.
+
 ## Behaviour changes
 
 ### Replies are kept on disk, and `read` prints long ones whole (#42)
@@ -1503,6 +1556,14 @@ in exchange for a dependency on upstream's numbering, in the one code path that
 has already produced a real bug here.
 
 ## Small deferred items
+
+- **The unknown-subcommand usage line does not list `close` (#143).** `roost
+  bogus` prints a one-line usage string naming every core command. `close` is
+  not in it yet: tests/test-ext.sh pins that line byte for byte, so the two
+  change together. `roost help` does list `close`.
+  Severity: cosmetic. What closes it: add `close [--force] TGT [T]` to the
+  line at the bottom of bin/roost and to its copy in tests/test-ext.sh,
+  together.
 
 - **The `prefix a` switcher's cursor keeps its position across a reload, not
   its row.** The list reloads every two seconds. If a pane opens or closes
