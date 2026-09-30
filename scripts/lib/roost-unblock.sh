@@ -247,6 +247,8 @@ roost_unblock_pane() {
     "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
     "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
     2>/dev/null || return 1
+  . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
+  roost_events_unblocked "$pane" "$now" "$since" 2>/dev/null || true
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
     && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ]
 }

@@ -629,6 +629,14 @@ fi
 # at another, which is the bug this guard exists to prevent, re-introduced
 # intermittently. See the `stop_while_blocked` write below.
 
+# The event log (#98): one JSON line per state change, and one when a pane that
+# stays blocked is blocked on something new. Both lines are guarded the same
+# way, so the PostToolUse hot path — an unchanged state that is not blocked —
+# pays neither the file read nor the call. The line is written from an EXIT
+# trap, after every write below; scripts/lib/roost-events.sh says why.
+if [ "$state" != "$prev" ] || [ "$state" = blocked ]; then . "$SELF_DIR/lib/roost-events.sh" || true; fi
+if [ "$state" != "$prev" ] || [ "$state" = blocked ]; then roost_events_arm "$sock" "$TMUX_PANE" "$prev" "$state" "$permission_request_hook" "$stop_while_blocked" || true; fi
+
 if [ "$state" = "$prev" ]; then
   # The one repeat that is NOT a no-op: a Notification for a NEW dialog on a
   # pane that still reads blocked (flock round 1 on #38, reproduced). The first

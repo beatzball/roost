@@ -1313,6 +1313,98 @@ right — the failure is always today's output.
   between one writer's listing and its link. Not reachable with one agent per
   pane; not tested.
 
+### The event log (#98): what it does not cover
+
+`roost events` is new, so nothing that worked before is at risk. These are the
+places a reader of the log can still be wrong. Severity is stated on each.
+
+- **A server that stops writes no `closed` lines. Low.** `kill-server`, or a
+  server that dies, runs no tmux hook, so nothing is left to ask which panes
+  went. Closing the LAST session is the same case, because the server exits
+  with it: measured with a `run-shell -b` logger on all four close hooks, tmux
+  3.6 ran no hook job at all, whether the session was killed or its only
+  pane's program exited; tmux 3.4 ran `session-closed` for a kill and nothing
+  for an exit. A reader learns it from `--follow` ending, which it does when
+  its server stops. Closing it: a `closed` line for each open pane of the old
+  boot, written the next time anything reads or writes the log and finds that
+  boot gone (roost_record_liveness already answers the question).
+- **A pane whose lines have rotated out gets no `closed` line. Low.** The
+  close check takes its candidates from the lines still kept, so an agent
+  pane that stays `done` while the rest of the fleet writes more than
+  ROOST_EVENTS_KEEP lines (5000 by default, so 6250 at most) is no longer
+  known to it, and closes silently. A reader that built its pane list from
+  `status --json` and the log keeps that pane for ever unless it checks
+  `status --json` again. Closing it: keep each open pane's newest line through
+  rotation (copy it into the new segment when one is made), or have the check
+  take the pane list from a per-boot file of panes that ever wrote a line.
+- **The close check reads the server's environment, not the agent's. Note.**
+  `roost events --reconcile` runs from tmux's `run-shell`, which has the
+  environment the server started with. A `ROOST_EVENTS` or `ROOST_RECORD_DIR`
+  exported only in the shell an agent runs in, after the server started, puts
+  the agent's lines in one log and the close check's search in another, and
+  no `closed` line is written. Closing it: record the log's directory in a
+  server option the first time a line is written, and have the check read it.
+- **A second codex dialog in a row writes no `blocked_on` line. Low.** codex's
+  adapter sends a flagless `blocked`, which carries no description, so nothing
+  says the dialog changed. Closing it: the codex adapter passes the
+  description, the way Claude's PermissionRequest hook does.
+- **A line can land in a segment a reader has already left. Low.** A writer
+  lists the segments, then appends to the newest. If another writer rotates in
+  between — microseconds — the line goes into the segment just closed. It is
+  not lost: it is in the log, and `roost events` without `--since` prints it.
+  But a reader whose cursor is already in the next segment does not go back.
+  `--follow` narrows this: it moves to a new segment only after it has existed
+  for a whole poll, and reads the old one again first. Not seen in the
+  200-writer test in `tests/test-events.sh`, which races four rotations.
+  Closing it: a cursor that names the segment count as well, so a reader can
+  re-read a closed segment's tail once.
+- **A writer stalled across two rotations can recreate a pruned segment.
+  Very low.** `>>` creates the file it cannot find, with the process umask, and
+  that segment then sorts oldest. Needs a writer frozen between listing and
+  appending while ROOST_EVENTS_KEEP/2 other lines are written. Closing it:
+  check the segment still exists after the append and remove it if it is
+  older than the oldest kept one.
+- **`reason` holds the command a dialog asks about. Note.** It is the same
+  `@roost-blocked-on` text #91 records (see the note for #93 in
+  `scripts/roost-agent-state`), so `export TOKEN=...` typed by a model lands in
+  the log. The file is 0600 in a 0700 directory, beside kept replies that hold
+  far more. `roost forget --all` clears it; `forget TGT` and `forget --gone` do
+  not, because cutting one pane's lines out would move every cursor after
+  them. Closing it, if it matters: rewrite that pane's `reason` fields to `""`
+  in place, which keeps every byte offset only if the text is padded, so it is
+  not cheap.
+- **The suite does not switch the log off by name. Low.** `tests/lib.sh` sets
+  `ROOST_RECORD_DIR=""`, which turns the log off too, but a developer who
+  exports `ROOST_EVENTS=/some/dir` would have every hook-driving test write
+  there. Closing it: `export ROOST_EVENTS=""` in `tests/lib.sh`, beside the
+  `ROOST_RECORD_DIR` line.
+- **The line is written by an EXIT trap. Note.** `scripts/roost-agent-state`
+  has no other; one added later would replace it silently and the log would
+  stop. `scripts/lib/roost-events.sh` says so where the trap is set. Closing
+  it: a test that fails when the hook sets a second EXIT trap.
+- **It costs a state change 7.5 to 9.4 ms. Note.** Measured on macOS 26.3,
+  tmux 3.6, bash 3.2.57: 80 working/done transitions through the real hook,
+  38.1 / 39.0 ms each with the log off and 45.6 / 48.4 ms with it on, over two
+  rounds. The forks are one tmux read, `date` and `wc -l`. The PostToolUse hot
+  path does not reach the new lines: 13.0 to 13.4 ms per call either way, over
+  three rounds in alternating order.
+- **A stopped server's lines cannot be read. Low.** `roost events` prints only
+  the lines of the server it is talking to, by boot key, and exits 2 when none
+  is running. The lines stay in the file until they rotate out. Closing it: a
+  `--server BOOT` option.
+- **The one-line usage `roost` prints for an unknown command does not list
+  `events`. Low.** `roost help` does. Closing it: add `events` to that line in
+  the `*)` fallback of `bin/roost`.
+- **Two lock directories left behind stop closes being logged. Low.** The
+  close check takes over an old lock under a second, short-lived one. If a run
+  is killed in the few system calls between making that second directory and
+  removing it, while it was taking over a lock another killed run had left,
+  both stay: every later run waits five seconds and gives up, and no `closed`
+  line is written until both directories are removed. Found in review, by
+  setting the two directories up by hand; not seen to happen. It needs two
+  runs killed, the second inside a very small window. Closing it: treat the
+  second lock like the first, and take it over when it is old.
+
 ## Behaviour changes
 
 ### Replies are kept on disk, and `read` prints long ones whole (#42)
