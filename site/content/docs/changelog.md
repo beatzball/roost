@@ -16,6 +16,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The `prefix a` switcher is live.** It used to be a snapshot: a list taken
+  when you opened it, with no colour. Now it reloads every two seconds while it
+  is open, colours each agent's state, and shows the screen of the row under
+  the cursor beside the list — so you can read what a blocked agent is asking
+  before you jump to it. `Ctrl-f` steps a state filter (all, needs you,
+  working, done) and `Ctrl-o` hides panes that are not agents. With more than
+  one session, rows are grouped under a header per session. The popup is
+  larger, 90% by 80%, to hold the preview. The live parts are tested on fzf 0.44
+  and 0.74; an fzf too old for them keeps the plain list, and `roost doctor`
+  now says which you have. Across a reload the cursor keeps its position rather than its row:
+  following the row made fzf drop one `Enter` in ten, measured.
+
 ### Fixed
 
 - **Docs pages are no longer blank at a trailing-slash URL** (#129). Every page

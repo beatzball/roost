@@ -7,7 +7,23 @@
 # not double in length). A window with two or more panes gets a header row plus
 # one indented row per pane. Every pane row also carries "window·command",
 # because fzf hides the headers the moment you type — each row has to stay
-# self-describing on its own.
+# self-describing on its own. With two or more sessions, each session gets a
+# header row too and its windows indent under it; one session gets none, for
+# the same reason a single-pane window gets none.
+#
+# While the popup is open the list reloads itself, the right-hand side shows
+# the screen of the row under the cursor, and two keys narrow the list. fzf
+# runs those as separate commands, so this script is its own helper:
+#
+#   roost-switch                 the popup
+#   roost-switch --rows          print the rows (what fzf loads and reloads)
+#   roost-switch --preview S W P print the screen of pane P, else window W,
+#                                else session S
+#   roost-switch --cycle-filter  step the state filter: all, needs you,
+#                                working, done
+#   roost-switch --toggle-agents show or hide panes that are not agents
+#   roost-switch --fzf-tier      print what the installed fzf can do:
+#                                live, basic or none (roost doctor asks)
 set -u
 
 # Socket, in order: ROOST_SWITCH_SOCK (test seam, a path -> -S), else the server
@@ -22,71 +38,250 @@ tmx() {
   else tmux -L roost "$@"; fi
 }
 
-if [ -z "${ROOST_SWITCH_DUMP:-}" ] && ! command -v fzf >/dev/null 2>&1; then
+# Seconds between reloads while the popup is open.
+REFRESH=2
+
+# fzf_has ARGS... -> true when the installed fzf accepts ARGS. Asked of fzf
+# itself rather than read off its version number: in --filter mode fzf parses
+# every option and binding, then exits without drawing anything — 2 for one it
+# does not know, 0 or 1 (matched, or not) for one it does. A version table
+# would be a second list to keep true; this cannot drift.
+fzf_has() {
+  fzf --filter x "$@" </dev/null >/dev/null 2>&1
+  [ $? -ne 2 ]
+}
+
+# fzf_tier -> "none" (no fzf), "basic" (a list and nothing else), or "live"
+# (reload, preview and the filter keys). The live parts lean on the `load`
+# event and `reload-sync`. An fzf without them rejects the unknown
+# name and exits, which would turn `prefix a` into a popup that flashes and
+# closes — so an old fzf gets the plain list it always had instead.
+fzf_tier() {
+  command -v fzf >/dev/null 2>&1 || { echo none; return; }
+  if fzf_has --bind 'load:reload-sync(true)'; then echo live; else echo basic; fi
+}
+
+# The filter and the agents-only switch live in two small files, because the
+# keys that change them and the reload that reads them are separate processes
+# fzf starts. The popup makes the directory and removes it on exit; a helper
+# called with no directory (a test, a person) reads "show everything".
+state_get() {
+  [ -n "${ROOST_SWITCH_STATE:-}" ] && [ -r "$ROOST_SWITCH_STATE/$1" ] \
+    && cat "$ROOST_SWITCH_STATE/$1" 2>/dev/null
+}
+state_set() {
+  [ -n "${ROOST_SWITCH_STATE:-}" ] || return 0
+  printf '%s\n' "$2" > "$ROOST_SWITCH_STATE/$1"
+}
+
+rows() {
+  local now ge gb gw gd gi raw filter agents color
+  now="$(date +%s)"
+  filter="$(state_get filter)"; [ -n "$filter" ] || filter=all
+  agents="$(state_get agents)"; [ -n "$agents" ] || agents=0
+  # https://no-color.org — any non-empty value turns the colours off.
+  color=1; [ -n "${NO_COLOR:-}" ] && color=0
+
+  # Glyphs come from config, so the switcher and the status bar can never drift —
+  # both derive from @roost-glyph-<state>. Hardcoded values are last-resort only.
+  ge="$(tmx show-options -gqv @roost-glyph-error   2>/dev/null)"; [ -n "$ge" ] || ge="💥"
+  gb="$(tmx show-options -gqv @roost-glyph-blocked 2>/dev/null)"; [ -n "$gb" ] || gb="🛑"
+  gw="$(tmx show-options -gqv @roost-glyph-working 2>/dev/null)"; [ -n "$gw" ] || gw="⏳"
+  gd="$(tmx show-options -gqv @roost-glyph-done    2>/dev/null)"; [ -n "$gd" ] || gd="✅"
+  gi="$(tmx show-options -gqv @roost-glyph-idle    2>/dev/null)"; [ -n "$gi" ] || gi="💤"
+
+  # list-panes -a does NOT return panes in display order (observed %0 %2 %1), so
+  # sort explicitly: session name, then window index, then pane index.
+  raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@roost-name}' 2>/dev/null \
+    | sort -t'	' -k2,2 -k4,4n -k8,8n)"
+
+  # No panes (e.g. a dead/unreachable socket) -> $raw is empty, and
+  # `printf '%s\n' "$raw"` below would still feed awk ONE empty line, which its
+  # unguarded rule prints as a garbage row (all key fields empty). Selecting
+  # that row would run `switch-client -t ""`. Bail before awk instead.
+  [ -n "$raw" ] || return 0
+
+  # The popup's first line is a sticky header naming the filter in force and
+  # the keys. It rides in with the rows so a reload redraws it — the filter
+  # keys change it, and this way needs nothing from fzf beyond --header-lines,
+  # so there is no second feature to probe for. Its
+  # three key fields are empty, like every other field fzf hides.
+  if [ "${1:-}" = status ]; then
+    local f="$filter" a="all panes"
+    [ "$filter" = needs ] && f="needs you"
+    [ "$agents" = 1 ] && a="agents only"
+    printf '\t\t\tshow: %s · %s   ^f filter  ^o agents\n' "$f" "$a"
+  fi
+
+  # Hidden key fields: session_id, window_id, pane_id (empty on a header row;
+  # a session header has no window id either).
+  #
+  # Two passes, because a header depends on what is VISIBLE, not on what
+  # exists: under a filter, a window showing one of its three panes is one flat
+  # row, and a session showing nothing gets no header at all.
+  printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v ge="$ge" -v gb="$gb" -v gw="$gw" -v gd="$gd" -v gi="$gi" \
+      -v filter="$filter" -v agents="$agents" -v color="$color" '
+    function glyph(s) {
+      if (s == "error")   return ge
+      if (s == "blocked") return gb
+      if (s == "working") return gw
+      if (s == "done")    return gd
+      return gi
+    }
+    # The 16 basic colours, not #rrggbb: they follow the terminal theme, and a
+    # roost theme carries no per-state colour to borrow — the badges are emoji,
+    # which colour themselves. Error and blocked differ (magenta, red) because
+    # they differ in the status bar too.
+    function paint(s, text) {
+      if (!color) return text
+      if (s == "error")   return "\033[35m" text "\033[0m"
+      if (s == "blocked") return "\033[31m" text "\033[0m"
+      if (s == "working") return "\033[33m" text "\033[0m"
+      if (s == "done")    return "\033[32m" text "\033[0m"
+      return "\033[2m" text "\033[0m"
+    }
+    function bold(text) { return color ? "\033[1m" text "\033[0m" : text }
+    function visible(st) {
+      # A pane with no state is a plain shell, not an agent.
+      if (agents == "1" && st == "") return 0
+      if (filter == "needs"   && st != "blocked" && st != "error") return 0
+      if (filter == "working" && st != "working") return 0
+      if (filter == "done"    && st != "done")    return 0
+      return 1
+    }
+    {
+      if (!visible($11)) next
+      line[++n] = $0
+      shown[$3]++
+      if (!($1 in seen)) { seen[$1] = 1; nsess++ }
+    }
+    END {
+      ind = (nsess > 1) ? "  " : ""
+      for (i = 1; i <= n; i++) {
+        split(line[i], f, "\t")
+        sid=f[1]; sname=f[2]; wid=f[3]; wname=f[5]; pid=f[7]; cmd=f[9]; path=f[10]; st=f[11]; since=f[12]; nm=f[13]
+        if (nsess > 1 && sid != lastsid) { printf "%s\t\t\t%s\n", sid, bold(sname); lastsid = sid }
+        label = (nm != "" ? nm : cmd)
+        # spawn NAME names the window AND the pane from the same NAME, so an
+        # unconditional dot-label suffix would echo the window name back
+        # (api-agent dot api-agent) where real signal, i.e. what is running,
+        # belongs. Suppress the suffix only when it would just repeat the name.
+        suffix = (label == wname) ? "" : "·" label
+        # A pane with no state is a plain shell, not an idle agent: show the idle
+        # glyph but no state word and no elapsed time.
+        el = (st == "" || since == "") ? "--" : sprintf("%dm", int((now - since) / 60))
+        # The glyph is painted with the state word, not beside it: an emoji
+        # ignores the colour, a Nerd Font or ascii glyph takes it, and the
+        # text "glyph state" stays unbroken for anything that matches on it.
+        badge = paint(st, sprintf("%s %-8s %4s", glyph(st), st, el))
+        if (shown[wid] <= 1) {
+          printf "%s\t%s\t%s\t%s%s  %-6s %s%s  (%s)\n", sid, wid, pid, ind, badge, pid, wname, suffix, path
+        } else {
+          if (wid != lastwid) { printf "%s\t%s\t\t%s%s  (%s)\n", sid, wid, ind, bold(wname), path; lastwid = wid }
+          printf "%s\t%s\t%s\t%s  %s  %-6s %s%s\n", sid, wid, pid, ind, badge, pid, wname, suffix
+        }
+      }
+    }'
+}
+
+# The screen of the row under the cursor, so a blocked agent's question can be
+# read before jumping to it. Most specific target wins: a pane row has all
+# three ids, a window header has no pane, a session header has only a session
+# — tmux resolves a window or session target to its active pane.
+preview() {
+  local t="${3:-}"
+  [ -n "$t" ] || t="${2:-}"
+  [ -n "$t" ] || t="${1:-}"
+  [ -n "$t" ] || exit 0
+  # Drop the blank lines under the last line of output. The preview follows
+  # the BOTTOM of what it is given, and a pane that has printed three lines is
+  # otherwise shown as its empty lower half. A line holding only colour codes
+  # counts as blank — capture-pane -e emits those for an empty styled row.
+  tmx capture-pane -e -p -t "$t" 2>/dev/null | awk '
+    { line[NR] = $0; plain = $0; gsub(/\033\[[0-9;]*m/, "", plain)
+      if (plain !~ /^[ \t]*$/) last = NR }
+    END { for (i = 1; i <= last; i++) print line[i] }'
+}
+
+case "${1:-}" in
+  --rows)     rows "${2:-}"; exit 0 ;;
+  --preview)  preview "${2:-}" "${3:-}" "${4:-}"; exit 0 ;;
+  --fzf-tier) fzf_tier; exit 0 ;;
+  --cycle-filter)
+    case "$(state_get filter)" in
+      needs)   state_set filter working ;;
+      working) state_set filter done ;;
+      done)    state_set filter all ;;
+      *)       state_set filter needs ;;
+    esac
+    exit 0 ;;
+  --toggle-agents)
+    if [ "$(state_get agents)" = 1 ]; then state_set agents 0; else state_set agents 1; fi
+    exit 0 ;;
+esac
+
+# Tests cannot drive fzf (it needs a tty), so allow dumping the composed rows.
+if [ -n "${ROOST_SWITCH_DUMP:-}" ]; then rows; exit 0; fi
+
+tier="$(fzf_tier)"
+if [ "$tier" = none ]; then
   tmx display-message "roost: install fzf to use the agent switcher"
   exit 0
 fi
 
-now="$(date +%s)"
-
-# Glyphs come from config, so the switcher and the status bar can never drift —
-# both derive from @roost-glyph-<state>. Hardcoded values are last-resort only.
-ge="$(tmx show-options -gqv @roost-glyph-error   2>/dev/null)"; [ -n "$ge" ] || ge="💥"
-gb="$(tmx show-options -gqv @roost-glyph-blocked 2>/dev/null)"; [ -n "$gb" ] || gb="🛑"
-gw="$(tmx show-options -gqv @roost-glyph-working 2>/dev/null)"; [ -n "$gw" ] || gw="⏳"
-gd="$(tmx show-options -gqv @roost-glyph-done    2>/dev/null)"; [ -n "$gd" ] || gd="✅"
-gi="$(tmx show-options -gqv @roost-glyph-idle    2>/dev/null)"; [ -n "$gi" ] || gi="💤"
-
-# list-panes -a does NOT return panes in display order (observed %0 %2 %1), so
-# sort explicitly: session name, then window index, then pane index.
-raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@roost-name}' 2>/dev/null \
-  | sort -t'	' -k2,2 -k4,4n -k8,8n)"
-
-# No panes (e.g. a dead/unreachable socket) -> $raw is empty, and
-# `printf '%s\n' "$raw"` below would still feed awk ONE empty line, which its
-# unguarded rule prints as a garbage row (all key fields empty). Selecting
-# that row would run `switch-client -t ""`. Bail before awk instead.
-[ -n "$raw" ] || exit 0
-
-# Hidden key fields: session_id, window_id, pane_id (empty on a header row).
-rows="$(printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v ge="$ge" -v gb="$gb" -v gw="$gw" -v gd="$gd" -v gi="$gi" '
-  function glyph(s) {
-    if (s == "error")   return ge
-    if (s == "blocked") return gb
-    if (s == "working") return gw
-    if (s == "done")    return gd
-    return gi
-  }
-  {
-    sid=$1; wid=$3; wname=$5; wpanes=$6+0; pid=$7; cmd=$9; path=$10; st=$11; since=$12; nm=$13
-    label = (nm != "" ? nm : cmd)
-    # spawn NAME names the window AND the pane from the same NAME, so an
-    # unconditional dot-label suffix would echo the window name back
-    # (api-agent dot api-agent) where real signal, i.e. what is running,
-    # belongs. Suppress the suffix only when it would just repeat the name.
-    suffix = (label == wname) ? "" : "·" label
-    # A pane with no state is a plain shell, not an idle agent: show the idle
-    # glyph but no state word and no elapsed time.
-    el = (st == "" || since == "") ? "--" : sprintf("%dm", int((now - since) / 60))
-    if (wpanes <= 1) {
-      printf "%s\t%s\t%s\t%s %-8s %4s  %-6s %s%s  (%s)\n", sid, wid, pid, glyph(st), st, el, pid, wname, suffix, path
-    } else {
-      if (wid != lastwid) { printf "%s\t%s\t\t%s  (%s)\n", sid, wid, wname, path; lastwid = wid }
-      printf "%s\t%s\t%s\t  %s %-8s %4s  %-6s %s%s\n", sid, wid, pid, glyph(st), st, el, pid, wname, suffix
-    }
-  }')"
-
-# Tests cannot drive fzf (it needs a tty), so allow dumping the composed rows.
-if [ -n "${ROOST_SWITCH_DUMP:-}" ]; then printf '%s\n' "$rows"; exit 0; fi
-
-sel="$(printf '%s\n' "$rows" | fzf --with-nth=4.. --delimiter='\t' --reverse --prompt='agent > ' --no-info)"
+if [ "$tier" = basic ]; then
+  sel="$(rows | fzf --ansi --with-nth=4.. --delimiter='\t' --reverse --prompt='agent > ' --no-info)"
+else
+  ROOST_SWITCH_STATE="$(mktemp -d "${TMPDIR:-/tmp}/roost-switch.XXXXXX")" || exit 0
+  export ROOST_SWITCH_STATE
+  trap 'rm -rf "$ROOST_SWITCH_STATE"' EXIT
+  # fzf hands each of these strings to $SHELL -c. The script's own path goes in
+  # through the environment rather than being pasted into the string, so a
+  # checkout under a path with a space or a quote in it cannot break the
+  # quoting; and $SHELL is pinned to sh so a fish or csh login shell does not
+  # get to parse them.
+  export ROOST_SWITCH_SELF="$0"
+  list='"$ROOST_SWITCH_SELF" --rows status'
+  # The `load` binding is the refresh loop: every finished load starts the
+  # next one, which sleeps first. reload-sync rather than reload, so the old
+  # list stays on screen until the new one is complete instead of blinking
+  # empty. A key that reloads replaces the sleeping reload — fzf kills it —
+  # so there is only ever one chain, and it ends when fzf exits. The keys use
+  # plain reload: a reload-sync from a key was sometimes not drawn until the
+  # next timed one, so the header named the old filter for up to two seconds.
+  #
+  # Across a reload the cursor keeps its POSITION, not its row: if a pane
+  # opens or closes above it, the cursor is on a neighbour afterwards. That is
+  # a choice between two measured faults, not an oversight.
+  #
+  # fzf can follow a row by its hidden id fields (--track --id-nth), and it is
+  # deliberately NOT used. With it, fzf locks the prompt and the cursor while
+  # a reload looks for the tracked row, and a key that lands in that window is
+  # dropped: Enter was ignored in 3 of 30 tries, twice over, against 0 of 30
+  # without it and 0 of 30 with no refresh at all (the control). Plain --track
+  # is no middle way — across a reload it did not follow an inserted row at
+  # all, with or without a change to the row's text.
+  #
+  # A switcher that sometimes does not switch fails on every tenth use. A
+  # cursor that slips needs a pane to open or close above it in the two
+  # seconds before Enter, and the preview shows where Enter will land.
+  sel="$(SHELL=/bin/sh FZF_DEFAULT_COMMAND="$list" fzf --ansi --with-nth=4.. --delimiter='\t' \
+    --reverse --prompt='agent > ' --no-info --header-lines=1 \
+    --preview '"$ROOST_SWITCH_SELF" --preview {1} {2} {3}' \
+    --preview-window 'right,55%,follow,<60(down,50%,follow)' \
+    --bind "load:reload-sync(sleep $REFRESH; $list)+refresh-preview" \
+    --bind "ctrl-f:execute-silent(\"\$ROOST_SWITCH_SELF\" --cycle-filter)+reload($list)" \
+    --bind "ctrl-o:execute-silent(\"\$ROOST_SWITCH_SELF\" --toggle-agents)+reload($list)")"
+fi
 [ -n "$sel" ] || exit 0
 
 sid="$(printf '%s' "$sel" | cut -f1)"
 wid="$(printf '%s' "$sel" | cut -f2)"
 pid="$(printf '%s' "$sel" | cut -f3)"
 tmx switch-client -t "$sid"
-tmx select-window -t "$wid"
+# A session header row has no window id — selecting it lands on the session's
+# current window.
+[ -n "$wid" ] && tmx select-window -t "$wid"
 # A header row has no pane id — selecting it lands on the window's active pane.
 [ -n "$pid" ] && tmx select-pane -t "$pid"
 exit 0
