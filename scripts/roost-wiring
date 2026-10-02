@@ -53,9 +53,9 @@ HERE="${HERE%/}"
 # identical command once across two sources and a differing one twice
 # (design M4 C2/C3, M4b). Never re-typed here.
 . "$HERE/scripts/lib/roost-hooks.sh"
-# roost_opencode_v2 — whether the opencode on PATH is 2.x, which decides
-# whether OPENCODE_CONFIG_DIR may be set at all. The one definition `roost
-# doctor` reads too.
+# roost_opencode_takes_config_dir — whether OPENCODE_CONFIG_DIR may be set at
+# all for the opencode on PATH: not for 2.x, and not for one that would not say
+# which it is. Built on the one version check `roost doctor` reads too.
 . "$HERE/scripts/lib/roost-opencode.sh"
 
 SOCKET="${ROOST_SOCKET:-roost}"
@@ -218,14 +218,22 @@ apply() {
   # doctor sends such a user to. The user's own value is still never touched:
   # ours_ocdir is the same test `off` uses.
   #
+  # The same goes for an opencode that is there but would not say which it is
+  # — it printed no version, or did not answer inside the bound. Wiring does
+  # not guess 1.x for it: roost_opencode_takes_config_dir has the argument, and
+  # the short of it is that a missing badge can be seen and a replaced
+  # configuration cannot.
+  #
   # What this cannot reach is a shell that is already open. It was given the
   # variable when it started and keeps it; doctor says so from inside one.
-  # And it is decided once, here, from the PATH of whoever started the server:
-  # an opencode installed or upgraded to 2.x later is not seen until the next
-  # apply. docs/known-gaps.md records both.
+  # And it is decided once per apply, from the PATH of whoever ran it — the
+  # process that started the server, or the shell `roost wiring on` was typed
+  # in. An opencode installed or upgraded to 2.x later is not seen until the
+  # next apply, and neither is one that a pane's own PATH finds first.
+  # docs/known-gaps.md records all three.
   local oc
   oc="$(t show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)"
-  if roost_opencode_v2; then
+  if ! roost_opencode_takes_config_dir; then
     ours_ocdir "$oc" && t set-environment -gu OPENCODE_CONFIG_DIR
   elif [ -z "$oc" ] || [ "$oc" = -OPENCODE_CONFIG_DIR ] || ours_ocdir "$oc"; then
     t set-environment -g OPENCODE_CONFIG_DIR "$WDIR/opencode"

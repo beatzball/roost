@@ -45,7 +45,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   **If you run opencode 2: run `roost wiring on` once, and in any pane that was
   already open run `unset OPENCODE_CONFIG_DIR`** — a shell keeps what it was
   given, and `roost doctor` tells you when one still has it. opencode 1.x is
-  wired exactly as before.
+  wired exactly as before, with one exception: an `opencode` that is on your
+  `PATH` but prints no version, or does not answer `--version` within five
+  seconds, is no longer wired, because roost cannot tell it is not 2.x. It then
+  badges through `roost install` instead. The five-second limit is there so that
+  a hung `opencode` cannot stop a roost server from starting.
 
 - **Docs pages are no longer blank at a trailing-slash URL** (#129). Every page
   under `/docs/` rendered as an empty dark screen if the address ended in a

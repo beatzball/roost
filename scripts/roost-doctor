@@ -303,10 +303,35 @@ if [ "$w_state" = on ] && [ -f "$w_dir/claude/settings.json" ] \
     warn "the global Claude hooks name a different checkout than this server's wiring, so every roost hook runs twice — run roost install from ${w_cmd%/scripts/roost-agent-state}, or: roost wiring off"
   fi
 fi
+# Which opencode this is, asked ONCE and asked here, above the first line that
+# says anything about opencode. Three reports below read it — this note, the
+# leftover amux.js warning, and the adapter check — and it used to be asked
+# only by the last of them, so on an opencode 2 machine the first two still
+# spoke as if it were 1.x, a few lines above the one saying it was not (found
+# in review of #153: "badges come only from roost install", and an `ln -s` for
+# a plugin opencode 2 cannot load).
+#
+# How the version is read — and why that is done in a throwaway directory, and
+# bounded, and why one that cannot be read takes the 1.x checks here — is
+# written once, beside the function, in scripts/lib/roost-opencode.sh. `roost
+# wiring` asks the same function, so this report and what the server was
+# actually given cannot disagree about which opencode this is.
+. "$(dirname "$0")/lib/roost-opencode.sh"
+ocver="$(roost_opencode_version)"
+oc_v2=0
+roost_opencode_v2 "$ocver" && oc_v2=1
+
 if [ -n "${OPENCODE_CONFIG_DIR:-}" ]; then
   case "$OPENCODE_CONFIG_DIR" in
     "$w_root/wiring/"*/opencode) : ;;
-    *) note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install" ;;
+    *)
+      if [ "$oc_v2" = 1 ]; then
+        # No promise about badges: on opencode 2 none come from roost install
+        # either (#150), and the line saying so is a few rows down.
+        note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it"
+      else
+        note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install"
+      fi ;;
   esac
 fi
 
@@ -416,7 +441,17 @@ if [ -e "$ocplug_old" ] || [ -L "$ocplug_old" ]; then
   # check below would still say roost's plugin is not installed. Only
   # remove-then-create-roost.js clears both, so name that exact command, the
   # same way its siblings below do.
-  warn "$ocplug_old still exists — it still works (it just forwards to roost.js) but there is no reason to keep the old name around; run: rm \"$ocplug_old\" && ln -s \"$ocwant\" \"$ocplug\""
+  #
+  # All of that is the opencode 1.x story. On opencode 2 the file does NOT
+  # still work — it is a 1.x plugin under another name, and 2.x refuses those
+  # at load (#150) — and the second half of the command would create the very
+  # link the 2.x branch below tells the user to remove. So there the advice is
+  # the first half alone.
+  if [ "$oc_v2" = 1 ]; then
+    warn "$ocplug_old still exists — it is a leftover roost plugin for opencode 1.x, which opencode 2 cannot load; run: rm \"$ocplug_old\""
+  else
+    warn "$ocplug_old still exists — it still works (it just forwards to roost.js) but there is no reason to keep the old name around; run: rm \"$ocplug_old\" && ln -s \"$ocwant\" \"$ocplug\""
+  fi
 fi
 
 # opencode adapter — informational. Most users will not have opencode, so a
@@ -431,14 +466,9 @@ fi
 # linked" on a 2.x machine was a green tick over something that does nothing,
 # and "run: ln -s ..." sent the user to a command that cannot help.
 #
-# How the version is read — and why that is done in a throwaway directory, and
-# why one that cannot be read takes the 1.x checks — is written once, beside
-# the function, in scripts/lib/roost-opencode.sh. `roost wiring` asks the same
-# function, so this report and what the server was actually given cannot
-# disagree about which opencode this is.
-. "$(dirname "$0")/lib/roost-opencode.sh"
-ocver="$(roost_opencode_version)"
-if roost_opencode_v2 "$ocver"; then
+# $ocver and $oc_v2 were read once, further up, beside the first line that
+# needed them.
+if [ "$oc_v2" = 1 ]; then
   # A warning, not a ✗: opencode 2 not badging stops nothing else in roost
   # working, the same as an adapter that is not linked. It names no command
   # because there is none to run for the badge — that fix is in roost, not on
@@ -456,9 +486,24 @@ if roost_opencode_v2 "$ocver"; then
   # Matched against roost's own wiring root, the same test the note further up
   # uses, so a directory the USER chose is never called a fault: they pointed
   # opencode there themselves and it is doing what they asked.
+  #
+  # What to do about NEW panes depends on the wiring state worked out above,
+  # and the first version of this line did not look (found in review of #153).
+  # `roost wiring on` is the right command only where wiring is on, or was
+  # never applied: it re-runs apply, which now removes the variable. Where the
+  # user turned wiring OFF, or removed it, the server has already dropped the
+  # variable — `off` unsets it — and `roost wiring on` would do something they
+  # did not ask for: bring back claude's wiring, and delete the wiring.off
+  # marker. So there the line says new panes are already fine. Outside a roost
+  # pane doctor knows nothing about any server, and says nothing about one.
   case "${OPENCODE_CONFIG_DIR:-}" in
     "$w_root/wiring/"*/opencode)
-      warn "OPENCODE_CONFIG_DIR in this shell is roost's wiring folder, and opencode 2 reads that folder INSTEAD of your own configuration — an opencode started here ignores your opencode.json: your model, providers and permission rules. In this shell run: unset OPENCODE_CONFIG_DIR — and for new panes run: roost wiring on (roost no longer sets it when opencode is 2.x). https://github.com/beatzball/roost/issues/154" ;;
+      case "$w_state" in
+        on|unwired) oc_next=" For new panes run: roost wiring on (roost no longer sets it when opencode is 2.x)." ;;
+        off|removed) oc_next=" New panes already start without it, because wiring is off here; only shells that were open before still have it." ;;
+        *) oc_next="" ;;
+      esac
+      warn "OPENCODE_CONFIG_DIR in this shell is roost's wiring folder, and opencode 2 reads that folder INSTEAD of your own configuration — an opencode started here ignores your opencode.json: your model, providers and permission rules. In this shell run: unset OPENCODE_CONFIG_DIR.$oc_next https://github.com/beatzball/roost/issues/154" ;;
   esac
   # And the leftover: the 1.x plugin `roost install` linked. opencode 2 tries
   # to load it, fails, and says so in the corner of its screen — measured,

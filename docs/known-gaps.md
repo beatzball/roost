@@ -1160,14 +1160,30 @@ What that does **not** reach:
   long-lived roost server and new panes keep getting the variable until one of
   those happens. That includes a machine with **no** opencode at server start:
   absent takes the 1.x path, as it always did, so the variable is set.
-- **A pane whose `PATH` finds a different opencode than the server's starter
-  did.** The check uses the `PATH` of whoever started the server. Two opencodes
-  on one machine, one per major, is exactly the setup a careful upgrader has.
+- **A pane whose `PATH` finds a different opencode than the one `apply` saw.**
+  The check uses the `PATH` of whoever ran `apply`: the process that started
+  the server, or the shell `roost wiring on` was typed in — which is the very
+  command doctor sends an opencode 2 user to. Two opencodes on one machine, one
+  per major, is exactly the setup a careful upgrader has.
 
 All three fail in the same direction — the variable is set where it should not
 be — and `roost doctor` in the affected shell reports all three, because it
 reads its own environment and its own `PATH`. None is detected by anything that
 runs unasked.
+
+**An opencode that will not say which it is gets no wiring.** The version check
+is bounded: `opencode --version` is killed after five seconds (six at worst),
+because it runs while a roost server is starting and an unbounded one was a
+roost that could hang at start. Measured in a fresh directory, three runs each,
+it took 0.29–0.52 s on 1.18.30 and 0.30–1.10 s on 2.0.20. An opencode that is
+on `PATH` but prints no version, or is killed at the bound, is treated by
+`roost wiring` as *not safe*: the variable is not set, and one roost set
+earlier is removed. For a real 1.x that is a lost badge until `roost install`
+is run, which doctor names. It is the cheaper mistake — the other one is this
+section's bug — and it is a behaviour change: before, an opencode that printed
+no version was wired. `roost doctor` still guesses 1.x for such a one, since a
+wrong guess there costs a line of advice. Not measured: how often a loaded
+machine pushes a real `--version` past five seconds.
 
 **Not measured:** whether opencode 2's shared background server, started from a
 roost pane that has the variable, carries the replaced configuration to
