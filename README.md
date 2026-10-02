@@ -310,6 +310,9 @@ scripts/lib/roost-socket.sh # the one place that answers "which tmux server am I
 scripts/lib/roost-ext.sh    # the extension seam's helpers: XDG paths, manifest
                             #   reading, the tiny semver range check, and the
                             #   fork-free ext.index lookup bin/roost dispatches on
+scripts/lib/roost-opencode.sh # which opencode is on PATH, 1.x or 2.x -- asked by
+                            #   doctor and by wiring, which must not set
+                            #   OPENCODE_CONFIG_DIR for 2.x (#154)
 adapters/opencode/roost.js  # opencode plugin that reports state and the reply
 adapters/copilot/extension.mjs  # GitHub Copilot CLI extension, same two jobs
 adapters/pi/roost.ts        # pi extension, same two jobs (.ts: pi loads it

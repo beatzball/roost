@@ -24,8 +24,16 @@ agent starts. It does this without editing your own config files.
   naming a file under `~/.config/roost/wiring/`. That file holds only roost's
   hooks. Your own settings — model, permissions, env, plugins, your own hooks —
   all still apply.
-- **opencode** gets `OPENCODE_CONFIG_DIR`, pointing at a folder under
-  `~/.config/roost/wiring/`, which opencode merges with your own configuration.
+- **opencode 1.x** gets `OPENCODE_CONFIG_DIR`, pointing at a folder under
+  `~/.config/roost/wiring/`, which opencode 1.x merges with your own
+  configuration.
+- **opencode 2** gets nothing, on purpose. opencode 2 reads that folder
+  *instead of* your own configuration, so setting it would drop your model,
+  providers and permission rules. roost checks which opencode you have when the
+  server starts and leaves the variable unset for 2.x. A pane that was already
+  open before you upgraded roost or opencode still has it: run
+  `unset OPENCODE_CONFIG_DIR` there, and `roost wiring on` for new panes.
+  `roost doctor` tells you when this applies.
 - **codex, pi and copilot** still badge only through `roost install`. See
   [State Badges](/docs/state-badges).
 

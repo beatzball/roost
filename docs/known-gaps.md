@@ -1119,6 +1119,65 @@ other job holds the terminal the pane is not died, and `respawn-pane -k`, which
 keeps pane options, changes the pane process the record names, so the record
 is ignored.
 
+### opencode 2 is not supported, and the wiring fix for it has three holes (#150, #154)
+
+**A live risk. High for the one case below it does not reach; otherwise low.**
+
+Two separate things, and the second was the dangerous one.
+
+**No badge (#150).** `adapters/opencode/roost.js` is an opencode 1.x plugin.
+opencode 2 refuses it at load and the pane never badges; `roost read` falls
+back to the screen. Not fixed. `roost doctor` says so, and `site/` says so. The
+measurements a real adapter needs — the 2.x event names, where a plugin runs,
+how a turn ends — are in the issue and its comments.
+
+**The user's configuration was replaced (#154).** `roost wiring` set
+`OPENCODE_CONFIG_DIR` in every pane. opencode 1.x reads that directory as well
+as the user's own; 2.x reads it **instead**. Measured on 2.0.20 against 1.18.30
+with the same files: under the variable, 2.x reported the wiring folder as its
+config directory and ran a turn on the built-in default model, where 1.x ran it
+on the model the user's file named. So an opencode 2 in a roost pane silently
+lost the user's model, providers and **permission rules** — and with no rules
+at all, 2.0.20 ran a shell command without asking.
+
+`roost wiring apply` now asks the opencode on `PATH` for its version, does not
+set the variable when that is 2.x, and removes one it set earlier. Checked end
+to end against the real 2.0.20 binary: a new pane of a freshly wired server has
+no `OPENCODE_CONFIG_DIR` and `opencode debug paths config` names the user's
+directory, where the previous wiring gave the wiring folder.
+
+What that does **not** reach:
+
+- **A shell that is already open.** It was handed the variable when it started
+  and keeps it. Nothing roost runs on the server can take it back. An opencode
+  2 started there still ignores the user's configuration. `roost doctor`, run
+  in that shell, says so and names `unset OPENCODE_CONFIG_DIR`. This is the
+  high case: it is every pane of a server that was running before the upgrade
+  to this roost, until each is closed or told.
+- **An opencode that becomes 2.x after the server started.** The version is
+  read once per `apply`, which runs when a server starts and on
+  `roost wiring on`. Install or upgrade to opencode 2 on a machine with a
+  long-lived roost server and new panes keep getting the variable until one of
+  those happens. That includes a machine with **no** opencode at server start:
+  absent takes the 1.x path, as it always did, so the variable is set.
+- **A pane whose `PATH` finds a different opencode than the server's starter
+  did.** The check uses the `PATH` of whoever started the server. Two opencodes
+  on one machine, one per major, is exactly the setup a careful upgrader has.
+
+All three fail in the same direction — the variable is set where it should not
+be — and `roost doctor` in the affected shell reports all three, because it
+reads its own environment and its own `PATH`. None is detected by anything that
+runs unasked.
+
+**Not measured:** whether opencode 2's shared background server, started from a
+roost pane that has the variable, carries the replaced configuration to
+opencode windows outside roost. It follows from the server owning configuration
+and inheriting its starter's environment; it was not run. Linux was not
+measured for any of this.
+
+The 1.x plugin link `roost install` makes is still made on a 2.x machine.
+opencode 2 shows `1 plugin failed` for it; doctor names the `rm`.
+
 ### Roost's own wiring reaches claude and opencode only (#58)
 
 **A live risk, low.** Phase 1 of #58 wires claude (a PATH shim, reached through

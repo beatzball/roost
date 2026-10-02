@@ -25,15 +25,27 @@ and this project uses [Semantic Versioning](https://semver.org/).
   yet** (#150). opencode 2 has a new plugin format and does not load roost's
   adapter, and it reports that only in its own log, so the pane runs normally
   and never badges. doctor used to print `opencode plugin linked` on such a
-  machine, or hand you an `ln -s` that could not help. It now prints one line
-  saying opencode 2 is not supported yet, with nothing to run, because the fix
-  is in roost and not on your machine. opencode 1.x is checked exactly as
+  machine, or hand you an `ln -s` that could not help. It now says opencode 2
+  is not supported yet, and names the two things you can fix yourself: a pane
+  that still has roost's `OPENCODE_CONFIG_DIR`, and the leftover 1.x plugin link
+  that makes opencode 2 show `1 plugin failed`. opencode 1.x is checked exactly as
   before. Finding the version starts opencode once with its directories pointed
   at a temp folder that is then removed: asked plainly, `opencode --version`
   creates its data directories, and a report should not be what first creates
   them.
 
 ### Fixed
+
+- **opencode 2 in a roost pane uses your configuration again** (#154). roost
+  wires opencode by setting `OPENCODE_CONFIG_DIR` in every pane. opencode 1.x
+  reads that folder as well as your own; opencode 2 reads it *instead*, so
+  inside roost it silently dropped your model, your providers and your
+  permission rules, and ran on its defaults. roost now checks which opencode
+  you have when the server starts and does not set the variable for 2.x.
+  **If you run opencode 2: run `roost wiring on` once, and in any pane that was
+  already open run `unset OPENCODE_CONFIG_DIR`** — a shell keeps what it was
+  given, and `roost doctor` tells you when one still has it. opencode 1.x is
+  wired exactly as before.
 
 - **Docs pages are no longer blank at a trailing-slash URL** (#129). Every page
   under `/docs/` rendered as an empty dark screen if the address ended in a

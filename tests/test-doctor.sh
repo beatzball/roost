@@ -296,6 +296,11 @@ assert_contains "$out" "does not support opencode 2 yet" "opencode 2: doctor say
 assert_contains "$out" "opencode 2.0.20 found" "opencode 2: the line names the version it found, without the 'opencode v' prefix twice"
 assert_contains "$out" "issues/150" "opencode 2: the line points at the issue"
 assert_eq "$(oc_has "$out" "opencode plugin linked")" "no" "opencode 2: a linked 1.x plugin is NOT reported as linked"
+# ...and the link is named as the leftover it now is. opencode 2 shows
+# "1 plugin failed" on every start because of it (measured), so the one thing
+# doctor can usefully say about it is how to make that stop.
+assert_contains "$out" "1 plugin failed" "opencode 2: a linked 1.x plugin is named as the cause of opencode's '1 plugin failed'"
+assert_contains "$out" "rm \"$ocdir/opencode/plugin/roost.js\"" "opencode 2: and doctor prints the command that removes it"
 run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "opencode 2: it is a warning, doctor's exit code is unchanged"
 
@@ -312,6 +317,41 @@ assert_contains "$out" "does not support opencode 2 yet" "opencode 2, nothing li
 assert_eq "$(oc_has "$out" "roost plugin not installed")" "no" "opencode 2, nothing linked: no advice to link the 1.x plugin"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
 assert_contains "$out" "roost plugin not installed" "opencode 1.x, nothing linked: the link advice is still printed"
+
+# Something at the plugin path that is NOT a link to a roost adapter is not
+# roost's to tell anyone to delete, on 2.x as on 1.x.
+printf 'not the real plugin\n' > "$ocdir/opencode/plugin/roost.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_eq "$(oc_has "$out" "1 plugin failed")" "no" "opencode 2: a file at the plugin path that is not roost's link gets no rm advice"
+rm "$ocdir/opencode/plugin/roost.js"
+
+# --- opencode 2 and roost's own OPENCODE_CONFIG_DIR (#154) ---
+# roost's wiring exports OPENCODE_CONFIG_DIR to every pane. opencode 1.x reads
+# that directory as well as the user's; 2.x reads it INSTEAD, so the user's
+# model, providers and permission rules are dropped. `roost wiring` no longer
+# sets it for 2.x, but a shell that was already open keeps the variable, and
+# doctor run from that shell is the only thing that can say so.
+#
+# The wiring root doctor matches against follows XDG_CONFIG_HOME, so the value
+# below is built from the same $ocdir it is given -- the shape `roost wiring`
+# writes, <config>/roost/wiring/<checkout id>/opencode.
+ocwire="$ocdir/roost/wiring/12345/opencode"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" 2>&1)"
+assert_contains "$out" "INSTEAD of your own configuration" "opencode 2 + roost's OPENCODE_CONFIG_DIR: doctor says the user's configuration is being ignored"
+assert_contains "$out" "unset OPENCODE_CONFIG_DIR" "opencode 2 + roost's OPENCODE_CONFIG_DIR: the fix for this shell is named"
+assert_contains "$out" "roost wiring on" "opencode 2 + roost's OPENCODE_CONFIG_DIR: the fix for new panes is named"
+assert_contains "$out" "issues/154" "opencode 2 + roost's OPENCODE_CONFIG_DIR: the line points at the issue"
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" >/dev/null 2>&1
+assert_eq "$?" "0" "opencode 2 + roost's OPENCODE_CONFIG_DIR: still a warning, the exit code is unchanged"
+
+# The two controls. The same variable under 1.x is how wiring is MEANT to work,
+# and a directory the user chose is theirs under either version.
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" 2>&1)"
+assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 1.x + roost's OPENCODE_CONFIG_DIR: no warning — 1.x merges it"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
+assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 2 + the USER's own OPENCODE_CONFIG_DIR: not called a fault"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 2, OPENCODE_CONFIG_DIR unset: nothing to warn about"
 
 rm -rf "$oc2shim" "$oc1shim"
 rm -rf "$ocdir" "$shimdir"

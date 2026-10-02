@@ -11,8 +11,9 @@
 #   ~/.config/roost/wiring/<checkout id>/claude/settings.json      hooks only, from roost_hooks_claude
 #   ~/.config/roost/wiring/<checkout id>/opencode/plugin/roost.js  a symlink to that checkout's adapter
 #   ~/.config/roost/wiring.off                    the "stay removed" marker
-#   on the server: default-command, OPENCODE_CONFIG_DIR, ROOST_TMUX,
-#   ROOST_WIRING_DIR, @roost-wiring-active
+#   on the server: default-command, OPENCODE_CONFIG_DIR (only when the
+#   opencode on PATH is not 2.x — #154, and the comment in apply),
+#   ROOST_TMUX, ROOST_WIRING_DIR, @roost-wiring-active
 #
 # ONE DIRECTORY PER CHECKOUT, and that was found in review, not designed in.
 # With one shared directory, a second server started from another checkout —
@@ -52,6 +53,10 @@ HERE="${HERE%/}"
 # identical command once across two sources and a differing one twice
 # (design M4 C2/C3, M4b). Never re-typed here.
 . "$HERE/scripts/lib/roost-hooks.sh"
+# roost_opencode_v2 — whether the opencode on PATH is 2.x, which decides
+# whether OPENCODE_CONFIG_DIR may be set at all. The one definition `roost
+# doctor` reads too.
+. "$HERE/scripts/lib/roost-opencode.sh"
 
 SOCKET="${ROOST_SOCKET:-roost}"
 case "$SOCKET" in */*) _flag="-S" ;; *) _flag="-L" ;; esac
@@ -91,9 +96,12 @@ usage: roost wiring on  [-t SESSION]
        roost wiring apply
 
 Roost's own route to the agents in its panes: a claude shim that adds a
-hooks-only --settings file, and OPENCODE_CONFIG_DIR for opencode. Files live in
-~/.config/roost/wiring/, one directory per roost checkout. Your own config
-files are never edited.
+hooks-only --settings file, and OPENCODE_CONFIG_DIR for opencode 1.x. Files
+live in ~/.config/roost/wiring/, one directory per roost checkout. Your own
+config files are never edited.
+
+OPENCODE_CONFIG_DIR is not set when your opencode is 2.x: opencode 2 reads that
+directory instead of your own configuration, not as well as it.
 
   on            turn wiring on for this roost server (and undo remove)
   off           turn it off for this roost server; new panes start unwired,
@@ -194,9 +202,32 @@ apply() {
   # Likewise an OPENCODE_CONFIG_DIR the user already had: tmux copies the
   # starting client's environment into the server's, so theirs is already
   # here, and replacing it would move their opencode configuration.
+  #
+  # And not at all when the opencode on PATH is 2.x (#154). The variable is
+  # safe on 1.x because 1.x reads the named directory AS WELL AS the user's
+  # own. 2.x reads it INSTEAD — measured, the table is beside
+  # roost_opencode_v2 — so setting it made every opencode 2 in a roost pane
+  # drop the user's whole configuration without a word: their model, their
+  # providers, and their permission rules, which is the part that cannot be
+  # shrugged off. It bought nothing in exchange, either: the folder holds a 1.x
+  # plugin that 2.x refuses to load.
+  #
+  # One of ours that is ALREADY there is removed, not merely left unset, or a
+  # server wired before opencode was upgraded would keep handing it to every
+  # new pane for as long as it ran — and `roost wiring on` is the command
+  # doctor sends such a user to. The user's own value is still never touched:
+  # ours_ocdir is the same test `off` uses.
+  #
+  # What this cannot reach is a shell that is already open. It was given the
+  # variable when it started and keeps it; doctor says so from inside one.
+  # And it is decided once, here, from the PATH of whoever started the server:
+  # an opencode installed or upgraded to 2.x later is not seen until the next
+  # apply. docs/known-gaps.md records both.
   local oc
   oc="$(t show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)"
-  if [ -z "$oc" ] || [ "$oc" = -OPENCODE_CONFIG_DIR ] || ours_ocdir "$oc"; then
+  if roost_opencode_v2; then
+    ours_ocdir "$oc" && t set-environment -gu OPENCODE_CONFIG_DIR
+  elif [ -z "$oc" ] || [ "$oc" = -OPENCODE_CONFIG_DIR ] || ours_ocdir "$oc"; then
     t set-environment -g OPENCODE_CONFIG_DIR "$WDIR/opencode"
   fi
 

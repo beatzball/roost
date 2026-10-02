@@ -40,6 +40,23 @@ export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 unset ROOST_NO_SHIM ROOST_TMUX ROOST_WIRING_DIR OPENCODE_CONFIG_DIR TMUX TMUX_PANE ROOST_SOCKET
 
+# --- which opencode this file sees -------------------------------------------
+# `roost wiring apply` now asks the opencode on PATH for its version, and sets
+# OPENCODE_CONFIG_DIR only when that is not 2.x (#154). Left to the machine,
+# every "apply sets OPENCODE_CONFIG_DIR" assertion below would pass on a box
+# with opencode 1.x or none (CI has none) and fail on a contributor's box with
+# opencode 2 — a red suite that says nothing about the change under test.
+#
+# So the file runs against a stub that prints what 1.x prints, and the cases
+# that are ABOUT 2.x put the other stub in front of it. Scripts that print the
+# two real version lines — `1.18.30`, and `opencode v2.0.20` — never symlinks
+# to a real binary.
+OC1STUB="$TMP/oc1stub"; OC2STUB="$TMP/oc2stub"
+mkdir -p "$OC1STUB" "$OC2STUB"
+printf '#!/bin/sh\necho "1.18.30"\n' > "$OC1STUB/opencode"; chmod +x "$OC1STUB/opencode"
+printf '#!/bin/sh\necho "opencode v2.0.20"\n' > "$OC2STUB/opencode"; chmod +x "$OC2STUB/opencode"
+PATH="$OC1STUB:$PATH"; export PATH
+
 # box NAME -> a fresh sandbox: $B/home, $B/xdg, $B/real (a fake claude), $B/sock
 box() {
   B="$TMP/$1"
@@ -269,6 +286,57 @@ ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" a
 assert_eq "$(g show-options -gqv default-command)" "exec /bin/sh" "a default-command the user set is never replaced"
 assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR)" "OPENCODE_CONFIG_DIR=/users/own/dir" \
   "an OPENCODE_CONFIG_DIR the user set is never replaced"
+
+# =============================================================================
+printf '\n== apply: opencode 2 is never pointed at the wiring folder (#154) ==\n'
+# opencode 1.x reads OPENCODE_CONFIG_DIR as well as the user's config; 2.x
+# reads it INSTEAD, so setting it made every opencode 2 in a roost pane drop
+# the user's model, providers and permission rules. These pin that apply
+# leaves the variable unset for 2.x, removes one it set earlier, still never
+# touches the user's own, and still wires everything else.
+box oc2fresh
+srv
+PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "opencode 2: apply does not set OPENCODE_CONFIG_DIR"
+assert_eq "$(g show-options -gqv @roost-wiring-active)" "on" "opencode 2: the server is still marked wired"
+assert_eq "$(g show-environment -g ROOST_WIRING_DIR 2>/dev/null)" "ROOST_WIRING_DIR=$(wdir_of "$B/xdg")" \
+  "opencode 2: claude's half of the wiring is untouched — ROOST_WIRING_DIR is still exported"
+assert_contains "$(g show-options -gqv default-command)" "$HERE/scripts/roost-pane-shell" \
+  "opencode 2: default-command is still roost-pane-shell"
+
+# The control, and the upgrade path in one box. Wired under 1.x the variable is
+# there — so the assertion above is about the version and not about the box —
+# and the same server wired again under 2.x loses it. Without the removal a
+# server started before opencode was upgraded would hand it to every new pane
+# for as long as it ran.
+box ocupgrade
+srv
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" \
+  "OPENCODE_CONFIG_DIR=$(wdir_of "$B/xdg")/opencode" "opencode 1.x, same box: apply sets OPENCODE_CONFIG_DIR (the control)"
+PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "opencode upgraded to 2 on a wired server: apply REMOVES the value roost set earlier"
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" \
+  "OPENCODE_CONFIG_DIR=$(wdir_of "$B/xdg")/opencode" "and back on 1.x it is set again — the version is what decides"
+
+# `roost wiring on` is the command doctor sends an opencode 2 user to, so it
+# has to be the thing that clears it.
+out="$(PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$ROOST" wiring on 2>&1)"; rc=$?
+assert_eq "$rc" "0" "opencode 2: roost wiring on succeeds"
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "opencode 2: roost wiring on clears roost's OPENCODE_CONFIG_DIR"
+
+# The user's own directory is theirs under either version. On 2.x it is doing
+# exactly what they asked for.
+box oc2user
+srv
+g set-environment -g OPENCODE_CONFIG_DIR /users/own/dir
+PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR)" "OPENCODE_CONFIG_DIR=/users/own/dir" \
+  "opencode 2: an OPENCODE_CONFIG_DIR the user set is neither replaced nor removed"
 
 # =============================================================================
 printf '\n== @roost-wiring-enabled off and the wiring.off marker stop apply entirely ==\n'
