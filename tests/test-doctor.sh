@@ -16,6 +16,21 @@ DOC="$HERE/scripts/roost-doctor"
 # contact -L roost.
 export ROOST_CONFIG_SOCK="/nonexistent/roost-doctor-test-sock"
 export ROOST_NOTIFY_SOCK="/nonexistent/roost-doctor-test-sock"
+# And a fourth way in, which the three above did not close. doctor's wiring
+# rows decide "inside a roost pane" from $TMUX alone, and then ask THAT server
+# for @roost-wiring-enabled and @roost-wiring-active. Run from a pane of the
+# developer's live roost, every doctor in this file therefore read two options
+# from the live server and reported its wiring state — "on" there, "not inside
+# a roost pane" in CI. It only read, so nothing was disturbed, but the header
+# above says this suite never contacts -L roost, and it did. It came to light
+# when a new assertion about the outside-a-pane wording passed in CI's shape
+# and failed inside roost (#153).
+#
+# Unset, as tests/test-wiring.sh unsets them at its top: every doctor here
+# then runs as if started outside tmux, on every machine, which is also the
+# only state this file has ever been green in on CI. The wiring rows that need
+# a server are in tests/test-wiring.sh, against one it starts itself.
+unset TMUX TMUX_PANE ROOST_TMUX ROOST_WIRING_DIR ROOST_NO_SHIM OPENCODE_CONFIG_DIR
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -66,6 +81,27 @@ export COPILOT_HOME="$CANARY/copilot"
 export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+
+# --- which opencode this file sees -------------------------------------------
+# doctor now asks the opencode on PATH for its version, where it used to ask
+# only whether one was there. Left to the machine, every doctor run in this
+# file that does not put a stub of its own first executes the REAL binary —
+# 45 times a run, counted in review of #153 with a logging stub — and on a
+# contributor's machine with opencode 2 that is the real 2.x, held back from
+# their data only by the redirect inside roost_opencode_version.
+#
+# So where the machine HAS an opencode, a stub that prints what 1.x prints goes
+# in front of it. Only there: a machine with none keeps none, because "opencode
+# is not installed" is a state this file must still be able to be run in, and
+# CI is such a machine. Every case that is about a particular version puts its
+# own stub ahead of this one. A script that prints the real 1.x version line,
+# never a symlink to a real binary.
+if command -v opencode >/dev/null 2>&1; then
+  OCSTUB="$TMP/oc-stub"
+  mkdir -p "$OCSTUB"
+  printf '#!/bin/sh\necho "1.18.30"\n' > "$OCSTUB/opencode"; chmod +x "$OCSTUB/opencode"
+  PATH="$OCSTUB:$PATH"; export PATH
+fi
 
 # What escaped, if anything. -mindepth 1 so the directory itself is never the
 # finding, and the whole listing is printed on failure rather than a count --
@@ -270,6 +306,137 @@ assert_contains "$out" "dangling" "doctor flags a dangling plugin symlink distin
 run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "a dangling plugin symlink does not fail doctor"
 
+# --- opencode 2: not supported yet, and doctor must say so (#150) ---
+# roost's adapter is an opencode 1.x plugin and opencode 2 refuses to load it,
+# quietly. Before this check doctor printed "opencode plugin linked" on such a
+# machine: a green tick over something that does nothing. These pin that 2.x
+# gets one honest line INSTEAD of the link advice, and that 1.x is untouched.
+#
+# The stubs are scripts that print what each line really prints -- `opencode
+# v2.0.20` on 2.x, a bare `1.18.30` on 1.x, both measured -- never symlinks to
+# a real binary. The stub every case above uses prints nothing at all, so the
+# "version unreadable falls through to the 1.x checks" path is already covered
+# by all of them.
+oc2shim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\necho "opencode v2.0.20"\n' > "$oc2shim/opencode"; chmod +x "$oc2shim/opencode"
+oc1shim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\necho "1.18.30"\n' > "$oc1shim/opencode"; chmod +x "$oc1shim/opencode"
+oc_has() { case "$1" in *"$2"*) printf yes ;; *) printf no ;; esac; }
+
+# The worst case first: the plugin IS correctly linked. That is the state that
+# used to earn the tick.
+rm "$ocdir/opencode/plugin/roost.js"
+ln -s "$HERE/adapters/opencode/roost.js" "$ocdir/opencode/plugin/roost.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_contains "$out" "does not support opencode 2 yet" "opencode 2: doctor says it is not supported"
+assert_contains "$out" "opencode 2.0.20 found" "opencode 2: the line names the version it found, without the 'opencode v' prefix twice"
+assert_contains "$out" "issues/150" "opencode 2: the line points at the issue"
+assert_eq "$(oc_has "$out" "opencode plugin linked")" "no" "opencode 2: a linked 1.x plugin is NOT reported as linked"
+# ...and the link is named as the leftover it now is. opencode 2 shows
+# "1 plugin failed" on every start because of it (measured), so the one thing
+# doctor can usefully say about it is how to make that stop.
+assert_contains "$out" "1 plugin failed" "opencode 2: a linked 1.x plugin is named as the cause of opencode's '1 plugin failed'"
+assert_contains "$out" "rm \"$ocdir/opencode/plugin/roost.js\"" "opencode 2: and doctor prints the command that removes it"
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" >/dev/null 2>&1
+assert_eq "$?" "0" "opencode 2: it is a warning, doctor's exit code is unchanged"
+
+# The control. Same link, same everything, only the version differs -- so the
+# assertions above are about the version and not about the fixture.
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
+assert_contains "$out" "opencode plugin linked" "opencode 1.x: a linked plugin is still reported as linked"
+assert_eq "$(oc_has "$out" "does not support opencode 2 yet")" "no" "opencode 1.x: no opencode 2 line"
+
+# Not linked: 2.x must not be handed an `ln -s` that cannot help.
+rm "$ocdir/opencode/plugin/roost.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_contains "$out" "does not support opencode 2 yet" "opencode 2, nothing linked: doctor says it is not supported"
+assert_eq "$(oc_has "$out" "roost plugin not installed")" "no" "opencode 2, nothing linked: no advice to link the 1.x plugin"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
+assert_contains "$out" "roost plugin not installed" "opencode 1.x, nothing linked: the link advice is still printed"
+
+# Something at the plugin path that is NOT a link to a roost adapter is not
+# roost's to tell anyone to delete, on 2.x as on 1.x.
+printf 'not the real plugin\n' > "$ocdir/opencode/plugin/roost.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_eq "$(oc_has "$out" "1 plugin failed")" "no" "opencode 2: a file at the plugin path that is not roost's link gets no rm advice"
+rm "$ocdir/opencode/plugin/roost.js"
+
+# --- opencode 2 and roost's own OPENCODE_CONFIG_DIR (#154) ---
+# roost's wiring exports OPENCODE_CONFIG_DIR to every pane. opencode 1.x reads
+# that directory as well as the user's; 2.x reads it INSTEAD, so the user's
+# model, providers and permission rules are dropped. `roost wiring` no longer
+# sets it for 2.x, but a shell that was already open keeps the variable, and
+# doctor run from that shell is the only thing that can say so.
+#
+# The wiring root doctor matches against follows XDG_CONFIG_HOME, so the value
+# below is built from the same $ocdir it is given -- the shape `roost wiring`
+# writes, <config>/roost/wiring/<checkout id>/opencode.
+ocwire="$ocdir/roost/wiring/12345/opencode"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" 2>&1)"
+assert_contains "$out" "INSTEAD of your own configuration" "opencode 2 + roost's OPENCODE_CONFIG_DIR: doctor says the user's configuration is being ignored"
+assert_contains "$out" "unset OPENCODE_CONFIG_DIR" "opencode 2 + roost's OPENCODE_CONFIG_DIR: the fix for this shell is named"
+assert_contains "$out" "issues/154" "opencode 2 + roost's OPENCODE_CONFIG_DIR: the line points at the issue"
+# What it says about NEW panes depends on the wiring state, and outside a roost
+# pane -- which is where this file runs doctor -- there is no server to speak
+# for. `roost wiring on` there would be advice about a server doctor never
+# asked. The on and off states need a real server and are pinned in
+# tests/test-wiring.sh, beside the other wiring rows.
+assert_eq "$(oc_has "$out" "new panes run: roost wiring on")" "no" "opencode 2 + roost's OPENCODE_CONFIG_DIR, outside a roost pane: no advice about a server's new panes"
+# Wiring REMOVED: the user took it out on purpose. `roost wiring on` would put
+# claude's wiring back and delete their marker, to fix a variable `remove`
+# already stopped handing out (found in review of #153).
+mkdir -p "$ocdir/roost"; : > "$ocdir/roost/wiring.off"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" 2>&1)"
+assert_contains "$out" "unset OPENCODE_CONFIG_DIR" "opencode 2, wiring removed: the fix for this shell is still named"
+assert_contains "$out" "New panes already start without it" "opencode 2, wiring removed: doctor says new panes are already fine"
+# Matched without its first word, so the sentence is caught however it is
+# capitalised: the wording this replaced began "for new panes run", and an
+# assertion spelled with a capital F passed against that old code too.
+assert_eq "$(oc_has "$out" "new panes run: roost wiring on")" "no" "opencode 2, wiring removed: doctor does NOT send the user to roost wiring on"
+rm "$ocdir/roost/wiring.off"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" 2>&1)"
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" >/dev/null 2>&1
+assert_eq "$?" "0" "opencode 2 + roost's OPENCODE_CONFIG_DIR: still a warning, the exit code is unchanged"
+
+# The two controls. The same variable under 1.x is how wiring is MEANT to work,
+# and a directory the user chose is theirs under either version.
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" OPENCODE_CONFIG_DIR="$ocwire" 2>&1)"
+assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 1.x + roost's OPENCODE_CONFIG_DIR: no warning — 1.x merges it"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
+assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 2 + the USER's own OPENCODE_CONFIG_DIR: not called a fault"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 2, OPENCODE_CONFIG_DIR unset: nothing to warn about"
+
+# --- opencode 2: the two older lines that still spoke as if it were 1.x ---
+# Both were printed ABOVE the point where doctor first read the version, so on
+# an opencode 2 machine they contradicted the "not supported yet" line a few
+# rows below them (found in review of #153, by two reviewers independently).
+#
+# 1. The user's own OPENCODE_CONFIG_DIR. The note promised badges "only from
+#    roost install"; on 2.x none come from there either.
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
+assert_contains "$out" "OPENCODE_CONFIG_DIR is /users/own/dir, not roost's" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: the note is still printed"
+assert_eq "$(oc_has "$out" "badges come only from roost install")" "no" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: no promise of badges from roost install"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
+assert_contains "$out" "badges come only from roost install" "opencode 1.x + the user's own OPENCODE_CONFIG_DIR: the note is unchanged (the control)"
+
+# 2. A leftover amux.js. On 1.x it "still works" and the fix is rm-then-link.
+#    On 2.x it does not work, and the link half would create the very file the
+#    2.x branch tells the user to remove.
+ln -s "$HERE/adapters/opencode/roost.js" "$ocdir/opencode/plugin/amux.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'amux.js still exists')"
+assert_contains "$l" "opencode 2 cannot load" "opencode 2 + a leftover amux.js: doctor says 2.x cannot load it"
+assert_contains "$l" "rm \"$ocdir/opencode/plugin/amux.js\"" "opencode 2 + a leftover amux.js: the rm is still named"
+assert_eq "$(oc_has "$l" "it still works")" "no" "opencode 2 + a leftover amux.js: doctor does not say it still works"
+assert_eq "$(oc_has "$l" "ln -s")" "no" "opencode 2 + a leftover amux.js: no ln -s for a plugin opencode 2 cannot load"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'amux.js still exists')"
+assert_contains "$l" "it still works" "opencode 1.x + a leftover amux.js: the line is unchanged (the control)"
+assert_contains "$l" "ln -s" "opencode 1.x + a leftover amux.js: the rm-then-link command is still printed"
+rm "$ocdir/opencode/plugin/amux.js"
+
+rm -rf "$oc2shim" "$oc1shim"
 rm -rf "$ocdir" "$shimdir"
 
 # --- roost itself must be on PATH ---

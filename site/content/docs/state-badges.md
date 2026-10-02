@@ -7,7 +7,7 @@ sidebar:
 
 ## Inside roost, claude and opencode need no setup
 
-A roost server wires the claude and opencode you start in its panes by itself,
+A roost server wires the claude and opencode 1.x you start in its panes by itself,
 typed by hand or started by `roost spawn`, with files under
 `~/.config/roost/wiring/` and no edit to your own config. That covers the
 badges on this page for those two. [Setup](/docs/setup) explains how it works
@@ -106,6 +106,17 @@ roost state working    # or: blocked, done, error, idle
 It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside a roost session — so it is safe to wire into a global config.
 
 ## opencode
+
+**This is for opencode 1.x. opencode 2 is not supported yet.** opencode 2 has a
+new plugin format and does not load roost's adapter, and it says so only in its
+own log — so an opencode 2 pane runs normally and simply never shows a badge,
+and `roost read` falls back to the screen. Nothing you link or install changes
+that; `roost doctor` tells you when the `opencode` on your `PATH` is 2.x. The
+work is tracked in [issue 150](https://github.com/beatzball/roost/issues/150).
+roost also leaves opencode 2 unwired, so that your own opencode configuration
+stays in effect — [Setup](/docs/setup) has the reason, and what to do in a pane
+that was open before you upgraded. Everything below describes opencode 1.x,
+which still works.
 
 **opencode** has an adapter in this repo. `roost install --only opencode` links
 it. By hand:

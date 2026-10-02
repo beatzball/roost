@@ -40,6 +40,23 @@ export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 unset ROOST_NO_SHIM ROOST_TMUX ROOST_WIRING_DIR OPENCODE_CONFIG_DIR TMUX TMUX_PANE ROOST_SOCKET
 
+# --- which opencode this file sees -------------------------------------------
+# `roost wiring apply` now asks the opencode on PATH for its version, and sets
+# OPENCODE_CONFIG_DIR only when that is not 2.x (#154). Left to the machine,
+# every "apply sets OPENCODE_CONFIG_DIR" assertion below would pass on a box
+# with opencode 1.x or none (CI has none) and fail on a contributor's box with
+# opencode 2 — a red suite that says nothing about the change under test.
+#
+# So the file runs against a stub that prints what 1.x prints, and the cases
+# that are ABOUT 2.x put the other stub in front of it. Scripts that print the
+# two real version lines — `1.18.30`, and `opencode v2.0.20` — never symlinks
+# to a real binary.
+OC1STUB="$TMP/oc1stub"; OC2STUB="$TMP/oc2stub"
+mkdir -p "$OC1STUB" "$OC2STUB"
+printf '#!/bin/sh\necho "1.18.30"\n' > "$OC1STUB/opencode"; chmod +x "$OC1STUB/opencode"
+printf '#!/bin/sh\necho "opencode v2.0.20"\n' > "$OC2STUB/opencode"; chmod +x "$OC2STUB/opencode"
+PATH="$OC1STUB:$PATH"; export PATH
+
 # box NAME -> a fresh sandbox: $B/home, $B/xdg, $B/real (a fake claude), $B/sock
 box() {
   B="$TMP/$1"
@@ -271,6 +288,103 @@ assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR)" "OPENCODE_CONFIG_DIR=/u
   "an OPENCODE_CONFIG_DIR the user set is never replaced"
 
 # =============================================================================
+printf '\n== apply: opencode 2 is never pointed at the wiring folder (#154) ==\n'
+# opencode 1.x reads OPENCODE_CONFIG_DIR as well as the user's config; 2.x
+# reads it INSTEAD, so setting it made every opencode 2 in a roost pane drop
+# the user's model, providers and permission rules. These pin that apply
+# leaves the variable unset for 2.x, removes one it set earlier, still never
+# touches the user's own, and still wires everything else.
+box oc2fresh
+srv
+PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "opencode 2: apply does not set OPENCODE_CONFIG_DIR"
+assert_eq "$(g show-options -gqv @roost-wiring-active)" "on" "opencode 2: the server is still marked wired"
+assert_eq "$(g show-environment -g ROOST_WIRING_DIR 2>/dev/null)" "ROOST_WIRING_DIR=$(wdir_of "$B/xdg")" \
+  "opencode 2: claude's half of the wiring is untouched — ROOST_WIRING_DIR is still exported"
+assert_contains "$(g show-options -gqv default-command)" "$HERE/scripts/roost-pane-shell" \
+  "opencode 2: default-command is still roost-pane-shell"
+
+# The control, and the upgrade path in one box. Wired under 1.x the variable is
+# there — so the assertion above is about the version and not about the box —
+# and the same server wired again under 2.x loses it. Without the removal a
+# server started before opencode was upgraded would hand it to every new pane
+# for as long as it ran.
+box ocupgrade
+srv
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" \
+  "OPENCODE_CONFIG_DIR=$(wdir_of "$B/xdg")/opencode" "opencode 1.x, same box: apply sets OPENCODE_CONFIG_DIR (the control)"
+PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "opencode upgraded to 2 on a wired server: apply REMOVES the value roost set earlier"
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR 2>/dev/null)" \
+  "OPENCODE_CONFIG_DIR=$(wdir_of "$B/xdg")/opencode" "and back on 1.x it is set again — the version is what decides"
+
+# `roost wiring on` is the command doctor sends an opencode 2 user to, so it
+# has to be the thing that clears it.
+out="$(PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$ROOST" wiring on 2>&1)"; rc=$?
+assert_eq "$rc" "0" "opencode 2: roost wiring on succeeds"
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "opencode 2: roost wiring on clears roost's OPENCODE_CONFIG_DIR"
+
+# The user's own directory is theirs under either version. On 2.x it is doing
+# exactly what they asked for.
+box oc2user
+srv
+g set-environment -g OPENCODE_CONFIG_DIR /users/own/dir
+PATH="$OC2STUB:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+assert_eq "$(g show-environment -g OPENCODE_CONFIG_DIR)" "OPENCODE_CONFIG_DIR=/users/own/dir" \
+  "opencode 2: an OPENCODE_CONFIG_DIR the user set is neither replaced nor removed"
+
+# An opencode that is THERE but will not say which it is. Wiring does not guess
+# 1.x for it: set for a 2.x it failed to recognise, the variable silently
+# replaces the user's configuration, and that cannot be seen; a missing badge
+# can. Two ways to be unreadable, and both are pinned.
+#
+# It prints nothing.
+OCMUTE="$TMP/ocmute"; mkdir -p "$OCMUTE"
+printf '#!/bin/sh\nexit 0\n' > "$OCMUTE/opencode"; chmod +x "$OCMUTE/opencode"
+box ocmute
+srv
+ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+PATH="$OCMUTE:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "an opencode that prints no version: apply does not set OPENCODE_CONFIG_DIR, and removes the one it set under 1.x"
+assert_eq "$(g show-options -gqv @roost-wiring-active)" "on" "an opencode that prints no version: the server is still marked wired"
+
+# It never answers. `apply` runs while a roost server is starting, so before
+# the bound this was a roost that never started (found in review of #153).
+# The stub records its pid and then sleeps for ten minutes; apply has to come
+# back anyway, the variable has to stay unset, and the stub has to be DEAD
+# afterwards — a bound that returns and leaves the process running has only
+# moved the problem.
+#
+# The clock is perl's, not a count of sleeps: a loaded runner undercounts a
+# loop. The limit is 20 s against a 6 s worst case, so a slow CI machine does
+# not turn a correct bound into a red test.
+OCHANG="$TMP/ochang"; mkdir -p "$OCHANG"
+printf '#!/bin/sh\necho $$ > "%s/pid"\nexec sleep 600\n' "$OCHANG" > "$OCHANG/opencode"; chmod +x "$OCHANG/opencode"
+box ochang
+srv
+t0="$(perl -MTime::HiRes=time -e 'printf "%.0f", time')"
+PATH="$OCHANG:$PATH" ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
+t1="$(perl -MTime::HiRes=time -e 'printf "%.0f", time')"
+[ "$((t1 - t0))" -lt 20 ]
+assert_true $? "an opencode that never answers: apply still returns (took $((t1 - t0))s, limit 20)"
+[ "$((t1 - t0))" -ge 4 ]
+assert_true $? "…and it did wait for the bound first, so the stub really was hanging (took $((t1 - t0))s)"
+g show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "an opencode that never answers: apply does not set OPENCODE_CONFIG_DIR"
+assert_eq "$(g show-options -gqv @roost-wiring-active)" "on" "an opencode that never answers: the rest of the wiring is still applied"
+hpid="$(cat "$OCHANG/pid" 2>/dev/null)"
+[ -n "$hpid" ]; assert_true $? "the hanging stub was started (it recorded its pid)"
+sleep 2
+kill -0 "$hpid" 2>/dev/null
+assert_eq "$?" "1" "an opencode that never answers: the process is killed, not left running"
+
+# =============================================================================
 printf '\n== @roost-wiring-enabled off and the wiring.off marker stop apply entirely ==\n'
 box cfgoff
 srv
@@ -486,7 +600,12 @@ S="$B/sock/roost"
 doc() { env -i PATH="$1" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
   COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
   ROOST_CONFIG_SOCK=/nonexistent ROOST_NOTIFY_SOCK=/nonexistent "${@:2}" "$HERE/scripts/roost-doctor" 2>&1; }
-DP="$HERE/shims:$B/real:$(dirname "$TMUXBIN"):/usr/bin:/bin"
+# The 1.x stub goes on this PATH too. `doc` starts doctor under `env -i`, so
+# the stub exported at the top of this file does not reach it, and the
+# directory that holds tmux is very often the one that holds a real opencode
+# (Homebrew puts both in one bin). Without the stub every doctor row below
+# would run that binary for its version.
+DP="$HERE/shims:$B/real:$OC1STUB:$(dirname "$TMUXBIN"):/usr/bin:/bin"
 NOTMUX="$HERE/shims:$B/real:$NOTMUX_BIN"
 # Both halves, so the empty answer below cannot come from a probe that failed
 # to run at all: the same probe on a PATH that DOES hold tmux has to find it.
@@ -519,7 +638,21 @@ out="$(doc "$DP" OPENCODE_CONFIG_DIR=/users/own/dir)"
 assert_contains "$out" "· OPENCODE_CONFIG_DIR is /users/own/dir, not roost's" "doctor: a user OPENCODE_CONFIG_DIR → info"
 out="$(doc "$DP" OPENCODE_CONFIG_DIR="$W/opencode")"
 assert_lacks "$out" "OPENCODE_CONFIG_DIR is" "doctor: roost's own OPENCODE_CONFIG_DIR → no note"
+# opencode 2 in a pane that still has roost's OPENCODE_CONFIG_DIR (#154). What
+# doctor says about NEW panes follows the wiring state, and it needs a real
+# server to have one. On: `roost wiring on` is the command that clears it.
+out="$(doc "$OC2STUB:$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" OPENCODE_CONFIG_DIR="$W/opencode")"
+assert_contains "$out" "INSTEAD of your own configuration" "doctor, opencode 2, wiring on: the pane's OPENCODE_CONFIG_DIR is reported"
+assert_contains "$out" "For new panes run: roost wiring on" "doctor, opencode 2, wiring on: new panes are fixed by roost wiring on"
+out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" ROOST_WIRING_DIR="$W" OPENCODE_CONFIG_DIR="$W/opencode")"
+assert_lacks "$out" "INSTEAD of your own configuration" "doctor, opencode 1.x, same pane: no warning (the control)"
 g set-option -g @roost-wiring-enabled off
+# Off: the user switched wiring off, and `off` already unset the variable on
+# the server. Sending them to `roost wiring on` would turn claude's wiring
+# back on to fix something that is not broken (found in review of #153).
+out="$(doc "$OC2STUB:$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN" OPENCODE_CONFIG_DIR="$W/opencode")"
+assert_contains "$out" "New panes already start without it" "doctor, opencode 2, wiring off: says new panes are already fine"
+assert_lacks "$out" "new panes run: roost wiring on" "doctor, opencode 2, wiring off: does not send the user to roost wiring on"
 out="$(doc "$DP" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN")"
 assert_contains "$out" "· wiring is off for this roost server" "doctor: server switch off → info"
 out="$(doc "$NOTMUX" TMUX="$S,1,0" ROOST_TMUX="$TMUXBIN")"

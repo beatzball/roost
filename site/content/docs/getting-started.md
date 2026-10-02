@@ -55,7 +55,7 @@ This is what a session looks like:
 - `tmux` ≥ 3.2 (needs pane options, `#{P:}` pane loops, and `display-popup`)
 - `git`
 - A powerline/Nerd Font for the tab separators — or run `roost init` and pick the plain-separator fallback
-- An agent that can report its state, for the badges — Claude Code, opencode, GitHub Copilot CLI, pi and OpenAI Codex CLI all have adapters in this repo, and the installer wires whichever of them you have; anything else calls `roost state`. The view itself works without any of them
+- An agent that can report its state, for the badges — Claude Code, opencode 1.x (2.x is [not supported yet](/docs/state-badges)), GitHub Copilot CLI, pi and OpenAI Codex CLI all have adapters in this repo, and the installer wires whichever of them you have; anything else calls `roost state`. The view itself works without any of them
 - Optional: `fzf` (for the `prefix a` agent switcher)
 - Optional: [`preen`](https://github.com/beatzball/preen) (renders an agent's markdown for `roost read --render`; without it that flag prints the raw text)
 
