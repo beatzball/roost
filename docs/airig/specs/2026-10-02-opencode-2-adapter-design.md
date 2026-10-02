@@ -1,9 +1,10 @@
 # An adapter for opencode 2 — design for #150
 
-Status: **proposed 2026-10-02, revised the same day after review. Not approved,
-nothing built.** The one decision that was the human's to make, Q1, is answered
-(§8). A jury of three reviewed the first version and all three asked for
-changes; §9 says what they found and what changed. The rest still waits for
+Status: **proposed 2026-10-02, revised twice the same day after two rounds of
+review. Not approved, nothing built.** The one decision that was the human's to
+make, Q1, is answered (§8). A jury of three reviewed the first version and the
+second, and asked for changes both times; §9 says what they found and what
+changed. This third version has not been reviewed. The rest still waits for
 agreement.
 
 Base: `main` at `8cbafa1`, which is PR #153 merged. This builds on it: #153
@@ -140,9 +141,23 @@ A second terminal was started on a chat **after** that chat's
   the pending request — its id, session, action and resources.
 - `status(id)` was `"running"`.
 
-So an open dialog can be recovered by a plugin that did not see it open.
-Measured for a dialog of the chat itself. *Not measured* for a dialog that
-belongs to a child of the chat (A1, §5).
+So an open dialog can be found by a plugin that did not see it open.
+
+The same for a **subagent's** dialog (A1, measured after the second review
+round). With a child's dialog open, a terminal started afterwards on the
+**parent** chat found:
+
+| call | result |
+|---|---|
+| `family(parent)` | `[parent, child]` |
+| `permission.list(parent)` after sync | `[]` |
+| `permission.list(child)` after sync | one pending request, `sessionID` = the child |
+| `root(child)` | the parent |
+| `permission.sync` | 7 ms for the child, under 1 ms for the parent |
+
+So "is a dialog open for the chat in front?" has an answer that needs no
+memory and no attribution of events: **any pending request in any member of
+`family(front)`.**
 
 ### 2.6 A reload
 
@@ -225,32 +240,45 @@ the 1.x helper, comments and all, including `ROOST_AGENT_NAME=opencode`.
 A missing API (`context.data.listen` absent on some later 2.x) leaves the pane
 unbadged rather than broken.
 
-### 3.2 The model: one entry per chat
+### 3.2 The model: one entry per session, and `blocked` is asked for, not tracked
 
-A map from **root** session id to `{ state, text, due }`.
+A map from session id to `{ phase, text, due }`, keyed by the id **the event
+itself carries**. There is no map of children to parents and no resolving of
+ids.
 
-- `state` — `working`, `blocked`, `done`, `error`, or `idle`.
+- `phase` — `working`, `done`, `error`, or `idle`. Never `blocked`.
 - `text` — what the turn in progress has said so far.
-- `due` — a reply that is owed to the pane and not yet written: either
-  `{ publish: TEXT }` or `{ clear: true }`, or nothing.
+- `due` — a reply owed to the pane for the turn that just ended and not yet
+  written: `{ publish: TEXT }` or `{ clear: true }`, or nothing.
 
-`children` maps a child id to its root, learned from `parentID` on
-`session.created`. A `permission.*` event for an id that is neither a known
-root nor a known child is resolved with `context.data.session.root(id)` before
-it is filed (§2.4: by the time a child asks, `root()` was right).
-
-| event | for the root it belongs to |
+| event | for the entry of the session id it carries |
 |---|---|
-| `session.execution.started` (root's own) | `working`; `text = none` |
-| `session.text.ended` (root's own) | `text = data.text` — the last one wins, as on 1.x |
-| `permission.asked` (root's or a child's) | `blocked` |
-| `permission.replied` (root's or a child's) | `working` |
-| `session.retry.scheduled` (root's own) | `error` if `attempt >= 3`, else `working` |
-| `session.execution.succeeded` (root's own), with text | `done`; if this chat is in front, `due = publish(text)` |
-| `session.execution.succeeded` (root's own), no text | `done`; if in front, `due = clear` |
-| `session.execution.failed` (root's own) | `error`; if in front, `due = clear` |
-| `session.execution.interrupted` (root's own) | `done`; if in front, `due = clear` |
-| a child's lifecycle, text, retries | ignored |
+| `session.execution.started` | `working`; `text = none`; **`due = none`** |
+| `session.text.ended` | `text = data.text` — the last one wins, as on 1.x |
+| `session.retry.scheduled` | `error` if `attempt >= 3`, else `working` |
+| `session.execution.succeeded`, with text | `done`; if this session is in front **now**, `due = publish(text)` |
+| `session.execution.succeeded`, no text | `done`; if in front now, `due = clear` |
+| `session.execution.failed` | `error`; if in front now, `due = clear` |
+| `session.execution.interrupted` | `done`; if in front now, `due = clear` |
+| `permission.asked`, `permission.replied`, **for any session** | nothing in the model; mark the front's dialog state **stale** (§3.3) |
+
+"In front now" is a fresh `router.current()` read when the event is handled,
+not what the last `reconcile()` saw.
+
+**Why a child needs no special handling.** A subagent's events carry the
+child's id (§2.4), so they land in the child's own entry and never touch the
+parent's. The child's `succeeded` cannot end the pane's turn and the child's
+text cannot become the pane's reply, because the pane only ever reads the entry
+of the session in front. The first two versions of this design mapped children
+to their roots, and both review rounds found a way for that mapping to be
+wrong — a `session.created` that was never heard, a `root()` that is not yet
+right (§9). Not mapping at all removes the question.
+
+**Why `blocked` is asked for.** Tracking it from `permission.asked` and
+`permission.replied` needs each event attributed to the right chat, and needs a
+count when two requests are open at once. Asking needs neither: the pane is
+`blocked` exactly when some member of `family(front)` has a pending request
+(§2.5). The events are still used — as the signal to ask again.
 
 `attempt >= 3` is the 1.x rule — error at the second retry — read off
 opencode's own counter. The known gap about a retrying-but-alive provider
@@ -269,28 +297,48 @@ turn's, and on `done` `roost read` would serve it with no warning (§2.8). The
 **A turn that finishes while its chat is hidden owes the pane nothing.** Its
 text is not kept. See §3.3 for why, and §6 for what that costs.
 
-The map is capped at 200 roots. Only entries in `done`, `error` or `idle` are
-evicted; a `working` or `blocked` chat is never dropped. An evicted or
-never-seen chat is **unknown**, which §3.3 handles the same way as a chat met
-for the first time.
+**A `due` never outlives its moment.** It is dropped when its session stops
+being the front one, and when that session starts another turn. Both review
+rounds reached the same bug from different sides: a reply that was owed, not
+yet written, and then written much later — after a tab switch and back — as
+if it were the newest answer (§9).
 
-### 3.3 What `reconcile()` writes
+The map is capped at 200 entries, and only entries in `done`, `error` or
+`idle` are evicted. A session with no entry is **unknown**, which §3.3 handles
+the same way whether it was evicted, never seen, or lost to a reload.
 
-`front` is the root of the session `router.current()` names, or none on the
-home screen. `written` is what this adapter last wrote: `{ front, state }`.
+### 3.3 What `reconcile()` writes, and when it asks
+
+`front` is the session id `router.current()` names, or none on the home
+screen. `written` is what this instance last wrote: `{ front, state }`. It
+starts empty, so the first pass writes everything.
 
 Each pass, in this order:
 
 1. **The front changed** (`front != written.front`). The pane is now about a
-   different chat, so the stored reply is not this chat's:
-   **clear it** — an empty `roost reply -` (§2.8) — and forget
-   `written.state`. Then, if the new front is unknown, **recover** it (below).
-2. **A reply is due** for the front chat: `publish` → `roost reply -` with the
-   text; `clear` → the empty one. Then drop `due`.
-3. **The state differs** from `written.state` → `roost state <state>`.
+   different chat, so the stored reply is not this chat's: drop the `due` of
+   the session that left, **clear the stored reply** — an empty
+   `roost reply -` (§2.8) — forget `written.state`, and mark the dialog state
+   stale.
+2. **The dialog state is stale** → ask: for each id in `family(front)`,
+   `permission.sync(id)` then `permission.list(id)`. Any pending request →
+   the front is blocked. Each `sync` is raced against a 2-second limit and
+   caught; if it fails or times out, the answer is "not known", the pane keeps
+   what it shows, and the question stays stale for the next pass.
+3. **A reply is due** for the front session: `publish` → `roost reply -` with
+   the text; `clear` → the empty one. Then drop `due`.
+4. **The state differs** from `written.state` → `roost state <state>`, where
+   the state is: `blocked` if step 2 found a pending request; else the front
+   entry's `phase`; else, for an unknown session, `working` if
+   `status(front) == "running"` and `idle` if not; and `idle` on the home
+   screen.
 
 Reply before state, always: `wait-done` returns the moment the badge stops
 being busy, and the documented idiom is wait-done then read.
+
+The dialog state goes stale on three things: a front change, any
+`permission.*` event for any session, and `setup`. Not on the timer — asking
+costs a call per family member, and the timer runs every second.
 
 **A reply is published exactly once, when a turn of the front chat ends.** It
 is never re-published. The first version of this design re-published a
@@ -302,24 +350,35 @@ chat's old answer. So after a front change `roost read` has no recorded reply
 for the pane and says so, until the chat in front finishes a turn. That is
 weaker than restoring it and it is true.
 
-**Recovering an unknown chat** — one this instance has no entry for: a chat
-never seen, an evicted one, and every chat after a reload (§2.6):
+**An unknown session needs no separate path.** A chat never seen, an evicted
+one, and every chat after a reload (§2.6) all go through the same four steps:
+the dialog question is asked of opencode, and the phase falls back to
+`status()`. What cannot be recovered is the difference between `done`, `error`
+and `idle` for a turn this instance did not see end; it reads `idle`.
 
-1. `await permission.sync(id)`, then `permission.list(id)`: a pending request
-   → `blocked`.
-2. else `status(id) == "running"` → `working`.
-3. else → `idle`.
+Asking for the dialog state matters because of what a wrong answer does:
+`roost send` refuses only a `blocked` target, so a pane that reads `working`
+over an open dialog gets the next prompt typed into the dialog.
 
-Step 1 exists because of what its absence does: `roost send` refuses only a
-`blocked` target, so a pane that reads `working` over an open dialog gets the
-next prompt typed into the dialog.
+**`setup` writes the pane in full.** The first pass clears the stored reply and
+writes the state it finds. The second version of this design tried to be
+cleverer — "never downgrade at setup", so that a reload would keep a finished
+chat's `done` and its reply — and the second review found three ways for that
+to be wrong (§9): a new opencode started in a pane still showing another
+chat's `done` and answer; a busy badge left by the previous instance for a turn
+that ended during the reload; and a timer tick that downgraded it anyway a
+second later. An instance cannot know whose badge is on the pane, so it does
+not guess. The cost is in §6: after a reload, a finished chat reads `idle`
+with no stored reply until its next turn.
 
-**At `setup`, the pane is never downgraded.** A new instance — a fresh
-terminal, or a reload mid-session — recovers the front chat, and writes only if
-the answer is `blocked` or `working`. If it is `idle` it writes nothing and
-clears nothing: after a reload the pane already holds the right `done` and the
-right reply from the instance that was just replaced, and this one cannot know
-that. `written` starts as "whatever is there".
+**A reload must not leave the old instance writing.** `reconcile()` is serial
+within one instance, and a reload makes a second one in the same process
+(§2.6). The cleanup `setup` returns therefore does four things: stops the
+listener, clears the timer, sets a `disposed` flag that every step of
+`reconcile()` checks after each `await`, and **kills the `roost` child it has
+in flight**, if any. The new instance writes the pane in full, as above, and
+writes it once more on its first timer tick, so a write the old instance got
+out before it was stopped does not stand.
 
 **`idle` is reported on a front change, and the contract says adapters do not
 report it.** That sentence in `2026-08-29-adapter-contract.md` is already not
@@ -396,12 +455,13 @@ Node only, no opencode:
 
 - imports `tui.js` and calls `setup(context)` with a **fake context**:
   `data.listen`, `ui.router.current`, `data.session.status`,
-  `data.session.permission.sync/list` and `data.session.root`, each scripted
-  by the case;
+  `data.session.family` and `data.session.permission.sync/list`, each scripted
+  by the case — including a `sync` that rejects and one that never settles;
 - puts a **recording `roost` shim** on `PATH`, as the 1.x harness does and as
   the contract requires, so what is asserted is the real `execFile` path: the
-  argv, the stdin, and the order the processes actually ran in. One variant of
-  the shim sleeps on `reply`, to force the overlap §3.1 exists for;
+  argv, the stdin, `ROOST_AGENT_NAME=opencode` on every call, and the order
+  the processes actually ran in. One variant of the shim sleeps on `reply`, to
+  force the overlap §3.1 exists for;
 - drives time with Node's mock timers, so "a second passed and nothing else
   happened" is a step a case can take.
 
@@ -413,8 +473,11 @@ exists (the contract: fixtures replay a recorded turn).
 |---|---|
 | a turn with no tool | `state working`, `reply TEXT`, `state done` |
 | a tool behind a dialog, allowed | `working`, `blocked`, `working`, reply, `done` |
-| a subagent with its own dialog | the child's `succeeded` writes nothing; the child's text is never a reply; its dialog writes `blocked` (trap T1) |
-| a subagent's dialog whose `session.created` was never heard | `blocked`, through `root()` |
+| a subagent with its own dialog | the child's `succeeded` writes nothing; the child's text is never a reply; its dialog writes `blocked`, found through `family(front)` (trap T1) |
+| the same, with every event before the child's first one withheld — a reload mid-subagent — and the child speaking before it asks | `blocked` all the same: nothing depends on having heard `session.created` |
+| two dialogs open in one family; the first is answered | still `blocked`; `working` only after the second |
+| `permission.sync` rejects, then works on the next pass | no write on the first pass, `blocked` on the second; nothing thrown |
+| `permission.sync` never settles | the pass ends after the 2-second limit and later passes still write |
 | answered turn, then a turn ended by Esc Esc | second turn: `working`, **empty reply**, `done` — the first answer is not left behind |
 | answered turn, then a turn ended by Reject | `working`, `blocked`, `working`, **empty reply**, `done` |
 | answered turn, then a turn that succeeds with no prose | **empty reply**, `done` |
@@ -423,10 +486,12 @@ exists (the contract: fixtures replay a recorded turn).
 | front A → B → A → B, all four finished, **no events**, timer only | each switch: empty reply, then the state. **No non-empty reply is ever written** — the turn record cannot grow |
 | front → a chat with an open dialog this instance never heard | empty reply, `blocked` |
 | front → home | empty reply, `idle` |
-| `setup` on a chat that is idle | **nothing written** |
-| `setup` on a chat that is running / has a pending permission | `working` / `blocked`, and no reply call |
+| `setup` on an idle chat, in a pane the shim says already holds another chat's `done` and reply | empty reply, `idle` — and the same again after one tick |
+| `setup` on a chat that is running / has a pending permission | empty reply, then `working` / `blocked` |
 | the slow-`reply` shim: A succeeds, the front moves to B (running) while A's publish is in flight | the last `state` written is B's `working`, and the last reply written is the empty one |
-| 201 chats, the oldest one `blocked` | it is not evicted; front → it writes `blocked` |
+| A succeeds in front; the front moves to B **before** the pass that would publish; A runs a second turn while hidden and is interrupted; front → A | **no non-empty reply is ever written** — the owed reply died when A left the front |
+| cleanup, then a new `setup`, with the old instance's `roost` child made slow | the old child is killed; the last writes are the new instance's |
+| 201 chats, the oldest one with an open dialog | front → it writes `blocked`, entry or no entry |
 | no `roost` on `PATH`; an event with no session id; an unknown type; a null payload | nothing thrown |
 
 Each event case is run once more with a second, unrelated chat's events
@@ -470,15 +535,13 @@ control for every 2.x assertion.
 
 ## 5. Order of work
 
-Two things are measured before anything is built, because the design leans on
-them and nobody has seen them:
+One thing is measured before the case that needs it is written:
 
-- **A1** — a pending permission that belongs to a **child** session, seen by an
-  instance that started after it was asked. If `permission.list` cannot show
-  it, recovery (§3.3) has a hole for subagent dialogs and it is recorded as a
-  gap.
 - **A2** — a retry that then succeeds, recorded, for the fixture. Until it is,
   that case is not in the offline suite.
+
+(A1 — a child's pending permission seen by an instance that started late — was
+measured after the second review round and is in §2.5.)
 
 Then:
 
@@ -509,8 +572,13 @@ One PR.
   coordinator that sent the prompt with `roost send` and waits with
   `wait-done --turn N` waits until its timeout if a person tabbed away in that
   pane mid-turn.
-- **After a reload or an eviction a finished chat reads `idle`, not `done`**,
-  once it is switched away from and back to. `status()` cannot say more.
+- **After a reload, a finished chat reads `idle` with no stored reply**, until
+  its next turn. A reload is what a roost update does to every open opencode
+  terminal. `setup` writes the pane in full because it cannot know whose badge
+  is on it (§3.3). The same for an evicted chat brought back to the front.
+  `status()` cannot tell `done` from `idle`.
+- **A dialog answered or opened while a `permission.sync` is failing** is seen
+  one pass late, or at the next `permission.*` event.
 - **A front change is seen up to a second late**, or at the next event. For
   that second the badge and `roost read` describe the chat that was in front.
 - **No badge without `roost install`** on opencode 2 (Q1). 1.x keeps its
@@ -540,9 +608,16 @@ One PR.
 - **R5 — #141** (session id, directory and harness on the pane) is being built
   in parallel. This adapter knows the session id of the front chat and should
   stamp it the way that issue settles; it does not invent its own option.
-- **R6 — recovery costs a network call.** `permission.sync` is awaited on every
-  front change to an unknown chat. Its latency was not measured; while it is
-  in flight the pane still shows the previous chat's badge.
+- **R6 — the dialog question is a call to opencode.** `permission.sync` is
+  awaited once per member of the front chat's family, on a front change and on
+  any `permission.*` event. Measured once: 7 ms for a child, under 1 ms for
+  its parent (§2.5). It sits inside the one serial writer, so it is raced
+  against 2 seconds and caught; a chat with many subagents multiplies it. Not
+  measured: its cost against a remote server.
+- **R7 — `family()` is the only source of "whose dialog is this".** It was seen
+  to list one child. Grandchildren, and a family after a child has finished,
+  were not measured. If it omits a member, that member's dialog reads
+  `working`. The live smoke test's subagent case is the check.
 
 ---
 
@@ -570,7 +645,9 @@ is the same shape, on an API that is a few weeks old.
 **Made by the author, open to challenge:**
 
 - A terminal-side plugin, not `--standalone` (D2 rules the other out).
-- State per root chat; the pane is reconciled to the front chat (D1).
+- State per session; the pane is reconciled to the front chat (D1).
+- `blocked` is asked of opencode — a pending request anywhere in the front
+  chat's family — and not tracked from events.
 - `interrupted` → `done` for both Esc and Reject.
 - A reply is published once, when a turn of the front chat ends, and never
   re-published. A front change clears the stored reply. The alternative — a
@@ -578,7 +655,8 @@ is the same shape, on an API that is a few weeks old.
   D3 allows and is not proposed.
 - A turn that ends with no answer clears the stored reply.
 - A 1-second timer for front changes.
-- `setup` never downgrades a pane.
+- `setup` writes the pane in full, and a reload therefore costs a finished
+  chat its `done` and its stored reply.
 - `idle` is reported on a front change, and the contract is corrected.
 - `roost install` links exactly one opencode adapter: the one for the version
   on `PATH`.
@@ -598,7 +676,7 @@ it changed anything.
 |---|---|---|
 | Re-publishing a reply on a tab switch appends a numbered turn each time: duplicates in the record, real turns evicted, `--turn N` answered by another chat | 3 of 3 | No re-publish. A front change clears (§3.3). A test against the real `roost` counts turn files (§4). |
 | A front-chat turn that ends by Esc, Reject or no prose leaves the previous answer stored, served silently on `done` | 3 of 3 | Those endings clear the reply (§3.2). The 1.x adapter's same hole is recorded. |
-| A chat the plugin has no memory of — after a reload, a late start, an eviction — can only read `working` or `idle`, so an open dialog reads `working` and `roost send` types into it | 2 of 3, and the third for subagents | Measured: `permission.sync` + `permission.list` recovers it (§2.5). Recovery added (§3.3); `working` and `blocked` chats are never evicted; `setup` never downgrades; an unheard child is resolved through `root()`. |
+| A chat the plugin has no memory of — after a reload, a late start, an eviction — can only read `working` or `idle`, so an open dialog reads `working` and `roost send` types into it | 2 of 3, and the third for subagents | Measured: `permission.sync` + `permission.list` recovers it (§2.5). Recovery added (§3.3); `working` and `blocked` chats are never evicted; `setup` never downgrades; an unheard child is resolved through `root()`. (The last two did not survive round 2, below.) |
 | Every listed test passes with no timer, and with writes that cross: the shell was untested | 2 of 3 | One serial `reconcile()` is the only writer (§3.1). The harness drives `setup` with a fake context, a real `roost` shim and mock timers, and must fail when the timer is removed (§4). A live event-free tab switch is added. |
 | "Nothing un-records a reply" was wrong: an empty `roost reply -` does | 2 of 3 | Step 1 is a test, not a new command (§2.8, §5). |
 | "No adapter reports `idle`" was wrong: codex does | 1 of 3 | The contract paragraph is corrected, not bent (§3.3). |
@@ -607,5 +685,30 @@ it changed anything.
 | `roost validate` also reads the adapter table | 1 of 3 | Named (§3.5). |
 | The live test needs the "ask" rule or `blocked` is never set up | 1 of 3 | Added (§4). |
 
-None of the three ran an opencode binary; they were told not to. Every
-opencode 2 fact in this document rests on the author's measurements alone.
+### Round 2, on the revision
+
+The same three, the same day. Each confirmed its own round-1 findings resolved
+(two "partly", both about subagents), and all three again returned
+CHANGES_NEEDED — every new finding was in logic the revision had added.
+
+| finding | raised by | what changed |
+|---|---|---|
+| A reply that was owed and not yet written survives a tab switch, and is published much later as if it were the newest answer | 3 of 3 | A `due` is dropped when its session leaves the front and when it starts another turn; "in front" is read fresh at the event (§3.2). A test walks the exact sequence (§4). |
+| After a reload, a child's events are filed as a chat of their own, so its dialog never reaches the parent; and `root()` is wrong for a child's first four seconds | 2 of 3 | No mapping of children at all. `blocked` is asked of opencode over `family(front)` — measured for a child's dialog, A1 (§2.5, §3.2). |
+| "`setup` never downgrades" keeps another chat's `done` and answer on a pane where a new opencode has started; keeps a stale busy badge; and is undone by the first timer tick anyway | 3 of 3, one situation each | Dropped. `setup` writes the pane in full; the cost is recorded (§3.3, §6). |
+| A reload leaves the old instance's `roost` child in flight, and its late write beats the new instance's | 1 of 3 | Cleanup stops the listener and timer, sets `disposed`, kills the child in flight; the new instance writes in full, twice (§3.3). |
+| `permission.replied` writes `working` while a second dialog is still open | 1 of 3 | Follows from asking: `blocked` holds while any request is pending. |
+| `permission.sync` inside the one serial writer could hang or reject and stop every later write | 2 of 3, as "not checked" | Raced against 2 seconds and caught (§3.3). |
+| `ROOST_AGENT_NAME` is named and not asserted | 1 of 3 | Asserted on every call (§4). |
+| The claim that reasoning arrives separately had no evidence in the files the jury was given | 1 of 3 | The event excerpt is posted on #150. |
+
+A third round has not been run on this version. Two rounds each found real
+faults, and each fault was in logic the previous revision had added. This
+revision removes logic rather than adding it — no child mapping, no tracked
+`blocked`, no setup rule — and every situation a reviewer found is now a case
+in §4. Whether that is enough, or a third round comes first, is the human's
+call.
+
+None of the three ran an opencode binary in either round; they were told not
+to. Every opencode 2 fact in this document rests on the author's measurements
+alone.
