@@ -421,7 +421,54 @@ fi
 
 # opencode adapter — informational. Most users will not have opencode, so a
 # missing plugin is a warning, never a required failure.
+#
+# The version is asked first, because on opencode 2 none of the link advice
+# below is true (#150). adapters/opencode/roost.js is an opencode 1.x plugin.
+# opencode 2 has a different plugin shape and refuses the file at load —
+# measured on 2.0.20, its log says "Plugin must export a default definition
+# with an id and an effect or setup function" — and it does so quietly: the
+# agent runs normally and the pane simply never badges. So "opencode plugin
+# linked" on a 2.x machine was a green tick over something that does nothing,
+# and "run: ln -s ..." sent the user to a command that cannot help.
+#
+# `--version` prints `1.18.30` on 1.x and `opencode v2.0.20` on 2.x, so the
+# number is taken from wherever the first digit is rather than from the start
+# of the line. On 2.x it starts no background service — checked, because 2.x
+# starts one for most other commands and doctor must not leave a server behind.
+#
+# A version that cannot be read falls through to the 1.x checks. That is what
+# doctor did before it asked at all, and an opencode too old or too odd to
+# print a version is far more likely to be 1.x than 2.x.
+#
+# Asking is not free, which is why it is done in a throwaway directory.
+# opencode sets up its directories before it looks at its arguments: measured
+# in an empty home, `opencode --version` on 1.18.30 creates opencode/ under
+# all four XDG directories and under $TMPDIR, and 2.0.20 does the same and
+# also writes a log file. doctor is a report — it must not be the thing that
+# first creates ~/.local/share/opencode on a machine where opencode was
+# installed and never run, and tests/test-doctor.sh's canary fails if any
+# doctor run writes into a home it was only supposed to read. So the five are
+# pointed at one temp directory for this one command, and it is removed.
+# If the temp directory cannot be made, the version is left unread rather
+# than asked for in the user's real directories.
+ocver=""
 if command -v opencode >/dev/null 2>&1; then
+  if ocvtmp="$(mktemp -d 2>/dev/null)" && [ -n "$ocvtmp" ]; then
+    ocver="$(XDG_CONFIG_HOME="$ocvtmp" XDG_DATA_HOME="$ocvtmp" XDG_CACHE_HOME="$ocvtmp" XDG_STATE_HOME="$ocvtmp" TMPDIR="$ocvtmp" \
+      opencode --version </dev/null 2>/dev/null | sed -n '1s/^[^0-9]*\([0-9][0-9.]*\).*/\1/p')"
+    rm -rf "$ocvtmp"
+  fi
+fi
+case "${ocver%%.*}" in
+  ''|0|1) ocnew=0 ;;
+  *)      ocnew=1 ;;
+esac
+if [ "$ocnew" = 1 ]; then
+  # A warning, not a ✗: opencode 2 not badging stops nothing else in roost
+  # working, the same as an adapter that is not linked. It names no command
+  # because there is none to run — the fix is in roost, not on this machine.
+  warn "opencode $ocver found — roost does not support opencode 2 yet: its adapter is an opencode 1.x plugin, which opencode 2 does not load, so an opencode 2 pane shows no badge and roost read falls back to the screen. There is nothing to fix on this machine; opencode 1.x still works. Tracked in https://github.com/beatzball/roost/issues/150"
+elif command -v opencode >/dev/null 2>&1; then
   if [ -L "$ocplug" ] && [ ! -e "$ocplug" ]; then
     # -e follows symlinks, so a DANGLING link (target moved/deleted, e.g. an
     # old checkout that got removed) reads as simply absent, and the "not

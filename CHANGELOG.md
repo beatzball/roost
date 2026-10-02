@@ -21,6 +21,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
   now says which you have. Across a reload the cursor keeps its position rather than its row:
   following the row made fzf drop one `Enter` in ten, measured.
 
+- **`roost doctor` says when your opencode is 2.x, which roost does not support
+  yet** (#150). opencode 2 has a new plugin format and does not load roost's
+  adapter, and it reports that only in its own log, so the pane runs normally
+  and never badges. doctor used to print `opencode plugin linked` on such a
+  machine, or hand you an `ln -s` that could not help. It now prints one line
+  saying opencode 2 is not supported yet, with nothing to run, because the fix
+  is in roost and not on your machine. opencode 1.x is checked exactly as
+  before. Finding the version starts opencode once with its directories pointed
+  at a temp folder that is then removed: asked plainly, `opencode --version`
+  creates its data directories, and a report should not be what first creates
+  them.
+
 ### Fixed
 
 - **Docs pages are no longer blank at a trailing-slash URL** (#129). Every page

@@ -270,6 +270,50 @@ assert_contains "$out" "dangling" "doctor flags a dangling plugin symlink distin
 run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "a dangling plugin symlink does not fail doctor"
 
+# --- opencode 2: not supported yet, and doctor must say so (#150) ---
+# roost's adapter is an opencode 1.x plugin and opencode 2 refuses to load it,
+# quietly. Before this check doctor printed "opencode plugin linked" on such a
+# machine: a green tick over something that does nothing. These pin that 2.x
+# gets one honest line INSTEAD of the link advice, and that 1.x is untouched.
+#
+# The stubs are scripts that print what each line really prints -- `opencode
+# v2.0.20` on 2.x, a bare `1.18.30` on 1.x, both measured -- never symlinks to
+# a real binary. The stub every case above uses prints nothing at all, so the
+# "version unreadable falls through to the 1.x checks" path is already covered
+# by all of them.
+oc2shim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\necho "opencode v2.0.20"\n' > "$oc2shim/opencode"; chmod +x "$oc2shim/opencode"
+oc1shim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\necho "1.18.30"\n' > "$oc1shim/opencode"; chmod +x "$oc1shim/opencode"
+oc_has() { case "$1" in *"$2"*) printf yes ;; *) printf no ;; esac; }
+
+# The worst case first: the plugin IS correctly linked. That is the state that
+# used to earn the tick.
+rm "$ocdir/opencode/plugin/roost.js"
+ln -s "$HERE/adapters/opencode/roost.js" "$ocdir/opencode/plugin/roost.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_contains "$out" "does not support opencode 2 yet" "opencode 2: doctor says it is not supported"
+assert_contains "$out" "opencode 2.0.20 found" "opencode 2: the line names the version it found, without the 'opencode v' prefix twice"
+assert_contains "$out" "issues/150" "opencode 2: the line points at the issue"
+assert_eq "$(oc_has "$out" "opencode plugin linked")" "no" "opencode 2: a linked 1.x plugin is NOT reported as linked"
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" >/dev/null 2>&1
+assert_eq "$?" "0" "opencode 2: it is a warning, doctor's exit code is unchanged"
+
+# The control. Same link, same everything, only the version differs -- so the
+# assertions above are about the version and not about the fixture.
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
+assert_contains "$out" "opencode plugin linked" "opencode 1.x: a linked plugin is still reported as linked"
+assert_eq "$(oc_has "$out" "does not support opencode 2 yet")" "no" "opencode 1.x: no opencode 2 line"
+
+# Not linked: 2.x must not be handed an `ln -s` that cannot help.
+rm "$ocdir/opencode/plugin/roost.js"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_contains "$out" "does not support opencode 2 yet" "opencode 2, nothing linked: doctor says it is not supported"
+assert_eq "$(oc_has "$out" "roost plugin not installed")" "no" "opencode 2, nothing linked: no advice to link the 1.x plugin"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
+assert_contains "$out" "roost plugin not installed" "opencode 1.x, nothing linked: the link advice is still printed"
+
+rm -rf "$oc2shim" "$oc1shim"
 rm -rf "$ocdir" "$shimdir"
 
 # --- roost itself must be on PATH ---

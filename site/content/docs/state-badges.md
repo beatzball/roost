@@ -107,6 +107,14 @@ It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside a ro
 
 ## opencode
 
+**This is for opencode 1.x. opencode 2 is not supported yet.** opencode 2 has a
+new plugin format and does not load roost's adapter, and it says so only in its
+own log — so an opencode 2 pane runs normally and simply never shows a badge,
+and `roost read` falls back to the screen. Nothing you link or install changes
+that; `roost doctor` tells you when the `opencode` on your `PATH` is 2.x. The
+work is tracked in [issue 150](https://github.com/beatzball/roost/issues/150).
+Everything below describes opencode 1.x, which still works.
+
 **opencode** has an adapter in this repo. `roost install --only opencode` links
 it. By hand:
 

@@ -30,7 +30,7 @@ and a pane still does not badge, check, in order:
 
 1. `roost hooks` output is merged into `~/.claude/settings.json` under `"hooks"`. See [State Badges](/docs/state-badges).
 2. You are running the agent **inside** a roost pane. `scripts/roost-agent-state` is a deliberate no-op outside one.
-3. For opencode, pi or GitHub Copilot CLI, the adapter is linked — run `roost doctor`, which prints the exact `ln -s` for your checkout. See [State Badges](/docs/state-badges).
+3. For opencode, pi or GitHub Copilot CLI, the adapter is linked — run `roost doctor`, which prints the exact `ln -s` for your checkout. See [State Badges](/docs/state-badges). If your opencode is 2.x, stop here: it is not supported yet, `roost doctor` says so, and the opencode section of [State Badges](/docs/state-badges) has the detail.
 4. For codex, `~/.codex/hooks.json` is written **and** you have answered *"Trust all and continue"* at codex's own `Hooks need review` prompt. That answer is one of the two steps `roost install` cannot do for you.
 5. For any other agent, it must call `roost state <state>` itself.
 
