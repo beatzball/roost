@@ -1,11 +1,11 @@
 # An adapter for opencode 2 — design for #150
 
-Status: **proposed 2026-10-02, revised twice the same day after two rounds of
-review. Not approved, nothing built.** The one decision that was the human's to
-make, Q1, is answered (§8). A jury of three reviewed the first version and the
-second, and asked for changes both times; §9 says what they found and what
-changed. This third version has not been reviewed. The rest still waits for
-agreement.
+Status: **proposed 2026-10-02, revised three times after three rounds of
+review (the third on 2026-10-03). Not approved, nothing built.** The one
+decision that was the human's to make, Q1, is answered (§8). A jury of three
+reviewed each version and asked for changes each time; §9 says what they found
+and what changed. This fourth version has not been reviewed. The rest still
+waits for agreement.
 
 Base: `main` at `8cbafa1`, which is PR #153 merged. This builds on it: #153
 added `scripts/lib/roost-opencode.sh`, bounded the version check, and stopped
@@ -126,10 +126,10 @@ carries `parentID`. Its lifecycle, its text and its permission events all carry
 the **child's** id. Its dialog is drawn in the parent's terminal. Its
 `execution.succeeded` arrives before the parent's.
 
-`context.data.session.root(<child>)` returned the child's own id for the first
-four seconds of the child's life, and the parent after that. In the one run,
-the child's `permission.asked` came five seconds in, after `root()` had become
-right.
+`context.data.session.root(<child>)` returned the child's own id at the moment
+of `session.created` and the parent 250 ms later (M3, §2.5). An earlier run
+had put the change somewhere inside the first four seconds; that was when the
+probe ran, not when the value changed.
 
 ### 2.5 What a plugin with no memory can find out
 
@@ -158,6 +158,23 @@ round). With a child's dialog open, a terminal started afterwards on the
 So "is a dialog open for the chat in front?" has an answer that needs no
 memory and no attribution of events: **any pending request in any member of
 `family(front)`.**
+
+How soon a new child appears in that family (M3, measured after the third
+review round): at the moment of the child's `session.created`, `family(parent)`
+did **not** list it and `root(child)` was the child itself; 250 ms later both
+were right, and stayed right. The child's `permission.asked` came 1.4 s after
+its creation, by which time the family listed it and `permission.list(child)`
+showed the request. So the lag is a quarter of a second, not the four seconds
+the earlier `root()` observation suggested — that observation was taken when
+the probe happened to run, not when the data changed. A child that asks inside
+its first 250 ms would be missed by an answer taken at that instant; §3.3 asks
+again rather than trusting one answer.
+
+Esc, pressed twice with that dialog on screen, did nothing (M4): no event, the
+dialog stayed, the turn went on. The keys go to the dialog. So "a turn that
+ends with a dialog still open" was not produced by Esc; whether a provider
+failure or a server shutdown can produce it is *not measured*, and §3.3 covers
+it anyway.
 
 ### 2.6 A reload
 
@@ -253,14 +270,16 @@ ids.
 
 | event | for the entry of the session id it carries |
 |---|---|
-| `session.execution.started` | `working`; `text = none`; **`due = none`** |
+| `session.execution.started` | `working`; `text = none` |
 | `session.text.ended` | `text = data.text` — the last one wins, as on 1.x |
 | `session.retry.scheduled` | `error` if `attempt >= 3`, else `working` |
 | `session.execution.succeeded`, with text | `done`; if this session is in front **now**, `due = publish(text)` |
 | `session.execution.succeeded`, no text | `done`; if in front now, `due = clear` |
 | `session.execution.failed` | `error`; if in front now, `due = clear` |
 | `session.execution.interrupted` | `done`; if in front now, `due = clear` |
-| `permission.asked`, `permission.replied`, **for any session** | nothing in the model; mark the front's dialog state **stale** (§3.3) |
+| `session.execution.succeeded` / `failed` / `interrupted`, **for any session** | also: mark the front's dialog state **stale** (§3.3) — a dialog the turn's end took with it must stop reading `blocked` |
+| `permission.asked`, **for any session** | nothing in the model; mark the dialog state stale |
+| `permission.replied`, for a session in the front's family | mark stale; and if the front entry's phase is `error`, set it to `working` — a dialog means the model answered, so the retry loop the `error` came from is over (the 1.x rule) |
 
 "In front now" is a fresh `router.current()` read when the event is handled,
 not what the last `reconcile()` saw.
@@ -297,11 +316,14 @@ turn's, and on `done` `roost read` would serve it with no warning (§2.8). The
 **A turn that finishes while its chat is hidden owes the pane nothing.** Its
 text is not kept. See §3.3 for why, and §6 for what that costs.
 
-**A `due` never outlives its moment.** It is dropped when its session stops
-being the front one, and when that session starts another turn. Both review
-rounds reached the same bug from different sides: a reply that was owed, not
-yet written, and then written much later — after a tab switch and back — as
-if it were the newest answer (§9).
+**A `due` never outlives the front.** It is dropped the moment its session
+stops being the front one. Two review rounds reached the same bug from
+different sides: a reply that was owed, not yet written, and then written much
+later — after a tab switch and back — as if it were the newest answer (§9).
+It is **not** dropped when the same chat starts its next turn: a turn that
+finished in front owes its reply even if a queued prompt starts the next turn
+before the pass that writes it, and dropping it there lost a real answer and
+mis-numbered the record (round 3).
 
 The map is capped at 200 entries, and only entries in `done`, `error` or
 `idle` are evicted. A session with no entry is **unknown**, which §3.3 handles
@@ -320,11 +342,12 @@ Each pass, in this order:
    the session that left, **clear the stored reply** — an empty
    `roost reply -` (§2.8) — forget `written.state`, and mark the dialog state
    stale.
-2. **The dialog state is stale** → ask: for each id in `family(front)`,
-   `permission.sync(id)` then `permission.list(id)`. Any pending request →
-   the front is blocked. Each `sync` is raced against a 2-second limit and
-   caught; if it fails or times out, the answer is "not known", the pane keeps
-   what it shows, and the question stays stale for the next pass.
+2. **Ask whether a dialog is open**, unless the answer may be trusted (below):
+   for each id in `family(front)`, `permission.sync(id)` then
+   `permission.list(id)`. Any pending request → the front is blocked. Each
+   `sync` is raced against a 2-second limit and caught; if it fails or times
+   out, the answer is "not known", the pane keeps what it shows, and the
+   question is asked again next pass.
 3. **A reply is due** for the front session: `publish` → `roost reply -` with
    the text; `clear` → the empty one. Then drop `due`.
 4. **The state differs** from `written.state` → `roost state <state>`, where
@@ -336,9 +359,19 @@ Each pass, in this order:
 Reply before state, always: `wait-done` returns the moment the badge stops
 being busy, and the documented idiom is wait-done then read.
 
-The dialog state goes stale on three things: a front change, any
-`permission.*` event for any session, and `setup`. Not on the timer — asking
-costs a call per family member, and the timer runs every second.
+**When the answer may be trusted.** The third review round found two ways a
+cached answer stays wrong for as long as it matters: a child that asks before
+its parent's family lists it, and a dialog taken away by the end of its turn
+with no `permission.replied` (§9). So the answer is cached only while nothing
+can change it unnoticed: when the front entry's phase is `done`, `error` or
+`idle` **and** the last answer was "no request pending". In every other case —
+the front is `working`, or the last answer was "pending", or the state was
+marked stale (a front change, a `permission.*` event, a turn's end, `setup`) —
+the question is asked again on every pass, timer passes included. The cost is
+one `sync` per family member per second while a turn runs: measured at 7 ms
+for a child and under 1 ms for a parent (§2.5), against a remote server *not
+measured* (R6). If `family()` lags a new child by its measured 250 ms, the
+next pass sees it.
 
 **A reply is published exactly once, when a turn of the front chat ends.** It
 is never re-published. The first version of this design re-published a
@@ -373,12 +406,21 @@ with no stored reply until its next turn.
 
 **A reload must not leave the old instance writing.** `reconcile()` is serial
 within one instance, and a reload makes a second one in the same process
-(§2.6). The cleanup `setup` returns therefore does four things: stops the
-listener, clears the timer, sets a `disposed` flag that every step of
-`reconcile()` checks after each `await`, and **kills the `roost` child it has
-in flight**, if any. The new instance writes the pane in full, as above, and
-writes it once more on its first timer tick, so a write the old instance got
-out before it was stopped does not stand.
+(§2.6). The cleanup `setup` returns stops the listener, clears the timer, and
+sets a `disposed` flag that every step of `reconcile()` checks after each
+`await`, so no **new** `roost` call is started by the old instance. A call
+already in flight is left to finish: the second version of this design killed
+it, and the third review showed that killing `roost reply` between its record
+append and its pane write leaves a turn file with no `@roost-reply`, and that
+killing the `roost` process does not reach the `tmux` it has already started —
+so the kill bought nothing and could do harm. The new instance writes the pane
+in full at `setup`, and on its first timer tick **forgets `written.state`** so
+the state is asserted once more; it does not clear the reply again, because
+by then the reply may be one this instance published itself. What this leaves
+open is a write the old instance had already handed to `tmux` landing after
+the new instance's first tick. That needs a reload inside the few milliseconds
+of one `roost` call and a `tmux` slower than a second; it is recorded in §6,
+not designed around.
 
 **`idle` is reported on a front change, and the contract says adapters do not
 report it.** That sentence in `2026-08-29-adapter-contract.md` is already not
@@ -486,11 +528,16 @@ exists (the contract: fixtures replay a recorded turn).
 | front A → B → A → B, all four finished, **no events**, timer only | each switch: empty reply, then the state. **No non-empty reply is ever written** — the turn record cannot grow |
 | front → a chat with an open dialog this instance never heard | empty reply, `blocked` |
 | front → home | empty reply, `idle` |
-| `setup` on an idle chat, in a pane the shim says already holds another chat's `done` and reply | empty reply, `idle` — and the same again after one tick |
+| `setup` on an idle chat, in a pane the shim says already holds another chat's `done` and reply | empty reply, `idle`; after one tick `idle` again and **no second reply call** |
 | `setup` on a chat that is running / has a pending permission | empty reply, then `working` / `blocked` |
+| `setup` mid-turn; the turn succeeds with text before the first tick | empty reply, `working`, reply, `done`; the tick writes `done` again and **does not clear the reply** |
+| a child whose `permission.asked` arrives one pass before the fake `family()` lists it | `working` on that pass, `blocked` on the next — not `working` for the life of the dialog |
+| a dialog open, then the turn `failed` with no `permission.replied`, and the fake `permission.list` now empty | `error`, not `blocked` (trap T8: the latch and its clear, both directions) |
+| a turn that hit `error` at attempt 3, then opened a dialog that was answered | `error`, `blocked`, `working` — not back to `error` |
+| A succeeds in front; a queued prompt starts A's next turn before the pass that publishes | the reply **is** published, then `working` |
 | the slow-`reply` shim: A succeeds, the front moves to B (running) while A's publish is in flight | the last `state` written is B's `working`, and the last reply written is the empty one |
 | A succeeds in front; the front moves to B **before** the pass that would publish; A runs a second turn while hidden and is interrupted; front → A | **no non-empty reply is ever written** — the owed reply died when A left the front |
-| cleanup, then a new `setup`, with the old instance's `roost` child made slow | the old child is killed; the last writes are the new instance's |
+| cleanup, then a new `setup`, with the old instance's `roost` child made slow | the old instance starts no new call after cleanup; the new instance's `setup` writes, and its first tick asserts the state again |
 | 201 chats, the oldest one with an open dialog | front → it writes `blocked`, entry or no entry |
 | no `roost` on `PATH`; an event with no session id; an unknown type; a null payload | nothing thrown |
 
@@ -521,11 +568,13 @@ would have failed.
 - drives a free `opencode/*` cloud model, as `roost validate --opencode-cloud`
   does, so it needs no account;
 - asserts pane options, not screens: `done` and the reply after a plain turn;
-  `blocked` while a dialog is open; `done` and no stored reply after Esc Esc;
-  `error` against a provider on a closed port; two panes — pane A's badge does
-  not move when pane B runs a turn; and **one terminal, two finished chats,
-  `alt+down` and nothing else** — the badge and the stored reply change within
-  three seconds. That last one is the only live check of the timer.
+  `blocked` while a dialog is open; `blocked` while a **subagent's** dialog is
+  open, and `done` with the parent's reply after it is allowed (R7's check);
+  `done` and no stored reply after Esc Esc; `error` against a provider on a
+  closed port; two panes — pane A's badge does not move when pane B runs a
+  turn; and **one terminal, two finished chats, `alt+down` and nothing else** —
+  the badge and the stored reply change within three seconds. That last one is
+  the only live check of the timer.
 
 **Install and doctor**: stub-driven cases beside the existing ones in
 `tests/test-install.sh` and `tests/test-doctor.sh`, with the 1.x stub as the
@@ -578,7 +627,13 @@ One PR.
   is on it (§3.3). The same for an evicted chat brought back to the front.
   `status()` cannot tell `done` from `idle`.
 - **A dialog answered or opened while a `permission.sync` is failing** is seen
-  one pass late, or at the next `permission.*` event.
+  one pass late.
+- **A reload inside one `roost` call.** A write the old instance had already
+  handed to `tmux` can land after the new instance's first tick, if `tmux`
+  takes more than a second to act on it. The pane then shows the old
+  instance's state until the next event. Not designed around (§3.3).
+- **Killing nothing on reload** means the old instance's last call finishes
+  normally — up to its 5-second timeout if `roost` is wedged.
 - **A front change is seen up to a second late**, or at the next event. For
   that second the badge and `roost read` describe the chat that was in front.
 - **No badge without `roost install`** on opencode 2 (Q1). 1.x keeps its
@@ -615,9 +670,10 @@ One PR.
   against 2 seconds and caught; a chat with many subagents multiplies it. Not
   measured: its cost against a remote server.
 - **R7 — `family()` is the only source of "whose dialog is this".** It was seen
-  to list one child. Grandchildren, and a family after a child has finished,
-  were not measured. If it omits a member, that member's dialog reads
-  `working`. The live smoke test's subagent case is the check.
+  to list one child, from 250 ms after the child's creation. Grandchildren, and
+  a family after a child has finished, were not measured. If it omits a member
+  for longer than a pass, that member's dialog reads `working` for that long.
+  The live smoke test's subagent case is the check.
 
 ---
 
@@ -702,12 +758,26 @@ CHANGES_NEEDED — every new finding was in logic the revision had added.
 | `ROOST_AGENT_NAME` is named and not asserted | 1 of 3 | Asserted on every call (§4). |
 | The claim that reasoning arrives separately had no evidence in the files the jury was given | 1 of 3 | The event excerpt is posted on #150. |
 
-A third round has not been run on this version. Two rounds each found real
-faults, and each fault was in logic the previous revision had added. This
-revision removes logic rather than adding it — no child mapping, no tracked
-`blocked`, no setup rule — and every situation a reviewer found is now a case
-in §4. Whether that is enough, or a third round comes first, is the human's
-call.
+### Round 3, on the second revision
+
+The same three, the next morning. Each confirmed its own round-2 findings
+resolved (one "partly": the reload hand-off, below), and all three returned
+CHANGES_NEEDED on the new "ask, do not track" logic.
+
+| finding | raised by | what changed |
+|---|---|---|
+| The dialog answer was a latch: taken on a `permission.*` event and trusted until the next one. A child that asks before `family(parent)` lists it, or a dialog taken away by its turn's end, leaves the pane wrong for the life of the dialog | 2 of 3 | Measured (M3, M4, §2.5): the family lags a new child by 250 ms; Esc at a dialog does nothing. The answer is now asked again on every pass while the front is `working` or the last answer was "pending", and a turn's end marks it stale (§3.2, §3.3). Two cases added (§4). |
+| The forced second full write on the first tick after a reload clears a reply the new instance itself just published | 2 of 3 | The tick re-asserts the state only (§3.3). A case added. |
+| Killing the `roost` child on reload does not reach the `tmux` it started, and can split a `reply` between record and pane | 2 of 3 | Nothing is killed; `disposed` stops new calls; the residue is recorded as a gap (§3.3, §6). |
+| Dropping an owed reply when the same chat starts its next turn loses a real answer and mis-numbers the record | 1 of 3 | The `due` is dropped only when the chat leaves the front (§3.2). A case added. |
+| After an `error` at attempt 3, an answered dialog left the badge on `error` for a turn that was alive; 1.x clears it | 1 of 3 | `permission.replied` in the front's family sets `error` back to `working` (§3.2). A case added. |
+| The live plan named no subagent case, though R7 relies on one | 1 of 3 | Added (§4). |
+
+Three rounds. Each found real faults; each round's faults were in what the
+round before had changed; this round's were in the asking rule and the reload
+rule, both of which are now simpler than they were. A fourth round has not
+been run on this version. Whether one comes first, or the §4 cases are the
+gate from here, is the human's call.
 
 None of the three ran an opencode binary in either round; they were told not
 to. Every opencode 2 fact in this document rests on the author's measurements
