@@ -1,0 +1,41 @@
+{"ms":2,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tui-setup"}
+{"ms":3,"pid":53529,"pane":"%0","gen":"GEN-1","what":"probe","why":"setup","route":"{\"type\":\"home\"}"}
+{"ms":2004,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":4005,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":6006,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":7178,"pid":53529,"pane":"%0","gen":"GEN-1","what":"ev","type":"session.execution.started","sid":"peIDeh"}
+{"ms":7182,"pid":53529,"pane":"%0","gen":"GEN-1","what":"probe","why":"after session.execution.started","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"}","status":"running","statusIsPromise":false,"synced":true,"permAfterSync":"[]","family":"[\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"]","permPerFamily":{"peIDeh":"[]"}}
+{"ms":8006,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":10006,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":12007,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":14007,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":14656,"pid":53529,"pane":"%0","gen":"GEN-1","what":"ev","type":"permission.asked","sid":"peIDeh"}
+{"ms":14665,"pid":53529,"pane":"%0","gen":"GEN-1","what":"probe","why":"after permission.asked","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"}","status":"running","statusIsPromise":false,"permBeforeSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","synced":true,"permAfterSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","family":"[\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"]","permPerFamily":{"peIDeh":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d2…"}}
+{"ms":16008,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":18009,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":20010,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":22011,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":3,"pid":55085,"pane":"%1","gen":"GEN-1","what":"tui-setup"}
+{"ms":35,"pid":55085,"pane":"%1","gen":"GEN-1","what":"probe","why":"setup","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"}","status":"running","statusIsPromise":false,"synced":true,"permAfterSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","family":"[\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"]","permPerFamily":{"peIDeh":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d2…"}}
+{"ms":24012,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":2004,"pid":55085,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":26012,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":4005,"pid":55085,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":28013,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":6005,"pid":55085,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":30014,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":8006,"pid":55085,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":9137,"pid":55085,"pane":"%1","gen":"GEN-1","what":"tui-cleanup"}
+{"ms":31623,"pid":53529,"pane":"%0","gen":"GEN-1","what":"tui-cleanup"}
+{"ms":1,"pid":55085,"pane":"%1","gen":"GEN-2","what":"tui-setup"}
+{"ms":1,"pid":53529,"pane":"%0","gen":"GEN-2","what":"tui-setup"}
+{"ms":1,"pid":55085,"pane":"%1","gen":"GEN-2","what":"probe","why":"setup","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"}","status":"running","statusIsPromise":false,"permBeforeSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","synced":true,"permAfterSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","family":"[\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"]","permPerFamily":{"peIDeh":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d2…"}}
+{"ms":1,"pid":53529,"pane":"%0","gen":"GEN-2","what":"probe","why":"setup","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"}","status":"running","statusIsPromise":false,"permBeforeSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","synced":true,"permAfterSync":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d27001nbQxihJYwyEW7i\",\"id\":\"call_01a0fd53991b72919c7f7f7a\"}}]","family":"[\"ses_f02ac8330ffe9cPZoPGSpeIDeh\"]","permPerFamily":{"peIDeh":"[{\"id\":\"per_0fd539a61001SU4hIN3JebQujm\",\"sessionID\":\"ses_f02ac8330ffe9cPZoPGSpeIDeh\",\"action\":\"shell\",\"resources\":[\"touch m13.txt\"],\"save\":[\"touch *\"],\"source\":{\"type\":\"tool\",\"messageID\":\"msg_0fd537d2…"}}
+{"ms":2002,"pid":55085,"pane":"%1","gen":"GEN-2","what":"tick"}
+{"ms":2002,"pid":53529,"pane":"%0","gen":"GEN-2","what":"tick"}
+{"ms":4003,"pid":53529,"pane":"%0","gen":"GEN-2","what":"tick"}
+{"ms":4003,"pid":55085,"pane":"%1","gen":"GEN-2","what":"tick"}
+{"ms":6004,"pid":55085,"pane":"%1","gen":"GEN-2","what":"tick"}
+{"ms":6004,"pid":53529,"pane":"%0","gen":"GEN-2","what":"tick"}
+{"ms":8005,"pid":53529,"pane":"%0","gen":"GEN-2","what":"tick"}
+{"ms":8005,"pid":55085,"pane":"%1","gen":"GEN-2","what":"tick"}

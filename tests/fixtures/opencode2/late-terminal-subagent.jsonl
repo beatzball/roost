@@ -1,0 +1,28 @@
+{"ms":3,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tui-setup"}
+{"ms":3,"pid":4821,"pane":"%0","gen":"GEN-1","what":"probe","why":"setup","route":"{\"type\":\"home\"}"}
+{"ms":2004,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":4005,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":6005,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":7698,"pid":4821,"pane":"%0","gen":"GEN-1","what":"ev","type":"session.execution.started","sid":"iSPryu"}
+{"ms":7702,"pid":4821,"pane":"%0","gen":"GEN-1","what":"probe","why":"after session.execution.started","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02a3ffdeffec6bklKuWiSPryu\"}","status":"running","statusIsPromise":false,"synced":true,"permAfterSync":"[]","family":"[\"ses_f02a3ffdeffec6bklKuWiSPryu\"]","permPerFamily":{"iSPryu":{"syncMs":0,"n":0,"first":null,"root":"iSPryu"}}}
+{"ms":8005,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":10006,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":12007,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":13477,"pid":4821,"pane":"%0","gen":"GEN-1","what":"ev","type":"session.execution.started","sid":"e6grRS"}
+{"ms":13478,"pid":4821,"pane":"%0","gen":"GEN-1","what":"probe","why":"after session.execution.started","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02a3ffdeffec6bklKuWiSPryu\"}","status":"running","statusIsPromise":false,"permBeforeSync":"[]","synced":true,"permAfterSync":"[]","family":"[\"ses_f02a3ffdeffec6bklKuWiSPryu\"]","permPerFamily":{"iSPryu":{"syncMs":0,"n":0,"first":null,"root":"iSPryu"}}}
+{"ms":14008,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":15854,"pid":4821,"pane":"%0","gen":"GEN-1","what":"ev","type":"permission.asked","sid":"e6grRS"}
+{"ms":15861,"pid":4821,"pane":"%0","gen":"GEN-1","what":"probe","why":"after permission.asked","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02a3ffdeffec6bklKuWiSPryu\"}","status":"running","statusIsPromise":false,"permBeforeSync":"[]","synced":true,"permAfterSync":"[]","family":"[\"ses_f02a3ffdeffec6bklKuWiSPryu\",\"ses_f02a3e929ffeAY6aIaoFe6grRS\"]","permPerFamily":{"iSPryu":{"syncMs":0,"n":0,"first":null,"root":"iSPryu"},"e6grRS":{"syncMs":0,"n":1,"first":{"sessionID":"e6grRS","action":"shell","resources":["touch from-sub.txt"]},"root":"iSPryu"}}}
+{"ms":16009,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":18013,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":3,"pid":6183,"pane":"%1","gen":"GEN-1","what":"tui-setup"}
+{"ms":39,"pid":6183,"pane":"%1","gen":"GEN-1","what":"probe","why":"setup","route":"{\"type\":\"session\",\"sessionID\":\"ses_f02a3ffdeffec6bklKuWiSPryu\"}","status":"running","statusIsPromise":false,"synced":true,"permAfterSync":"[]","family":"[\"ses_f02a3ffdeffec6bklKuWiSPryu\",\"ses_f02a3e929ffeAY6aIaoFe6grRS\"]","permPerFamily":{"iSPryu":{"syncMs":0,"n":0,"first":null,"root":"iSPryu"},"e6grRS":{"syncMs":7,"n":1,"first":{"sessionID":"e6grRS","action":"shell","resources":["touch from-sub.txt"]},"root":"iSPryu"}}}
+{"ms":20013,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":2005,"pid":6183,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":22014,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":4006,"pid":6183,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":24015,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":6007,"pid":6183,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":26015,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tick"}
+{"ms":8008,"pid":6183,"pane":"%1","gen":"GEN-1","what":"tick"}
+{"ms":27072,"pid":4821,"pane":"%0","gen":"GEN-1","what":"tui-cleanup"}
