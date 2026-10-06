@@ -1,11 +1,12 @@
 # An adapter for opencode 2 — design for #150
 
-Status: **proposed 2026-10-02, revised three times after three rounds of
-review (the third on 2026-10-03). Not approved, nothing built.** The one
-decision that was the human's to make, Q1, is answered (§8). A jury of three
-reviewed each version and asked for changes each time; §9 says what they found
-and what changed. This fourth version has not been reviewed. The rest still
-waits for agreement.
+Status: **approved 2026-10-06, as this fourth version. Nothing built yet.**
+Proposed 2026-10-02 and revised three times after three rounds of review (the
+third on 2026-10-03); the one decision that was the human's to make, Q1, is
+answered (§8). A jury of three reviewed each of the first three versions and
+asked for changes each time; §9 says what they found and what changed. The
+fourth version was not reviewed: the human chose the §4 cases as the gate from
+here.
 
 Base: `main` at `8cbafa1`, which is PR #153 merged. This builds on it: #153
 added `scripts/lib/roost-opencode.sh`, bounded the version check, and stopped
