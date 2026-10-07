@@ -54,6 +54,31 @@ make_harness_shim() { # make_harness_shim NAME... -> prints a PATH dir
   printf '%s' "$dir"
 }
 
+# make_versioned_shim VERSIONLINE NAME... -> the same shim as make_harness_shim,
+# except that the `opencode` stub prints VERSIONLINE, the way a real one
+# answers `opencode --version` (`1.18.30` on 1.x, `opencode v2.0.20` on 2.x).
+# A stub, never a symlink to a real opencode: 1.x and 2.x cannot share a data
+# directory, and the machine running this suite may hold a real 1.x with real
+# data.
+#
+# `sleep` is added because roost_opencode_version's watchdog runs
+# `sleep 5; kill "$probe"`. With no sleep on PATH that line fails at once and
+# the kill fires straight away, so whether the stub got to answer first would be
+# a race, and a "2.x" case could read as "no version" for a reason that has
+# nothing to do with the code under test.
+make_versioned_shim() { # make_versioned_shim VERSIONLINE NAME... -> prints a PATH dir
+  local line="$1"; shift
+  local dir h real
+  dir="$(make_harness_shim "$@")"
+  real="$(command -v sleep 2>/dev/null)" && ln -s "$real" "$dir/sleep" 2>/dev/null
+  for h in "$@"; do
+    [ "$h" = opencode ] || continue
+    printf "#!/bin/sh\necho '%s'\n" "$line" > "$dir/opencode"
+    chmod +x "$dir/opencode"
+  done
+  printf '%s' "$dir"
+}
+
 # make_one_tool_shim TOOL NAME... -> a shim carrying exactly ONE JSON engine.
 # scripts/lib/roost-json.sh prefers python3 whenever it is there, and so does
 # the installer's own probe, so on this machine the jq branch of both would
@@ -1954,7 +1979,104 @@ done
 rm -rf "$PROBE_PY_SHIM" "$PROBE_JQ_SHIM"
 
 # ===========================================================================
-# 20. Hygiene
+# 20. The adapter table and opencode 2
+# ===========================================================================
+# opencode 2's adapter is a DIRECTORY symlink at its own path, so the table
+# carries it as a key of its own, `opencode2`, and roost_adapter_key says which
+# of the two opencode keys this machine gets. Every case sources the lib in a
+# fresh `bash -c` under `set -u` -- roost-install, roost-doctor and
+# roost-validate source it, some of them with `set -u` in force -- with PATH
+# set to a shim, so the opencode it asks is a stub that prints a version line
+# and never a real binary.
+
+# in_adapter_lib ROOT BOX SHIMDIR FUNC [ARG...] -> what FUNC prints when the
+# lib is sourced from the checkout at ROOT, with every harness home under BOX
+# and PATH set to SHIMDIR.
+in_adapter_lib() {
+  local root="$1" box="$2" shim="$3"; shift 3
+  mkdir -p "$box"
+  HOME="$box/home" \
+  XDG_CONFIG_HOME="$box/home/.config" \
+  XDG_DATA_HOME="$box/home/.local/share" \
+  COPILOT_HOME="$box/home/.copilot" \
+  PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+  CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  PATH="$shim" \
+    bash -c 'set -u; . "$1/scripts/lib/roost-adapters.sh"; shift; "$@"' _ "$root" "$@"
+}
+
+OC2_V2_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode)"
+OC2_V1_SHIM="$(make_versioned_shim '1.18.30' opencode)"
+# The silent stub is make_harness_shim's own `exit 0` one, which prints nothing
+# at all -- not even an empty line. Built on a versioned shim with no opencode
+# in it, so it still carries the `sleep` the watchdog needs.
+OC2_SILENT_SHIM="$(make_versioned_shim '')"
+printf '#!/bin/sh\nexit 0\n' > "$OC2_SILENT_SHIM/opencode"
+chmod +x "$OC2_SILENT_SHIM/opencode"
+OC2_NONE_SHIM="$(make_versioned_shim '')"
+OC2_BOX="$TMP/oc2"
+
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_V2_SHIM" roost_adapter_key opencode)" "opencode2" \
+  "roost_adapter_key opencode is opencode2 when opencode on PATH says v2.0.20"
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_V1_SHIM" roost_adapter_key opencode)" "opencode" \
+  "roost_adapter_key opencode stays opencode when opencode on PATH says 1.18.30"
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_SILENT_SHIM" roost_adapter_key opencode)" "opencode" \
+  "roost_adapter_key opencode stays opencode when opencode on PATH prints no version"
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_key opencode)" "opencode" \
+  "roost_adapter_key opencode stays opencode with no opencode on PATH"
+# Any other harness comes back unchanged, even on a machine with a 2.x.
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_V2_SHIM" roost_adapter_key pi)" "pi" \
+  "roost_adapter_key pi is pi, whatever opencode is on PATH"
+
+oc2_path="$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_path opencode2)"
+assert_prefix "$oc2_path" "$OC2_BOX/home/.config/opencode/" \
+  "roost_adapter_path opencode2 is inside opencode's own config directory"
+case "$oc2_path" in */opencode/plugins/roost) r=0 ;; *) r=1 ;; esac
+assert_true "$r" "roost_adapter_path opencode2 ends in /opencode/plugins/roost (got $oc2_path)"
+oc2_want="$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_target opencode2)"
+# `cd -P`, because the lib resolves its root through symlinks and $HERE does
+# not; a checkout reached through a symlinked directory would otherwise fail
+# here on spelling alone.
+assert_eq "$oc2_want" "$(cd -P "$HERE" && pwd)/adapters/opencode/v2" \
+  "roost_adapter_target opencode2 is this checkout's adapters/opencode/v2"
+
+# The three states, on one path. The link is made to the same target string
+# the table returns, so `ok` here is the table agreeing with itself through
+# `-ef` on a DIRECTORY symlink -- the one thing this key adds over the other
+# three, whose links all name a file.
+#
+# Run against a COPY of scripts/lib in a scratch checkout that has an
+# adapters/opencode/v2 directory, not against this checkout. The table finds
+# its root from its own file's location (_roost_adapter_root), so the copy
+# answers for the scratch checkout. That keeps `ok` meaning "the link reaches a
+# directory that is there" whether or not this checkout has the adapter yet --
+# against a target that does not exist, the same link reads `dangling`, and the
+# case would pass or fail on the state of the tree rather than on the table.
+# Resolved with `cd -P` once it exists, because _roost_adapter_root resolves
+# its own root the same way: on macOS /tmp is itself a symlink, and
+# the unresolved spelling would never compare equal to what the lib prints.
+mkdir -p "$TMP/oc2-checkout/scripts/lib" "$TMP/oc2-checkout/adapters/opencode/v2"
+OC2_CO="$(cd -P "$TMP/oc2-checkout" && pwd)"
+cp "$HERE"/scripts/lib/*.sh "$OC2_CO/scripts/lib/"
+oc2_co_want="$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_target opencode2)"
+assert_eq "$oc2_co_want" "$OC2_CO/adapters/opencode/v2" \
+  "a copy of the lib answers for its own scratch checkout (the harness for the state cases)"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "missing" \
+  "roost_adapter_state opencode2 is missing in an empty home"
+mkdir -p "${oc2_path%/*}"
+ln -s "$oc2_co_want" "$oc2_path"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "ok" \
+  "roost_adapter_state opencode2 is ok once the plugin directory links to the checkout"
+rm -f "$oc2_path"
+mkdir -p "$oc2_path"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "foreign" \
+  "roost_adapter_state opencode2 is foreign when a real directory sits at the path"
+
+rm -rf "$OC2_V2_SHIM" "$OC2_V1_SHIM" "$OC2_SILENT_SHIM" "$OC2_NONE_SHIM"
+
+# ===========================================================================
+# 21. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
