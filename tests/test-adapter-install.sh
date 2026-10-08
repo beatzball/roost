@@ -1577,21 +1577,24 @@ assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
 # the checkout may be someone's dev tree with local work in it. All this does
 # is SAY so, from what git already knows locally -- never a fetch, which would
 # be a surprise network call inside an installer, and never a pull.
+#
+# A scratch checkout carrying the files roost-install needs to run. Copies,
+# not symlinks: the installer resolves its own location through a symlink
+# chain (that is how it refuses to trust an inherited $ROOST_HOME), so a
+# symlink here would resolve straight back to the real worktree and every
+# case below would be measuring THIS repo's upstream instead of the
+# fixture's. Defined outside the git guard below: it needs only `cp`, and
+# section 21's symlinked-plugin/ case builds one whether or not git is here.
+mkcheckout() { # mkcheckout DIR
+  mkdir -p "$1/scripts/lib"
+  cp "$HERE/scripts/roost-install" "$1/scripts/roost-install"
+  cp "$HERE/scripts/lib/roost-adapters.sh" \
+     "$HERE/scripts/lib/roost-hooks.sh" \
+     "$HERE/scripts/lib/roost-json.sh" \
+     "$HERE/scripts/lib/roost-opencode.sh" "$1/scripts/lib/"
+}
+
 if command -v git >/dev/null 2>&1; then
-  # A scratch checkout carrying the files roost-install needs to run. Copies,
-  # not symlinks: the installer resolves its own location through a symlink
-  # chain (that is how it refuses to trust an inherited $ROOST_HOME), so a
-  # symlink here would resolve straight back to the real worktree and every
-  # case below would be measuring THIS repo's upstream instead of the
-  # fixture's.
-  mkcheckout() { # mkcheckout DIR
-    mkdir -p "$1/scripts/lib"
-    cp "$HERE/scripts/roost-install" "$1/scripts/roost-install"
-    cp "$HERE/scripts/lib/roost-adapters.sh" \
-       "$HERE/scripts/lib/roost-hooks.sh" \
-       "$HERE/scripts/lib/roost-json.sh" \
-       "$HERE/scripts/lib/roost-opencode.sh" "$1/scripts/lib/"
-  }
   # An empty hooks directory, and a fixture identity. These repos exist for
   # four seconds inside a mktemp dir; pointing them at an empty hooksPath
   # keeps the machine's global hooks (which scan staged content and commit
@@ -2238,19 +2241,42 @@ assert_contains "$out" "rm \"$p1\"" \
 # adapters/opencode/roost.js out of the checkout. So the run refuses it, and
 # the manual note must not hand the user that `rm` either -- the fix is the
 # directory, never the file.
+#
+# It runs in a SCRATCH checkout (mkcheckout), never against this one. The
+# scratch roost-install resolves _roost_adapter_root to the scratch tree, so
+# `-ef` holds against a COPY of adapters/opencode/roost.js, and plugin/ links
+# to the copy's directory. Were both `-L` guards in roost-install ever to
+# regress, the `rm` would delete that copy -- not a tracked file in the
+# developer's working copy, which is what this case used to put in reach.
+symco="$TMP/oc2-symdir-checkout"
+mkcheckout "$symco"
+mkdir -p "$symco/adapters/opencode/v2"
+cp "$HERE/adapters/opencode/roost.js" "$symco/adapters/opencode/roost.js"
+cp "$HERE/adapters/opencode/v2/tui.js" "$symco/adapters/opencode/v2/tui.js"
+# The scratch tree's own targets, read through its own lib: resolved the way
+# its roost-install resolves them (`cd -P`, so a symlinked /tmp on macOS agrees).
+symco_target() { # symco_target HARNESS
+  bash -c '. "'"$symco"'/scripts/lib/roost-adapters.sh"; roost_adapter_target "$1"' _ "$1"
+}
+real1x_before="$(cksum < "$HERE/adapters/opencode/roost.js")"
 box="$TMP/oc2-symdir"
 p1="$(adapter_path_in "$box" opencode)"
 p2="$(adapter_path_in "$box" opencode2)"
 mkdir -p "${p1%/*/*}"
-ln -s "$HERE/adapters/opencode" "${p1%/*}"
+ln -s "$symco/adapters/opencode" "${p1%/*}"
 recs="$TMP/oc2-symdir.tsv"
+symdir_install="$INSTALL"
+INSTALL="$symco/scripts/roost-install"
 out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+INSTALL="$symdir_install"
 assert_eq "$rc" "0" "opencode 2, symlinked plugin/ directory: exits 0"
-[ -f "$(adapter_target opencode)" ]; assert_true $? \
-  "opencode 2, symlinked plugin/ directory: the checkout's adapters/opencode/roost.js is still there"
+[ -f "$(symco_target opencode)" ]; assert_true $? \
+  "opencode 2, symlinked plugin/ directory: the scratch checkout's adapters/opencode/roost.js is still there"
+assert_eq "$(cksum < "$HERE/adapters/opencode/roost.js" 2>/dev/null)" "$real1x_before" \
+  "opencode 2, symlinked plugin/ directory: this checkout's adapters/opencode/roost.js is byte-identical"
 assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
   "opencode 2, symlinked plugin/ directory: --records says it was refused"
-assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(symco_target opencode2)" \
   "opencode 2, symlinked plugin/ directory: plugins/roost is linked"
 assert_contains "$out" "this checkout's own file, reached through a symlinked directory" \
   "opencode 2, symlinked plugin/ directory: the Will NOT touch heading says what is there"
