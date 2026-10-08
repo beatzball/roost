@@ -22,6 +22,11 @@
 # if the binary is not named, not executable, or not 2.x.
 #
 # Isolation: its own tmux socket. The live -L roost server is never contacted.
+# And nothing is taken from the caller's environment that could name a real
+# directory: a pane inside a roost server carries OPENCODE_CONFIG_DIR, set by
+# roost's own wiring for 1.x, and opencode 2 honours it over XDG_CONFIG_HOME --
+# so every call of the binary clears it (#150: run from such a pane, the
+# `debug paths` check below saw the real wiring directory and refused).
 #
 # Override the model when the free list changes under you:
 #   ROOST_LIVE_MODEL=opencode/<id> ROOST_OPENCODE2_BIN=... bash tests/live/opencode2-smoke.sh
@@ -61,6 +66,14 @@ S="$D/roost"
 # terminal on the same directories (#150: `serve --service`, ppid 1) -- so a
 # second opencode.json under the same homes may never be read by the service
 # the first one started. A whole second set of homes gets a service of its own.
+#
+# But only one service runs at a time. Measured twice by hand on 2.0.22
+# (#150): the service is ONE PER USER, not one per set of homes. With the main
+# set's `serve --service` alive, a TUI started on the dead set sat at
+# "Starting background server..." indefinitely, spawning `serve --service`
+# processes that never took over; with no other service alive, the same TUI
+# reached its home screen in under 10s. So case 7 stops the main set's service,
+# and waits for its process to go, before it starts the dead pane.
 HOMESETS="main dead"
 homes_env() {  # homes_env SET -> the env assignments that redirect all five
   local h="$D/$1"
@@ -73,7 +86,12 @@ oc() {  # oc SET SECONDS ARGS... -> run the binary on that set's homes, bounded
   # perl, not a shell function: env(1) execs its command and cannot see one.
   # From $D/proj, the directory every pane starts in, so `debug paths` is
   # checked against what the panes will see, not the caller's directory.
-  ( cd "$D/proj" && env $(homes_env "$set") perl -e 'alarm shift; exec @ARGV' "$t" "$BIN" "$@" </dev/null )
+  # OPENCODE_CONFIG_DIR is cleared (see the header), not pointed at the set's
+  # own config directory: unset is what a user outside roost has, and what the
+  # adapter is meant to be proved against. A value of our own would be one more
+  # setting no real install writes, whose effect on 2.x beyond `debug paths`
+  # was never measured.
+  ( cd "$D/proj" && env -u OPENCODE_CONFIG_DIR $(homes_env "$set") perl -e 'alarm shift; exec @ARGV' "$t" "$BIN" "$@" </dev/null )
 }
 for set in $HOMESETS; do
   for sub in home config/opencode/plugins data cache state tmp; do mkdir -p "$D/$set/$sub"; done
@@ -183,7 +201,17 @@ started=1
 if [ -n "${ROOST_LIVE_MODEL:-}" ]; then
   MODEL="$ROOST_LIVE_MODEL"
 else
-  MODEL="$(oc main 60 models 2>/dev/null | grep '^opencode/' | head -n 1)"
+  # Asked up to three times. Measured on 2.0.22 in a fresh home (#150): the
+  # FIRST `models` -- the one that starts the background service -- printed
+  # nothing and exited 0, and a second call seconds later listed eight
+  # opencode/* models. One empty answer is therefore not "no free model".
+  # Each try is bounded like every other call, so the worst case is 3 x 60s.
+  MODEL=""; try=0
+  while [ -z "$MODEL" ] && [ "$try" -lt 3 ]; do
+    [ "$try" -gt 0 ] && sleep 3
+    MODEL="$(oc main 60 models 2>/dev/null | grep '^opencode/' | head -n 1)"
+    try=$((try+1))
+  done
 fi
 [ -n "$MODEL" ] || skip "$BIN lists no free opencode/* model (is the network up?); name one with ROOST_LIVE_MODEL"
 
@@ -362,8 +390,11 @@ send() { tmux -S "$S" send-keys -t "$1" "$2"; sleep 1; tmux -S "$S" send-keys -t
 # inside opencode's process, exactly as it is for a real user whose shell has
 # bin/ on PATH -- the adapter runs `roost` by name.
 launch() {
+  # OPENCODE_CONFIG_DIR is cleared here as in oc, and for the same reason: the
+  # tmux server took this script's environment when it started, and a pane
+  # may inherit it from there.
   tmux -S "$S" new-window -d -P -F '#{pane_id}' -c "$D/proj" \
-    "env $(homes_env "$1") PATH='$HERE/bin:$PATH' ROOST_SOCKET=$S '$BIN'"
+    "env -u OPENCODE_CONFIG_DIR $(homes_env "$1") PATH='$HERE/bin:$PATH' ROOST_SOCKET=$S '$BIN'"
 }
 
 printf '  opencode %s, model %s\n' "$ver" "$MODEL"
@@ -504,9 +535,23 @@ fi
 close "$pt"
 
 # --- case 7: a provider on a closed port -> error ---------------------------
-# Its own homes and therefore its own service (see HOMESETS). On 2.0.20 a dead
+# Its own homes and therefore its own service, once the main set's has gone
+# (see HOMESETS). On 2.0.20 a dead
 # provider gives retry.scheduled attempts 2..11 over about 87s, then
 # execution.failed; the adapter reads error from attempt 3 (design §2.3).
+#
+# The main set's service is stopped first, because only one runs per user (see
+# HOMESETS). The wait is for the process, not the command: a process takes a
+# moment to go after its server says it has stopped, as in cleanup. Bounded at
+# 30s, and nothing is killed -- if one remains, wait_ready below dies with the
+# screen kept, which is the evidence. cleanup's own `service stop` for both
+# sets still runs at exit.
+oc main 30 service stop >/dev/null 2>&1
+services() { local q; for q in $(pgrep -f -- "$BIN" 2>/dev/null); do
+               case "$(ps -o args= -p "$q" 2>/dev/null)" in *"serve --service"*) printf '%s ' "$q" ;; esac; done; }
+n=0
+while [ "$n" -lt 30 ] && [ -n "$(services)" ]; do sleep 1; n=$((n+1)); done
+[ -z "$(services)" ] || printf '  a serve --service of %s is still running after 30s (pids: %s); starting the dead pane anyway\n' "$BIN" "$(services)"
 pd="$(launch dead)"
 wait_ready "$pd" 90 || die "the pane never read idle and settled (case 7, 90s) -- read $L"
 send "$pd" 'Write a haiku about tmux.'
