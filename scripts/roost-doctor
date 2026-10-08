@@ -457,23 +457,43 @@ fi
 # opencode adapter — informational. Most users will not have opencode, so a
 # missing plugin is a warning, never a required failure.
 #
-# The version is asked first, because on opencode 2 none of the link advice
-# below is true (#150). adapters/opencode/roost.js is an opencode 1.x plugin.
-# opencode 2 has a different plugin shape and refuses the file at load —
-# measured on 2.0.20, its log says "Plugin must export a default definition
+# The version is asked first, because on opencode 2 none of the 1.x link
+# advice below is true (#150). adapters/opencode/roost.js is an opencode 1.x
+# plugin. opencode 2 has a different plugin shape and refuses the file at load
+# — measured on 2.0.20, its log says "Plugin must export a default definition
 # with an id and an effect or setup function" — and it does so quietly: the
 # agent runs normally and the pane simply never badges. So "opencode plugin
 # linked" on a 2.x machine was a green tick over something that does nothing,
-# and "run: ln -s ..." sent the user to a command that cannot help.
+# and "run: ln -s ..." sent the user to a command that cannot help. opencode 2
+# has its own adapter, adapters/opencode/v2 — a DIRECTORY, linked at
+# plugins/roost (plural) — so the 2.x branch checks that link instead, in the
+# same four states, through the same roost_adapter_* table roost install and
+# roost validate use, so the three can never disagree about which link they
+# mean.
 #
 # $ocver and $oc_v2 were read once, further up, beside the first line that
 # needed them.
 if [ "$oc_v2" = 1 ]; then
-  # A warning, not a ✗: opencode 2 not badging stops nothing else in roost
-  # working, the same as an adapter that is not linked. It names no command
-  # because there is none to run for the badge — that fix is in roost, not on
-  # this machine. The two lines below it are the things that CAN be fixed here.
-  warn "opencode $ocver found — roost does not support opencode 2 yet: its adapter is an opencode 1.x plugin, which opencode 2 does not load, so an opencode 2 pane shows no badge and roost read falls back to the screen. opencode 1.x still works. Tracked in https://github.com/beatzball/roost/issues/150"
+  # Warnings, not a ✗: an opencode 2 pane that does not badge stops nothing
+  # else in roost working, the same as every other adapter that is not linked.
+  # roost_adapter_state reports what is at the path; the words for each state
+  # are the 1.x branch's below, so a user reads the same advice for both.
+  oc2plug="$(roost_adapter_path opencode2)"
+  oc2want="$(roost_adapter_target opencode2)"
+  case "$(roost_adapter_state opencode2)" in
+    ok)
+      ok "opencode 2 plugin linked" ;;
+    dangling)
+      # The link is still there, pointing nowhere, so a bare `ln -s` would
+      # fail with "File exists" — the same trap the 1.x branch names below.
+      warn "opencode 2 plugin symlink at $oc2plug is dangling — run: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\", or run: roost install" ;;
+    missing)
+      # plugins/ (plural) is new in 2.x and usually does not exist yet, hence
+      # the mkdir -p.
+      warn "opencode $ocver found, roost's opencode 2 plugin not installed — run: mkdir -p \"$(dirname "$oc2plug")\" && ln -s \"$oc2want\" \"$oc2plug\", or run: roost install" ;;
+    *)
+      warn "opencode 2 plugin at $oc2plug is not this install — relink it to $oc2want" ;;
+  esac
   # The one that matters (#154). roost's wiring exports OPENCODE_CONFIG_DIR to
   # every pane, and opencode 2 reads that directory INSTEAD of the user's own —
   # the table is in scripts/lib/roost-opencode.sh. `roost wiring` no longer
