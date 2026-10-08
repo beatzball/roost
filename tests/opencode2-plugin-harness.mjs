@@ -128,10 +128,21 @@ if (!enableIntervalMock()) {
 // line and exit 0, like the two skips above. Importing it runs nothing:
 // the module only defines setup. `?probe` keeps it out of the cases' own
 // `?case=N` imports.
+//
+// Only node's own failure is a SKIP. A real syntax error in tui.js is a
+// SyntaxError too, and so is node 18's, so the type alone cannot tell them
+// apart: the message does. Anything else -- a broken adapter, on any node --
+// is one FAIL line and exit 0, so run.sh counts it. A catch that skipped on
+// every error let a `tui.js` with a syntax error, or a top-level
+// ReferenceError, pass the suite on node 24 with nothing tested (#150 review).
 try {
   await import(`${pathToFileURL(ADAPTER).href}?probe`)
 } catch (e) {
-  console.log(`  SKIP: node ${process.version} cannot load the adapter (${e?.message ?? e}) — opencode 2 plugin tests skipped`)
+  if (e instanceof SyntaxError && /outside a module/.test(e.message)) {
+    console.log(`  SKIP: node ${process.version} cannot load the adapter (${e.message}) — opencode 2 plugin tests skipped`)
+  } else {
+    console.log(`  FAIL: the adapter does not load (${e?.message ?? e})`)
+  }
   rmSync(dir, { recursive: true, force: true })
   process.exit(0)
 }
