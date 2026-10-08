@@ -90,7 +90,51 @@ process.env.PATH = `${dir}:${REAL_PATH}`
 // 2-second limit on permission.sync is a real setTimeout and the "never
 // settles" case below measures it in real time, and because this harness's
 // own waits (quiet(), settle()) are real-time waits on child processes.
-mock.timers.enable({ apis: ["setInterval"] })
+//
+// Having mock.timers is not enough: node 18 has it, but there enable() takes
+// the timers as a bare array, and the { apis: [...] } object form came later.
+// node 18.19.1 (Ubuntu 24.04's own nodejs) throws ERR_INVALID_ARG_TYPE, a
+// TypeError, on the object form (#150), and that crash left this file with
+// no PASS/FAIL/SKIP line and a non-zero exit. So the object form first, the
+// array form on a TypeError, and if neither is taken, one SKIP line naming the
+// node version and exit 0 -- the same as a node with no mock timers at all.
+const enableIntervalMock = () => {
+  try {
+    mock.timers.enable({ apis: ["setInterval"] })
+    return true
+  } catch (e) {
+    if (!(e instanceof TypeError)) return false
+  }
+  try {
+    mock.timers.enable(["setInterval"])
+    return true
+  } catch {
+    return false
+  }
+}
+if (!enableIntervalMock()) {
+  console.log(`  SKIP: node ${process.version}'s mock.timers.enable takes neither { apis: [...] } nor [...] — opencode 2 plugin tests skipped`)
+  rmSync(dir, { recursive: true, force: true })
+  process.exit(0)
+}
+
+// A node that has the timers may still be unable to load the adapter at all.
+// tui.js is ES-module syntax in a `.js` file with no package.json saying
+// "type": "module" -- node 24 detects that and loads it, node 18.19.1 throws
+// "Cannot use import statement outside a module" (#150). Every case would
+// then FAIL at "the adapter loads and sets up", which says nothing about the
+// adapter: opencode 2 loads it in its own runtime, not the user's node. So it
+// is imported once here, before any case, and a node that cannot is one SKIP
+// line and exit 0, like the two skips above. Importing it runs nothing:
+// the module only defines setup. `?probe` keeps it out of the cases' own
+// `?case=N` imports.
+try {
+  await import(`${pathToFileURL(ADAPTER).href}?probe`)
+} catch (e) {
+  console.log(`  SKIP: node ${process.version} cannot load the adapter (${e?.message ?? e}) — opencode 2 plugin tests skipped`)
+  rmSync(dir, { recursive: true, force: true })
+  process.exit(0)
+}
 
 let pass = 0
 let fail = 0
