@@ -547,7 +547,11 @@ close "$pt"
 # screen kept, which is the evidence. cleanup's own `service stop` for both
 # sets still runs at exit.
 oc main 30 service stop >/dev/null 2>&1
+# Only pids not in $before, as in cleanup's ours(): a service that was running
+# before this script started is the human's own, so it is neither waited on
+# nor named in the line below -- that line must only ever name one of ours.
 services() { local q; for q in $(pgrep -f -- "$BIN" 2>/dev/null); do
+               case " $before " in *" $q "*) continue ;; esac
                case "$(ps -o args= -p "$q" 2>/dev/null)" in *"serve --service"*) printf '%s ' "$q" ;; esac; done; }
 n=0
 while [ "$n" -lt 30 ] && [ -n "$(services)" ]; do sleep 1; n=$((n+1)); done
