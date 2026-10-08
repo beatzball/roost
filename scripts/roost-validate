@@ -1010,12 +1010,16 @@ h_config_missing() {
 # to create the missing ones — so anything left here is either a path roost
 # will not touch, or an answer of no.
 h_adapter_fix() {
-  local h="$1" home want path n ev
+  local h="$1" home want path n ev k
   home="$(roost_adapter_home "$h")"
   case "$h" in
     opencode|pi|copilot)
-      path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
-      case "$(roost_adapter_state "$h")" in
+      # By key, as offer_adapter_install does, so the fix names the adapter the
+      # opencode on PATH would load. h_prepare skips opencode 2 before this is
+      # reached today; this keeps the two from disagreeing when it no longer does.
+      k="$(roost_adapter_key "$h")"
+      path="$(roost_adapter_path "$k")"; want="$(roost_adapter_target "$k")"
+      case "$(roost_adapter_state "$k")" in
         ok) return 0 ;;
         missing)
           printf 'the %s adapter is not linked — run: mkdir -p "%s" && ln -s "%s" "%s"' \
@@ -1094,7 +1098,7 @@ ALREADY_LINKED=""       # newline-separated "harness<TAB>path" linked by someone
 INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
 
 offer_adapter_install() {
-  local h path ans created=0 only install_out install_rc records verb
+  local h k path ans created=0 only install_out install_rc records verb
 
   if [ "$LOCAL" -eq 1 ]; then
     # --local builds its own scratch config directory per harness and links the
@@ -1105,11 +1109,17 @@ offer_adapter_install() {
 
   for h in opencode pi copilot; do
     have "$h" || continue
-    case "$(roost_adapter_state "$h")" in
+    # The table key, not the name: one opencode binary, two adapters, and the
+    # version on PATH decides which (roost_adapter_key). $h stays the name the
+    # tester reads and the one --only and the install records use; every
+    # state, path and target below is looked up by $k, so a 2.x machine is
+    # offered and reported against plugins/roost rather than plugin/roost.js.
+    k="$(roost_adapter_key "$h")"
+    case "$(roost_adapter_state "$k")" in
       missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
       # dangling is treated exactly like foreign here: same behaviour as
       # before roost_adapter_state told the two apart, not a policy change.
-      foreign|dangling) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$h")
+      foreign|dangling) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$k")
 " ;;
     esac
   done
@@ -1132,8 +1142,9 @@ offer_adapter_install() {
   printf '  These roost adapters are not linked yet. Without them the pane is never\n'
   printf '  badged, so those harnesses would be skipped:\n\n'
   for h in $INSTALL_CANDIDATES; do
-    printf '    %-9s %s\n' "$h" "$(roost_adapter_path "$h")"
-    printf '    %-9s   -> %s\n' "" "$(roost_adapter_target "$h")"
+    k="$(roost_adapter_key "$h")"
+    printf '    %-9s %s\n' "$h" "$(roost_adapter_path "$k")"
+    printf '    %-9s   -> %s\n' "" "$(roost_adapter_target "$k")"
   done
   printf '\n  Creating them is a symlink each, nothing else — no hooks file, no trust,\n'
   printf '  no settings change, no provider config. The report prints the one-line\n'
@@ -1250,7 +1261,12 @@ offer_adapter_install() {
   # the installer never reached a verdict on — a crash, a refusal to start —
   # and the honest report for that is the same as for a failed write.
   for h in $INSTALL_CANDIDATES; do
-    path="$(roost_adapter_path "$h")"
+    # By key, as in the offer above. The installer records the harness NAME
+    # with the path it actually linked, so on 2.x the `wrote` line is the one
+    # for plugins/roost; looked up at the 1.x path, this loop would find that
+    # path's `removed` line, or nothing, and say "could NOT link" about a link
+    # that was made.
+    path="$(roost_adapter_path "$(roost_adapter_key "$h")")"
     verb=""
     # Matched on harness AND path: a harness can own more than one record in a
     # full run (copilot has both a symlink and a settings file), and only the
@@ -1467,6 +1483,18 @@ h_prepare() {
   # in docs/known-gaps.md was measured on Claude Code specifically.
   if [ "$h" = claude ]; then
     H_SKIP='roost validate does not drive Claude Code: there is no way to isolate its config without taking the credential with it. See section 6.1'
+    return 0
+  fi
+
+  # opencode 2, in every mode and every tier. A skip, never a pass: the cloud
+  # tier (h_cloud_setup) and --local (h_local_setup) both link the 1.x adapter,
+  # adapters/opencode/roost.js, at plugin/roost.js in their scratch config, and
+  # nothing in this script has been run against a 2.x binary — so a drive
+  # would report on a setup opencode 2 cannot load, not on roost. Checked
+  # before the cloud tier because that tier is opencode's first, and it would
+  # build that 1.x scratch config.
+  if [ "$h" = opencode ] && roost_opencode_v2; then
+    H_SKIP='opencode 2 is not driven by roost validate yet — its adapter is checked by tests/live/opencode2-smoke.sh, run by hand (#150)'
     return 0
   fi
 

@@ -133,10 +133,32 @@ make_shim() { # make_shim NAME... -> prints a PATH dir
 }
 ALL_SHIM="$(make_shim opencode pi copilot)"
 
+# make_versioned_shim VERSION-LINE -> a PATH dir like ALL_SHIM's, except that
+# its opencode prints VERSION-LINE, so roost_adapter_key reads a version from
+# it. A stub, never a link to a real binary: the plan forbids running a real
+# opencode here, and 1.x and 2.x cannot share a data directory.
+#
+# `sleep` is added for these shims only. roost_opencode_version runs
+# `opencode --version` under a `sleep 5` watchdog, and with no sleep on PATH
+# the watchdog kills the probe at once — the version line can then be lost to
+# that race, and the case would read 1.x whatever the stub printed. The other
+# shims keep their exact inventory; their silent opencode has no version to lose.
+make_versioned_shim() {
+  local dir real
+  dir="$(make_shim pi copilot)"
+  real="$(command -v sleep 2>/dev/null)" && ln -s "$real" "$dir/sleep"
+  printf '#!/bin/sh\necho "%s"\n' "$1" > "$dir/opencode"
+  chmod +x "$dir/opencode"
+  printf '%s' "$dir"
+}
+
 # --- one sandboxed offer ---------------------------------------------------
 # stdin is /dev/null: with no terminal the offer must resolve to no on its own,
 # and a case that inherited the runner's stdin would be answering a question it
 # was never asked.
+#
+# SHIM, when set, replaces ALL_SHIM for one call — the opencode 2 cases below
+# need an opencode that prints a version.
 run_offer() { # run_offer BOX [validate args...]
   local box="$1"; shift
   mkdir -p "$box/home"
@@ -147,7 +169,7 @@ run_offer() { # run_offer BOX [validate args...]
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
   CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
-  PATH="$ALL_SHIM" \
+  PATH="${SHIM:-$ALL_SHIM}" \
     bash "$DRIVER" "$HEAD" --out "$box/report.md" "$@" </dev/null 2>&1
 }
 
@@ -415,7 +437,56 @@ assert_contains "$res" \
   "raced: the count is only the two this run really created"
 
 # ===========================================================================
-# 11. the file itself
+# 11. opencode 2 gets its own adapter path, and 1.x is the control
+# ===========================================================================
+# One binary, two adapters: opencode 2 loads a DIRECTORY at plugins/roost,
+# linked to adapters/opencode/v2, and 1.x loads plugin/roost.js. The offer
+# names whichever one the opencode on PATH gets (roost_adapter_key), and the
+# record it reads back after the install is the one for that same path —
+# looked up at the 1.x path, a 2.x link the installer really wrote would be
+# reported as "could NOT link".
+#
+# The drive-path skip (h_prepare's H_SKIP for opencode 2) is past the slice
+# this file sources; it is checked by hand.
+V2_SHIM="$(make_versioned_shim "opencode v2.0.20")"
+V1_SHIM="$(make_versioned_shim "1.18.30")"
+
+box="$TMP/oc2"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+v2path="$(apath "$box" opencode2)"
+v1path="$(apath "$box" opencode)"
+assert_contains "$out" "    opencode  $v2path" \
+  "opencode 2: the offer names plugins/roost"
+assert_contains "$out" "  -> $(atarget opencode2)" \
+  "opencode 2: the offer names adapters/opencode/v2 as the target"
+assert_eq "$(readlink "$v2path" 2>/dev/null)" "$(atarget opencode2)" \
+  "opencode 2: plugins/roost is linked to this checkout's 2.x adapter"
+assert_contains "$res" "INSTALLED	$v2path" \
+  "opencode 2: the link the installer wrote is recorded for the undo"
+case "$res" in *"BLOCKED	opencode	"*) s=blocked ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2: the 2.x link is not reported as could-NOT-link"
+case "$out" in *"$v1path"*) s=named ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2: the 1.x path is never offered"
+[ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
+  "opencode 2: nothing is created at plugin/roost.js"
+
+box="$TMP/oc1"
+out="$(SHIM="$V1_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+v2path="$(apath "$box" opencode2)"
+v1path="$(apath "$box" opencode)"
+assert_contains "$out" "    opencode  $v1path" \
+  "opencode 1.x (control): the offer names plugin/roost.js"
+assert_contains "$res" "INSTALLED	$v1path" \
+  "opencode 1.x (control): plugin/roost.js is recorded for the undo"
+case "$out" in *"$v2path"*) s=named ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 1.x (control): plugins/roost is never offered"
+
+rm -rf "$V2_SHIM" "$V1_SHIM"
+
+# ===========================================================================
+# 12. the file itself
 # ===========================================================================
 bash -n "$REPO/scripts/roost-validate"; assert_true $? "scripts/roost-validate parses as bash"
 # bash 3.2 is the floor (AGENTS.md / the spec's global constraints): no
