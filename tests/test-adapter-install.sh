@@ -1589,7 +1589,8 @@ if command -v git >/dev/null 2>&1; then
     cp "$HERE/scripts/roost-install" "$1/scripts/roost-install"
     cp "$HERE/scripts/lib/roost-adapters.sh" \
        "$HERE/scripts/lib/roost-hooks.sh" \
-       "$HERE/scripts/lib/roost-json.sh" "$1/scripts/lib/"
+       "$HERE/scripts/lib/roost-json.sh" \
+       "$HERE/scripts/lib/roost-opencode.sh" "$1/scripts/lib/"
   }
   # An empty hooks directory, and a fixture identity. These repos exist for
   # four seconds inside a mktemp dir; pointing them at an empty hooksPath
@@ -1646,6 +1647,14 @@ EOF
   out="$(run_install "$TMP/gitclonebox" "$GIT_SHIM" --yes)"; rc=$?
   INSTALL="$real_install"
   assert_eq "$rc" "0" "behind upstream: exits 0 (it is a note, not a problem)"
+  # The scratch checkout is a COPY of the files roost-install needs, so a lib
+  # that starts sourcing a new sibling breaks it without failing anything else
+  # here: bash prints "No such file or directory" into this output and carries
+  # on. That happened when roost-adapters.sh began sourcing roost-opencode.sh
+  # and mkcheckout did not copy it. Asserted here so the next missing sibling
+  # fails a test instead of being swallowed.
+  case "$out" in *"No such file"*) s=missing ;; *) s=complete ;; esac
+  assert_eq "$s" "complete" "behind upstream: the scratch checkout has every file the installer sources"
   assert_contains "$out" "1 commit behind $upname" \
     "behind upstream: the line names how far behind and what it tracks"
   # Resolved with `cd -P`, because the installer resolves its OWN location
