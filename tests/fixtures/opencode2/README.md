@@ -17,7 +17,7 @@ other fields differ by file:
 
 | file | spy | `what` values | the event payload |
 |---|---|---|---|
-| `fresh.jsonl`, `dead-provider.jsonl`, `tabs.jsonl` | v2 | `tui-setup`, `ev` | `ev` holds the event's `details` as a **JSON string clipped at 500 characters** — a value ending in `…` is not valid JSON. `type`, `sid` (last 6 of the session id), `route` (`home` or `session:<last 6>`), `root` and `status` (`context.data.session.status(route)`) are separate fields and always whole |
+| `fresh.jsonl`, `dead-provider.jsonl`, `tabs.jsonl` | v2 | `tui-setup`, `ev` | `data` holds the event's `details.data` — the payload, with `sessionID` (and `parentID` on a child's `session.created`) at its top level — as a **JSON string clipped at 420 characters**; a value ending in `…` is not valid JSON, and only the fields before the cut are whole (`sessionID` and `parentID` always are; a long `text` is not). `type`, `sid` (last 6 of the session id), `route` (`home` or `session:<last 6>`), `root` and `status` (`context.data.session.status(route)`, JSON-encoded) are separate fields and always whole |
 | `late-terminal.jsonl` | v3 | `tui-setup`, `probe`, `ev`, `tick`, `tui-cleanup` | `probe` holds `route`, `status`, `permission.list` before and after `sync`, `family`; `gen` says which plugin instance (GEN-1 before the file was edited, GEN-2 after) |
 | `late-terminal-subagent.jsonl` | v3 | the same | the dialog belongs to a child session; `permPerFamily` lists each family member's pending requests and `root()` |
 | `family-timing.jsonl` | v4 | `tui-setup`, `ev`, `family`, `pending` | `family` rows probe `family(parent)` at the child's `session.created` and on a schedule after it; `pending` rows ask every family member for pending requests |
