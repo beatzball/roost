@@ -343,7 +343,6 @@ assert_eq "$?" "0" "opencode 2: it is a warning, doctor's exit code is unchanged
 # assertions above are about the version and not about the fixture.
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
 assert_contains "$out" "opencode plugin linked" "opencode 1.x: a linked plugin is still reported as linked"
-assert_eq "$(oc_has "$out" "does not support opencode 2 yet")" "no" "opencode 1.x: no opencode 2 line"
 
 # Not linked: 2.x must not be handed the 1.x plugin's `ln -s`, which cannot
 # help -- it gets the one for its own adapter directory instead.
@@ -449,10 +448,13 @@ assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 
 # rows below them (found in review of #153, by two reviewers independently).
 #
 # 1. The user's own OPENCODE_CONFIG_DIR. The note promised badges "only from
-#    roost install"; on 2.x none come from there either.
+#    roost install"; on 2.x, before #150, none came from there either, so the
+#    2.x note left that out. Now roost install links the 2.x adapter, and roost
+#    wiring never reaches opencode 2 at all, so the sentence is true on 2.x
+#    exactly as on 1.x and both print it.
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
 assert_contains "$out" "OPENCODE_CONFIG_DIR is /users/own/dir, not roost's" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: the note is still printed"
-assert_eq "$(oc_has "$out" "badges come only from roost install")" "no" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: no promise of badges from roost install"
+assert_contains "$out" "badges come only from roost install" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: badges come only from roost install, as on 1.x"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
 assert_contains "$out" "badges come only from roost install" "opencode 1.x + the user's own OPENCODE_CONFIG_DIR: the note is unchanged (the control)"
 

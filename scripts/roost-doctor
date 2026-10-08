@@ -321,17 +321,16 @@ ocver="$(roost_opencode_version)"
 oc_v2=0
 roost_opencode_v2 "$ocver" && oc_v2=1
 
+# One note for both versions. In #153 the opencode 2 copy left out "badges
+# come only from roost install", because then none came from there either — a
+# line further down said opencode 2 was not supported. Since #150 roost install
+# links the 2.x adapter, and roost's wiring never reaches opencode 2 at all, so
+# the sentence is as true on 2.x as on 1.x.
 if [ -n "${OPENCODE_CONFIG_DIR:-}" ]; then
   case "$OPENCODE_CONFIG_DIR" in
     "$w_root/wiring/"*/opencode) : ;;
     *)
-      if [ "$oc_v2" = 1 ]; then
-        # No promise about badges: on opencode 2 none come from roost install
-        # either (#150), and the line saying so is a few rows down.
-        note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it"
-      else
-        note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install"
-      fi ;;
+      note "OPENCODE_CONFIG_DIR is $OPENCODE_CONFIG_DIR, not roost's — roost does not replace it, so opencode badges come only from roost install" ;;
   esac
 fi
 
