@@ -1119,17 +1119,75 @@ other job holds the terminal the pane is not died, and `respawn-pane -k`, which
 keeps pane options, changes the pane process the record names, so the record
 is ignored.
 
-### opencode 2 is not supported, and the wiring fix for it has three holes (#150, #154)
+### opencode 2: the adapter ships with gaps, and the wiring fix has three holes (#150, #154)
 
 **A live risk. High for the one case below it does not reach; otherwise low.**
 
 Two separate things, and the second was the dangerous one.
 
-**No badge (#150).** `adapters/opencode/roost.js` is an opencode 1.x plugin.
-opencode 2 refuses it at load and the pane never badges; `roost read` falls
-back to the screen. Not fixed. `roost doctor` says so, and `site/` says so. The
-measurements a real adapter needs — the 2.x event names, where a plugin runs,
-how a turn ends — are in the issue and its comments.
+**No badge (#150) — fixed by the adapter.** `adapters/opencode/roost.js` is an
+opencode 1.x plugin, and opencode 2 refuses it at load. opencode 2 now has its
+own adapter, `adapters/opencode/v2/tui.js`, which `roost install` links at
+`~/.config/opencode/plugins/roost`. Its design is
+`docs/airig/specs/2026-10-02-opencode-2-adapter-design.md`; §6 there is where
+these gaps come from. **Low each, except the third, which is medium for a
+script:** the badge and `roost read` follow the chat on screen, and that is
+where most of them come from.
+
+- **A hidden tab** that is working, blocked or failed shows nothing until it
+  is brought to the front.
+- **After a tab switch `roost read` has no reply for the pane** until the chat
+  now in front finishes a turn. It says so and shows the screen.
+- **A turn that finishes while its chat is hidden records no reply at all.** A
+  coordinator that sent the prompt with `roost send` and waits with
+  `wait-done --turn N` waits until its timeout if a person tabbed away in that
+  pane mid-turn.
+- **After a reload, a finished chat reads `idle` with no stored reply**, until
+  its next turn. A reload is what a roost update does to every open opencode
+  terminal. The adapter's `setup` writes the pane in full because it cannot
+  know whose badge is on it. The same for an evicted chat brought back to the
+  front. opencode's `status()` cannot tell `done` from `idle`.
+- **A dialog answered or opened while a `permission.sync` is failing** is seen
+  one pass late.
+- **A reload inside one `roost` call.** A write the old instance had already
+  handed to `tmux` can land after the new instance's first tick, if `tmux`
+  takes more than a second to act on it. The pane then shows the old
+  instance's state until the next event. Not designed around.
+- **Killing nothing on reload** means the old instance's last call finishes
+  normally — up to its 5-second timeout if `roost` is wedged.
+- **A front change is seen up to a second late**, or at the next event. For
+  that second the badge and `roost read` describe the chat that was in front.
+- **No badge without `roost install`** on opencode 2. `roost wiring` does not
+  reach it (the next part of this section says why). 1.x keeps its no-setup
+  wiring.
+- **A retrying-but-alive provider** reads `error` mid-turn, as on 1.x — the
+  entry "An opencode pane on a retrying-but-alive provider wears `error`
+  mid-turn" above, carried over unchanged.
+- **Inferred, not measured: a user's own `OPENCODE_CONFIG_DIR` may hide the
+  link.** `roost install` links under `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/roost`
+  and does not read `OPENCODE_CONFIG_DIR`. opencode 2 reads a directory named
+  there *instead of* `~/.config/opencode` (measured, below). If it also looks
+  for plugins only in that directory, a 2.x user who sets the variable
+  themselves gets `opencode 2 plugin linked` from `roost doctor`, and "opencode
+  badges come only from roost install", and a pane that never badges. On 1.x
+  the same shape is harmless, because 1.x merges both directories. Whether 2.x
+  discovers plugins from the directory that replaced its own was not measured.
+- **Not measured** (the design's §2.9): `--standalone`, and a remote
+  `--server`, with a terminal-side plugin; whether `OPENCODE_CLI_CONFIG_CONTENT`
+  drops the `plugins` list in the user's own `cli.json`; compaction, a prompt
+  queued behind a running turn, and a turn started from another client in a
+  chat this terminal is showing; a terminal whose route is a subagent's chat; a
+  retry that then succeeds; any event that says a chat was deleted; Linux, and
+  opencode 2 on tmux 3.4; what a 1-second interval costs in the TUI.
+
+**The 1.x adapter serves a stale reply after a turn with no answer.** Found by
+the review of the opencode 2 design, and **not fixed** here. When a turn ends
+by Esc, by Reject at a dialog, or with no prose at all, `adapters/opencode/roost.js`
+publishes nothing, so the pane's stored reply is still the previous turn's.
+The badge reads ✅ `done`, and `roost read` serves that older answer as this
+turn's with no notice. The opencode 2 adapter clears the stored reply for each
+of those endings. **Medium for a coordinator** that reads a reply after
+`wait-done`: it acts on an answer to a question it did not just ask.
 
 **The user's configuration was replaced (#154).** `roost wiring` set
 `OPENCODE_CONFIG_DIR` in every pane. opencode 1.x reads that directory as well

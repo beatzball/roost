@@ -16,6 +16,21 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **opencode 2 is supported** (#150). roost now has an adapter for opencode 2
+  beside the one for 1.x. **If you run opencode 2: run `roost install` once.**
+  It links the adapter at `~/.config/opencode/plugins/roost`, and removes
+  roost's old 1.x link if you have one, because opencode 2 cannot load it and
+  shows `1 plugin failed`. roost's automatic wiring does not reach opencode 2,
+  so this is the one step. After it, an opencode 2 pane badges and `roost read`
+  returns its replies as on 1.x, and the badge follows the chat on screen: a
+  chat in a hidden tab shows nothing until you bring it to the front. Two
+  things differ from 1.x. After you switch tabs, `roost read` has no reply for
+  the pane until the chat now in front finishes a turn; it says so and shows
+  the screen. And a roost update reloads the adapter, which turns a finished
+  chat's badge to idle, with no stored reply, until its next turn.
+
 ### Changed
 
 - **The `prefix a` switcher is live.** It used to be a snapshot: a list taken
@@ -30,14 +45,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
   now says which you have. Across a reload the cursor keeps its position rather than its row:
   following the row made fzf drop one `Enter` in ten, measured.
 
-- **`roost doctor` says when your opencode is 2.x, which roost does not support
-  yet** (#150). opencode 2 has a new plugin format and does not load roost's
-  adapter, and it reports that only in its own log, so the pane runs normally
-  and never badges. doctor used to print `opencode plugin linked` on such a
-  machine, or hand you an `ln -s` that could not help. It now says opencode 2
-  is not supported yet, and names the two things you can fix yourself: a pane
-  that still has roost's `OPENCODE_CONFIG_DIR`, and the leftover 1.x plugin link
-  that makes opencode 2 show `1 plugin failed`. opencode 1.x is checked exactly as
+- **`roost doctor` checks opencode 2 on its own terms** (#150). opencode 2 has
+  a new plugin format and does not load roost's 1.x adapter, and it reports
+  that only in its own log, so the pane runs normally and never badges. doctor
+  used to print `opencode plugin linked` on such a machine, or hand you an
+  `ln -s` that could not help. It now checks the opencode 2 adapter's link —
+  `opencode 2 plugin linked`, or the command that makes it — and names the two
+  other things you can fix yourself: a pane that still has roost's
+  `OPENCODE_CONFIG_DIR`, and the leftover 1.x plugin link that makes opencode 2
+  show `1 plugin failed`. opencode 1.x is checked exactly as
   before. Finding the version starts opencode once with its directories pointed
   at a temp folder that is then removed: asked plainly, `opencode --version`
   creates its data directories, and a report should not be what first creates

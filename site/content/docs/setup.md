@@ -34,6 +34,8 @@ agent starts. It does this without editing your own config files.
   open before you upgraded roost or opencode still has it: run
   `unset OPENCODE_CONFIG_DIR` there, and `roost wiring on` for new panes.
   `roost doctor` tells you when this applies.
+  opencode 2 badges through `roost install` instead — see
+  [State Badges](/docs/state-badges).
 - **codex, pi and copilot** still badge only through `roost install`. See
   [State Badges](/docs/state-badges).
 
