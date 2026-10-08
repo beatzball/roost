@@ -58,5 +58,9 @@ characters** of a session id. Full ids appear inside `ev` payloads.
 
 ## Not recorded
 
-A retry that then succeeds (design §5, A2); compaction; a queued prompt; a
-grandchild; a route that is a child session; Linux.
+A retry that then succeeds (design §5, A2); a dialog in a chat's **own** turn
+that is allowed (the recorded allowed dialogs are a subagent's, and the
+recorded parent dialog is a Reject — the harness moves the child's recorded
+`permission.*` payloads onto the parent for that case and says so);
+compaction; a queued prompt; a grandchild; a route that is a child session;
+Linux.
