@@ -71,7 +71,9 @@ oc() {  # oc SET SECONDS ARGS... -> run the binary on that set's homes, bounded
   local set="$1" t="$2"; shift 2
   # shellcheck disable=SC2046 # homes_env is word-split on purpose: no value holds a space
   # perl, not a shell function: env(1) execs its command and cannot see one.
-  env $(homes_env "$set") perl -e 'alarm shift; exec @ARGV' "$t" "$BIN" "$@" </dev/null
+  # From $D/proj, the directory every pane starts in, so `debug paths` is
+  # checked against what the panes will see, not the caller's directory.
+  ( cd "$D/proj" && env $(homes_env "$set") perl -e 'alarm shift; exec @ARGV' "$t" "$BIN" "$@" </dev/null )
 }
 for set in $HOMESETS; do
   for sub in home config/opencode/plugins data cache state tmp; do mkdir -p "$D/$set/$sub"; done
@@ -86,12 +88,18 @@ before="$(pgrep -f -- "$BIN" 2>/dev/null | tr '\n' ' ')"
 # service. `--version` and `debug paths` start none (#150); `models` and the
 # TUI do. Until then the trap has nothing to stop.
 started=""
+# The case-3 badge sampler, while it runs. cleanup kills it, so a die between
+# its start and its stop cannot leave it polling a server that is gone.
+sampler=""
 pass=0; fail=0
 
 # The screens live outside $D so a failure can leave them behind to read: the
 # badge that came out is rarely enough to diagnose one, and re-running costs
-# minutes of model time. A clean run deletes them. Made only once the binary is
-# known to be 2.x, so a SKIP leaves nothing outside $D.
+# minutes of model time. Every case pane's screen is captured as the case closes
+# it (close, below), and on a FAIL exit the screen of every pane still open is
+# captured too -- so a FAIL in any case keeps that case's screen. A clean run
+# deletes them. Made only once the binary is known to be 2.x, so a SKIP leaves
+# nothing outside $D.
 L=""
 keep_logs() {
   [ -n "$L" ] || return 0
@@ -107,6 +115,7 @@ keep_logs() {
 # path is not proof it is ours.
 cleanup() {
   local rc=$? set left n=0
+  [ -n "$sampler" ] && kill "$sampler" 2>/dev/null
   if [ -n "$L" ] && [ "$fail" -gt 0 ]; then
     for p in $(tmux -S "$S" list-panes -a -F '#{pane_id}' 2>/dev/null); do
       tmux -S "$S" capture-pane -p -t "$p" > "$L/screen-${p#%}.txt" 2>/dev/null
@@ -242,6 +251,8 @@ state() { tmux -S "$S" show-options -pqv -t "$1" @agent_state; }
 since() { tmux -S "$S" show-options -pqv -t "$1" @agent_since; }
 stored() { tmux -S "$S" show-options -pqv -t "$1" @roost-reply; }
 screen() { tmux -S "$S" capture-pane -p -t "$1" 2>/dev/null; }
+# close PANE -> keep the pane's screen in $L, then kill its window.
+close() { screen "$1" > "$L/screen-${1#%}.txt"; tmux -S "$S" kill-window -t "$1" 2>/dev/null; }
 
 # wait_state PANE WANT TIMEOUT -> 0 if the pane reaches WANT in time
 wait_state() {
@@ -253,12 +264,15 @@ wait_state() {
   return 1
 }
 
-# wait_dialog PANE TIMEOUT -> 0 once opencode's permission dialog is on screen.
+# wait_dialog PANE TIMEOUT -> 0 once opencode's permission dialog is on screen,
+# or once the badge reads blocked.
 #
-# The screen is the witness here, not the badge, and that is the point: it is
-# what tells "the adapter missed an open dialog" (dialog on screen, badge not
-# blocked: FAIL) apart from "the model never made a call that asks" (no dialog
-# at all: SKIP). On 2.0.20 the dialog still reads `Permission required` (#150).
+# The screen is a witness the badge cannot be: it is what tells "the adapter
+# missed an open dialog" (dialog on screen, badge not blocked: FAIL) apart from
+# "the model never made a call that asks" (no dialog at all: SKIP). On 2.0.20
+# the dialog still reads `Permission required` (#150). The badge counts too, so
+# a dialog whose wording has changed, with the adapter right about it, is not
+# read as SKIP -- and left open for the next prompt's Enter to answer.
 #
 # A `done` gives up early only once the pane has been seen busy: the turn
 # before this one left `done` on the badge, and the new prompt takes a moment
@@ -268,6 +282,7 @@ wait_dialog() {
   while [ "$n" -lt "$t" ]; do
     screen "$p" | grep -q 'Permission required' && return 0
     s="$(state "$p")"
+    [ "$s" = blocked ] && return 0
     [ "$s" != done ] && busy=1
     [ "$s" = done ] && [ -n "$busy" ] && return 1
     sleep 1; n=$((n+1))
@@ -401,14 +416,14 @@ wait_ready "$pb" 90 || die "the pane never read idle and settled (case 3, pane B
 send "$pb" 'Reply with exactly this and nothing else: roost-smoke-pane-b'
 wait_state "$pb" done 120 || no "pane B's turn ends on done (got '$(state "$pb")')"
 sleep 2   # past a timer tick in A, so a tick that wrongly writes has had its chance
-kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
+kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null; sampler=""
 seq3="$(tr '\n' ',' < "$badges")"
 [ "$seq3" = "done," ] && ok "pane A's badge holds while pane B runs a turn" \
   || no "pane A's badge holds while pane B runs a turn (A's badges: $seq3)"
 [ "$(since "$pa")" = "$a_since" ] && [ "$(stored "$pa")" = "$a_reply" ] \
   && ok "pane A is not re-stamped and its stored reply is untouched" \
   || no "pane A is not re-stamped and its stored reply is untouched (since $a_since -> $(since "$pa"))"
-tmux -S "$S" kill-window -t "$pb" 2>/dev/null
+close "$pb"
 
 # --- case 4: a shell call -> blocked while the dialog is up, done after Allow
 send "$pa" 'Use the shell tool to run exactly: echo roost-smoke-shell'
@@ -445,7 +460,7 @@ if wait_dialog "$pa" 180; then
 else
   skipped "no permission dialog appeared, so the model never had the subagent make a shell call (badge '$(state "$pa")')"
 fi
-tmux -S "$S" kill-window -t "$pa" 2>/dev/null
+close "$pa"
 
 # --- case 6: one terminal, two finished chats, alt+down only ----------------
 # The only live check of the adapter's 1-second timer. Switching the front tab
@@ -486,7 +501,7 @@ else
     no "after alt+down alone, the badge is re-stamped and the stored reply cleared within 3s (since $t_since -> $(since "$pt"), reply '$(printf '%s' "$t_reply" | head -c 40)' -> '$(stored "$pt" | head -c 40)')"
   fi
 fi
-tmux -S "$S" kill-window -t "$pt" 2>/dev/null
+close "$pt"
 
 # --- case 7: a provider on a closed port -> error ---------------------------
 # Its own homes and therefore its own service (see HOMESETS). On 2.0.20 a dead
@@ -497,7 +512,7 @@ wait_ready "$pd" 90 || die "the pane never read idle and settled (case 7, 90s) -
 send "$pd" 'Write a haiku about tmux.'
 if wait_state "$pd" error 120; then ok "an unreachable provider drives the pane to error"
 else no "an unreachable provider drives the pane to error (got '$(state "$pd")')"; fi
-tmux -S "$S" kill-window -t "$pd" 2>/dev/null
+close "$pd"
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
