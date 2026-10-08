@@ -529,19 +529,29 @@ const setup = (context) => {
   try {
     timer = setInterval(onTick, 1000)
   } catch {}
+  // An interval holds the event loop open. If opencode ever exits by letting
+  // its loop drain rather than calling process.exit, a live interval would
+  // keep the process running. Exit was not measured (§2.6 measured a reload
+  // only), so unref the timer: a pass still runs every second while opencode
+  // runs, and the timer alone never keeps it alive. In a `try`, and only if
+  // the host's timer has unref, for the same reason setInterval is.
+  try {
+    timer?.unref?.()
+  } catch {}
 
   // setup writes the pane in full: the first pass clears the stored reply and
   // writes the state it finds (step 1 above says why).
   reconcile()
 
-  // The cleanup opencode runs on a reload or exit — measured on 2.0.20: the
-  // old instance's cleanup runs, a new instance is set up in the same process,
-  // and the old interval stops. Stop listening, clear the timer, and start no
-  // new `roost` call: every step of a pass checks `disposed` after each
-  // await. A call already in flight is left to finish — killing `roost reply`
-  // between its record append and its pane write would leave a turn file with
-  // no @roost-reply, and killing `roost` does not reach the `tmux` it has
-  // already started, so a kill buys nothing and can do harm.
+  // The cleanup opencode runs on a reload or exit. A reload was measured on
+  // 2.0.20 (§2.6): the old instance's cleanup runs, a new instance is set up
+  // in the same process, and the old interval stops. Exit was not measured.
+  // Stop listening, clear the timer, and start no new `roost` call: every
+  // step of a pass checks `disposed` after each await. A call already in
+  // flight is left to finish — killing `roost reply` between its record
+  // append and its pane write would leave a turn file with no @roost-reply,
+  // and killing `roost` does not reach the `tmux` it has already started, so
+  // a kill buys nothing and can do harm.
   return () => {
     disposed = true
     try {

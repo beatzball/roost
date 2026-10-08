@@ -96,7 +96,9 @@ let pass = 0
 let fail = 0
 // While `muted` holds a counter, check() counts there instead of printing: the
 // mutation run below needs to know whether a case failed without its FAIL
-// lines counting against this file.
+// lines counting against this file. `loaded` counts the instances start()
+// set up while muted, so that run can tell a copy that failed for the right
+// reason from one that never loaded.
 let muted = null
 const check = (got, want, what) => {
   if (muted) {
@@ -394,6 +396,7 @@ const start = async (label, prepare = () => {}, adapter = ADAPTER) => {
   try {
     const mod = await import(`${pathToFileURL(adapter).href}?case=${caseNo}`)
     t.cleanup = mod.default.setup(t.context)
+    if (muted) muted.loaded++
   } catch (e) {
     check(`${e?.code ?? e}`, "loaded", `${label}: the adapter loads and sets up`)
     return null
@@ -976,6 +979,14 @@ for (const [what, pending, want] of [
     // The shim records its start a moment after the spawn; wait for it, so
     // the count taken at cleanup includes the call in flight.
     for (let i = 0; i < 200 && started() < 1; i++) await sleep(10)
+    // Move the front before cleanup. With the front still on the chat it
+    // wrote, a pass after dispose finds nothing to clear and goes straight to
+    // ask(), whose own `disposed` check ends it — so the loop's `!disposed`
+    // guard in reconcile() would go untested. With the front moved, that
+    // extra pass would enter step 1 and run `roost reply -` after dispose:
+    // the guard is then the only thing standing between cleanup and a second
+    // call.
+    old.on(OTHER)
     await finish(old)
     const atCleanup = started()
     old.deliver(TICK)
@@ -1011,11 +1022,14 @@ for (const [what, pending, want] of [
   const hits = lines.filter((l) => l.includes("setInterval(")).length
   const copy = join(dir, "tui-no-timer.mjs")
   writeFileSync(copy, lines.filter((l) => !l.includes("setInterval(")).join("\n"))
-  muted = { failed: 0 }
+  // A copy that fails to import fails start()'s own check, which would count
+  // as a failure here too: the run must also show the copy loaded, or a
+  // deletion that broke the file would pass for one that removed the timer.
+  muted = { failed: 0, loaded: 0 }
   await timerOnly("the timer-only case without the timer", copy)
-  const failed = muted.failed
+  const { failed, loaded } = muted
   muted = null
-  check(`${hits}|${failed > 0}`, "1|true", "the timer-only case fails without the timer")
+  check(`${hits}|${loaded}|${failed > 0}`, "1|1|true", "the timer-only case fails without the timer")
 }
 
 // --- Nothing throws ---
