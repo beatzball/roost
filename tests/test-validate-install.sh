@@ -79,6 +79,13 @@ slice="$1"; shift
 trap - EXIT
 offer_adapter_install
 rc=$?
+# The report's own section, built the way the real run builds it, so a case
+# can assert on the undo lines the tester would paste. Printed BEFORE the
+# result block: result_of keeps only what follows ===RESULT===, so nothing in
+# the report can be mistaken for one of the values below.
+report_install
+printf '\n===REPORT===\n'
+cat "$BODY"
 # The five things the report is made of, in a shape no prose line can collide
 # with. Asserting on the offer's console prose alone is how a case goes green
 # against the wrong line; these are the values themselves.
@@ -96,6 +103,9 @@ done
 # other case in the file down with it.
 printf '%s' "${ALREADY_LINKED:-}" | while IFS="$(printf '\t')" read -r h p; do
   [ -n "$h" ] && printf 'ALREADY\t%s\t%s\n' "$h" "$p"
+done
+printf '%s' "${REMOVED_LINKS:-}" | while IFS="$(printf '\t')" read -r h p u; do
+  [ -n "$h" ] && printf 'REMOVED\t%s\t%s\t%s\n' "$h" "$p" "$u"
 done
 rm -rf "$WORK"
 DRIVER
@@ -482,6 +492,44 @@ assert_contains "$res" "INSTALLED	$v1path" \
   "opencode 1.x (control): plugin/roost.js is recorded for the undo"
 case "$out" in *"$v2path"*) s=named ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "opencode 1.x (control): plugins/roost is never offered"
+case "$res" in *"REMOVED	"*) s=removed ;; *) s=none ;; esac
+assert_eq "$s" "none" "opencode 1.x (control): nothing is reported as removed"
+case "$out" in *"removed "*|*"One thing is removed"*) s=named ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 1.x (control): no removal line is printed"
+
+# --- opencode 2 with roost's own 1.x link still in place ------------------
+# `roost install --only opencode` on 2.x removes that link (opencode 2 tries
+# to load it and cannot). validate runs that install, so its offer must say a
+# link will be removed, and its report must name the removal and carry the
+# `ln -s` that puts it back — read from the installer's `removed` record.
+box="$TMP/oc2old"
+mkdir -p "$box/home/.config/opencode/plugin"
+v1path="$(apath "$box" opencode)"
+v2path="$(apath "$box" opencode2)"
+ln -s "$(atarget opencode)" "$v1path"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+rep="${out#*===REPORT===}"; rep="${rep%%===RESULT===*}"
+undo="ln -s \"$(atarget opencode)\" \"\$HOME/.config/opencode/plugin/roost.js\""
+assert_eq "$(readlink "$v2path" 2>/dev/null)" "$(atarget opencode2)" \
+  "opencode 2, old 1.x link: plugins/roost is linked"
+[ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
+  "opencode 2, old 1.x link: the 1.x link is gone"
+assert_contains "$out" "    remove    $v1path" \
+  "opencode 2, old 1.x link: the offer says the 1.x link will be removed"
+case "$out" in *"a symlink each, nothing else"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, old 1.x link: the offer does not say nothing else"
+assert_contains "$out" "  removed $v1path" \
+  "opencode 2, old 1.x link: the removal is printed as it happens"
+assert_contains "$res" "REMOVED	opencode	$v1path	ln -s \"$(atarget opencode)\" \"$v1path\"" \
+  "opencode 2, old 1.x link: the removal and its undo are read from the record"
+assert_contains "$rep" "$undo" \
+  "opencode 2, old 1.x link: the report's undo list has the ln -s"
+assert_contains "$rep" "rm \"\$HOME/.config/opencode/plugins/roost\"" \
+  "opencode 2, old 1.x link: the report's undo list still has the rm for plugins/roost"
+assert_contains "$res" \
+  "DECISION	offered and accepted — this run created 3 adapter symlink(s) and removed 1 opencode 1.x link(s); see the undo below" \
+  "opencode 2, old 1.x link: the decision line counts the removal"
 
 rm -rf "$V2_SHIM" "$V1_SHIM"
 

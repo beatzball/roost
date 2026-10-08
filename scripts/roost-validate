@@ -1095,10 +1095,12 @@ INSTALL_DECISION=""     # one line, for the report
 INSTALLED_LINKS=""      # newline-separated paths this run created
 BLOCKED_LINKS=""        # newline-separated "harness<TAB>path" it refused to touch
 ALREADY_LINKED=""       # newline-separated "harness<TAB>path" linked by someone else
+REMOVED_LINKS=""        # newline-separated "harness<TAB>path<TAB>undo" this run removed
 INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
 
 offer_adapter_install() {
-  local h k path ans created=0 only install_out install_rc records verb
+  local h k path ans created=0 removed=0 only install_out install_rc records verb
+  local v1_going=""
 
   if [ "$LOCAL" -eq 1 ]; then
     # --local builds its own scratch config directory per harness and links the
@@ -1145,10 +1147,30 @@ offer_adapter_install() {
     k="$(roost_adapter_key "$h")"
     printf '    %-9s %s\n' "$h" "$(roost_adapter_path "$k")"
     printf '    %-9s   -> %s\n' "" "$(roost_adapter_target "$k")"
+    # On opencode 2, linking plugins/roost is not the whole of what the
+    # installer does: it also removes roost's own 1.x link at plugin/roost.js,
+    # which opencode 2 tries to load and cannot (scripts/roost-install's
+    # unlink step). The same test the installer plans it with — `ok` or
+    # `dangling`, and a symlink — so the offer names that removal exactly
+    # when it will happen, and "nothing else" is never printed above it.
+    if [ "$k" = opencode2 ] && [ -L "$(roost_adapter_path opencode)" ]; then
+      case "$(roost_adapter_state opencode)" in
+        ok|dangling) v1_going="$(roost_adapter_path opencode)" ;;
+      esac
+    fi
   done
-  printf '\n  Creating them is a symlink each, nothing else — no hooks file, no trust,\n'
-  printf '  no settings change, no provider config. The report prints the one-line\n'
-  printf '  undo for every link this run makes.\n\n'
+  if [ -n "$v1_going" ]; then
+    printf '\n  Creating them is a symlink each — no hooks file, no trust, no settings\n'
+    printf '  change, no provider config. One thing is removed as well: roost'"'"'s own\n'
+    printf '  opencode 1.x link, which opencode 2 tries to load and cannot:\n\n'
+    printf '    %-9s %s\n' "remove" "$v1_going"
+    printf '\n  The report prints the one-line undo for every link this run makes or\n'
+    printf '  removes.\n\n'
+  else
+    printf '\n  Creating them is a symlink each, nothing else — no hooks file, no trust,\n'
+    printf '  no settings change, no provider config. The report prints the one-line\n'
+    printf '  undo for every link this run makes.\n\n'
+  fi
 
   # Decide, in three ways, and never hang in any of them.
   if [ "$INSTALL_ADAPTERS" = 0 ]; then
@@ -1294,12 +1316,25 @@ offer_adapter_install() {
         printf '  could NOT link %s\n' "$path" ;;
     esac
   done
+  # A removal is a change to the tester's machine like any link, so it is read
+  # from the record the same way and reported with its undo — never left for
+  # the tester to discover. Only `roost install` on an opencode 2 machine
+  # writes one: roost's own 1.x link, removed because opencode 2 cannot load
+  # it. Its UNDO column is the exact `ln -s` that puts the same link back.
+  while IFS="$(printf '\t')" read -r v vh vpath vundo; do
+    [ "${v:-}" = removed ] || continue
+    REMOVED_LINKS="$REMOVED_LINKS$vh	$vpath	$vundo
+"
+    removed=$((removed + 1))
+    printf '  removed %s — roost'"'"'s own 1.x link, which opencode 2 cannot load\n' "$vpath"
+  done < "$records"
   if [ "$install_rc" -ne 0 ]; then
     printf '\n  roost install exited %s. Its own output:\n\n' "$install_rc"
     printf '%s\n' "$install_out"
   fi
   printf '\n'
   INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s); see the undo below"
+  [ "$removed" -gt 0 ] && INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s) and removed $removed opencode 1.x link(s); see the undo below"
   return 0
 }
 
@@ -1309,11 +1344,24 @@ offer_adapter_install() {
 report_install() {
   sub "Adapter links"
   para "**$INSTALL_DECISION**"
-  if [ -n "$INSTALLED_LINKS" ]; then
-    para "**This run created the following symlinks on this machine.** They are
+  if [ -n "$INSTALLED_LINKS$REMOVED_LINKS" ]; then
+    if [ -z "$REMOVED_LINKS" ]; then
+      para "**This run created the following symlinks on this machine.** They are
 symlinks into the roost checkout and nothing else was written — no hooks file,
 no trust granted, no settings edited, no provider configuration. To undo them,
 run these lines; removing a symlink cannot affect anything it pointed at:"
+    else
+      # "Nothing else was written" would be false here, so it is not said.
+      # The removal is named in its own words, with what it was and why,
+      # before the one undo block that covers both.
+      para "**This run created and removed symlinks on this machine.** It created
+symlinks into the roost checkout, and on this opencode 2 machine it removed
+roost's own opencode 1.x link, which opencode 2 tries to load and cannot.
+Nothing else was written — no hooks file, no trust granted, no settings edited,
+no provider configuration. To undo all of it, run these lines; the \`rm\` lines
+remove only the links this run made, and the \`ln -s\` lines put back exactly
+the link that was removed:"
+    fi
     printf '```sh\n' >> "$BODY"
     # $HOME, not the ~ that redact() leaves behind. A tilde inside double
     # quotes is a literal tilde to every shell — `rm "~/.pi/..."` fails with
@@ -1325,9 +1373,22 @@ run these lines; removing a symlink cannot affect anything it pointed at:"
     printf '%s' "$INSTALLED_LINKS" | while read -r path; do
       [ -n "$path" ] && printf 'rm "%s"\n' "$path" | redact | sed 's|^rm "~/|rm "$HOME/|' >> "$BODY"
     done
+    # In the same block, after the `rm` lines, so undoing the whole run is one
+    # paste and it runs in reverse: the 2.x link goes, then the 1.x link comes
+    # back. Both quoted paths of an `ln -s` can be under $HOME — the checkout
+    # and the link — so the tilde fix is global here rather than anchored to
+    # the start of the line.
+    printf '%s' "$REMOVED_LINKS" | while IFS="$(printf '\t')" read -r h path undo; do
+      [ -n "$h" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
+    done
     printf '```\n\n' >> "$BODY"
-    record WARN 1 "this run wrote to your machine" \
-      "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) after you agreed; the undo commands are in §1"
+    if [ -z "$REMOVED_LINKS" ]; then
+      record WARN 1 "this run wrote to your machine" \
+        "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) after you agreed; the undo commands are in §1"
+    else
+      record WARN 1 "this run wrote to your machine" \
+        "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) and removed $(printf '%s' "$REMOVED_LINKS" | grep -c . ) opencode 1.x link(s) after you agreed; the undo commands are in §1"
+    fi
   fi
   if [ -n "$ALREADY_LINKED" ]; then
     para "**Already linked, but not by this run.** Each path below was correct by the
