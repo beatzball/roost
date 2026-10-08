@@ -243,7 +243,9 @@ now, and each for a reason that is not "nothing happened":
   chat on screen, so on the home screen, or for a chat whose turn this instance
   did not see end — after a reload, or once the chat's entry was evicted — the
   adapter writes `idle` over whatever the pane held, because a `done` or a
-  `working` left there would describe another chat or another instance.
+  `working` left there would describe another chat or another instance. It
+  also writes `idle` at setup, where it cannot know whether the badge it finds
+  is right.
 
 So an adapter may report `idle` when it must **overwrite** a badge it knows to
 be wrong and has no truer state to put there. It never reports `idle` to say

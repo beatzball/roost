@@ -116,7 +116,8 @@
 # overwrite the ✅ that turn just earned with 💤 a frame later, and 💤 is the
 # badge that says "nothing here to look at". spec §1 settles it from the other
 # side too: idle is a DEFAULT, not a report — an unstamped pane already renders
-# as idle, and neither shipped adapter has ever reported it.
+# as idle. An adapter reports it only to overwrite a badge it knows is wrong:
+# Interrupt below does, and SessionEnd after Stop would not.
 #
 # `SubagentStop`. A child's end is announced on its own event, which is what
 # keeps Stop meaning the pane's own turn (spec §5 T1). Not registering it is the

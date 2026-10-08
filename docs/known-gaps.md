@@ -1182,8 +1182,9 @@ where most of them come from.
 
 **The 1.x adapter serves a stale reply after a turn with no answer.** Found by
 the review of the opencode 2 design, and **not fixed** here. When a turn ends
-by Esc, by Reject at a dialog, or with no prose at all, `adapters/opencode/roost.js`
-publishes nothing, so the pane's stored reply is still the previous turn's.
+by Esc, by Reject at a dialog (inferred from the 2.x recording; not recorded on
+1.x), or with no prose at all, `adapters/opencode/roost.js` publishes nothing,
+so the pane's stored reply is still the previous turn's.
 The badge reads ✅ `done`, and `roost read` serves that older answer as this
 turn's with no notice. The opencode 2 adapter clears the stored reply for each
 of those endings. **Medium for a coordinator** that reads a reply after
