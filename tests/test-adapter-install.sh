@@ -2155,6 +2155,8 @@ assert_eq "$rc" "0" "opencode 2, own 1.x link, --dry-run: exits 0"
 assert_contains "$out" "Will remove:" \
   "opencode 2, own 1.x link: the plan says something will be removed"
 assert_contains "$out" "$p1" "opencode 2, own 1.x link: the plan names plugin/roost.js"
+assert_contains "$out" "1 plugin failed" \
+  "opencode 2, own 1.x link: the plan names the '1 plugin failed' it causes"
 [ -L "$p1" ]; assert_true $? "opencode 2, own 1.x link: --dry-run left it in place"
 [ ! -e "$p2" ] && [ ! -L "$p2" ]; assert_true $? \
   "opencode 2, own 1.x link: --dry-run linked nothing"
@@ -2186,6 +2188,12 @@ ln -s "$TMP/no-such-checkout/adapters/opencode/roost.js" "$p1"
 out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "opencode 2, dangling 1.x link: exits 0"
 [ ! -L "$p1" ]; assert_true $? "opencode 2, dangling 1.x link: it is removed"
+# `1 plugin failed` was measured for a live 1.x adapter, not a dangling link,
+# so the plan claims only that it points at nothing.
+assert_contains "$out" "it points at nothing" \
+  "opencode 2, dangling 1.x link: the plan says it points at nothing"
+case "$out" in *"1 plugin failed"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling 1.x link: the plan does not claim '1 plugin failed'"
 
 # --- 2.x, a foreign file at plugin/roost.js -> untouched, and named ---------
 box="$TMP/oc2-foreign1x"
@@ -2223,6 +2231,41 @@ assert_eq "$(readlink "$p1" 2>/dev/null)" "$TMP/other-checkout/adapters/opencode
   "opencode 2, another checkout's 1.x link: left exactly as it was"
 assert_contains "$out" "rm \"$p1\"" \
   "opencode 2, another checkout's 1.x link: the manual note names the rm"
+
+# The checkout's own 1.x FILE, reached through a plugin/ directory that is
+# itself a symlink into the checkout. roost_adapter_state says `ok` (an -ef
+# test), but the path is not a link: an `rm` there deletes
+# adapters/opencode/roost.js out of the checkout. So the run refuses it, and
+# the manual note must not hand the user that `rm` either -- the fix is the
+# directory, never the file.
+box="$TMP/oc2-symdir"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+mkdir -p "${p1%/*/*}"
+ln -s "$HERE/adapters/opencode" "${p1%/*}"
+recs="$TMP/oc2-symdir.tsv"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, symlinked plugin/ directory: exits 0"
+[ -f "$(adapter_target opencode)" ]; assert_true $? \
+  "opencode 2, symlinked plugin/ directory: the checkout's adapters/opencode/roost.js is still there"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, symlinked plugin/ directory: --records says it was refused"
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
+  "opencode 2, symlinked plugin/ directory: plugins/roost is linked"
+assert_contains "$out" "this checkout's own file, reached through a symlinked directory" \
+  "opencode 2, symlinked plugin/ directory: the Will NOT touch heading says what is there"
+assert_contains "$out" "is a regular file reached through a symlinked plugin/ directory" \
+  "opencode 2, symlinked plugin/ directory: the manual note says what the path is"
+assert_contains "$out" "never delete the file" \
+  "opencode 2, symlinked plugin/ directory: the manual note says not to delete the file"
+assert_contains "$out" "remove or re-point" \
+  "opencode 2, symlinked plugin/ directory: the manual note names the directory as the fix"
+case "$out" in *"rm \"$p1\""*) s=offered ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, symlinked plugin/ directory: the manual note does not offer rm of the file"
+case "$out" in *"something that is not this checkout"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, symlinked plugin/ directory: nothing calls this checkout's own file 'not this checkout'"
 
 # --- --only opencode on 2.x covers both keys ---------------------------------
 box="$TMP/oc2-only"

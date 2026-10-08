@@ -931,8 +931,15 @@ if [ -n "$UNLINK_STEPS" ]; then
   printf 'Will remove:\n'
   printf '%s' "$UNLINK_STEPS" | while IFS="$TAB" read -r action h path target key; do
     [ -n "$action" ] || continue
-    printf '  %-6s %s\n         (roost'"'"'s own %s 1.x adapter, a link to %s;\n          %s 2 cannot load it and says "1 plugin failed")\n' \
-      remove "$path" "$h" "$target" "$h"
+    # `1 plugin failed` was measured for a LIVE 1.x adapter. A dangling link
+    # was not measured, so for one the line claims only what is certain.
+    if [ -e "$path" ]; then
+      why="$h 2 cannot load it and says \"1 plugin failed\""
+    else
+      why="it points at nothing, and $h 2 cannot load it"
+    fi
+    printf '  %-6s %s\n         (roost'"'"'s own %s 1.x adapter, a link to %s;\n          %s)\n' \
+      remove "$path" "$h" "$target" "$why"
   done
   printf '\n'
 fi
@@ -955,13 +962,40 @@ EOF
   printf 'Already correct: %s\n\n' "${ok_names// /, }"
 fi
 
+# own_file_via_dir PATH TARGET — true when PATH is not a link but IS this
+# checkout's own TARGET file, which means some directory on the way to it is a
+# symlink into the checkout (in practice plugin/ itself). roost_adapter_state
+# calls that `ok`, because `ok` is an -ef test, and the opencode 2 unlink step
+# refuses it, because an `rm` there deletes the file out of the checkout. Both
+# the heading and the manual note below need to say THAT, and not "something
+# that is not this checkout", which is the one thing it certainly is not.
+own_file_via_dir() { [ ! -L "$1" ] && [ "$1" -ef "$2" ]; }
+
 if [ -n "$REFUSED" ]; then
-  printf 'Will NOT touch — something that is not this checkout is already there:\n'
-  printf '%s' "$REFUSED" | while IFS="$TAB" read -r h path target action; do
-    [ -n "$h" ] || continue
-    printf '  %s\n' "$path"
-  done
-  printf '\n'
+  # Two headings, because the one that fits every other refusal is false for a
+  # row that is this checkout's own file: a reader who believes the heading
+  # treats the file as someone else's and deletes it.
+  refused_foreign=""; refused_own=""
+  while IFS="$TAB" read -r h path target action; do
+    [ -n "${h:-}" ] || continue
+    if own_file_via_dir "$path" "$target"; then
+      refused_own="$refused_own  $path
+"
+    else
+      refused_foreign="$refused_foreign  $path
+"
+    fi
+  done <<EOF
+$REFUSED
+EOF
+  if [ -n "$refused_foreign" ]; then
+    printf 'Will NOT touch — something that is not this checkout is already there:\n'
+    printf '%s\n' "$refused_foreign"
+  fi
+  if [ -n "$refused_own" ]; then
+    printf 'Will NOT touch — this checkout'"'"'s own file, reached through a symlinked directory:\n'
+    printf '%s\n' "$refused_own"
+  fi
 fi
 
 if [ -n "$JSON_REFUSED" ]; then
@@ -1238,6 +1272,23 @@ if [ -n "$REFUSED" ]; then
     # print `1 plugin failed`. The `rm` is offered only for a symlink: a
     # regular file there may be the user's own plugin, and one reached through
     # a symlinked plugin/ directory may be the checkout's own adapter.
+    if [ "${action:-}" = unlink ] && own_file_via_dir "$path" "$target"; then
+      # The checkout's own 1.x adapter FILE, reached through a plugin/
+      # directory that is a symlink into the checkout. Deleting the file
+      # deletes adapters/opencode/roost.js from the checkout, so the note
+      # names the directory as the thing to change, and offers no `rm`.
+      add_manual "$h: $path
+  is a regular file reached through a symlinked plugin/ directory — it is
+  this checkout's own 1.x adapter, $target.
+  This machine's $h is 2.x, which uses roost's adapter in plugins/roost
+  instead, and $h 2 cannot load this one. roost install will not remove it.
+  The fix is the directory: remove or re-point
+    $(dirname "$path")
+  so it no longer links into the roost checkout. Look at it first with
+    ls -ld \"$(dirname "$path")\"
+  and never delete the file: that deletes it from the checkout."
+      continue
+    fi
     if [ "${action:-}" = unlink ]; then
       oc_note="$h: something that is not this checkout's link is at
     $path
