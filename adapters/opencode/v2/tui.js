@@ -313,7 +313,10 @@ const setup = (context) => {
     lastFamily = members
     let unknown = false
     for (const id of members) {
-      if (disposed) return null
+      // A front that left mid-ask is another pass's question; the rest of
+      // this family's syncs, up to 2 s each, would be spent on a chat the pane
+      // is no longer about.
+      if (disposed || readFront() !== front) return null
       let timer
       try {
         const synced = await Promise.race([
@@ -383,7 +386,7 @@ const setup = (context) => {
       } while (again && !disposed)
     } catch {
       // Never throws: a broken pass leaves the pane as it was, and the next
-      // event starts a new one.
+      // event or tick starts a new one.
     } finally {
       running = false
     }
@@ -411,22 +414,27 @@ const setup = (context) => {
     // back with an empty one, forget the state written, and ask about dialogs
     // afresh.
     //
-    // The first pass of an instance has no chat of its own that left. Whether
-    // the pane still holds a reply left by something else is for setup to
-    // settle, not this step.
+    // The first pass is setup's, and it clears the reply too: setup writes
+    // the pane in full. An instance cannot know whose badge and whose reply
+    // are on the pane — a new opencode started in a pane still showing
+    // another chat's `done` and answer, a busy badge left by the previous
+    // instance for a turn that ended during the reload — so it does not
+    // guess. An earlier version of the design tried "never downgrade at
+    // setup", to keep a finished chat's `done` and reply across a reload, and
+    // its review found three ways for that to be wrong. The cost: after a
+    // reload a finished chat reads `idle` with no stored reply until its next
+    // turn.
     if (front !== written.front) {
       const left = written.front
       written.front = front
       written.state = null
       stale()
-      if (left !== NEVER) {
-        if (left !== null) {
-          const e = model.get(left)
-          if (e) e.due = null
-        }
-        await publish("")
-        if (moved(front)) return
+      if (left !== NEVER && left !== null) {
+        const e = model.get(left)
+        if (e) e.due = null
       }
+      await publish("")
+      if (moved(front)) return
     }
 
     // 2. Ask whether a dialog is open, unless the last answer may be trusted.
@@ -494,14 +502,53 @@ const setup = (context) => {
     })
   } catch {}
 
-  // The cleanup opencode runs on a reload or exit: stop listening and start no
-  // new `roost` call. A call already in flight is left to finish — killing
-  // `roost reply` between its record append and its pane write would leave a
-  // turn file with no @roost-reply.
+  // The timer's only job is a pass a second, because switching the chat in
+  // front emits no event: without it a tab switch is seen at the next event,
+  // which may be minutes away. A badge that lags a switch by a second is
+  // invisible; the cost is one cheap pass a second per open opencode terminal
+  // when nothing has changed (not measured).
+  //
+  // Its FIRST tick also forgets the state written, so the state is asserted
+  // once more. That is for a reload: the old instance is not killed, so a
+  // write it had already started can land after this instance's setup pass.
+  // The reply is not cleared again — by then it may be one this instance
+  // published itself. What stays open is an old write that `tmux` takes more
+  // than a second to act on; that is recorded, not designed around.
+  let ticked = false
+  const onTick = () => {
+    try {
+      if (disposed) return
+      if (!ticked) {
+        ticked = true
+        written.state = null
+      }
+      reconcile()
+    } catch {}
+  }
+  let timer = null
+  try {
+    timer = setInterval(onTick, 1000)
+  } catch {}
+
+  // setup writes the pane in full: the first pass clears the stored reply and
+  // writes the state it finds (step 1 above says why).
+  reconcile()
+
+  // The cleanup opencode runs on a reload or exit — measured on 2.0.20: the
+  // old instance's cleanup runs, a new instance is set up in the same process,
+  // and the old interval stops. Stop listening, clear the timer, and start no
+  // new `roost` call: every step of a pass checks `disposed` after each
+  // await. A call already in flight is left to finish — killing `roost reply`
+  // between its record append and its pane write would leave a turn file with
+  // no @roost-reply, and killing `roost` does not reach the `tmux` it has
+  // already started, so a kill buys nothing and can do harm.
   return () => {
     disposed = true
     try {
       if (typeof stop === "function") stop()
+    } catch {}
+    try {
+      clearInterval(timer)
     } catch {}
   }
 }

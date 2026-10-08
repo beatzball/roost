@@ -59,14 +59,30 @@ const shim = join(dir, "roost")
 // there; every other call is argv exactly as before. Without this the adapters'
 // switch to stdin would have recorded every reply as the literal "-", which is
 // what the red run showed.
-writeFileSync(
-  shim,
-  `#!/bin/sh\n` +
-    `if [ "$1" = reply ] && [ "$2" = - ]; then via=stdin; arg=\`cat\`; else via=argv; arg="$2"; fi\n` +
-    `esc=\`printf '%s' "$arg" | tr '\\n' '\\036'\`\n` +
-    `printf '%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" >> "${log}"\n`
-)
-chmodSync(shim, 0o755)
+const RECORD =
+  `if [ "$1" = reply ] && [ "$2" = - ]; then via=stdin; arg=\`cat\`; else via=argv; arg="$2"; fi\n` +
+  `esc=\`printf '%s' "$arg" | tr '\\n' '\\036'\`\n` +
+  `printf '%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" >> "${log}"\n`
+const plainShim = () => {
+  writeFileSync(shim, `#!/bin/sh\n` + RECORD)
+  chmodSync(shim, 0o755)
+}
+plainShim()
+// The slow variant, for the cases about a write still in flight: the verbs
+// named (a `case` pattern, "reply" or "state|reply") sleep 400 ms before the
+// row is recorded, and every call first appends its verb to `starts` — so a
+// call that was STARTED can be counted while it is still running, which the
+// log, written as the shim exits, cannot show.
+const starts = join(dir, "starts")
+const slowShim = (verbs) => {
+  writeFileSync(starts, "")
+  writeFileSync(
+    shim,
+    `#!/bin/sh\n` + `printf '%s\\n' "$1" >> "${starts}"\n` + `case "$1" in ${verbs}) sleep 0.4 ;; esac\n` + RECORD
+  )
+  chmodSync(shim, 0o755)
+}
+const started = () => readFileSync(starts, "utf8").split("\n").filter(Boolean).length
 const REAL_PATH = process.env.PATH
 process.env.PATH = `${dir}:${REAL_PATH}`
 
@@ -78,7 +94,15 @@ mock.timers.enable({ apis: ["setInterval"] })
 
 let pass = 0
 let fail = 0
+// While `muted` holds a counter, check() counts there instead of printing: the
+// mutation run below needs to know whether a case failed without its FAIL
+// lines counting against this file.
+let muted = null
 const check = (got, want, what) => {
+  if (muted) {
+    if (got !== want) muted.failed++
+    return
+  }
   if (got === want) {
     pass++
     console.log(`  PASS: ${what}`)
@@ -152,7 +176,7 @@ const settle = async () => {
 // tests/fixtures/opencode2/README.md says how they were made and clipped. Each
 // row with `what: "ev"` is one event the spy heard. Its payload — what the
 // listener receives at `details.data` — is held as a JSON string, in a field
-// the files name `data` (the README calls it `ev`). A payload longer than the
+// the files name `data`. A payload longer than the
 // spy's limit was cut and ends in "…", so it is not valid JSON; such an event
 // is rebuilt from the row's `type` plus the fields an adapter can read off a
 // clipped payload whole: `sessionID` and `parentID` (both come first) and, for
@@ -223,10 +247,11 @@ const moved = (rows, line, sessionID, extra = {}) => {
   const row = at(rows, line)
   return step({ ...row, route: `session:${sessionID.slice(-6)}` }, { ...payloadOf(row), sessionID, ...extra })
 }
-// No recorded event stands for "a later pass". The timer that would run one is
-// not in this adapter yet, and every event ends in a pass, so an event of a
-// type the adapter does not know is the nudge.
-const nudge = () => ({ evs: [{ event: { name: "harness.nudge", details: { data: {} } } }], src: "nudge" })
+// "A second passed and nothing else happened": one tick of the adapter's
+// 1-second interval on node:test's mock clock. In a step's `evs` it is
+// delivered in order with the events around it.
+const TICK = { tick: true }
+const tick = () => ({ evs: [TICK], src: "tick" })
 
 // A second, unrelated chat, shuffled in: tabs.jsonl lines 17–31, its whole
 // turn. A seeded generator, so a failure replays the same order.
@@ -312,7 +337,15 @@ const newContext = () => {
   // Deliver one event the way opencode would: its own state first — the
   // status the spy recorded for the chat in the row's route, a request added
   // on permission.asked and taken away on permission.replied — then the event.
-  t.deliver = ({ event, row }) => {
+  t.deliver = ({ event, row, tick }) => {
+    if (tick) {
+      try {
+        mock.timers.tick(1000)
+      } catch (e) {
+        t.threw.push(String(e))
+      }
+      return
+    }
     if (row?.route?.startsWith("session:") && typeof row.status === "string") {
       t.status[full(row.route.slice(8))] = JSON.parse(row.status)
     }
@@ -327,11 +360,21 @@ const newContext = () => {
       t.threw.push(String(e))
     }
   }
+  // Rows the spy logged in one millisecond were delivered together, so they
+  // are replayed back to back: the next one lands inside the pass the last one
+  // started, which is the overlap the one serial writer exists for. Any other
+  // step waits for quiet() first. A step with a `pre` or a `post` is never
+  // run together with its neighbour, so a checkpoint still sees its own step.
+  const together = (a, b) => {
+    const x = a?.evs.at(-1)?.row
+    const y = b?.evs[0]?.row
+    return !!x && !!y && !a.post && !b.pre && x.file === y.file && x.ms === y.ms
+  }
   t.replay = async (items) => {
-    for (const it of items) {
+    for (const [i, it] of items.entries()) {
       await it.pre?.(t)
       for (const e of it.evs) t.deliver(e)
-      await quiet()
+      if (!together(it, items[i + 1])) await quiet()
       await it.post?.(t)
     }
   }
@@ -343,13 +386,13 @@ const newContext = () => {
 // empty log. Returns the context, or null with a FAIL line when the adapter
 // cannot be loaded — the harness fails its cases rather than crashing.
 let caseNo = 0
-const start = async (label, prepare = () => {}) => {
+const start = async (label, prepare = () => {}, adapter = ADAPTER) => {
   caseNo++
   if (existsSync(log)) rmSync(log)
   const t = newContext()
   prepare(t)
   try {
-    const mod = await import(`${pathToFileURL(ADAPTER).href}?case=${caseNo}`)
+    const mod = await import(`${pathToFileURL(adapter).href}?case=${caseNo}`)
     t.cleanup = mod.default.setup(t.context)
   } catch (e) {
     check(`${e?.code ?? e}`, "loaded", `${label}: the adapter loads and sets up`)
@@ -397,6 +440,9 @@ const statesSoFar = (label, want) => async () => {
 // chat, and never moved. Each runs twice: as recorded, and with the second
 // chat's turn (tabs.jsonl lines 17–31) shuffled in, which must change nothing.
 //
+// Every list starts with R(""): setup's first pass writes the pane in full,
+// and that begins with taking back whatever reply was stored on it.
+//
 // A replay starts at a turn's session.execution.started, not at the
 // session.created or session.inbox.enqueued before it. Those rows carry the
 // status opencode reported before the turn began, "idle", and an instance that
@@ -409,7 +455,7 @@ const CASES = [
     name: "a turn with no tool",
     front: PARENT,
     items: () => range(FRESH, 4, 16),
-    want: ["working", R("first-turn"), "done"],
+    want: [R(""), "working", R("first-turn"), "done"],
   },
   {
     // fresh.jsonl lines 41–105, the subagent run, with the child's events left
@@ -425,7 +471,7 @@ const CASES = [
       moved(FRESH, 64, PARENT),
       ...range(FRESH, 65, 105, (r) => r.sid !== "1G3Yor"),
     ],
-    want: ["working", "blocked", "working", R("sub-done"), "done"],
+    want: [R(""), "working", "blocked", "working", R("sub-done"), "done"],
   },
   {
     // fresh.jsonl lines 41–105 whole: the `general` subagent, two dialogs of
@@ -437,7 +483,7 @@ const CASES = [
     front: PARENT,
     family: { [PARENT]: [PARENT, CHILD] },
     items: () => range(FRESH, 41, 105),
-    want: ["working", "blocked", "working", "blocked", "working", R("sub-done"), "done"],
+    want: [R(""), "working", "blocked", "working", "blocked", "working", R("sub-done"), "done"],
   },
   {
     // fresh.jsonl lines 61–105: the same run with every event before the
@@ -448,7 +494,7 @@ const CASES = [
     front: PARENT,
     family: { [PARENT]: [PARENT, CHILD] },
     items: () => range(FRESH, 61, 105),
-    want: ["working", "blocked", "working", "blocked", "working", R("sub-done"), "done"],
+    want: [R(""), "working", "blocked", "working", "blocked", "working", R("sub-done"), "done"],
   },
   {
     // fresh.jsonl lines 41–64, the subagent run to its first dialog's answer,
@@ -464,22 +510,28 @@ const CASES = [
       { ...step(at(FRESH, 64)), post: statesSoFar("two dialogs, one answered: still blocked", "working,blocked") },
       moved(FRESH, 64, PARENT, { requestID: "per_second_request" }),
     ],
-    want: ["working", "blocked", "working"],
+    want: [R(""), "working", "blocked", "working"],
   },
   {
     // The dialog case above, with permission.sync rejecting on the pass that
     // permission.asked (line 63, moved to the parent) starts, and working on
     // the next.
+    //
+    // The adapter's first tick is taken first, on a settled pane, because it
+    // re-asserts the state (a reload's guard): left for later, it would write
+    // `blocked` twice whenever the shuffled-in chat's event ran the next pass
+    // before the tick did.
     name: "permission.sync rejects on the first ask and works on the next",
     front: PARENT,
     items: () => [
+      { ...tick(), pre: () => settle(), post: statesSoFar("the first tick writes the state once more", "working,working") },
       ...range(FRESH, 41, 62, (r) => r.sid !== "1G3Yor"),
       {
         ...moved(FRESH, 63, PARENT),
         pre: (t) => (t.syncPlan = ["reject"]),
-        post: statesSoFar("a rejected sync writes nothing on its pass", "working"),
+        post: statesSoFar("a rejected sync writes nothing on its pass", "working,working"),
       },
-      { ...nudge(), post: statesSoFar("the next pass asks again and writes blocked", "working,blocked") },
+      { ...tick(), post: statesSoFar("the next pass asks again and writes blocked", "working,working,blocked") },
       // And once more as the dialog closes (line 64, moved). On the first
       // ask, `working` was already on the pane, so writing nothing and writing
       // the phase look the same; here they do not. An answer that did not
@@ -488,17 +540,20 @@ const CASES = [
       {
         ...moved(FRESH, 64, PARENT),
         pre: (t) => (t.syncPlan = ["reject"]),
-        post: statesSoFar("a rejected sync as the dialog closes leaves blocked up", "working,blocked"),
+        post: statesSoFar("a rejected sync as the dialog closes leaves blocked up", "working,working,blocked"),
       },
-      { ...nudge(), post: statesSoFar("the next pass asks again and writes working", "working,blocked,working") },
+      {
+        ...tick(),
+        post: statesSoFar("the next pass asks again and writes working", "working,working,blocked,working"),
+      },
       ...range(FRESH, 65, 105, (r) => r.sid !== "1G3Yor"),
     ],
-    want: ["working", "blocked", "working", R("sub-done"), "done"],
+    want: [R(""), "working", "working", "blocked", "working", R("sub-done"), "done"],
   },
   {
     // The same, with a permission.sync that never settles on that pass. A
-    // nudge right behind it stands for the next pass; it waits for the stuck
-    // one, which must give up at its 2-second limit.
+    // tick right behind it starts the next pass; it waits for the stuck one,
+    // which must give up at its 2-second limit.
     name: "permission.sync never settles",
     front: PARENT,
     items: () => [
@@ -507,7 +562,7 @@ const CASES = [
         const asked = moved(FRESH, 63, PARENT)
         let began = 0
         return {
-          evs: [...asked.evs, ...nudge().evs],
+          evs: [...asked.evs, TICK],
           src: asked.src,
           pre: (t) => {
             t.syncPlan = ["hang"]
@@ -527,7 +582,7 @@ const CASES = [
       moved(FRESH, 64, PARENT),
       ...range(FRESH, 65, 105, (r) => r.sid !== "1G3Yor"),
     ],
-    want: ["working", "blocked", "working", R("sub-done"), "done"],
+    want: [R(""), "working", "blocked", "working", R("sub-done"), "done"],
   },
   {
     // fresh.jsonl lines 4–16, then 30–39: the first turn answered, then a long
@@ -536,7 +591,7 @@ const CASES = [
     name: "answered turn, then Esc Esc",
     front: PARENT,
     items: () => [...range(FRESH, 4, 16), ...range(FRESH, 30, 39)],
-    want: ["working", R("first-turn"), "done", "working", R(""), "done"],
+    want: [R(""), "working", R("first-turn"), "done", "working", R(""), "done"],
   },
   {
     // fresh.jsonl lines 4–16, then 106–121: the first turn answered, then a
@@ -545,7 +600,7 @@ const CASES = [
     name: "answered turn, then Reject",
     front: PARENT,
     items: () => [...range(FRESH, 4, 16), ...range(FRESH, 106, 121)],
-    want: ["working", R("first-turn"), "done", "working", "blocked", "working", R(""), "done"],
+    want: [R(""), "working", R("first-turn"), "done", "working", "blocked", "working", R(""), "done"],
   },
   {
     // fresh.jsonl lines 4–16, then the same lines again without line 9, its
@@ -553,7 +608,7 @@ const CASES = [
     name: "answered turn, then a success with no prose",
     front: PARENT,
     items: () => [...range(FRESH, 4, 16), ...range(FRESH, 4, 16, (r) => r.line !== 9)],
-    want: ["working", R("first-turn"), "done", "working", R(""), "done"],
+    want: [R(""), "working", R("first-turn"), "done", "working", R(""), "done"],
   },
   {
     // dead-provider.jsonl lines 4–30: retry.scheduled attempts 2 (line 8) to
@@ -570,7 +625,7 @@ const CASES = [
               ? { ...s, post: statesSoFar("a dead provider: nothing more through attempt 11", "working,error") }
               : s
       ),
-    want: ["working", "error", R("")],
+    want: [R(""), "working", "error", R("")],
   },
   {
     // dead-provider.jsonl lines 4–10, to `error` at attempt 3, then a dialog
@@ -578,7 +633,7 @@ const CASES = [
     name: "error at attempt 3, then a dialog answered",
     front: DEADCHAT,
     items: () => [...range(DEAD, 4, 10), moved(FRESH, 63, DEADCHAT), moved(FRESH, 64, DEADCHAT)],
-    want: ["working", "error", "blocked", "working"],
+    want: [R(""), "working", "error", "blocked", "working"],
   },
   {
     // fresh.jsonl lines 4–16 as A, in front, and tabs.jsonl's second chat
@@ -586,7 +641,7 @@ const CASES = [
     name: "two chats interleaved, front is A",
     front: PARENT,
     items: () => shuffle(range(FRESH, 4, 16), SECOND(), 7),
-    want: ["working", R("first-turn"), "done"],
+    want: [R(""), "working", R("first-turn"), "done"],
     once: true,
   },
   {
@@ -602,7 +657,7 @@ const CASES = [
       ...range(FRESH, 4, 12),
       { evs: [...step(at(FRESH, 13)).evs, ...step(at(FRESH, 18)).evs], src: "fresh.jsonl:13+18" },
     ],
-    want: ["working", R("first-turn")],
+    want: [R(""), "working", R("first-turn")],
   },
 ]
 
@@ -652,15 +707,315 @@ for (const c of CASES) {
     check(calls(), "idle", `${label}: the home screen reads idle, and the 201st chat does not throw`)
     t.status[ids[0]] = "idle"
     t.on(ids[0])
-    t.deliver(nudge().evs[0])
+    t.deliver(TICK)
     await settle()
-    check(verbs(), "state,reply,state", `${label}: brought to the front, it clears the reply and then writes a state`)
+    check(verbs(), "reply,state,reply,state", `${label}: brought to the front, it clears the reply and then writes a state`)
     check(calls(), "idle,idle", `${label}: the evicted chat reads idle`)
     t.on(ids[1])
-    t.deliver(nudge().evs[0])
-    await expect(label, t, ["idle", R(""), "idle", R(""), "done"])
+    t.deliver(TICK)
+    await expect(label, t, [R(""), "idle", R(""), "idle", R(""), "done"])
     await finish(t)
   }
+}
+
+// --- Front changes, the timer, setup, and a reload ---
+//
+// No event says the chat in front changed (switching tabs emits nothing), so
+// in these cases the front is moved by hand and only the adapter's 1-second
+// interval can notice: deliver(TICK) is mock.timers.tick(1000).
+
+// The timer-only case, a function of the adapter file so that the mutation
+// run below can replay it against a copy with the interval removed.
+// tabs.jsonl lines 4–16 (chat A's turn, answered "chat-A") with A in front,
+// then lines 19–31 (chat B's turn) while A is still in front, so both chats
+// have finished. Then A → B → A → B with no event at all, one tick after each.
+// The record cannot grow: no switch may write a non-empty reply.
+const CHAT_A = full("klEg7i") // tabs.jsonl's first chat
+const timerOnly = async (label, adapter = ADAPTER) => {
+  const items = [...range(TABS, 4, 16), ...range(TABS, 19, 31)]
+  const t = await start(
+    label,
+    (t) => {
+      t.on(CHAT_A)
+      t.status[CHAT_A] = firstStatus(items, CHAT_A)
+    },
+    adapter
+  )
+  if (!t) return
+  await t.replay(items)
+  await settle()
+  for (const [n, id] of [OTHER, CHAT_A, OTHER].entries()) {
+    const before = rows().length
+    t.on(id)
+    t.deliver(TICK)
+    await settle()
+    check(
+      cols().slice(before).map((c) => `${c[0]} ${c[1]}`).join(","),
+      `reply ,state done`,
+      `${label}: switch ${n + 1} writes an empty reply, then the state`
+    )
+  }
+  await expect(label, t, [R(""), "working", R("chat-A"), "done", R(""), "done", R(""), "done", R(""), "done"])
+  await finish(t)
+}
+await timerOnly("front A → B → A → B, all finished, no events, ticks only")
+
+{
+  // The home screen at setup; then the front moves to a chat with a request
+  // pending that this instance never heard asked — fresh.jsonl line 116's
+  // request, in its own chat.
+  const label = "front → a chat with an open dialog this instance never heard"
+  const t = await start(label)
+  if (t) {
+    await settle()
+    t.status[PARENT] = "running"
+    t.pending[PARENT] = [payloadOf(at(FRESH, 116))]
+    t.on(PARENT)
+    t.deliver(TICK)
+    await expect(label, t, [R(""), "idle", R(""), "blocked"])
+    await finish(t)
+  }
+}
+
+{
+  // fresh.jsonl lines 4–16, the first turn answered; then the home screen.
+  const label = "front → home"
+  const items = range(FRESH, 4, 16)
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = firstStatus(items, PARENT)
+  })
+  if (t) {
+    await t.replay(items)
+    await settle()
+    t.on(null)
+    t.deliver(TICK)
+    await expect(label, t, [R(""), "working", R("first-turn"), "done", R(""), "idle"])
+    await finish(t)
+  }
+}
+
+{
+  // A new opencode started in a pane that still shows another chat's `done`
+  // and answer: the log is seeded with those two rows before setup. setup
+  // takes the answer back and writes what it finds; the first tick asserts the
+  // state once more and does not clear the reply a second time.
+  const label = "setup on an idle chat, in a pane holding another chat's done and reply"
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = "idle"
+    writeFileSync(log, `state\tdone\topencode\targv\nreply\tanother chat's answer\topencode\tstdin\n`)
+  })
+  if (t) {
+    await settle()
+    t.deliver(TICK)
+    await expect(label, t, ["done", R("another chat's answer"), R(""), "idle", "idle"])
+    await finish(t)
+  }
+}
+
+for (const [what, pending, want] of [
+  ["running", false, "working"],
+  ["running, with a request pending", true, "blocked"],
+]) {
+  // fresh.jsonl line 116's request, when there is one.
+  const label = `setup on a chat that is ${what}`
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = "running"
+    if (pending) t.pending[PARENT] = [payloadOf(at(FRESH, 116))]
+  })
+  if (t) {
+    await expect(label, t, [R(""), want])
+    await finish(t)
+  }
+}
+
+{
+  // setup mid-turn — the turn's execution.started never heard — then
+  // fresh.jsonl lines 7–16, the rest of the first turn, before the first tick.
+  // The tick writes `done` again and does not clear the reply just published.
+  const label = "setup mid-turn; the turn succeeds with text before the first tick"
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = "running"
+  })
+  if (t) {
+    await t.replay(range(FRESH, 7, 16))
+    await settle()
+    t.deliver(TICK)
+    await expect(label, t, [R(""), "working", R("first-turn"), "done", "done"])
+    await finish(t)
+  }
+}
+
+{
+  // With every `roost reply` slowed to 400 ms: fresh.jsonl lines 4–12, then
+  // line 13 (execution.succeeded) starts the publish of "first-turn", and
+  // while it is in flight the front moves to another chat, running. The pass
+  // that resumes must not finish A's turn on a pane now about B.
+  const label = "a slow reply: the front moves while A's publish is in flight"
+  slowShim("reply")
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = "running"
+  })
+  if (t) {
+    await t.replay(range(FRESH, 4, 12))
+    t.deliver(step(at(FRESH, 13)).evs[0])
+    await sleep(100)
+    check(started() > rows().length, true, `${label}: A's publish is in flight when the front moves`)
+    t.status[OTHER] = "running"
+    t.on(OTHER)
+    t.deliver(TICK)
+    await settle()
+    const states = calls().split(",")
+    const said = replies()
+    check(`${states.at(-1)}|${JSON.stringify(said.at(-1))}`, `working|""`, `${label}: the last state is B's, the last reply the empty one`)
+    await expect(label, t, [R(""), "working", R("first-turn"), R(""), "working"])
+    await finish(t)
+  }
+  plainShim()
+}
+
+{
+  // With every `roost reply` slowed: setup's own clear holds the first pass
+  // while fresh.jsonl lines 4–16 — A's whole first turn, answered — arrive,
+  // and the front moves to B before that pass ends. A owed a reply, but it
+  // left the front first. Then A runs a turn while hidden (lines 30–39, ended
+  // with Esc Esc) and is brought back.
+  const label = "A's owed reply dies when A leaves the front"
+  slowShim("reply")
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = "running"
+  })
+  if (t) {
+    for (const s of range(FRESH, 4, 16)) for (const e of s.evs) t.deliver(e)
+    t.status[OTHER] = "idle"
+    t.on(OTHER)
+    await settle()
+    await t.replay(range(FRESH, 30, 39))
+    t.on(PARENT)
+    t.deliver(TICK)
+    await settle()
+    check(
+      JSON.stringify(replies().filter((r) => r !== "")),
+      "[]",
+      `${label}: no non-empty reply is ever written`
+    )
+    await expect(label, t, [R(""), R(""), "idle", R(""), "done"])
+    await finish(t)
+  }
+  plainShim()
+}
+
+{
+  // fresh.jsonl lines 41–63: the subagent run to the child's first
+  // permission.asked, with the fake family(front) not yet listing the child —
+  // as at its creation, measured 250 ms behind (family-timing.jsonl). On that
+  // pass the request is not found; once the family lists the child, the next
+  // tick finds it.
+  const label = "a child's dialog, asked one pass before family() lists it"
+  const items = [
+    ...range(FRESH, 41, 62),
+    { ...step(at(FRESH, 63)), post: statesSoFar(`${label}: working on that pass`, "working") },
+  ]
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.family[PARENT] = [PARENT]
+    t.status[PARENT] = firstStatus(items, PARENT)
+  })
+  if (t) {
+    await t.replay(items)
+    t.family[PARENT] = [PARENT, CHILD]
+    t.deliver(TICK)
+    await expect(label, t, [R(""), "working", "blocked"])
+    await finish(t)
+  }
+}
+
+{
+  // dead-provider.jsonl lines 4–7, a dialog opened in that chat (fresh.jsonl
+  // line 63, moved), line 28, then line 29 — execution.failed — with no
+  // permission.replied and the request gone from permission.list, as a turn's
+  // end takes its dialog with it.
+  const label = "a dialog open, then the turn fails with no permission.replied"
+  const items = [
+    ...range(DEAD, 4, 7),
+    moved(FRESH, 63, DEADCHAT),
+    step(at(DEAD, 28)),
+    { ...step(at(DEAD, 29)), pre: (t) => (t.pending[DEADCHAT] = []) },
+  ]
+  const t = await start(label, (t) => {
+    t.on(DEADCHAT)
+    t.status[DEADCHAT] = firstStatus(items, DEADCHAT)
+  })
+  if (t) {
+    await t.replay(items)
+    await expect(label, t, [R(""), "working", "blocked", R(""), "error"])
+    await finish(t)
+  }
+}
+
+{
+  // A reload: the old instance's cleanup runs while its setup pass is inside
+  // a slow `roost reply`, with fresh.jsonl lines 4–16 already heard — so it
+  // has a reply and a `done` it would write next. After cleanup it must start
+  // no new call; the one in flight is left to finish. Then a new instance is
+  // set up: it writes the pane in full, and its first tick writes the state
+  // again.
+  const label = "a reload"
+  slowShim("state|reply")
+  const old = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = "running"
+  })
+  if (old) {
+    for (const s of range(FRESH, 4, 16)) for (const e of s.evs) old.deliver(e)
+    // The shim records its start a moment after the spawn; wait for it, so
+    // the count taken at cleanup includes the call in flight.
+    for (let i = 0; i < 200 && started() < 1; i++) await sleep(10)
+    await finish(old)
+    const atCleanup = started()
+    old.deliver(TICK)
+    await settle()
+    check(
+      `${atCleanup}|${started()}|${rows().length}`,
+      `1|1|1`,
+      `${label}: after cleanup the old instance starts no new call, and its call in flight finishes`
+    )
+    plainShim()
+    const t = await start(label, (t) => {
+      t.on(PARENT)
+      t.status[PARENT] = "idle"
+    })
+    if (t) {
+      await settle()
+      t.deliver(TICK)
+      await expect(`${label}: the new instance`, t, [R(""), "idle", "idle"])
+      await finish(t)
+    }
+  }
+  plainShim()
+}
+
+{
+  // The mutation: the same timer-only case against a copy of tui.js with its
+  // `setInterval(` line deleted. If that copy passes, the case is not testing
+  // the timer. The copy is .mjs so it loads as a module wherever it sits.
+  let lines = []
+  try {
+    lines = readFileSync(ADAPTER, "utf8").split("\n")
+  } catch {}
+  const hits = lines.filter((l) => l.includes("setInterval(")).length
+  const copy = join(dir, "tui-no-timer.mjs")
+  writeFileSync(copy, lines.filter((l) => !l.includes("setInterval(")).join("\n"))
+  muted = { failed: 0 }
+  await timerOnly("the timer-only case without the timer", copy)
+  const failed = muted.failed
+  muted = null
+  check(`${hits}|${failed > 0}`, "1|true", "the timer-only case fails without the timer")
 }
 
 // --- Nothing throws ---
