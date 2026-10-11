@@ -2198,6 +2198,67 @@ assert_contains "$out" "it points at nothing" \
 case "$out" in *"1 plugin failed"*) s=claimed ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "opencode 2, dangling 1.x link: the plan does not claim '1 plugin failed'"
 
+# A dangling link that never named a roost adapter is NOT ours: `dangling`
+# says only that the target is gone, not whose target it was. The user's own
+# plugin on a volume that is not mounted right now reads exactly this way. So
+# it is refused, as scripts/roost-doctor already judges it -- a link is
+# roost's only when it ends in /adapters/opencode/roost.js. The case above,
+# whose target does end that way, is the control: it is still removed.
+box="$TMP/oc2-danglingforeign"
+p1="$(adapter_path_in "$box" opencode)"
+mkdir -p "${p1%/*}"
+ln -s "/nowhere/my-own-plugin.js" "$p1"
+recs="$TMP/oc2-danglingforeign.tsv"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, dangling link that is not roost's: exits 0"
+assert_eq "$(readlink "$p1" 2>/dev/null)" "/nowhere/my-own-plugin.js" \
+  "opencode 2, dangling link that is not roost's: the link is still there"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, dangling link that is not roost's: --records says it was refused"
+case "$out" in *"Will remove:"*) s=planned ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling link that is not roost's: no Will remove: section"
+case "$out" in *"removed "*) s=removed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling link that is not roost's: nothing is reported removed"
+case "$out" in *"roost's own"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling link that is not roost's: nothing calls it roost's own"
+assert_contains "$out" "something that is not this checkout's link is at" \
+  "opencode 2, dangling link that is not roost's: the manual note says it is not this checkout's link"
+
+# The same rule at apply time. The plan sees roost's own dangling 1.x link and
+# plans its removal; then, before the removal runs, the link is swapped for
+# someone else's dangling one -- which still reads `dangling`. The swap rides
+# on `ln`: the plugins/roost link step runs before the unlink step in the
+# apply loop, and `ln` comes from the shim PATH. The shim's `ln` is a SYMLINK
+# to the real binary, so it is removed first and the wrapper written to a
+# fresh file: `>` would follow the link and overwrite the real `ln`.
+SWAP_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode)"
+real_ln="$(command -v ln)"
+box="$TMP/oc2-danglingswap"
+p1="$(adapter_path_in "$box" opencode)"
+rm -f "$SWAP_SHIM/ln"
+if [ ! -e "$SWAP_SHIM/ln" ] && [ ! -L "$SWAP_SHIM/ln" ]; then
+  cat > "$SWAP_SHIM/ln" <<EOF
+#!/bin/sh
+case "\$*" in
+  *plugins/roost*) "$(command -v rm)" -f "$p1" && "$real_ln" -s /nowhere/swapped-in.js "$p1" ;;
+esac
+exec "$real_ln" "\$@"
+EOF
+  chmod +x "$SWAP_SHIM/ln"
+fi
+mkdir -p "${p1%/*}"
+ln -s "$TMP/no-such-checkout/adapters/opencode/roost.js" "$p1"
+recs="$TMP/oc2-danglingswap.tsv"
+out="$(run_install "$box" "$SWAP_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, swapped for a foreign dangling link during the run: exits 0"
+assert_contains "$out" "Will remove:" \
+  "opencode 2, swapped for a foreign dangling link during the run: the plan saw roost's link"
+assert_eq "$(readlink "$p1" 2>/dev/null)" "/nowhere/swapped-in.js" \
+  "opencode 2, swapped for a foreign dangling link during the run: the swapped-in link is still there"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, swapped for a foreign dangling link during the run: --records says it was refused"
+rm -rf "$SWAP_SHIM"
+
 # --- 2.x, a foreign file at plugin/roost.js -> untouched, and named ---------
 box="$TMP/oc2-foreign1x"
 p1="$(adapter_path_in "$box" opencode)"
