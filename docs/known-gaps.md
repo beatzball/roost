@@ -1143,10 +1143,14 @@ where most of them come from.
   `wait-done --turn N` waits until its timeout if a person tabbed away in that
   pane mid-turn.
 - **After a reload, a finished chat reads `idle` with no stored reply**, until
-  its next turn. A reload is what a roost update does to every open opencode
-  terminal. The adapter's `setup` writes the pane in full because it cannot
-  know whose badge is on it. The same for an evicted chat brought back to the
-  front. opencode's `status()` cannot tell `done` from `idle`.
+  its next turn. Measured: editing the plugin file reloads it in every open
+  terminal, and the reload runs `setup` again. Not measured: whether a roost
+  update does that. roost installs a symlinked plugin DIRECTORY, so an update
+  changes the link's target, and a change to the target is the case that was
+  not tried (design §2.6). If an open opencode's badge stops changing after an
+  update, restart it. The adapter's `setup` writes the pane in full because it
+  cannot know whose badge is on it. The same for an evicted chat brought back
+  to the front. opencode's `status()` cannot tell `done` from `idle`.
 - **A dialog answered or opened while a `permission.sync` is failing** is seen
   one pass late.
 - **A reload inside one `roost` call.** A write the old instance had already
@@ -1160,6 +1164,20 @@ where most of them come from.
 - **No badge without `roost install`** on opencode 2. `roost wiring` does not
   reach it (the next part of this section says why). 1.x keeps its no-setup
   wiring.
+- **A missed end-of-turn event pins `working`.** Low; not observed. The
+  adapter takes a chat's phase from its own record whenever it has one, and
+  asks opencode's `status()` only for a chat it never heard. If the event
+  that ends a turn (`succeeded`, `failed`, `interrupted`) for the chat in
+  front never arrives — a dropped connection, or compaction, which was not
+  measured (design §2.9) — the record keeps `working`, so the badge stays
+  `working` and `wait-done` waits until its timeout, or until the chat's next
+  event.
+- **The `opencode` first on PATH chooses the install.** Low. `roost install`
+  asks that one binary its version. On a machine with 2.x first on PATH that
+  still runs 1.x by absolute path, the install removes roost's 1.x link at
+  `plugin/roost.js`. A 1.x in a roost pane still badges through roost's
+  wiring; a 1.x anywhere else that relied on the link does not. The run
+  prints the `ln -s` that puts the link back.
 - **A retrying-but-alive provider** reads `error` mid-turn, as on 1.x — the
   entry "An opencode pane on a retrying-but-alive provider wears `error`
   mid-turn" above, carried over unchanged.

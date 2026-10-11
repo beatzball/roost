@@ -190,10 +190,12 @@ the pane shows the one in front.
 - **After a tab switch, `roost read` has no reply** until the chat now in front
   finishes a turn. It says so and shows the screen instead. The last chat's
   answer is not carried over, because it is not this chat's.
-- **A roost update turns a finished chat's badge to idle** until its next turn.
-  An update reloads the adapter in every open opencode terminal, and a fresh
-  adapter cannot tell a chat that finished from one that never started. Its
-  stored reply is cleared too.
+- **A reload of the adapter turns a finished chat's badge to idle** until its
+  next turn. A reload starts the adapter fresh, and a fresh adapter cannot
+  tell a chat that finished from one that never started. Its stored reply is
+  cleared too. Whether a roost update reloads the adapter in an opencode
+  terminal that is already open was not measured. If the badge stops changing
+  after an update, restart that opencode.
 - **A dialog in a subagent's chat badges 🛑 blocked.** The person who has to
   answer it is sitting at this pane, the same as on 1.x.
 
