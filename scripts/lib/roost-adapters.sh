@@ -172,6 +172,26 @@ roost_adapter_state() {
   fi
 }
 
+# roost_adapter_names_1x PATH — true when PATH is a symlink whose text names a
+# roost 1.x opencode adapter, in this checkout or any other. The same test
+# scripts/roost-doctor applies before it calls a leftover link roost's, so the
+# two never disagree about whose link it is. Used for a DANGLING link only:
+# with the target gone there is nothing to `-ef` against, and the link's own
+# text is all that says whose it was.
+#
+# It lives here, not in scripts/roost-install, because two scripts must agree
+# on it: the installer decides with it whether to remove a dangling
+# plugin/roost.js on opencode 2, and scripts/roost-validate's offer predicts
+# that removal with it. Two copies drifted once already — validate's offer said
+# "will be removed" about a link the installer then refused.
+roost_adapter_names_1x() {
+  [ -L "$1" ] || return 1
+  case "$(readlink "$1" 2>/dev/null)" in
+    */adapters/opencode/roost.js) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # roost_adapter_key HARNESS -> the table key that harness gets on this
 # machine. Prints `opencode2` when HARNESS is `opencode` and the opencode on
 # PATH is 2.x or later (roost_opencode_v2, scripts/lib/roost-opencode.sh);

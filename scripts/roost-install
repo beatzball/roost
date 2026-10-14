@@ -610,20 +610,6 @@ REFUSED=""
 DETECTED=""
 TAB="$(printf '\t')"
 
-# names_roost_1x PATH — true when PATH is a symlink whose text names a roost
-# 1.x opencode adapter, in this checkout or any other. The same test
-# scripts/roost-doctor applies before it calls a leftover link roost's, so the
-# two never disagree about whose link it is. Used for a DANGLING link only:
-# with the target gone there is nothing to `-ef` against, and the link's own
-# text is all that says whose it was.
-names_roost_1x() {
-  [ -L "$1" ] || return 1
-  case "$(readlink "$1" 2>/dev/null)" in
-    */adapters/opencode/roost.js) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 for h in $HARNESSES; do
   in_scope "$h" || continue
   # A harness that is not installed is not mentioned at all. Not "skipped",
@@ -668,7 +654,7 @@ for h in $HARNESSES; do
   # roost adapter (a link to a checkout that is gone) mean. `dangling` alone
   # says only that the target is missing, not whose target it was: the user's
   # own plugin on a volume that is not mounted reads exactly the same. So a
-  # dangling link counts only when names_roost_1x says so — the rule
+  # dangling link counts only when roost_adapter_names_1x says so — the rule
   # scripts/roost-doctor uses to call a leftover link roost's — and is refused
   # otherwise. `-L` as well, because `ok` is an `-ef` test and is
   # also true of the checkout's own FILE reached through a symlinked plugin/
@@ -681,7 +667,7 @@ for h in $HARNESSES; do
     p1_state="$(roost_adapter_state opencode)"
     case "$p1_state" in
       ok|dangling)
-        if [ -L "$p1" ] && { [ "$p1_state" = ok ] || names_roost_1x "$p1"; }; then
+        if [ -L "$p1" ] && { [ "$p1_state" = ok ] || roost_adapter_names_1x "$p1"; }; then
           UNLINK_STEPS="${UNLINK_STEPS}unlink$TAB$h$TAB$p1$TAB$(readlink "$p1")${TAB}opencode
 "
         else
@@ -1087,7 +1073,7 @@ if [ "$do_writes" -eq 1 ]; then
     # link swapped for someone else's dangling one while the prompt sat there
     # still reads `dangling`, so the same rule is asked again here, and a link
     # that fails it falls to the refusal below like any other change.
-    if [ "$action:$state" = unlink:dangling ] && ! names_roost_1x "$path"; then
+    if [ "$action:$state" = unlink:dangling ] && ! roost_adapter_names_1x "$path"; then
       state="dangling, not a roost adapter"
     fi
     case "$action:$state" in

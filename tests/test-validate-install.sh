@@ -531,6 +531,45 @@ assert_contains "$res" \
   "DECISION	offered and accepted — this run created 3 adapter symlink(s) and removed 1 opencode 1.x link(s); see the undo below" \
   "opencode 2, old 1.x link: the decision line counts the removal"
 
+# --- opencode 2 with a DANGLING link at plugin/roost.js -------------------
+# A dangling link says only that its target is gone, not whose target it was:
+# the user's own plugin on a volume that is not mounted reads the same as a
+# link to a roost checkout that was deleted. The installer removes it only
+# when its text names a roost 1.x adapter (roost_adapter_names_1x), so the
+# offer has to predict with that same rule. Asked with `ok|dangling` alone, it
+# told the tester a link would be removed that the installer then refused.
+box="$TMP/oc2theirs"
+mkdir -p "$box/home/.config/opencode/plugin"
+v1path="$(apath "$box" opencode)"
+ln -s /nowhere/my-own-plugin.js "$v1path"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+case "$out" in *"    remove    $v1path"*) s=offered ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, the user's own dangling link: the offer does not say it will be removed"
+assert_contains "$out" "a symlink each, nothing else" \
+  "opencode 2, the user's own dangling link: the offer says nothing else is touched"
+case "$res" in *"REMOVED	"*) s=removed ;; *) s=none ;; esac
+assert_eq "$s" "none" \
+  "opencode 2, the user's own dangling link: nothing is reported as removed"
+assert_eq "$(readlink "$v1path" 2>/dev/null)" "/nowhere/my-own-plugin.js" \
+  "opencode 2, the user's own dangling link: the link is still there afterwards"
+
+# The control: roost's own link to a checkout that is gone. Its text ends in
+# /adapters/opencode/roost.js, so it is offered as removed, and removed.
+box="$TMP/oc2gone"
+mkdir -p "$box/home/.config/opencode/plugin"
+v1path="$(apath "$box" opencode)"
+ln -s "$TMP/gone-checkout/adapters/opencode/roost.js" "$v1path"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+assert_contains "$out" "    remove    $v1path" \
+  "opencode 2, roost's own dangling link (control): the offer says it will be removed"
+assert_contains "$res" "REMOVED	opencode	$v1path	" \
+  "opencode 2, roost's own dangling link (control): the removal is recorded"
+[ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
+  "opencode 2, roost's own dangling link (control): the link is gone"
+
 rm -rf "$V2_SHIM" "$V1_SHIM"
 
 # ===========================================================================

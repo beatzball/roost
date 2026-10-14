@@ -1150,12 +1150,19 @@ offer_adapter_install() {
     # On opencode 2, linking plugins/roost is not the whole of what the
     # installer does: it also removes roost's own 1.x link at plugin/roost.js,
     # which opencode 2 tries to load and cannot (scripts/roost-install's
-    # unlink step). The same test the installer plans it with — `ok` or
-    # `dangling`, and a symlink — so the offer names that removal exactly
-    # when it will happen, and "nothing else" is never printed above it.
+    # unlink step). The same test the installer plans it with — a symlink,
+    # and either `ok` or `dangling` with text that names a roost 1.x adapter
+    # (roost_adapter_names_1x, shared through scripts/lib/roost-adapters.sh so
+    # the two cannot drift) — so the offer names that removal exactly when it
+    # will happen, and "nothing else" is never printed above it. A dangling
+    # link that is the user's own is refused by the installer, so it is not
+    # offered as removed here either.
     if [ "$k" = opencode2 ] && [ -L "$(roost_adapter_path opencode)" ]; then
       case "$(roost_adapter_state opencode)" in
-        ok|dangling) v1_going="$(roost_adapter_path opencode)" ;;
+        ok) v1_going="$(roost_adapter_path opencode)" ;;
+        dangling)
+          roost_adapter_names_1x "$(roost_adapter_path opencode)" &&
+            v1_going="$(roost_adapter_path opencode)" ;;
       esac
     fi
   done
