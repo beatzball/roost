@@ -1033,7 +1033,31 @@ for (const [what, pending, want] of [
     for (const s of range(FRESH, 4, 16)) for (const e of s.evs) old.deliver(e)
     // The shim records its start a moment after the spawn; wait for it, so
     // the count taken at cleanup includes the call in flight.
-    for (let i = 0; i < 200 && started() < 1; i++) await sleep(10)
+    //
+    // Waited on the way settle() waits: on what the adapter is doing, not on
+    // a fixed timer. A `roost` child running, or a call on the fake context,
+    // means the call is still on its way and the clock starts again; only 2 s
+    // with neither gives up. A bare 200 × 10 ms gave up on a loaded machine
+    // (three suites at once, 3 of 13 runs) while the shim's `sh` was still
+    // starting, and the case then read the call the adapter had already
+    // issued as one started after cleanup: `want [1|1|1] got [0|1|1]`.
+    // 30 s is the ceiling either way, so a pass that never calls cannot hang
+    // the file.
+    const waitedFor = await (async () => {
+      const t0 = Date.now()
+      let last = activity
+      let since = t0
+      while (started() < 1) {
+        if (Date.now() - since > 2000) return "2 s with no child running and no call on the context"
+        if (Date.now() - t0 > 30000) return "the 30 s ceiling"
+        await sleep(10)
+        if (children() > 0 || activity !== last) {
+          last = activity
+          since = Date.now()
+        }
+      }
+      return ""
+    })()
     // Move the front before cleanup. With the front still on the chat it
     // wrote, a pass after dispose finds nothing to clear and goes straight to
     // ask(), whose own `disposed` check ends it — so the loop's `!disposed`
@@ -1046,8 +1070,10 @@ for (const [what, pending, want] of [
     const atCleanup = started()
     old.deliver(TICK)
     await settle()
+    // A bound that tripped is reported as itself. Read as a count, it would
+    // blame the adapter for a call the harness never saw start.
     check(
-      `${atCleanup}|${started()}|${rows().length}`,
+      waitedFor ? `the wait for the shim's start line gave up after ${waitedFor}` : `${atCleanup}|${started()}|${rows().length}`,
       `1|1|1`,
       `${label}: after cleanup the old instance starts no new call, and its call in flight finishes`
     )
