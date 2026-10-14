@@ -1172,6 +1172,15 @@ where most of them come from.
   measured (design §2.9) — the record keeps `working`, so the badge stays
   `working` and `wait-done` waits until its timeout, or until the chat's next
   event.
+- **Two turn ends inside one pass can replace the owed reply.** Low; not
+  observed. When the front chat's turn N ends, the adapter keeps the reply it
+  owes in `due`, and the next pass writes it. If a queued prompt's turn N+1
+  also ends before that pass returns, `due` is overwritten, not queued
+  (`adapters/opencode/v2/tui.js:273`). A pass can wait up to 2 s for each
+  family member in `ask()`, or 5 s in a `roost` child. Reply N is then never
+  written, and the pane's turn numbers shift by one, so `roost wait-done
+  --turn N` waits on the wrong turn. It needs two turn ends inside one pass.
+  The fix is a one-element queue, left for a follow-up.
 - **The `opencode` first on PATH chooses the install.** Low. `roost install`
   asks that one binary its version. On a machine with 2.x first on PATH that
   still runs 1.x by absolute path, the install removes roost's 1.x link at
