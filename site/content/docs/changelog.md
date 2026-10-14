@@ -28,8 +28,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   chat in a hidden tab shows nothing until you bring it to the front. Two
   things differ from 1.x. After you switch tabs, `roost read` has no reply for
   the pane until the chat now in front finishes a turn; it says so and shows
-  the screen. And a roost update reloads the adapter, which turns a finished
-  chat's badge to idle, with no stored reply, until its next turn.
+  the screen. And a reload of the adapter turns a finished chat's badge to
+  idle, with no stored reply, until its next turn: a reload runs the adapter's
+  setup again. Whether a roost update causes that reload in an opencode
+  terminal that is already open was not measured.
 
 ### Changed
 
