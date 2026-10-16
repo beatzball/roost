@@ -34,6 +34,14 @@ MODEL="${ROOST_LIVE_MODEL:-granite4.2:3b}"
 
 skip() { printf '  SKIP: %s\n' "$1"; exit 0; }
 command -v opencode >/dev/null 2>&1 || skip "opencode not installed"
+# This file links the 1.x adapter at plugin/roost.js and asserts what it does.
+# opencode 2 cannot load that adapter, so every case below would fail for a
+# reason that has nothing to do with roost — and 1.x and 2.x cannot share a
+# data directory. Asked the way roost install asks it: roost_opencode_version
+# runs `opencode --version` bounded, in a throwaway directory.
+. "$HERE/scripts/lib/roost-opencode.sh"
+roost_opencode_v2 "$(roost_opencode_version)" \
+  && skip "this is the opencode 1.x smoke test; for 2.x run tests/live/opencode2-smoke.sh"
 command -v ollama   >/dev/null 2>&1 || skip "ollama not installed"
 curl -s -m 5 http://localhost:11434/api/tags >/dev/null 2>&1 \
   || skip "ollama is not responding on :11434"

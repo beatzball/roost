@@ -229,10 +229,30 @@ shipped adapter keys on; `onErrorOccurred` fires once **per failed attempt**
 
 ### `idle` is a default, not a report
 
-Neither shipped adapter ever reports `idle`. `tmux/roost.conf:32-42`
-deliberately leaves `@agent_state` with **no global default**, so an unstamped
-pane reads *empty*, and `tmux/roost.conf:80` renders empty as the idle glyph.
-An adapter with nothing to say says nothing.
+When this was written, neither shipped adapter ever reported `idle`. Two do
+now, and each for a reason that is not "nothing happened":
+
+- **codex** reports `idle --stop-hook` on `Interrupt`
+  (`adapters/codex/roost-codex-hook`, #38). A turn the human stopped, or a
+  dialog they declined, ends with `Interrupt` and no `Stop`. `done` would say
+  the turn finished its work, `error` would notify that something broke; the
+  true report is "the turn is over and nobody is working", and `--stop-hook`
+  clears the previous turn's stored reply.
+- **opencode 2** reports `idle` to take back a badge that is no longer about
+  the pane's chat (`adapters/opencode/v2/tui.js`, #150). The badge follows the
+  chat on screen, so on the home screen, or for a chat whose turn this instance
+  did not see end — after a reload, or once the chat's entry was evicted — the
+  adapter writes `idle` over whatever the pane held, because a `done` or a
+  `working` left there would describe another chat or another instance. It
+  also writes `idle` at setup, where it cannot know whether the badge it finds
+  is right.
+
+So an adapter may report `idle` when it must **overwrite** a badge it knows to
+be wrong and has no truer state to put there. It never reports `idle` to say
+"no turn yet": `tmux/roost.conf:32-42` deliberately leaves `@agent_state` with
+**no global default**, so an unstamped pane reads *empty*, and
+`tmux/roost.conf:80` renders empty as the idle glyph. An adapter with nothing
+to say says nothing.
 
 This matters because a global default would badge every unstamped pane — a
 shell, a log tail, a pager — as an agent. The empty string is what
@@ -453,12 +473,14 @@ third to ship (`#18`), from the scout in the row below it. **Live-verified**
 means that
 scout drove a real turn and pasted the output; **source-only** means they read
 it and labelled it unverified. The labels are theirs and are carried through
-unchanged.
+unchanged. The opencode 2 row was added later, with #150; its design is
+`docs/airig/specs/2026-10-02-opencode-2-adapter-design.md`.
 
 | harness | tier | `blocked` | `error` | reply | install |
 |---|---|---|---|---|---|
 | **Claude Code** | **2, shipped** | live | **no hook** | `Stop` payload | 4 hooks in `~/.claude/settings.json`, by absolute path |
-| **opencode** | **2, shipped** | live | 2 retries / `session.error` | `message.part.updated` | symlink into `~/.config/opencode/plugin/` |
+| **opencode 1.x** | **2, shipped** | live | 2 retries / `session.error` | `message.part.updated` | symlink into `~/.config/opencode/plugin/` |
+| **opencode 2** | **2, shipped** | asked of the server — `permission.list` across the front chat's family, every pass while it can change | `session.retry.scheduled` attempt 3 / `session.execution.failed` | `session.text.ended` | a directory symlink into `~/.config/opencode/plugins/` |
 | **Codex** | 2 reachable | live-verified, and does **not** over-fire on auto-approved calls | **no event at all** | `last_assistant_message`, live-verified | frozen `hooks.json` + a shim; needs a doctor trust check |
 | **Copilot CLI** | **2, shipped** | live, via a gated handler | `session.error` (not `onErrorOccurred` — it fires per failed attempt) | `assistant.message.content` | symlink into `~/.copilot/extensions/roost/extension.mjs` |
 | **pi** | 2 reachable | implementable and live-verified, but **never fires on a stock install** | `stopReason === "error"`, live-verified | `message_end` flushed at `agent_settled`, live-verified | symlink into `~/.pi/agent/extensions/` |
@@ -587,6 +609,14 @@ These are not hypotheticals. Each one shipped, or nearly shipped, in an adapter
 that looked correct — or, for T5 and T6, was caught by a live scout in a harness
 roost has not adapted yet, which is the cheaper place to catch it. A new adapter
 should carry a fixture for every one that applies to its harness.
+
+The opencode 2 adapter is tested for T1 and T8 in
+`tests/opencode2-plugin-harness.mjs`: T1 by the recorded subagent runs ("a
+subagent with its own dialog", "a subagent's dialog, with everything before
+the child's first text withheld"), whose child events never end the pane's turn
+or become its reply; T8 by "a dialog open, then the turn fails with no
+permission.replied" and "a child's dialog, asked one pass before family()
+lists it", the two ways a cached dialog answer could stick.
 
 T4, T5 and T6 are three **different** shapes of one failure: the harness's own
 documentation describes a signal that does not reach you. They are separated

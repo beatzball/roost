@@ -698,3 +698,22 @@ pps="$(new_pane)"; require_pane "$pps" "prune sidecars"
 for n in 1 2 3 4 5; do ROOST_RECORD_KEEP=3 as_pane "$pps" "$ROOST" reply "SIDE $n"; done
 assert_eq "$(ls "$(recdir "$pps")/replies" | tr '\n' ' ')" "000003 000003.pane 000004 000004.pane 000005 000005.pane " "pruning removes a turn's .pane sidecar with it"
 
+
+# --- 18. an empty reply clears the pane and records no turn ---------------
+
+# The opencode 2 adapter (#150) clears a pane's stored reply with an empty
+# `roost reply -` when the front chat changes. That leans on two things the
+# `reply)` branch in bin/roost already does: an empty reply is not recorded,
+# and the pane option is set to empty, which `read` treats as no reply. If
+# either changes, the adapter silently serves another chat's answer.
+pe="$(new_pane)"; require_pane "$pe" "empty reply"
+as_pane "$pe" "$ROOST" reply "ANSWER ONE"
+as_pane "$pe" "$ROOST" reply "ANSWER TWO"
+assert_eq "$(turns_in "$pe")" 2 "two non-empty replies make two turn files (control)"
+printf '' | as_pane "$pe" "$ROOST" reply -; rc=$?
+assert_eq "$rc" 0 "an empty \`roost reply -\` exits 0"
+assert_eq "$(turns_in "$pe")" 2 "...and records no turn"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pe" @roost-reply)" "" "...and leaves @roost-reply empty"
+"$ROOST" read "$pe" >/dev/null 2>"$work/err"
+assert_contains "$(cat "$work/err")" "no recorded reply for '$pe'" "...so read falls back to the screen"
+assert_eq "$("$ROOST" read --turn 2 "$pe")" "ANSWER TWO" "...and the record is intact: --turn 2 still reads"

@@ -1,0 +1,28 @@
+{"ms":3,"pane":"%0","what":"tui-setup"}
+{"ms":7972,"pane":"%0","what":"ev","type":"session.created","sid":"SVWq3e"}
+{"ms":8012,"pane":"%0","what":"pending","why":"after session.created","front":"SVWq3e","family":["SVWq3e"],"pendingPerMember":{"SVWq3e":0},"status":"idle"}
+{"ms":8017,"pane":"%0","what":"ev","type":"session.execution.started","sid":"SVWq3e"}
+{"ms":8020,"pane":"%0","what":"pending","why":"after session.execution.started","front":"SVWq3e","family":["SVWq3e"],"pendingPerMember":{"SVWq3e":0},"status":"running"}
+{"ms":9517,"pane":"%0","what":"pending","why":"session.execution.started +1500ms","front":"SVWq3e","family":["SVWq3e"],"pendingPerMember":{"SVWq3e":0},"status":"running"}
+{"ms":10671,"pane":"%0","what":"ev","type":"session.tool.called","sid":"SVWq3e"}
+{"ms":10675,"pane":"%0","what":"pending","why":"after session.tool.called","front":"SVWq3e","family":["SVWq3e"],"pendingPerMember":{"SVWq3e":0},"status":"running"}
+{"ms":10750,"pane":"%0","what":"family","label":"at created","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e"],"listsChild":false,"root":"XGrZ88"}
+{"ms":10750,"pane":"%0","what":"ev","type":"session.created","sid":"XGrZ88"}
+{"ms":10750,"pane":"%0","what":"ev","type":"session.execution.started","sid":"XGrZ88"}
+{"ms":10750,"pane":"%0","what":"pending","why":"after session.created","front":"SVWq3e","family":["SVWq3e"],"pendingPerMember":{"SVWq3e":0},"status":"running"}
+{"ms":10750,"pane":"%0","what":"pending","why":"after session.execution.started","front":"SVWq3e","family":["SVWq3e"],"pendingPerMember":{"SVWq3e":0},"status":"running"}
+{"ms":11004,"pane":"%0","what":"family","label":"+250ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":11750,"pane":"%0","what":"family","label":"+1000ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":12018,"pane":"%0","what":"pending","why":"session.execution.started +4000ms","front":"SVWq3e","family":["SVWq3e","XGrZ88"],"pendingPerMember":{"SVWq3e":0,"XGrZ88":0},"status":"running"}
+{"ms":12095,"pane":"%0","what":"ev","type":"session.tool.called","sid":"XGrZ88"}
+{"ms":12096,"pane":"%0","what":"pending","why":"after session.tool.called","front":"SVWq3e","family":["SVWq3e","XGrZ88"],"pendingPerMember":{"SVWq3e":0,"XGrZ88":0},"status":"running"}
+{"ms":12112,"pane":"%0","what":"ev","type":"permission.asked","sid":"XGrZ88"}
+{"ms":12124,"pane":"%0","what":"pending","why":"after permission.asked","front":"SVWq3e","family":["SVWq3e","XGrZ88"],"pendingPerMember":{"SVWq3e":0,"XGrZ88":1},"status":"running"}
+{"ms":12251,"pane":"%0","what":"pending","why":"session.execution.started +1500ms","front":"SVWq3e","family":["SVWq3e","XGrZ88"],"pendingPerMember":{"SVWq3e":0,"XGrZ88":1},"status":"running"}
+{"ms":12751,"pane":"%0","what":"family","label":"+2000ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":13754,"pane":"%0","what":"family","label":"+3000ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":14751,"pane":"%0","what":"family","label":"+4000ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":14751,"pane":"%0","what":"pending","why":"session.execution.started +4000ms","front":"SVWq3e","family":["SVWq3e","XGrZ88"],"pendingPerMember":{"SVWq3e":0,"XGrZ88":1},"status":"running"}
+{"ms":15751,"pane":"%0","what":"family","label":"+5000ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":17750,"pane":"%0","what":"family","label":"+7000ms","parent":"SVWq3e","child":"XGrZ88","family":["SVWq3e","XGrZ88"],"listsChild":true,"root":"SVWq3e"}
+{"ms":28499,"pane":"%0","what":"tui-cleanup"}

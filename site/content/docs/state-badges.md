@@ -107,16 +107,12 @@ It reads `$TMUX_PANE` to find its own pane, and does nothing at all outside a ro
 
 ## opencode
 
-**This is for opencode 1.x. opencode 2 is not supported yet.** opencode 2 has a
-new plugin format and does not load roost's adapter, and it says so only in its
-own log — so an opencode 2 pane runs normally and simply never shows a badge,
-and `roost read` falls back to the screen. Nothing you link or install changes
-that; `roost doctor` tells you when the `opencode` on your `PATH` is 2.x. The
-work is tracked in [issue 150](https://github.com/beatzball/roost/issues/150).
-roost also leaves opencode 2 unwired, so that your own opencode configuration
-stays in effect — [Setup](/docs/setup) has the reason, and what to do in a pane
-that was open before you upgraded. Everything below describes opencode 1.x,
-which still works.
+roost has two opencode adapters, one for each major version, because opencode 2
+has a new plugin format and will not load a 1.x plugin. `roost doctor` tells you
+which opencode is on your `PATH`, and `roost install` links the adapter that
+matches it.
+
+### opencode 1.x
 
 **opencode** has an adapter in this repo. `roost install --only opencode` links
 it. By hand:
@@ -153,13 +149,58 @@ One thing to check before you rely on it: the plugin runs **inside the opencode 
 
 **A subagent's work does not badge your pane, but its questions do.** When a turn delegates to a subagent, the child's own start, finish and speech arrive on the same stream as the parent's, and unfiltered they would stamp your pane ✅ done partway through the turn and publish the child's answer as yours. Those are filtered out. A subagent's **permission dialog** is deliberately not filtered: the human who has to answer it is sitting at this pane, so it still badges 🛑.
 
-### What 💥 error means for `roost wait-done`
+#### What 💥 error means for `roost wait-done`
 
 `roost wait-done` does not treat an errored pane as finished. It prints `roost: '<target>' is in error state, not done` and exits 1, rather than reporting success on a turn that produced nothing. When the adapter recorded why — codex does, because its 💥 is inferred — a second line names the pane and the reason.
 
 That matters most in a script. If you loop `roost wait-done` over several agents, exit 1 means **error *or* timeout**, and the message tells you which; exit 2 means the agent died or the target is gone (see the [exit table](/docs/driving-a-fleet)). Under `set -e` a script will stop on a dead agent rather than carrying on, which is the intended behaviour but a change in flow if you had assumed non-zero meant "still busy, try again".
 
 `tests/live/opencode-smoke.sh` drives real opencode against a local model to check the adapter end to end. It is not part of `tests/run.sh` — run it by hand after an opencode upgrade.
+
+### opencode 2
+
+`roost install` links the opencode 2 adapter, a directory, at
+`~/.config/opencode/plugins/roost`. By hand:
+
+```sh
+mkdir -p ~/.config/opencode/plugins
+ln -s "$HOME/path/to/roost/adapters/opencode/v2" ~/.config/opencode/plugins/roost
+```
+
+`roost doctor` prints this exact command for your checkout, and says
+`opencode 2 plugin linked` once it is done. On opencode 2, `roost install` also
+removes roost's own 1.x link at `~/.config/opencode/plugin/roost.js` if you
+still have one, because opencode 2 cannot load it and shows `1 plugin failed`.
+
+**On opencode 2, `roost install` is the route, not roost's wiring.** The
+wiring a roost server gives the panes it opens does not reach opencode 2 —
+[Setup](/docs/setup) says why — so an opencode 2 pane badges only once the
+adapter is linked. Run `roost install` once.
+
+After that, badges and `roost read` work as they do on 1.x: one retry is not an
+error, Esc ends a turn ✅ done, and a subagent's own start and finish do not
+badge your pane. What is different follows from one fact: **the badge follows
+the chat on screen.** An opencode 2 terminal can hold several chats in tabs, and
+the pane shows the one in front.
+
+- **A hidden tab shows nothing.** A chat in a tab you are not looking at can be
+  working, waiting on you or failed, and the badge says nothing about it until
+  you bring it to the front. A turn that finishes while its chat is hidden
+  leaves no reply.
+- **After a tab switch, `roost read` has no reply** until the chat now in front
+  finishes a turn. It says so and shows the screen instead. The last chat's
+  answer is not carried over, because it is not this chat's.
+- **A reload of the adapter turns a finished chat's badge to idle** until its
+  next turn. A reload starts the adapter fresh, and a fresh adapter cannot
+  tell a chat that finished from one that never started. Its stored reply is
+  cleared too. Whether a roost update reloads the adapter in an opencode
+  terminal that is already open was not measured. If the badge stops changing
+  after an update, restart that opencode.
+- **A dialog in a subagent's chat badges 🛑 blocked.** The person who has to
+  answer it is sitting at this pane, the same as on 1.x.
+
+`tests/live/opencode2-smoke.sh` drives a real opencode 2 to check this adapter
+end to end. Like the 1.x one, it is run by hand.
 
 ## GitHub Copilot CLI
 

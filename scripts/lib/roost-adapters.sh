@@ -1,10 +1,27 @@
 # roost-adapters.sh — the adapter path table: where each harness keeps its
 # configuration, and where roost's symlink-shaped adapters go and must point.
 #
-# Shared by scripts/roost-validate (report + optional install offer) and
-# scripts/roost-install (the installer). One table, because a tester's report
-# and the installer's plan must never disagree about which file either of them
-# means.
+# Shared by scripts/roost-validate (report + optional install offer),
+# scripts/roost-install (the installer) and scripts/roost-doctor (the report).
+# One table, because a tester's report, a doctor report and the installer's
+# plan must never disagree about which file any of them means.
+#
+# opencode has two keys: `opencode` for 1.x (a file symlink at
+# plugin/roost.js) and `opencode2` for 2.x (a DIRECTORY symlink at
+# plugins/roost). roost_adapter_key, at the bottom, says which one the
+# opencode on PATH gets (#150).
+
+# roost_adapter_key needs roost_opencode_v2. Sourced by path relative to THIS
+# file rather than from an inherited $ROOST_HOME, for the reason
+# _roost_adapter_root below spells out at length: bin/roost exports ROOST_HOME
+# into every pane of the session it starts, so a caller running inside a roost
+# session would otherwise read the version check out of a DIFFERENT checkout.
+# Guarded the way scripts/lib/roost-json.sh guards its own sibling:
+# scripts/roost-doctor sources both files, and re-sourcing is wasted work
+# rather than a bug.
+if ! declare -f roost_opencode_v2 >/dev/null 2>&1; then
+  . "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-opencode.sh"
+fi
 
 # roost_adapter_home HARNESS — the directory that harness actually keeps its
 # configuration and credentials in. Per harness, and never assumed to be the
@@ -12,7 +29,9 @@
 # codex each have their own override too.
 roost_adapter_home() {
   case "$1" in
-    opencode) printf '%s/opencode' "${XDG_CONFIG_HOME:-$HOME/.config}" ;;
+    # opencode 2 keeps the same configuration directory as 1.x; only where
+    # the adapter goes inside it changed.
+    opencode|opencode2) printf '%s/opencode' "${XDG_CONFIG_HOME:-$HOME/.config}" ;;
     pi)       printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" ;;
     copilot)  printf '%s' "${COPILOT_HOME:-$HOME/.copilot}" ;;
     codex)    printf '%s' "${CODEX_HOME:-$HOME/.codex}" ;;
@@ -98,6 +117,9 @@ roost_adapter_path() {
   local home; home="$(roost_adapter_home "$1")"
   case "$1" in
     opencode) printf '%s/plugin/roost.js' "$home" ;;
+    # A directory, not a file: 2.x loads a plugin from a folder under
+    # plugins/ (plural), and the folder roost links is adapters/opencode/v2.
+    opencode2) printf '%s/plugins/roost' "$home" ;;
     pi)       printf '%s/extensions/roost.ts' "$home" ;;
     copilot)  printf '%s/extensions/roost/extension.mjs' "$home" ;;
   esac
@@ -106,6 +128,7 @@ roost_adapter_target() {
   local here; here="$(_roost_adapter_root)"
   case "$1" in
     opencode) printf '%s/adapters/opencode/roost.js' "$here" ;;
+    opencode2) printf '%s/adapters/opencode/v2' "$here" ;;
     pi)       printf '%s/adapters/pi/roost.ts' "$here" ;;
     copilot)  printf '%s/adapters/copilot/extension.mjs' "$here" ;;
   esac
@@ -132,13 +155,60 @@ roost_adapter_target() {
 #   none      this harness has no symlink-shaped adapter (codex uses a hooks
 #             file and a trust prompt, and both are out of scope for
 #             installing)
+#
+# opencode2's adapter is a DIRECTORY symlink where the other three link a
+# file, and the four states need no change for it: `-ef` follows a symlink to
+# a directory exactly as it does to a file, so it is true for the link and
+# its target directory; `-e` and `-L` behave the same for both; and a real
+# directory sitting at the path is not `-ef` the target, so it reads foreign.
 roost_adapter_state() {
   local h="$1" path want
-  case "$h" in opencode|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
+  case "$h" in opencode|opencode2|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
   path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
   if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
   elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'dangling'
   elif [ "$path" -ef "$want" ]; then printf 'ok'
   else printf 'foreign'
+  fi
+}
+
+# roost_adapter_names_1x PATH — true when PATH is a symlink whose text names a
+# roost 1.x opencode adapter, in this checkout or any other. The same test
+# scripts/roost-doctor applies before it calls a leftover link roost's, so the
+# two never disagree about whose link it is. Used for a DANGLING link only:
+# with the target gone there is nothing to `-ef` against, and the link's own
+# text is all that says whose it was.
+#
+# It lives here, not in scripts/roost-install, because two scripts must agree
+# on it: the installer decides with it whether to remove a dangling
+# plugin/roost.js on opencode 2, and scripts/roost-validate's offer predicts
+# that removal with it. Two copies drifted once already — validate's offer said
+# "will be removed" about a link the installer then refused.
+roost_adapter_names_1x() {
+  [ -L "$1" ] || return 1
+  case "$(readlink "$1" 2>/dev/null)" in
+    */adapters/opencode/roost.js) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# roost_adapter_key HARNESS -> the table key that harness gets on this
+# machine. Prints `opencode2` when HARNESS is `opencode` and the opencode on
+# PATH is 2.x or later (roost_opencode_v2, scripts/lib/roost-opencode.sh);
+# otherwise prints HARNESS unchanged.
+#
+# Every caller that acts on the opencode on PATH asks this, so install, doctor
+# and validate cannot disagree about which adapter a machine gets. "Not 2.x"
+# includes no opencode at all and one whose version could not be read; those
+# keep the 1.x key, for the reasons roost_opencode_v2's own comment gives.
+#
+# It runs `opencode --version` (bounded, in a throwaway directory -- see
+# roost_opencode_version) only when HARNESS is `opencode`.
+roost_adapter_key() {
+  local h="${1-}"
+  if [ "$h" = opencode ] && roost_opencode_v2; then
+    printf 'opencode2'
+  else
+    printf '%s' "$h"
   fi
 }

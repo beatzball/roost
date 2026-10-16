@@ -79,6 +79,13 @@ slice="$1"; shift
 trap - EXIT
 offer_adapter_install
 rc=$?
+# The report's own section, built the way the real run builds it, so a case
+# can assert on the undo lines the tester would paste. Printed BEFORE the
+# result block: result_of keeps only what follows ===RESULT===, so nothing in
+# the report can be mistaken for one of the values below.
+report_install
+printf '\n===REPORT===\n'
+cat "$BODY"
 # The five things the report is made of, in a shape no prose line can collide
 # with. Asserting on the offer's console prose alone is how a case goes green
 # against the wrong line; these are the values themselves.
@@ -96,6 +103,9 @@ done
 # other case in the file down with it.
 printf '%s' "${ALREADY_LINKED:-}" | while IFS="$(printf '\t')" read -r h p; do
   [ -n "$h" ] && printf 'ALREADY\t%s\t%s\n' "$h" "$p"
+done
+printf '%s' "${REMOVED_LINKS:-}" | while IFS="$(printf '\t')" read -r h p u; do
+  [ -n "$h" ] && printf 'REMOVED\t%s\t%s\t%s\n' "$h" "$p" "$u"
 done
 rm -rf "$WORK"
 DRIVER
@@ -133,10 +143,32 @@ make_shim() { # make_shim NAME... -> prints a PATH dir
 }
 ALL_SHIM="$(make_shim opencode pi copilot)"
 
+# make_versioned_shim VERSION-LINE -> a PATH dir like ALL_SHIM's, except that
+# its opencode prints VERSION-LINE, so roost_adapter_key reads a version from
+# it. A stub, never a link to a real binary: the plan forbids running a real
+# opencode here, and 1.x and 2.x cannot share a data directory.
+#
+# `sleep` is added for these shims only. roost_opencode_version runs
+# `opencode --version` under a `sleep 5` watchdog, and with no sleep on PATH
+# the watchdog kills the probe at once — the version line can then be lost to
+# that race, and the case would read 1.x whatever the stub printed. The other
+# shims keep their exact inventory; their silent opencode has no version to lose.
+make_versioned_shim() {
+  local dir real
+  dir="$(make_shim pi copilot)"
+  real="$(command -v sleep 2>/dev/null)" && ln -s "$real" "$dir/sleep"
+  printf '#!/bin/sh\necho "%s"\n' "$1" > "$dir/opencode"
+  chmod +x "$dir/opencode"
+  printf '%s' "$dir"
+}
+
 # --- one sandboxed offer ---------------------------------------------------
 # stdin is /dev/null: with no terminal the offer must resolve to no on its own,
 # and a case that inherited the runner's stdin would be answering a question it
 # was never asked.
+#
+# SHIM, when set, replaces ALL_SHIM for one call — the opencode 2 cases below
+# need an opencode that prints a version.
 run_offer() { # run_offer BOX [validate args...]
   local box="$1"; shift
   mkdir -p "$box/home"
@@ -147,7 +179,7 @@ run_offer() { # run_offer BOX [validate args...]
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
   CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
-  PATH="$ALL_SHIM" \
+  PATH="${SHIM:-$ALL_SHIM}" \
     bash "$DRIVER" "$HEAD" --out "$box/report.md" "$@" </dev/null 2>&1
 }
 
@@ -415,7 +447,133 @@ assert_contains "$res" \
   "raced: the count is only the two this run really created"
 
 # ===========================================================================
-# 11. the file itself
+# 11. opencode 2 gets its own adapter path, and 1.x is the control
+# ===========================================================================
+# One binary, two adapters: opencode 2 loads a DIRECTORY at plugins/roost,
+# linked to adapters/opencode/v2, and 1.x loads plugin/roost.js. The offer
+# names whichever one the opencode on PATH gets (roost_adapter_key), and the
+# record it reads back after the install is the one for that same path —
+# looked up at the 1.x path, a 2.x link the installer really wrote would be
+# reported as "could NOT link".
+#
+# The drive-path skip (h_prepare's H_SKIP for opencode 2) is past the slice
+# this file sources; it is checked by hand.
+V2_SHIM="$(make_versioned_shim "opencode v2.0.20")"
+V1_SHIM="$(make_versioned_shim "1.18.30")"
+
+box="$TMP/oc2"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+v2path="$(apath "$box" opencode2)"
+v1path="$(apath "$box" opencode)"
+assert_contains "$out" "    opencode  $v2path" \
+  "opencode 2: the offer names plugins/roost"
+assert_contains "$out" "  -> $(atarget opencode2)" \
+  "opencode 2: the offer names adapters/opencode/v2 as the target"
+assert_eq "$(readlink "$v2path" 2>/dev/null)" "$(atarget opencode2)" \
+  "opencode 2: plugins/roost is linked to this checkout's 2.x adapter"
+assert_contains "$res" "INSTALLED	$v2path" \
+  "opencode 2: the link the installer wrote is recorded for the undo"
+case "$res" in *"BLOCKED	opencode	"*) s=blocked ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2: the 2.x link is not reported as could-NOT-link"
+case "$out" in *"$v1path"*) s=named ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2: the 1.x path is never offered"
+[ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
+  "opencode 2: nothing is created at plugin/roost.js"
+
+box="$TMP/oc1"
+out="$(SHIM="$V1_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+v2path="$(apath "$box" opencode2)"
+v1path="$(apath "$box" opencode)"
+assert_contains "$out" "    opencode  $v1path" \
+  "opencode 1.x (control): the offer names plugin/roost.js"
+assert_contains "$res" "INSTALLED	$v1path" \
+  "opencode 1.x (control): plugin/roost.js is recorded for the undo"
+case "$out" in *"$v2path"*) s=named ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 1.x (control): plugins/roost is never offered"
+case "$res" in *"REMOVED	"*) s=removed ;; *) s=none ;; esac
+assert_eq "$s" "none" "opencode 1.x (control): nothing is reported as removed"
+case "$out" in *"removed "*|*"One thing is removed"*) s=named ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 1.x (control): no removal line is printed"
+
+# --- opencode 2 with roost's own 1.x link still in place ------------------
+# `roost install --only opencode` on 2.x removes that link (opencode 2 tries
+# to load it and cannot). validate runs that install, so its offer must say a
+# link will be removed, and its report must name the removal and carry the
+# `ln -s` that puts it back — read from the installer's `removed` record.
+box="$TMP/oc2old"
+mkdir -p "$box/home/.config/opencode/plugin"
+v1path="$(apath "$box" opencode)"
+v2path="$(apath "$box" opencode2)"
+ln -s "$(atarget opencode)" "$v1path"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+rep="${out#*===REPORT===}"; rep="${rep%%===RESULT===*}"
+undo="ln -s \"$(atarget opencode)\" \"\$HOME/.config/opencode/plugin/roost.js\""
+assert_eq "$(readlink "$v2path" 2>/dev/null)" "$(atarget opencode2)" \
+  "opencode 2, old 1.x link: plugins/roost is linked"
+[ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
+  "opencode 2, old 1.x link: the 1.x link is gone"
+assert_contains "$out" "    remove    $v1path" \
+  "opencode 2, old 1.x link: the offer says the 1.x link will be removed"
+case "$out" in *"a symlink each, nothing else"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, old 1.x link: the offer does not say nothing else"
+assert_contains "$out" "  removed $v1path" \
+  "opencode 2, old 1.x link: the removal is printed as it happens"
+assert_contains "$res" "REMOVED	opencode	$v1path	ln -s \"$(atarget opencode)\" \"$v1path\"" \
+  "opencode 2, old 1.x link: the removal and its undo are read from the record"
+assert_contains "$rep" "$undo" \
+  "opencode 2, old 1.x link: the report's undo list has the ln -s"
+assert_contains "$rep" "rm \"\$HOME/.config/opencode/plugins/roost\"" \
+  "opencode 2, old 1.x link: the report's undo list still has the rm for plugins/roost"
+assert_contains "$res" \
+  "DECISION	offered and accepted — this run created 3 adapter symlink(s) and removed 1 opencode 1.x link(s); see the undo below" \
+  "opencode 2, old 1.x link: the decision line counts the removal"
+
+# --- opencode 2 with a DANGLING link at plugin/roost.js -------------------
+# A dangling link says only that its target is gone, not whose target it was:
+# the user's own plugin on a volume that is not mounted reads the same as a
+# link to a roost checkout that was deleted. The installer removes it only
+# when its text names a roost 1.x adapter (roost_adapter_names_1x), so the
+# offer has to predict with that same rule. Asked with `ok|dangling` alone, it
+# told the tester a link would be removed that the installer then refused.
+box="$TMP/oc2theirs"
+mkdir -p "$box/home/.config/opencode/plugin"
+v1path="$(apath "$box" opencode)"
+ln -s /nowhere/my-own-plugin.js "$v1path"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+case "$out" in *"    remove    $v1path"*) s=offered ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, the user's own dangling link: the offer does not say it will be removed"
+assert_contains "$out" "a symlink each, nothing else" \
+  "opencode 2, the user's own dangling link: the offer says nothing else is touched"
+case "$res" in *"REMOVED	"*) s=removed ;; *) s=none ;; esac
+assert_eq "$s" "none" \
+  "opencode 2, the user's own dangling link: nothing is reported as removed"
+assert_eq "$(readlink "$v1path" 2>/dev/null)" "/nowhere/my-own-plugin.js" \
+  "opencode 2, the user's own dangling link: the link is still there afterwards"
+
+# The control: roost's own link to a checkout that is gone. Its text ends in
+# /adapters/opencode/roost.js, so it is offered as removed, and removed.
+box="$TMP/oc2gone"
+mkdir -p "$box/home/.config/opencode/plugin"
+v1path="$(apath "$box" opencode)"
+ln -s "$TMP/gone-checkout/adapters/opencode/roost.js" "$v1path"
+out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
+res="$(result_of "$out")"
+assert_contains "$out" "    remove    $v1path" \
+  "opencode 2, roost's own dangling link (control): the offer says it will be removed"
+assert_contains "$res" "REMOVED	opencode	$v1path	" \
+  "opencode 2, roost's own dangling link (control): the removal is recorded"
+[ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
+  "opencode 2, roost's own dangling link (control): the link is gone"
+
+rm -rf "$V2_SHIM" "$V1_SHIM"
+
+# ===========================================================================
+# 12. the file itself
 # ===========================================================================
 bash -n "$REPO/scripts/roost-validate"; assert_true $? "scripts/roost-validate parses as bash"
 # bash 3.2 is the floor (AGENTS.md / the spec's global constraints): no

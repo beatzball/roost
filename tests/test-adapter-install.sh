@@ -54,6 +54,31 @@ make_harness_shim() { # make_harness_shim NAME... -> prints a PATH dir
   printf '%s' "$dir"
 }
 
+# make_versioned_shim VERSIONLINE NAME... -> the same shim as make_harness_shim,
+# except that the `opencode` stub prints VERSIONLINE, the way a real one
+# answers `opencode --version` (`1.18.30` on 1.x, `opencode v2.0.20` on 2.x).
+# A stub, never a symlink to a real opencode: 1.x and 2.x cannot share a data
+# directory, and the machine running this suite may hold a real 1.x with real
+# data.
+#
+# `sleep` is added because roost_opencode_version's watchdog runs
+# `sleep 5; kill "$probe"`. With no sleep on PATH that line fails at once and
+# the kill fires straight away, so whether the stub got to answer first would be
+# a race, and a "2.x" case could read as "no version" for a reason that has
+# nothing to do with the code under test.
+make_versioned_shim() { # make_versioned_shim VERSIONLINE NAME... -> prints a PATH dir
+  local line="$1"; shift
+  local dir h real
+  dir="$(make_harness_shim "$@")"
+  real="$(command -v sleep 2>/dev/null)" && ln -s "$real" "$dir/sleep" 2>/dev/null
+  for h in "$@"; do
+    [ "$h" = opencode ] || continue
+    printf "#!/bin/sh\necho '%s'\n" "$line" > "$dir/opencode"
+    chmod +x "$dir/opencode"
+  done
+  printf '%s' "$dir"
+}
+
 # make_one_tool_shim TOOL NAME... -> a shim carrying exactly ONE JSON engine.
 # scripts/lib/roost-json.sh prefers python3 whenever it is there, and so does
 # the installer's own probe, so on this machine the jq branch of both would
@@ -1552,20 +1577,24 @@ assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
 # the checkout may be someone's dev tree with local work in it. All this does
 # is SAY so, from what git already knows locally -- never a fetch, which would
 # be a surprise network call inside an installer, and never a pull.
+#
+# A scratch checkout carrying the files roost-install needs to run. Copies,
+# not symlinks: the installer resolves its own location through a symlink
+# chain (that is how it refuses to trust an inherited $ROOST_HOME), so a
+# symlink here would resolve straight back to the real worktree and every
+# case below would be measuring THIS repo's upstream instead of the
+# fixture's. Defined outside the git guard below: it needs only `cp`, and
+# section 21's symlinked-plugin/ case builds one whether or not git is here.
+mkcheckout() { # mkcheckout DIR
+  mkdir -p "$1/scripts/lib"
+  cp "$HERE/scripts/roost-install" "$1/scripts/roost-install"
+  cp "$HERE/scripts/lib/roost-adapters.sh" \
+     "$HERE/scripts/lib/roost-hooks.sh" \
+     "$HERE/scripts/lib/roost-json.sh" \
+     "$HERE/scripts/lib/roost-opencode.sh" "$1/scripts/lib/"
+}
+
 if command -v git >/dev/null 2>&1; then
-  # A scratch checkout carrying the files roost-install needs to run. Copies,
-  # not symlinks: the installer resolves its own location through a symlink
-  # chain (that is how it refuses to trust an inherited $ROOST_HOME), so a
-  # symlink here would resolve straight back to the real worktree and every
-  # case below would be measuring THIS repo's upstream instead of the
-  # fixture's.
-  mkcheckout() { # mkcheckout DIR
-    mkdir -p "$1/scripts/lib"
-    cp "$HERE/scripts/roost-install" "$1/scripts/roost-install"
-    cp "$HERE/scripts/lib/roost-adapters.sh" \
-       "$HERE/scripts/lib/roost-hooks.sh" \
-       "$HERE/scripts/lib/roost-json.sh" "$1/scripts/lib/"
-  }
   # An empty hooks directory, and a fixture identity. These repos exist for
   # four seconds inside a mktemp dir; pointing them at an empty hooksPath
   # keeps the machine's global hooks (which scan staged content and commit
@@ -1621,6 +1650,14 @@ EOF
   out="$(run_install "$TMP/gitclonebox" "$GIT_SHIM" --yes)"; rc=$?
   INSTALL="$real_install"
   assert_eq "$rc" "0" "behind upstream: exits 0 (it is a note, not a problem)"
+  # The scratch checkout is a COPY of the files roost-install needs, so a lib
+  # that starts sourcing a new sibling breaks it without failing anything else
+  # here: bash prints "No such file or directory" into this output and carries
+  # on. That happened when roost-adapters.sh began sourcing roost-opencode.sh
+  # and mkcheckout did not copy it. Asserted here so the next missing sibling
+  # fails a test instead of being swallowed.
+  case "$out" in *"No such file"*) s=missing ;; *) s=complete ;; esac
+  assert_eq "$s" "complete" "behind upstream: the scratch checkout has every file the installer sources"
   assert_contains "$out" "1 commit behind $upname" \
     "behind upstream: the line names how far behind and what it tracks"
   # Resolved with `cd -P`, because the installer resolves its OWN location
@@ -1954,7 +1991,414 @@ done
 rm -rf "$PROBE_PY_SHIM" "$PROBE_JQ_SHIM"
 
 # ===========================================================================
-# 20. Hygiene
+# 20. The adapter table and opencode 2
+# ===========================================================================
+# opencode 2's adapter is a DIRECTORY symlink at its own path, so the table
+# carries it as a key of its own, `opencode2`, and roost_adapter_key says which
+# of the two opencode keys this machine gets. Every case sources the lib in a
+# fresh `bash -c` under `set -u` -- roost-install, roost-doctor and
+# roost-validate source it, some of them with `set -u` in force -- with PATH
+# set to a shim, so the opencode it asks is a stub that prints a version line
+# and never a real binary.
+
+# in_adapter_lib ROOT BOX SHIMDIR FUNC [ARG...] -> what FUNC prints when the
+# lib is sourced from the checkout at ROOT, with every harness home under BOX
+# and PATH set to SHIMDIR.
+in_adapter_lib() {
+  local root="$1" box="$2" shim="$3"; shift 3
+  mkdir -p "$box"
+  HOME="$box/home" \
+  XDG_CONFIG_HOME="$box/home/.config" \
+  XDG_DATA_HOME="$box/home/.local/share" \
+  COPILOT_HOME="$box/home/.copilot" \
+  PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+  CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  PATH="$shim" \
+    bash -c 'set -u; . "$1/scripts/lib/roost-adapters.sh"; shift; "$@"' _ "$root" "$@"
+}
+
+OC2_V2_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode)"
+OC2_V1_SHIM="$(make_versioned_shim '1.18.30' opencode)"
+# The silent stub is make_harness_shim's own `exit 0` one, which prints nothing
+# at all -- not even an empty line. Built on a versioned shim with no opencode
+# in it, so it still carries the `sleep` the watchdog needs.
+OC2_SILENT_SHIM="$(make_versioned_shim '')"
+printf '#!/bin/sh\nexit 0\n' > "$OC2_SILENT_SHIM/opencode"
+chmod +x "$OC2_SILENT_SHIM/opencode"
+OC2_NONE_SHIM="$(make_versioned_shim '')"
+OC2_BOX="$TMP/oc2"
+
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_V2_SHIM" roost_adapter_key opencode)" "opencode2" \
+  "roost_adapter_key opencode is opencode2 when opencode on PATH says v2.0.20"
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_V1_SHIM" roost_adapter_key opencode)" "opencode" \
+  "roost_adapter_key opencode stays opencode when opencode on PATH says 1.18.30"
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_SILENT_SHIM" roost_adapter_key opencode)" "opencode" \
+  "roost_adapter_key opencode stays opencode when opencode on PATH prints no version"
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_key opencode)" "opencode" \
+  "roost_adapter_key opencode stays opencode with no opencode on PATH"
+# Any other harness comes back unchanged, even on a machine with a 2.x.
+assert_eq "$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_V2_SHIM" roost_adapter_key pi)" "pi" \
+  "roost_adapter_key pi is pi, whatever opencode is on PATH"
+
+oc2_path="$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_path opencode2)"
+assert_prefix "$oc2_path" "$OC2_BOX/home/.config/opencode/" \
+  "roost_adapter_path opencode2 is inside opencode's own config directory"
+case "$oc2_path" in */opencode/plugins/roost) r=0 ;; *) r=1 ;; esac
+assert_true "$r" "roost_adapter_path opencode2 ends in /opencode/plugins/roost (got $oc2_path)"
+oc2_want="$(in_adapter_lib "$HERE" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_target opencode2)"
+# `cd -P`, because the lib resolves its root through symlinks and $HERE does
+# not; a checkout reached through a symlinked directory would otherwise fail
+# here on spelling alone.
+assert_eq "$oc2_want" "$(cd -P "$HERE" && pwd)/adapters/opencode/v2" \
+  "roost_adapter_target opencode2 is this checkout's adapters/opencode/v2"
+# The state cases below run against a scratch copy (the comment there says
+# why), so they cannot see whether THIS checkout has the directory the table
+# names. This line can: a table naming a directory the checkout does not ship
+# would have roost install create a link that reads `dangling` the moment it
+# exists.
+[ -d "$oc2_want" ]; assert_true $? \
+  "roost_adapter_target opencode2, from this checkout, names a directory that exists"
+
+# The three states, on one path. The link is made to the same target string
+# the table returns, so `ok` here is the table agreeing with itself through
+# `-ef` on a DIRECTORY symlink -- the one thing this key adds over the other
+# three, whose links all name a file.
+#
+# Run against a COPY of scripts/lib in a scratch checkout that has an
+# adapters/opencode/v2 directory, not against this checkout. The table finds
+# its root from its own file's location (_roost_adapter_root), so the copy
+# answers for the scratch checkout. That keeps `ok` meaning "the link reaches a
+# directory that is there" whether or not this checkout has the adapter yet --
+# against a target that does not exist, the same link reads `dangling`, and the
+# case would pass or fail on the state of the tree rather than on the table.
+# Resolved with `cd -P` once it exists, because _roost_adapter_root resolves
+# its own root the same way: on macOS /tmp is itself a symlink, and
+# the unresolved spelling would never compare equal to what the lib prints.
+mkdir -p "$TMP/oc2-checkout/scripts/lib" "$TMP/oc2-checkout/adapters/opencode/v2"
+OC2_CO="$(cd -P "$TMP/oc2-checkout" && pwd)"
+cp "$HERE"/scripts/lib/*.sh "$OC2_CO/scripts/lib/"
+oc2_co_want="$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_target opencode2)"
+assert_eq "$oc2_co_want" "$OC2_CO/adapters/opencode/v2" \
+  "a copy of the lib answers for its own scratch checkout (the harness for the state cases)"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "missing" \
+  "roost_adapter_state opencode2 is missing in an empty home"
+mkdir -p "${oc2_path%/*}"
+ln -s "$oc2_co_want" "$oc2_path"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "ok" \
+  "roost_adapter_state opencode2 is ok once the plugin directory links to the checkout"
+rm -f "$oc2_path"
+mkdir -p "$oc2_path"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "foreign" \
+  "roost_adapter_state opencode2 is foreign when a real directory sits at the path"
+# The stronger control. A real directory is not a symlink, so the case above
+# cannot tell `-ef` from "any symlink to any directory is ok". A link to some
+# OTHER real directory -- another checkout's adapter, say -- is the realistic
+# foreign case, and only `-ef` reads it as foreign.
+rm -rf "$oc2_path"
+mkdir -p "$OC2_BOX/elsewhere"
+ln -s "$OC2_BOX/elsewhere" "$oc2_path"
+assert_eq "$(in_adapter_lib "$OC2_CO" "$OC2_BOX" "$OC2_NONE_SHIM" roost_adapter_state opencode2)" "foreign" \
+  "roost_adapter_state opencode2 is foreign when the path links to some other real directory"
+
+rm -rf "$OC2_V2_SHIM" "$OC2_V1_SHIM" "$OC2_SILENT_SHIM" "$OC2_NONE_SHIM"
+
+# ===========================================================================
+# 21. roost install on an opencode 2 machine
+# ===========================================================================
+# One binary, two adapters, and the version on PATH decides which one a run
+# links (roost_adapter_key). On 2.x the adapter is the DIRECTORY
+# adapters/opencode/v2, linked at plugins/roost; roost's own 1.x link at
+# plugin/roost.js is removed, because opencode 2 cannot load it and says
+# `1 plugin failed`. Anything else at that path is left alone and named.
+#
+# Every opencode here is a stub that prints a version line (make_versioned_shim)
+# -- never a real binary. The 1.x and the silent-stub runs are the control:
+# they must do exactly what sections 1-3 pin, with nothing at plugins/roost.
+OCI_V2_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode)"
+OCI_V1_SHIM="$(make_versioned_shim '1.18.30' opencode)"
+
+# --- 2.x, a fresh home -> plugins/roost linked, and no plugin/roost.js ------
+box="$TMP/oc2-fresh"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, fresh home: exits 0"
+assert_contains "$out" "$p2" "opencode 2, fresh home: the plan names plugins/roost"
+assert_contains "$out" "$(adapter_target opencode2)" \
+  "opencode 2, fresh home: the plan names the v2 target"
+[ -L "$p2" ]; assert_true $? "opencode 2, fresh home: plugins/roost is a symlink"
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
+  "opencode 2, fresh home: plugins/roost points at adapters/opencode/v2"
+[ -d "$p2/" ]; assert_true $? "opencode 2, fresh home: plugins/roost reaches a real directory"
+[ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
+  "opencode 2, fresh home: no plugin/roost.js was created"
+n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$n" "1" "opencode 2, fresh home: exactly one symlink was created"
+assert_contains "$out" "rm \"$p2\"" "opencode 2, fresh home: the undo names plugins/roost"
+
+# --- 2.x, a re-run -> nothing written, and the summary names opencode -------
+before="$(tree_of "$box")"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, re-run: exits 0"
+assert_eq "$(tree_of "$box")" "$before" "opencode 2, re-run: the sandbox tree is unchanged"
+assert_contains "$out" "Already correct: opencode" \
+  "opencode 2, re-run: the Already correct line names opencode"
+case "$out" in *"Will remove"*|*"Will write"*) s=planned ;; *) s=quiet ;; esac
+assert_eq "$s" "quiet" "opencode 2, re-run: nothing is planned"
+
+# --- 2.x, roost's own 1.x link present -> removed, and plugins/roost linked -
+box="$TMP/oc2-own1x"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+mkdir -p "${p1%/*}"
+ln -s "$(adapter_target opencode)" "$p1"
+out="$(run_install "$box" "$OCI_V2_SHIM" --dry-run)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, own 1.x link, --dry-run: exits 0"
+assert_contains "$out" "Will remove:" \
+  "opencode 2, own 1.x link: the plan says something will be removed"
+assert_contains "$out" "$p1" "opencode 2, own 1.x link: the plan names plugin/roost.js"
+assert_contains "$out" "1 plugin failed" \
+  "opencode 2, own 1.x link: the plan names the '1 plugin failed' it causes"
+[ -L "$p1" ]; assert_true $? "opencode 2, own 1.x link: --dry-run left it in place"
+[ ! -e "$p2" ] && [ ! -L "$p2" ]; assert_true $? \
+  "opencode 2, own 1.x link: --dry-run linked nothing"
+recs="$TMP/oc2-own1x.tsv"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, own 1.x link: exits 0"
+[ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
+  "opencode 2, own 1.x link: plugin/roost.js is gone after --yes"
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
+  "opencode 2, own 1.x link: plugins/roost is linked"
+# The undo for a removal puts the link back, not an `rm`.
+undo1="ln -s \"$(adapter_target opencode)\" \"$p1\""
+assert_contains "$out" "$undo1" "opencode 2, own 1.x link: the undo puts the 1.x link back"
+assert_contains "$(records_of "$recs")" "removed${TAB}opencode$TAB$p1$TAB$undo1" \
+  "opencode 2, own 1.x link: --records says it was removed, with its undo"
+assert_contains "$(records_of "$recs")" "wrote${TAB}opencode$TAB$p2${TAB}rm \"$p2\"" \
+  "opencode 2, own 1.x link: --records says plugins/roost was written"
+# The checkout's own 1.x adapter is untouched: removing a link never reaches
+# what it points at.
+[ -f "$(adapter_target opencode)" ]; assert_true $? \
+  "opencode 2, own 1.x link: the checkout's adapters/opencode/roost.js is still there"
+
+# A DANGLING 1.x link is ours too -- the checkout it pointed at moved -- so it
+# goes the same way.
+box="$TMP/oc2-dangling1x"
+p1="$(adapter_path_in "$box" opencode)"
+mkdir -p "${p1%/*}"
+ln -s "$TMP/no-such-checkout/adapters/opencode/roost.js" "$p1"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, dangling 1.x link: exits 0"
+[ ! -L "$p1" ]; assert_true $? "opencode 2, dangling 1.x link: it is removed"
+# `1 plugin failed` was measured for a live 1.x adapter, not a dangling link,
+# so the plan claims only that it points at nothing.
+assert_contains "$out" "it points at nothing" \
+  "opencode 2, dangling 1.x link: the plan says it points at nothing"
+case "$out" in *"1 plugin failed"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling 1.x link: the plan does not claim '1 plugin failed'"
+
+# A dangling link that never named a roost adapter is NOT ours: `dangling`
+# says only that the target is gone, not whose target it was. The user's own
+# plugin on a volume that is not mounted right now reads exactly this way. So
+# it is refused, as scripts/roost-doctor already judges it -- a link is
+# roost's only when it ends in /adapters/opencode/roost.js. The case above,
+# whose target does end that way, is the control: it is still removed.
+box="$TMP/oc2-danglingforeign"
+p1="$(adapter_path_in "$box" opencode)"
+mkdir -p "${p1%/*}"
+ln -s "/nowhere/my-own-plugin.js" "$p1"
+recs="$TMP/oc2-danglingforeign.tsv"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, dangling link that is not roost's: exits 0"
+assert_eq "$(readlink "$p1" 2>/dev/null)" "/nowhere/my-own-plugin.js" \
+  "opencode 2, dangling link that is not roost's: the link is still there"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, dangling link that is not roost's: --records says it was refused"
+case "$out" in *"Will remove:"*) s=planned ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling link that is not roost's: no Will remove: section"
+case "$out" in *"removed "*) s=removed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling link that is not roost's: nothing is reported removed"
+case "$out" in *"roost's own"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 2, dangling link that is not roost's: nothing calls it roost's own"
+assert_contains "$out" "something that is not this checkout's link is at" \
+  "opencode 2, dangling link that is not roost's: the manual note says it is not this checkout's link"
+
+# The same rule at apply time. The plan sees roost's own dangling 1.x link and
+# plans its removal; then, before the removal runs, the link is swapped for
+# someone else's dangling one -- which still reads `dangling`. The swap rides
+# on `ln`: the plugins/roost link step runs before the unlink step in the
+# apply loop, and `ln` comes from the shim PATH. The shim's `ln` is a SYMLINK
+# to the real binary, so it is removed first and the wrapper written to a
+# fresh file: `>` would follow the link and overwrite the real `ln`.
+SWAP_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode)"
+real_ln="$(command -v ln)"
+box="$TMP/oc2-danglingswap"
+p1="$(adapter_path_in "$box" opencode)"
+rm -f "$SWAP_SHIM/ln"
+if [ ! -e "$SWAP_SHIM/ln" ] && [ ! -L "$SWAP_SHIM/ln" ]; then
+  cat > "$SWAP_SHIM/ln" <<EOF
+#!/bin/sh
+case "\$*" in
+  *plugins/roost*) "$(command -v rm)" -f "$p1" && "$real_ln" -s /nowhere/swapped-in.js "$p1" ;;
+esac
+exec "$real_ln" "\$@"
+EOF
+  chmod +x "$SWAP_SHIM/ln"
+fi
+mkdir -p "${p1%/*}"
+ln -s "$TMP/no-such-checkout/adapters/opencode/roost.js" "$p1"
+recs="$TMP/oc2-danglingswap.tsv"
+out="$(run_install "$box" "$SWAP_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, swapped for a foreign dangling link during the run: exits 0"
+assert_contains "$out" "Will remove:" \
+  "opencode 2, swapped for a foreign dangling link during the run: the plan saw roost's link"
+assert_eq "$(readlink "$p1" 2>/dev/null)" "/nowhere/swapped-in.js" \
+  "opencode 2, swapped for a foreign dangling link during the run: the swapped-in link is still there"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, swapped for a foreign dangling link during the run: --records says it was refused"
+rm -rf "$SWAP_SHIM"
+
+# --- 2.x, a foreign file at plugin/roost.js -> untouched, and named ---------
+box="$TMP/oc2-foreign1x"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+mkdir -p "${p1%/*}"
+printf 'export const mine = true; // not roost\n' > "$p1"
+fbefore="$(cksum < "$p1")"
+recs="$TMP/oc2-foreign1x.tsv"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, foreign plugin/roost.js: exits 0"
+assert_eq "$(cksum < "$p1" 2>/dev/null)" "$fbefore" \
+  "opencode 2, foreign plugin/roost.js: the file is byte-identical after"
+assert_contains "$out" "$p1" "opencode 2, foreign plugin/roost.js: the path is named"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, foreign plugin/roost.js: --records says it was refused"
+# Never the 1.x manual fix: on 2.x, linking roost's 1.x adapter there is the
+# thing that breaks opencode, so the note must not hand the user that command.
+case "$out" in *"ln -s \"$(adapter_target opencode)\""*) s=offered ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, foreign plugin/roost.js: the manual note does not offer to link the 1.x adapter"
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
+  "opencode 2, foreign plugin/roost.js: plugins/roost is still linked"
+
+# Another checkout's 1.x link is foreign too -- it is not THIS checkout's, and
+# "it is probably ours" is not a reason to delete it.
+box="$TMP/oc2-other1x"
+p1="$(adapter_path_in "$box" opencode)"
+mkdir -p "${p1%/*}" "$TMP/other-checkout/adapters/opencode"
+printf '// another checkout\n' > "$TMP/other-checkout/adapters/opencode/roost.js"
+ln -s "$TMP/other-checkout/adapters/opencode/roost.js" "$p1"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, another checkout's 1.x link: exits 0"
+assert_eq "$(readlink "$p1" 2>/dev/null)" "$TMP/other-checkout/adapters/opencode/roost.js" \
+  "opencode 2, another checkout's 1.x link: left exactly as it was"
+assert_contains "$out" "rm \"$p1\"" \
+  "opencode 2, another checkout's 1.x link: the manual note names the rm"
+
+# The checkout's own 1.x FILE, reached through a plugin/ directory that is
+# itself a symlink into the checkout. roost_adapter_state says `ok` (an -ef
+# test), but the path is not a link: an `rm` there deletes
+# adapters/opencode/roost.js out of the checkout. So the run refuses it, and
+# the manual note must not hand the user that `rm` either -- the fix is the
+# directory, never the file.
+#
+# It runs in a SCRATCH checkout (mkcheckout), never against this one. The
+# scratch roost-install resolves _roost_adapter_root to the scratch tree, so
+# `-ef` holds against a COPY of adapters/opencode/roost.js, and plugin/ links
+# to the copy's directory. Were both `-L` guards in roost-install ever to
+# regress, the `rm` would delete that copy -- not a tracked file in the
+# developer's working copy, which is what this case used to put in reach.
+symco="$TMP/oc2-symdir-checkout"
+mkcheckout "$symco"
+mkdir -p "$symco/adapters/opencode/v2"
+cp "$HERE/adapters/opencode/roost.js" "$symco/adapters/opencode/roost.js"
+cp "$HERE/adapters/opencode/v2/tui.js" "$symco/adapters/opencode/v2/tui.js"
+# The scratch tree's own targets, read through its own lib: resolved the way
+# its roost-install resolves them (`cd -P`, so a symlinked /tmp on macOS agrees).
+symco_target() { # symco_target HARNESS
+  bash -c '. "'"$symco"'/scripts/lib/roost-adapters.sh"; roost_adapter_target "$1"' _ "$1"
+}
+real1x_before="$(cksum < "$HERE/adapters/opencode/roost.js")"
+box="$TMP/oc2-symdir"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+mkdir -p "${p1%/*/*}"
+ln -s "$symco/adapters/opencode" "${p1%/*}"
+recs="$TMP/oc2-symdir.tsv"
+symdir_install="$INSTALL"
+INSTALL="$symco/scripts/roost-install"
+out="$(run_install "$box" "$OCI_V2_SHIM" --yes --records "$recs")"; rc=$?
+INSTALL="$symdir_install"
+assert_eq "$rc" "0" "opencode 2, symlinked plugin/ directory: exits 0"
+[ -f "$(symco_target opencode)" ]; assert_true $? \
+  "opencode 2, symlinked plugin/ directory: the scratch checkout's adapters/opencode/roost.js is still there"
+assert_eq "$(cksum < "$HERE/adapters/opencode/roost.js" 2>/dev/null)" "$real1x_before" \
+  "opencode 2, symlinked plugin/ directory: this checkout's adapters/opencode/roost.js is byte-identical"
+assert_contains "$(records_of "$recs")" "refused${TAB}opencode$TAB$p1$TAB" \
+  "opencode 2, symlinked plugin/ directory: --records says it was refused"
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(symco_target opencode2)" \
+  "opencode 2, symlinked plugin/ directory: plugins/roost is linked"
+assert_contains "$out" "this checkout's own file, reached through a symlinked directory" \
+  "opencode 2, symlinked plugin/ directory: the Will NOT touch heading says what is there"
+assert_contains "$out" "is a regular file reached through a symlinked plugin/ directory" \
+  "opencode 2, symlinked plugin/ directory: the manual note says what the path is"
+assert_contains "$out" "never delete the file" \
+  "opencode 2, symlinked plugin/ directory: the manual note says not to delete the file"
+assert_contains "$out" "remove or re-point" \
+  "opencode 2, symlinked plugin/ directory: the manual note names the directory as the fix"
+case "$out" in *"rm \"$p1\""*) s=offered ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, symlinked plugin/ directory: the manual note does not offer rm of the file"
+case "$out" in *"something that is not this checkout"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" \
+  "opencode 2, symlinked plugin/ directory: nothing calls this checkout's own file 'not this checkout'"
+
+# --- --only opencode on 2.x covers both keys ---------------------------------
+box="$TMP/oc2-only"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+mkdir -p "${p1%/*}"
+ln -s "$(adapter_target opencode)" "$p1"
+out="$(run_install "$box" "$OCI_V2_SHIM" --only opencode --yes)"; rc=$?
+assert_eq "$rc" "0" "--only opencode on opencode 2: exits 0"
+assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
+  "--only opencode on opencode 2: plugins/roost is linked"
+[ ! -L "$p1" ]; assert_true $? "--only opencode on opencode 2: roost's 1.x link is removed"
+
+# --- 1.x -> exactly today's behaviour, and nothing at plugins/roost ----------
+box="$TMP/oc1-fresh"
+p1="$(adapter_path_in "$box" opencode)"
+p2="$(adapter_path_in "$box" opencode2)"
+out="$(run_install "$box" "$OCI_V1_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 1.18.30, fresh home: exits 0"
+assert_eq "$(readlink "$p1" 2>/dev/null)" "$(adapter_target opencode)" \
+  "opencode 1.18.30, fresh home: plugin/roost.js points at this checkout"
+[ ! -e "$p2" ] && [ ! -L "$p2" ]; assert_true $? \
+  "opencode 1.18.30, fresh home: nothing at plugins/roost"
+case "$out" in *plugins/roost*) s=mentioned ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "opencode 1.18.30, fresh home: plugins/roost is not mentioned"
+before="$(tree_of "$box")"
+out="$(run_install "$box" "$OCI_V1_SHIM" --yes)"; rc=$?
+assert_eq "$(tree_of "$box")" "$before" "opencode 1.18.30, re-run: the sandbox tree is unchanged"
+assert_contains "$out" "Already correct: opencode" \
+  "opencode 1.18.30, re-run: the Already correct line names opencode"
+
+box="$TMP/oc1-foreign"
+p1="$(adapter_path_in "$box" opencode)"
+mkdir -p "${p1%/*}"
+printf 'export const mine = true; // not roost\n' > "$p1"
+fbefore="$(cksum < "$p1")"
+out="$(run_install "$box" "$OCI_V1_SHIM" --yes)"; rc=$?
+assert_eq "$(cksum < "$p1" 2>/dev/null)" "$fbefore" \
+  "opencode 1.18.30, foreign plugin/roost.js: the file is byte-identical after"
+assert_contains "$out" "ln -s \"$(adapter_target opencode)\"" \
+  "opencode 1.18.30, foreign plugin/roost.js: the manual note still names the 1.x target"
+
+rm -rf "$OCI_V2_SHIM" "$OCI_V1_SHIM"
+
+# ===========================================================================
+# 22. Hygiene
 # ===========================================================================
 [ -x "$INSTALL" ]; assert_true $? "scripts/roost-install is executable"
 bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"

@@ -306,11 +306,13 @@ assert_contains "$out" "dangling" "doctor flags a dangling plugin symlink distin
 run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$shimdir:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "a dangling plugin symlink does not fail doctor"
 
-# --- opencode 2: not supported yet, and doctor must say so (#150) ---
-# roost's adapter is an opencode 1.x plugin and opencode 2 refuses to load it,
-# quietly. Before this check doctor printed "opencode plugin linked" on such a
-# machine: a green tick over something that does nothing. These pin that 2.x
-# gets one honest line INSTEAD of the link advice, and that 1.x is untouched.
+# --- opencode 2: its own adapter, checked like every other (#150) ---
+# roost's 1.x adapter is an opencode 1.x plugin and opencode 2 refuses to load
+# it, quietly. Before #150 doctor printed "opencode plugin linked" on such a
+# machine: a green tick over something that does nothing. opencode 2 now has
+# its own adapter, a directory linked at plugins/roost, so these pin that 2.x
+# gets the four link states against THAT link instead of the 1.x one, and that
+# 1.x is untouched.
 #
 # The stubs are scripts that print what each line really prints -- `opencode
 # v2.0.20` on 2.x, a bare `1.18.30` on 1.x, both measured -- never symlinks to
@@ -328,9 +330,6 @@ oc_has() { case "$1" in *"$2"*) printf yes ;; *) printf no ;; esac; }
 rm "$ocdir/opencode/plugin/roost.js"
 ln -s "$HERE/adapters/opencode/roost.js" "$ocdir/opencode/plugin/roost.js"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
-assert_contains "$out" "does not support opencode 2 yet" "opencode 2: doctor says it is not supported"
-assert_contains "$out" "opencode 2.0.20 found" "opencode 2: the line names the version it found, without the 'opencode v' prefix twice"
-assert_contains "$out" "issues/150" "opencode 2: the line points at the issue"
 assert_eq "$(oc_has "$out" "opencode plugin linked")" "no" "opencode 2: a linked 1.x plugin is NOT reported as linked"
 # ...and the link is named as the leftover it now is. opencode 2 shows
 # "1 plugin failed" on every start because of it (measured), so the one thing
@@ -344,12 +343,16 @@ assert_eq "$?" "0" "opencode 2: it is a warning, doctor's exit code is unchanged
 # assertions above are about the version and not about the fixture.
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
 assert_contains "$out" "opencode plugin linked" "opencode 1.x: a linked plugin is still reported as linked"
-assert_eq "$(oc_has "$out" "does not support opencode 2 yet")" "no" "opencode 1.x: no opencode 2 line"
 
-# Not linked: 2.x must not be handed an `ln -s` that cannot help.
+# Not linked: 2.x must not be handed the 1.x plugin's `ln -s`, which cannot
+# help -- it gets the one for its own adapter directory instead.
 rm "$ocdir/opencode/plugin/roost.js"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
-assert_contains "$out" "does not support opencode 2 yet" "opencode 2, nothing linked: doctor says it is not supported"
+l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin not installed')"
+assert_contains "$l" "opencode 2.0.20 found" "opencode 2, nothing linked: the line names the version it found, without the 'opencode v' prefix twice"
+assert_contains "$l" "ln -s \"$HERE/adapters/opencode/v2\" \"$ocdir/opencode/plugins/roost\"" "opencode 2, nothing linked: the printed command links adapters/opencode/v2 at plugins/roost"
+assert_contains "$l" "mkdir -p \"$ocdir/opencode/plugins\"" "opencode 2, nothing linked: the printed command creates plugins/ first"
+assert_contains "$l" "or run: roost install" "opencode 2, nothing linked: roost install is offered too"
 assert_eq "$(oc_has "$out" "roost plugin not installed")" "no" "opencode 2, nothing linked: no advice to link the 1.x plugin"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
 assert_contains "$out" "roost plugin not installed" "opencode 1.x, nothing linked: the link advice is still printed"
@@ -360,6 +363,38 @@ printf 'not the real plugin\n' > "$ocdir/opencode/plugin/roost.js"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
 assert_eq "$(oc_has "$out" "1 plugin failed")" "no" "opencode 2: a file at the plugin path that is not roost's link gets no rm advice"
 rm "$ocdir/opencode/plugin/roost.js"
+
+# The other three states, against the 2.x link. Linked: the adapter directory
+# at plugins/roost, through a symlink, the way roost install makes it.
+mkdir -p "$ocdir/opencode/plugins"
+ln -s "$HERE/adapters/opencode/v2" "$ocdir/opencode/plugins/roost"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+assert_contains "$out" "opencode 2 plugin linked" "opencode 2, adapter linked: doctor reports it linked"
+assert_eq "$(oc_has "$out" "opencode 2 plugin not installed")" "no" "opencode 2, adapter linked: no link advice"
+# The control: 1.x does not look at plugins/roost at all.
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" 2>&1)"
+assert_eq "$(oc_has "$out" "opencode 2 plugin")" "no" "opencode 1.x, 2.x adapter linked: no opencode 2 line"
+rm "$ocdir/opencode/plugins/roost"
+
+# Dangling: a link whose target moved. -e follows the link and says absent,
+# so the plain `ln -s` would fail with "File exists"; the fix removes it first.
+ln -s "$ocdir/opencode/nonexistent-v2" "$ocdir/opencode/plugins/roost"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
+assert_contains "$l" "dangling" "opencode 2, dangling adapter link: doctor says so"
+assert_contains "$l" "rm \"$ocdir/opencode/plugins/roost\" && ln -s \"$HERE/adapters/opencode/v2\"" "opencode 2, dangling adapter link: the fix removes it, then links"
+rm "$ocdir/opencode/plugins/roost"
+
+# A real directory at the path -- the user's own plugin, or a copy -- is not
+# this install, and doctor names where it should point rather than deleting.
+mkdir "$ocdir/opencode/plugins/roost"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
+assert_contains "$l" "not this install" "opencode 2, a real directory at the adapter path: not this install"
+assert_contains "$l" "relink it to $HERE/adapters/opencode/v2" "opencode 2, a real directory at the adapter path: doctor names the target"
+run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" >/dev/null 2>&1
+assert_eq "$?" "0" "opencode 2, not this install: a warning, doctor's exit code is unchanged"
+rmdir "$ocdir/opencode/plugins/roost" "$ocdir/opencode/plugins"
 
 # --- opencode 2 and roost's own OPENCODE_CONFIG_DIR (#154) ---
 # roost's wiring exports OPENCODE_CONFIG_DIR to every pane. opencode 1.x reads
@@ -413,10 +448,13 @@ assert_eq "$(oc_has "$out" "INSTEAD of your own configuration")" "no" "opencode 
 # rows below them (found in review of #153, by two reviewers independently).
 #
 # 1. The user's own OPENCODE_CONFIG_DIR. The note promised badges "only from
-#    roost install"; on 2.x none come from there either.
+#    roost install"; on 2.x, before #150, none came from there either, so the
+#    2.x note left that out. Now roost install links the 2.x adapter, and roost
+#    wiring never reaches opencode 2 at all, so the sentence is true on 2.x
+#    exactly as on 1.x and both print it.
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
 assert_contains "$out" "OPENCODE_CONFIG_DIR is /users/own/dir, not roost's" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: the note is still printed"
-assert_eq "$(oc_has "$out" "badges come only from roost install")" "no" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: no promise of badges from roost install"
+assert_contains "$out" "badges come only from roost install" "opencode 2 + the user's own OPENCODE_CONFIG_DIR: badges come only from roost install, as on 1.x"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH" OPENCODE_CONFIG_DIR=/users/own/dir 2>&1)"
 assert_contains "$out" "badges come only from roost install" "opencode 1.x + the user's own OPENCODE_CONFIG_DIR: the note is unchanged (the control)"
 
