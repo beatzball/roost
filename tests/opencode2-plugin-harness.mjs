@@ -59,10 +59,15 @@ const shim = join(dir, "roost")
 // there; every other call is argv exactly as before. Without this the adapters'
 // switch to stdin would have recorded every reply as the literal "-", which is
 // what the red run showed.
+//
+// A fifth column, added for #141: every argument, joined by `|`. Only
+// `roost identify` needs it — its meaning is in its flags, not in $2 — and no
+// fixture's session id or the harness's own directory holds a `|`.
 const RECORD =
   `if [ "$1" = reply ] && [ "$2" = - ]; then via=stdin; arg=\`cat\`; else via=argv; arg="$2"; fi\n` +
   `esc=\`printf '%s' "$arg" | tr '\\n' '\\036'\`\n` +
-  `printf '%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" >> "${log}"\n`
+  `all=""; for a in "$@"; do all="$all|$a"; done\n` +
+  `printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" "\${all#|}" >> "${log}"\n`
 const plainShim = () => {
   writeFileSync(shim, `#!/bin/sh\n` + RECORD)
   chmodSync(shim, 0o755)
@@ -176,7 +181,13 @@ process.on("uncaughtException", (e) => escaped.push(`uncaught ${e?.code ?? e}`))
 process.on("unhandledRejection", (e) => escaped.push(`unhandled ${e?.code ?? e}`))
 
 const rows = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [])
-const cols = () => rows().map((r) => r.split("\t"))
+// `roost identify` rows (#141) are kept out of cols(), so every check below
+// that was written before the adapter identified anything — the order of
+// replies and states, the states, the replies — keeps meaning exactly what it
+// meant. allCols() has them, and the identity cases read it.
+const allCols = () => rows().map((r) => r.split("\t"))
+const cols = () => allCols().filter((c) => c[0] !== "identify")
+const identifies = () => allCols().filter((c) => c[0] === "identify").map((c) => c[4])
 // The four readers of tests/opencode-plugin-harness.mjs, and envNames().
 const calls = () => cols().filter((c) => c[0] === "state").map((c) => c[1]).join(",")
 const replies = () => cols().filter((c) => c[0] === "reply").map((c) => c[1].replace(/\x1e/g, "\n"))
@@ -803,7 +814,7 @@ const timerOnly = async (label, adapter = ADAPTER) => {
   await t.replay(items)
   await settle()
   for (const [n, id] of [OTHER, CHAT_A, OTHER].entries()) {
-    const before = rows().length
+    const before = cols().length
     t.on(id)
     t.deliver(TICK)
     await settle()
@@ -1111,6 +1122,93 @@ for (const [what, pending, want] of [
   const { failed, loaded } = muted
   muted = null
   check(`${hits}|${loaded}|${failed > 0}`, "1|1|true", "the timer-only case fails without the timer")
+}
+
+// --- Who the agent is (#141) ---
+//
+// reconcile() identifies the pane when the chat in front is not the one it
+// last identified: `roost identify --session <front> --cwd <process.cwd()>
+// --harness opencode`, before that pass's state, and never for the home
+// screen. No --transcript: opencode 2 keeps its conversations in its own
+// storage. The directory is the TUI process's own, so each case runs from a
+// directory of its own making, and the expected --cwd is read back from
+// process.cwd() there.
+const idOf = (id, cwd) => `identify|--session|${id}|--cwd|${cwd}|--harness|opencode`
+const inOwnDir = async (name, fn) => {
+  const home = process.cwd()
+  const own = join(dir, name)
+  mkdirSync(own)
+  process.chdir(own)
+  try {
+    await fn(process.cwd())
+  } finally {
+    process.chdir(home)
+  }
+}
+await inOwnDir("cwd-fresh", async (cwd) => {
+  const label = "identity: a fresh chat, then a second turn in it"
+  const t = await start(label, (t) => {
+    t.on(PARENT)
+    t.status[PARENT] = firstStatus(range(FRESH, 4, 16), PARENT)
+  })
+  if (!t) return
+  await t.replay(range(FRESH, 4, 16))
+  await settle()
+  check(identifies().join(","), idOf(PARENT, cwd), `${label}: the chat in front is identified once, with process.cwd() as --cwd`)
+  const order = allCols().map((c) => c[0])
+  check(order.indexOf("identify") >= 0 && order.indexOf("identify") < order.indexOf("state"), true,
+    `${label}: before its first state`)
+  check(allCols().filter((c) => c[0] === "identify").map((c) => c[2]).join(","), "opencode",
+    `${label}: with ROOST_AGENT_NAME=opencode`)
+  await t.replay(range(FRESH, 41, 105, (r) => r.sid !== "1G3Yor"))
+  t.deliver(TICK)
+  await settle()
+  check(identifies().length, 1, `${label}: a second turn and a tick in the same chat identify nothing more`)
+  await finish(t)
+})
+await inOwnDir("cwd-tabs", async (cwd) => {
+  const label = "identity: tabs.jsonl, then the front changes"
+  const items = [...range(TABS, 4, 16), ...range(TABS, 19, 31)]
+  const t = await start(label, (t) => {
+    t.on(CHAT_A)
+    t.status[CHAT_A] = firstStatus(items, CHAT_A)
+  })
+  if (!t) return
+  await t.replay(items)
+  await settle()
+  check(identifies().join(","), idOf(CHAT_A, cwd), `${label}: B's turn while A is in front identifies only A`)
+  // One switch at a time: only the rows that switch's own pass wrote are
+  // looked at, so a later switch's state cannot stand in for this one's.
+  for (const [n, id] of [OTHER, CHAT_A].entries()) {
+    const before = allCols().length
+    t.on(id)
+    t.deliver(TICK)
+    await settle()
+    const order = allCols().slice(before).map((c) => c[0])
+    check(order.indexOf("identify") >= 0 && order.indexOf("identify") < order.indexOf("state"), true,
+      `${label}: switch ${n + 1} identifies before its state`)
+  }
+  check(identifies().join(","), [CHAT_A, OTHER, CHAT_A].map((id) => idOf(id, cwd)).join(","),
+    `${label}: each change of the chat in front identifies it again`)
+  await finish(t)
+})
+{
+  const label = "identity: the home screen"
+  const t = await start(label)
+  if (t) {
+    await t.replay(range(FRESH, 4, 16))
+    t.deliver(TICK)
+    await settle()
+    check(identifies().length, 0, `${label}: with no chat in front, nothing is identified`)
+    t.on(PARENT)
+    t.deliver(TICK)
+    await settle()
+    t.on(null)
+    t.deliver(TICK)
+    await settle()
+    check(identifies().length, 1, `${label}: going back to it identifies nothing and clears nothing`)
+    await finish(t)
+  }
 }
 
 // --- Nothing throws ---
