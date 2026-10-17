@@ -117,6 +117,14 @@ markers with a script.
   ```
 
   A test that only passes on the Mac is not done.
+- **Two opencode adapters.** `adapters/opencode/roost.js` is for opencode
+  1.x and `adapters/opencode/v2/tui.js` for opencode 2 (#150, #156). A
+  change to what opencode reports lands in both, or the task says why not.
+  The 2.x plugin knows only the chat in front of its terminal, has no
+  transcript, and must not run `roost` outside its one serial `reconcile()`;
+  read `docs/airig/specs/2026-10-02-opencode-2-adapter-design.md` §3 first.
+  A second opencode 2 cannot be driven against a throwaway home while the
+  user's own runs: 2.x keeps one background service per user.
 - **bash 3.2 safe.** No `declare -A`, no `${var,,}`, no `printf '\uXXXX'`,
   no `read -N`. `bin/roost` runs on the macOS `/bin/bash`.
 - **Tests use isolated sockets.** Every test drives `tmux -S "$ROOST_TEST_SOCK"`
@@ -323,8 +331,10 @@ the verb in one line beside `roost state`.
 
 ### Task A6 — opencode, copilot and pi call `roost identify`
 
-**Files:** `adapters/opencode/roost.js`, `adapters/copilot/extension.mjs`,
-`adapters/pi/roost.ts`, `tests/test-opencode-plugin.sh`,
+**Files:** `adapters/opencode/roost.js` (opencode 1.x),
+`adapters/opencode/v2/tui.js` (opencode 2, the terminal-side plugin from
+#150), `adapters/copilot/extension.mjs`, `adapters/pi/roost.ts`,
+`tests/test-opencode-plugin.sh`, `tests/test-opencode2-plugin.sh`,
 `tests/test-copilot-extension.sh`, `tests/test-pi-extension.sh` and their
 `*-harness.mjs` / `.ts` files
 **Depends on:** A3, A1's rows
@@ -338,11 +348,19 @@ the verb in one line beside `roost state`.
    process is not in a roost pane, the same rule `roost state` applies.
 2. One spawn per session start, not per event; a child session (opencode's
    `parentID`) never calls it.
+   **opencode 2 is different:** its plugin runs in the terminal, one
+   terminal shows one chat at a time and can switch tabs, and nothing on
+   disk is a transcript. Identify the chat in front, from inside the one
+   serial `reconcile()` the adapter has (its design forbids a `roost` call
+   anywhere else), re-identify when the front chat changes, pass
+   `process.cwd()` as the directory and no transcript. The home screen
+   identifies nothing. Test it in `tests/opencode2-plugin-harness.mjs` with
+   the `tabs.jsonl` fixture.
 3. Extend each offline harness test: the fixture stream includes a session
    start and the test asserts exactly one `identify` call with the expected
    arguments, and zero for a child session.
 
-**Check:** `bash tests/test-opencode-plugin.sh && bash tests/test-copilot-extension.sh && bash tests/test-pi-extension.sh`
+**Check:** `bash tests/test-opencode-plugin.sh && bash tests/test-opencode2-plugin.sh && bash tests/test-copilot-extension.sh && bash tests/test-pi-extension.sh`
 → all `PASS` (the pi harness needs Node 22.18+; it prints `SKIP` on older,
 which is not a pass — check `node --version`).
 **Commit:** `adapters: opencode, copilot and pi record their session on the pane (#141)`
