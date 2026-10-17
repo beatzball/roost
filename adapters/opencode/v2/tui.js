@@ -189,6 +189,11 @@ const setup = (context) => {
   // state it was given.
   const written = { front: NEVER, state: null }
 
+  // The chat this instance last identified the pane as (#141), or null for
+  // none yet. Kept apart from written.front on purpose: that one also tracks
+  // the home screen, which is never identified.
+  let identified = null
+
   // The last answer to "is a dialog open in the front's family?" — true,
   // false, or null for not known — and a generation number that every event
   // able to change the answer bumps. A pass trusts the answer only if nothing
@@ -435,6 +440,37 @@ const setup = (context) => {
       }
       await publish("")
       if (moved(front)) return
+    }
+
+    // 1b. Who the agent is (#141), for `roost status --json`: the chat in
+    // front, when it is not the one last identified. Here, in the one writer,
+    // and BEFORE the state below, so a reader that sees this pass's badge
+    // finds the identity that goes with it. Keyed on the front, never on an
+    // event: every terminal hears every chat (the header), so the session id
+    // an event carries is not this pane's. A tab switch is a front change and
+    // identifies the new chat; switching back identifies the old one again,
+    // which costs one tmux read and writes nothing if it is what the pane
+    // already holds.
+    //
+    // The home screen (null) identifies nothing and clears nothing: the pane
+    // keeps the last chat it was about. The directory is the TUI's own, where
+    // opencode was started. No --transcript: opencode 2 keeps its
+    // conversations in its own storage, not one file per chat. Through run(),
+    // so a missing roost or a refused value never throws; `identified` is set
+    // first, so a call that failed is not retried on every pass. Measured on
+    // opencode 2.0.29 in a roost pane: the chat in front was identified, and a
+    // tab switch identified the new chat. Not measured: a deleted chat in
+    // front, and two terminals on one opencode server.
+    if (front !== null && front !== identified) {
+      identified = front
+      let cwd = null
+      try {
+        cwd = process.cwd()
+      } catch {}
+      if (typeof cwd === "string" && cwd) {
+        await run(["identify", "--session", front, "--cwd", cwd, "--harness", "opencode"])
+        if (moved(front)) return
+      }
     }
 
     // 2. Ask whether a dialog is open, unless the last answer may be trusted.
