@@ -335,6 +335,7 @@ roost_ext_core_commands() {
     forget \
     events \
     wait-done wait \
+    close \
     status \
     kill down stop \
     --version -V version
