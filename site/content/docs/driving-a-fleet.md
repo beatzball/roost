@@ -39,6 +39,7 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 - `roost wait-done TARGET` / `roost read TARGET` — wait for it to finish, then read the reply
 - `roost screen TARGET` — what is on that pane's screen, chrome and all
 - `roost reply "…"` — record what *you* just said, so another agent's `read` gets it
+- `roost close TARGET` — end one agent its harness's own way, then close its pane (see below)
 
 `spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place. `view` is for neither — it is for a **human**, and it picks pane or window for you. State is **per-pane**, so `wait-done %N` waits on that one pane whichever way it was created; give it a window target instead and it waits for every agent pane in that window.
 
@@ -328,9 +329,47 @@ Three limits:
 
 A target that was gone used to exit `0`. If a script relied on that, it now sees `2`. A `set -e` script stops on a dead agent rather than continuing.
 
+## Close one agent: `roost close`
+
+`spawn` and `split` open an agent. `close` ends one, and closes its pane:
+
+```sh
+roost close %12          # ask the agent to exit, wait up to 10 s, close the pane
+roost close api 30       # a window name works too, if the window has one pane
+roost close --force %12  # a working or blocked agent: close it without asking
+```
+
+It does three things, in order:
+
+1. **It asks the agent to exit its own way.** roost types the harness's exit command into the pane. This is `/exit` for Claude Code, opencode and copilot, and `/quit` for codex and pi. The harness then does whatever it does on a clean exit. A pane with no badge (a shell, a log tail) is not an agent, so nothing is typed into it. Nothing is typed into a pane where only a shell is left, either, even if an old badge is still on it.
+2. **It waits for the agent to leave.** The wait is 10 seconds unless you give another number. The agent can leave its pane in two ways. Its pane can close, when the agent was the pane's own command. Or a shell can take the pane back, when the agent was typed at a prompt.
+3. **It closes that pane.** It closes only that one pane: never the window's other panes, never a session and never the server.
+
+What it refuses, and does not change:
+
+- **A ⏳ working agent.** Measured on Claude Code and codex, both quit at once in the middle of a turn, with no question, and the turn is lost. Wait for it with `roost wait-done`, or pass `--force`.
+- **A 🛑 blocked agent.** A dialog is open for a human. With `--force`, the pane is closed and the dialog is not answered.
+- **A window with more than one pane.** `close` takes one pane. Give it the pane's `%N`, which `roost status` lists.
+- **The last pane of a session.** Closing it would end the session. `roost kill SESSION` is the command for that.
+- **An agent whose harness roost cannot name, or has no exit command for.** roost does not type a guess into an agent, because an agent reads a word it does not know as a prompt. `--force` closes the pane without asking.
+
+`--force` lifts the first two refusals and the last one. It never types anything: it closes the pane at once. It does not lift the window and session refusals, because those protect panes other than the one you named.
+
+**If the harness opens a dialog while it exits**, for example "background work is still running", the pane goes 🛑 blocked. `close` then stops with exit `1`. It answers nothing, and the pane stays open for you.
+
+**The kept replies are not deleted.** After a close, `roost read %12` still prints that agent's last reply. `roost forget` is the only command that deletes kept replies.
+
+### Exit codes for `roost close`
+
+| exit | meaning |
+|---|---|
+| `0` | the pane is closed |
+| `1` | refused, or the agent did not leave in time, or it opened a dialog. The pane is still open. stderr says which |
+| `2` | the target was already gone. One line on stderr |
+
 ## Machine-readable output: `--json`
 
-The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So six commands also print a JSON document when you pass `--json`:
+The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So seven commands also print a JSON document when you pass `--json`:
 
 ```sh
 roost status --json
@@ -338,6 +377,7 @@ roost whoami --json
 roost read --json api            # flags go before the target, as with --render
 roost screen --json api 20
 roost send --json api "run the tests"   # flags go before the target, as with --force
+roost close --json %12             # flags go before the target, as with --force
 roost state done --json          # the flag goes AFTER the state
 ```
 
@@ -447,6 +487,23 @@ For an adapter or a script that badges itself. It sets the state exactly as `roo
 | `recorded` | bool | the pane's state was read back and matches. `false` means the badge did not land — outside roost, or on a server or pane that is not the one you think |
 
 It exits 0 even when `recorded` is `false`, as the plain command always has. Put `--json` **after** the state: `roost state --json` with the flag first still means "set idle", as it always did.
+
+### `roost close --json`
+
+```json
+{"schema":1,"command":"close","target":"%12","pane":"%12","state":"done","harness":"claude","exit_command":"/exit","forced":false}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `target` | string | the target as you typed it |
+| `pane` | string | the `%N` that was closed |
+| `state` | string or `null` | the badge the pane had when `close` started; `null` for a pane with no badge |
+| `harness` | string or `null` | the harness roost found in the pane; `null` when there was no badge, or when it could not tell |
+| `exit_command` | string or `null` | the text roost typed to ask the agent to exit; `null` when nothing was typed (no badge, `--force`, the agent had already left, or only a shell was left in the pane) |
+| `forced` | bool | `--force` was given |
+
+A close that fails prints **nothing** on stdout, as every `--json` command does. Read the exit status first.
 
 `wait-done` does not take `--json` yet. `send --json` is new; `schema` did not change for it, because adding a command that takes `--json` is not a breaking change (see above).
 
