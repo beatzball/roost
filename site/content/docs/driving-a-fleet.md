@@ -450,6 +450,67 @@ It exits 0 even when `recorded` is `false`, as the plain command always has. Put
 
 `wait-done` does not take `--json` yet. `send --json` is new; `schema` did not change for it, because adding a command that takes `--json` is not a breaking change (see above).
 
+### Every state change as it happens: `roost events`
+
+`status --json` says where every pane is **now**. `roost events` says each time one **moves**, so a program can react instead of polling:
+
+```sh
+roost events                      # every line still in the log, for this server
+roost events --follow             # ...then each new one as it happens
+roost events --since "$cursor"    # only what came after a line you already have
+roost events --pane %3            # one pane only
+```
+
+It prints one JSON object per line. It needs no `--json`: there is no English form.
+
+```json
+{"schema":1,"ts":1789000100,"server":"1789000000-4242","pane":"%3","window":"@1","session_id":null,"event":"state","from":"working","to":"blocked","turn":7,"reason":"Bash: npm test","cursor":"1789000000-5151:1:1834"}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `schema` | integer | `1`. The rules above apply: new fields can appear, and a value you do not know is unknown, not an error |
+| `ts` | integer | epoch seconds when the line was written |
+| `server` | string | the server's boot key. A `%N` is reused after a server restart; this is not |
+| `pane` | string | the pane's `%N` |
+| `window` | string | its window's `@N` |
+| `session_id` | string or `null` | the agent's own session id, when the pane has one recorded; `null` when not. Not `panes[].session` in `status --json`, which is the tmux session's name |
+| `event` | string | `state` when the state changed. `blocked_on` when the pane is still `blocked`, but on a new dialog. `closed` when the pane is gone |
+| `from` | string or `null` | the state before; `null` for a pane no hook had stamped. For `closed`, the pane's last state |
+| `to` | string or `null` | the state now. `null` when the pane has no state: roost cleared a 🛑 after a declined dialog, or the pane closed |
+| `turn` | integer or `null` | the turn this belongs to, numbered as `roost send` numbers them; `null` when replies are not recorded, and on `closed` |
+| `reason` | string | for `blocked`, what the dialog asks for (`Bash: npm test`); for `error`, why; for a 🛑 roost cleared, `the dialog was declined or dismissed`; otherwise `""`. Never any prompt or reply text |
+| `cursor` | string | where this line is in the log. Pass it to `--since` to resume after it |
+
+**What writes a line.**
+
+- A change of state, from the agent's own hook.
+- A second dialog on a pane that is already `blocked`. Two dialogs in a row are `blocked` → `blocked`, and without that line a reader would keep showing the first.
+- A 🛑 that roost clears itself, after you decline or dismiss a Claude dialog. `send`, `read` and `wait-done` clear it as they find it, and write `blocked` → `null`.
+- A pane closing, when the log has a line for it: its program exited, or it was killed with its pane, window or session. roost's tmux config runs `roost events --reconcile` for each of those, and it writes one `closed` line per pane that is gone.
+
+A hook call that changes nothing writes nothing. A `Stop` that roost holds back because a dialog is still open writes nothing either, because the badge did not move.
+
+**Resume where you stopped.** Keep the `cursor` of the last line you handled. After a restart, `roost events --since "$cursor" --follow` prints exactly the lines after it, and nothing twice.
+
+**`--follow` ends** when the server it follows stops, after printing the last lines, and says so on stderr. It checks twice a second, and costs nothing between checks.
+
+| exit | meaning | what to do |
+|---|---|---|
+| `0` | printed what there was (perhaps nothing). With `--follow`: the server stopped | with `--follow`, start again when a server is back |
+| `3` | the cursor is **no longer in the log**: it was rotated away, or the log was cleared | re-read `roost status --json`, then start again without `--since` |
+| `2` | no roost server is running on this socket | start one, or point `ROOST_SOCKET` at the right one |
+| `1` | a usage error, a `--since` that is not a cursor, or the log is off | fix the call, or turn the log on |
+
+**Where it lives.** In `events/` inside the kept-replies directory — `${XDG_STATE_HOME:-~/.local/state}/roost/panes/events` — readable by you alone. `ROOST_EVENTS=/some/dir` moves it, and `ROOST_EVENTS=""` turns it off. It is also off whenever kept replies are off (`ROOST_RECORD_DIR=""`), unless `ROOST_EVENTS` names a directory; then it is on, and `turn` is `null`. It keeps at least the newest `ROOST_EVENTS_KEEP` lines (default `5000`) and at most a quarter more.
+
+**Clearing it.** `roost forget --all` clears the log. `roost forget TGT` and `roost forget --gone` do not: they remove kept replies only, so a pane's lines — with the dialog text in `reason` — stay until they rotate out. Cutting one pane's lines out would move every cursor after them.
+
+What it does not report:
+
+- **A server that stops.** `roost kill` with no session, closing the last session, or a server that dies: tmux runs no hook for its panes, so they get no `closed` line. `--follow` ends when its server stops, which is the signal.
+- **A pane the log no longer has a line for.** A plain shell has no lines, and gets no `closed` line either. Neither does an agent pane whose lines have all rotated out — one that sat still while the fleet wrote more than `ROOST_EVENTS_KEEP` lines. A reader that keeps a pane list should check it against `roost status --json` now and then.
+
 ## The agent skill
 
 For LLM agents, install the portable skill so they know the loop:

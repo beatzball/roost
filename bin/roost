@@ -22,7 +22,9 @@
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
-#                            delete kept replies: one pane's, every pane's that is closed or on a server that has stopped, or all of them. They live in ${XDG_STATE_HOME:-~/.local/state}/roost/panes (ROOST_RECORD_DIR overrides; set it to "" to keep none), and a closed pane's are deleted on their own 30 days after its last reply (ROOST_RECORD_DAYS)
+#                            delete kept replies: one pane's, every pane's that is closed or on a server that has stopped, or all of them. They live in ${XDG_STATE_HOME:-~/.local/state}/roost/panes (ROOST_RECORD_DIR overrides; set it to "" to keep none), and a closed pane's are deleted on their own 30 days after its last reply (ROOST_RECORD_DAYS). --all also clears the event log
+#   roost events [--since CURSOR] [--follow] [--pane %N]
+#                            print this server's state changes, one JSON line each with a cursor; --since resumes after one, --follow keeps printing until the server stops. Exit 3: the cursor was rotated away — re-read `status --json` and start again. ROOST_EVENTS="" turns the log off; see the Driving a Fleet docs page
 #   roost screen [--json] TGT [N]  print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
 #   roost reply TEXT... | roost reply -
 #                            record this pane's reply, for another agent's `roost read`. TEXT... is read from the command line; `-` (or `--stdin`, or no argument at all) reads the reply from STDIN instead. Use stdin for a reply of more than a few KB, and for any reply built from a file: Linux refuses a single argument of 131072 bytes or more, so the command-line form loses a long reply outright
@@ -2704,9 +2706,23 @@ JSON
     # file a writer creates first. A directory of the right shape without one is
     # left alone, and so is anything else under a ROOST_RECORD_DIR pointed
     # somewhere by mistake. What a user put INSIDE a record goes with it.
+    #
+    # `--all` also clears the event log (#98), which lives in `events/` inside
+    # the same root unless ROOST_EVENTS moved it. The other forms leave it: a
+    # line names a pane but holds nothing the pane said, and cutting one pane's
+    # lines out would move every cursor after them.
     . "$ROOST_HOME/scripts/lib/roost-record.sh"
+    . "$ROOST_HOME/scripts/lib/roost-events.sh"
     roost_record_root
     if [ -z "$ROOST_RECORD_ROOT" ]; then
+      # Kept replies are off, but ROOST_EVENTS can still name a log of its own.
+      if [ "${2:-}" = "--all" ]; then
+        roost_events_clear
+        if [ "$ROOST_EVENTS_CLEARED" = 1 ]; then
+          echo "roost forget: cleared the event log in $ROOST_EVENTS_DIR"
+          exit 0
+        fi
+      fi
       echo "roost forget: no record directory — ROOST_RECORD_DIR is not an absolute path, or HOME is unset." >&2
       exit 1
     fi
@@ -2719,8 +2735,12 @@ JSON
           rmdir "${_p%/*}" 2>/dev/null || true
           n=$((n + 1))
         done
+        roost_events_clear
         rmdir "$ROOST_RECORD_ROOT" 2>/dev/null || true
         echo "roost forget: removed $(plural "$n" record) under $ROOST_RECORD_ROOT"
+        if [ "$ROOST_EVENTS_CLEARED" = 1 ]; then
+          echo "roost forget: cleared the event log in $ROOST_EVENTS_DIR"
+        fi
         ;;
       --gone)
         removed=0 kept=0 unknown=0
@@ -2764,6 +2784,66 @@ JSON
         echo "roost forget: removed the record for '$2' ($(plural "$ROOST_RECORD_COUNT" turn), ${kb:-0} KB)"
         ;;
     esac
+    ;;
+  events)
+    # The event log (#98): every state change the hook recorded, one JSON line
+    # each, with the cursor that resumes after it. scripts/lib/roost-events.sh
+    # has the layout, the rotation and why no lock is needed.
+    #
+    #   events                 every line of this server still in the log
+    #   events --since CURSOR  only the lines after that one
+    #   events --follow        then keep printing, until the server stops
+    #   events --pane %N       only that pane's lines
+    #
+    # Exit status: 0 printed (with --follow: the server stopped); 1 usage, or
+    # the log is off; 2 no server is running here; 3 the cursor is no longer in
+    # the log — re-read `status --json` and start again without --since.
+    #
+    # Only THIS server's lines, by boot key: the log is shared by every server
+    # writing to the same state directory, and a %N means a different pane
+    # after a restart.
+    . "$ROOST_HOME/scripts/lib/roost-events.sh"
+    # `events --reconcile SOCKET BOOT [PANE]` is not for people: tmux/roost.conf
+    # runs it, in the background, from the hooks that fire when a pane goes,
+    # and it writes a `closed` line for each pane of BOOT that is gone (see
+    # roost_events_reconcile). Silent and exit 0 whatever happens: run-shell
+    # would show anything else to whoever is looking at the server.
+    if [ "${2:-}" = "--reconcile" ]; then
+      roost_events_reconcile "${3:-}" "${4:-}" "${5:-}" >/dev/null 2>&1 || true
+      exit 0
+    fi
+    ev_usage() { echo "usage: roost events [--since CURSOR] [--follow] [--pane %N]" >&2; exit 1; }
+    ev_since="" ev_follow=0 ev_pane=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --since) [ "$#" -ge 2 ] || ev_usage; ev_since="$2"; shift 2 ;;
+        --follow|-f) ev_follow=1; shift ;;
+        --pane)
+          [ "$#" -ge 2 ] || ev_usage
+          case "$2" in %[0-9]*) ;; *) ev_usage ;; esac
+          case "${2#%}" in *[!0-9]*) ev_usage ;; esac
+          ev_pane="$2"; shift 2 ;;
+        *) ev_usage ;;
+      esac
+    done
+    roost_events_dir
+    if [ -z "$ROOST_EVENTS_DIR" ]; then
+      echo "roost events: the event log is off — ROOST_EVENTS is set to \"\" (or is not an absolute path), or kept replies are off (ROOST_RECORD_DIR=\"\") and ROOST_EVENTS names no directory." >&2
+      exit 1
+    fi
+    ev_boot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+    case "$ev_boot" in
+      [0-9]*-[0-9]*) ;;
+      *) echo "roost events: no roost server is running on $SOCKET." >&2; exit 2 ;;
+    esac
+    ev_rc=0
+    roost_events_read "$ev_boot" "$ev_since" "$ev_pane" "$ev_follow" || ev_rc=$?
+    if [ "$ev_rc" = 4 ]; then
+      echo "roost events: '$ev_since' is not a cursor — pass one that roost events printed." >&2
+      exit 1
+    fi
+    exit "$ev_rc"
     ;;
   status)
     # --json (#41) only as the second word; any other extra word is ignored, as
