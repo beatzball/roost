@@ -9,6 +9,24 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`roost events`: every state change, as it happens** (#98). A program
+  that wanted to know when an agent moved had to poll `roost status --json`.
+  Now each change writes one JSON line to a log beside the kept replies, and
+  `roost events` prints this server's lines, each with a cursor:
+  `--since CURSOR` resumes after one, `--follow` keeps printing until the
+  server stops, and `--pane %N` keeps one pane. A line names the server,
+  pane, window, the agent's `session_id` when one is recorded, the states
+  before and after, the turn (numbered as `roost send` numbers them) and a
+  short reason: what a dialog asks for, or why a turn failed. It never
+  holds prompt or reply text. A second dialog on a pane that is already
+  blocked gets its own line; so does a 🛑 roost clears after you decline a
+  dialog, and a pane closing — its program exiting, or a kill of its pane,
+  window or session. A cursor the log has rotated away exits 3. Re-read
+  `status --json` then. The log keeps at least `ROOST_EVENTS_KEEP` lines
+  (default 5000). `ROOST_EVENTS=""` turns it off, and
+  `roost forget --all` clears it. Reload roost's tmux config (`prefix r`)
+  for closes to be logged on a server that was already running.
+
 - **opencode 2 is supported** (#150). roost now has an adapter for opencode 2
   beside the one for 1.x. **If you run opencode 2: run `roost install` once.**
   It links the adapter at `~/.config/opencode/plugins/roost`, and removes
