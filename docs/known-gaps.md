@@ -253,6 +253,76 @@ the healthy turn after a failed one, still reach `done`.
   Claude upgrade** renaming the event or its `error` field. The suite's
   payloads are old captures. Run it by hand after an upgrade.
 
+### A pane reads 🛑 blocked for the whole run of a tool that was approved
+
+**A live risk, and today's behaviour on Claude Code and codex.** Measured for
+the `roost answer` design (#142,
+`docs/airig/specs/2026-09-30-roost-answer-design.md`, M6) on a throwaway `-S`
+server with a local stand-in for each API: Claude Code 2.1.283, codex-cli
+0.157.1, tmux 3.6, 2026-09-30. Each case below was run **once**.
+
+- **Claude Code.** A `sleep 25` was approved with `1`. The dialog left the
+  screen 12 ms later. The pane then read `blocked`, with the same
+  `@roost-blocked-on`, for **25.09 s**, until the tool's `PostToolUse`. No hook
+  fires between `PermissionRequest` and `PostToolUse`, and the transcript gains
+  no record in that time. So the badge says "a dialog is open" when none is.
+- **What that costs.** `roost send` refuses the pane with "a permission dialog
+  is open", which is the wrong reason. `next-blocked` and a notification point
+  a human at a pane that needs nothing. And a key sent to "answer" the dialog
+  lands in the prompt box: a `1` sent to an idle Claude or codex prompt is
+  typed there and stays (once each).
+- **codex** shows the same until its turn ends, and then something worse: see
+  the next entry.
+
+**Why it is left.** Neither harness has an event for "the human said yes".
+The first event after an approval is the tool's result. `roost answer` is
+designed to work around it, not to fix it: it checks the visible screen for
+the dialog before it sends a key, and it records that the dialog was answered.
+A human who presses the key at the pane still gets this badge.
+
+**What would close it:** an approval event from the harness, or for codex a
+`PostToolUse` when `exec_command` yields.
+
+### A codex pane can read 🛑 blocked after its turn is over
+
+**A live risk. Seen once, on codex-cli 0.157.1**, in the same run as the entry
+above. A `sleep 25` was approved with `y`. `exec_command` gave control back to
+the model after about 10 s, while the command still ran. So `Stop` fired at
++10.2 s with **no** `PostToolUse` before it, and the `Stop` guard in
+`scripts/roost-agent-state` held that one `Stop` back, because the pane read
+`blocked`. **The pane still read `blocked` 20 s later, with the turn over**,
+and stayed so until the next prompt.
+
+**What that costs.** `roost wait-done` waits out its timeout on a finished
+turn, `roost send` refuses with exit 3, and `roost read` calls the turn's own
+reply stale. It is the "exactly one `Stop` and no clearing event" hole in the
+declined-dialog entry below, seen live for the first time.
+
+**Why it is left.** It was found while measuring a design, and the fix is in
+the codex adapter, which that design does not touch. **What would close it:**
+a clearing event when `exec_command` yields, or a `Stop` guard that does not
+hold a `Stop` back once the dialog is known to be answered.
+
+### A second codex pane can badge the first (#145)
+
+**A live risk, high if it holds up. Seen once, on codex-cli 0.157.1.** Two
+codex panes on one `CODEX_HOME`: all six hook calls of the second pane ran
+with the first pane's `TMUX_PANE`, so the first pane read `blocked` for a
+dialog on the second pane's screen, and the second pane had no badge. #145 has
+the measurement and owns the fix. It is listed here because a wrong pane's
+badge is the kind that makes `send`, `wait-done` and the planned `answer` act
+on the wrong pane.
+
+### Claude's "No" is not always option 3
+
+**A note, not a defect in roost.** For anyone who scripts keys to a Claude
+permission dialog. Measured on 2.1.283, once each: a `Bash` dialog has three
+options, `1. Yes`, `2. Yes, and always allow …`, `3. No`. A `Bash` command
+that uses `&` has two, `1. Yes`, `2. No`. So `2` is "No" on one dialog and a
+standing permission on the other. Escape declines on both. `1` approves on
+both, and with the cursor moved to another row (once). The "third dialog
+answer" bullet in the entry below describes the three-option shape only.
+
 ### A declined permission dialog: fixed for Claude Code and codex, with holes left
 
 **Fixed by #38, for two harnesses, from harness records rather than the
