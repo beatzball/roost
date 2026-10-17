@@ -400,6 +400,34 @@ export const RoostState = () => {
   }
 }
 
+// Who this agent is (#141), for `roost status --json`: pi's session id, the
+// directory it runs in and its session file, through the public `roost
+// identify` — no tmux knowledge here. Called from session_start, which pi
+// emits for startup, /new, /resume, /fork and /reload alike, so a changed
+// session is reported the moment pi changes it.
+//
+// The session file is pi's transcript: one JSONL file per session. A session
+// started with --no-session has none, and then no --transcript is passed.
+// Read from pi's own docs (docs/extensions.md, `ctx.cwd` and
+// `ctx.sessionManager`) and its shipped types on 0.81.1; NOT measured against a
+// live pi for this change. Every accessor is optional-called and the whole
+// thing is in a try: a pi whose API moved must lose the identity, never the
+// session_start handler.
+const identify = async (ctx: any): Promise<void> => {
+  let id: unknown, file: unknown, cwd: unknown
+  try {
+    id = ctx?.sessionManager?.getSessionId?.()
+    file = ctx?.sessionManager?.getSessionFile?.()
+    cwd = ctx?.cwd
+  } catch {
+    return
+  }
+  if (typeof id !== "string" || !id || typeof cwd !== "string" || !cwd) return
+  const args = ["identify", "--session", id, "--cwd", cwd, "--harness", "pi"]
+  if (typeof file === "string" && file) args.push("--transcript", file)
+  await run(args)
+}
+
 // --- what pi actually runs ---------------------------------------------------
 
 export default function (pi: any) {
@@ -445,6 +473,7 @@ export default function (pi: any) {
     // one for each, and every one of them arrives here.
     adapter.attach(ctx.ui)
     await adapter.event("session_start")
+    await identify(ctx)
   })
   pi.on("agent_start", async (_event: any, ctx: any) => {
     if (!badged(ctx)) return
