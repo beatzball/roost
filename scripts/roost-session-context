@@ -101,6 +101,45 @@ case "$pane" in
   *) exit 0 ;;
 esac
 
+# Who this agent is (#141): its session id, directory and transcript, stamped
+# on the pane for `roost status --json` and copied into the pane record.
+# SessionStart is the one Claude event that carries all three before anything
+# else happens, and it fires again with the NEW values whenever they change.
+# Measured on Claude Code 2.1.283 with a logger on SessionStart,
+# UserPromptSubmit, PostToolUse, Stop and SessionEnd, an isolated HOME and a
+# local stand-in for the Messages API:
+#
+#   startup          session_id, transcript_path and cwd all present; cwd is
+#                    the directory claude was launched in
+#   /clear           SessionEnd with the old id, then SessionStart source=clear
+#                    with a NEW id and a new transcript, in the same process
+#   --resume ID      a new process; SessionStart source=resume with the OLD id
+#                    and the old transcript path
+#   a `cd` by Bash   every LATER payload's cwd follows it (PostToolUse, Stop
+#                    and UserPromptSubmit all read the subdirectory), but
+#                    SessionStart does not fire, and /clear's SessionStart reads
+#                    the launch directory again
+#
+# So @roost-cwd is the SESSION's directory — where claude was started, which is
+# also the directory its transcript is filed under and where `claude --resume`
+# has to run — not wherever the agent last cd'd. Tracking the second would need
+# a stdin read on UserPromptSubmit, which is a new flag in the generated
+# settings file; docs/known-gaps.md records the choice.
+#
+# AFTER the whoami check and the pane-id check, never before: this writes to
+# a pane, and those two are what prove the pane is this agent's on a roost
+# server. The fork (one reader process) is affordable for the reason whoami's
+# is: SessionStart fires once per conversation, not once per tool call.
+#
+# Nothing it does may reach stdout, which is the context JSON below, and
+# nothing may fail this script — every exit here is 0, for the reasons given
+# above. A tty on stdin means a human ran this by hand; `cat` would wait for ^D.
+if [ ! -t 0 ]; then
+  payload="$(cat 2>/dev/null || true)"
+  . "$ROOST_HOME/scripts/lib/roost-identity.sh"
+  roost_identity_from_payload "$ROOST_SELF_SOCK" "$pane" claude "$payload" >/dev/null 2>&1 || true
+fi
+
 # The injected text. Keep it SHORT: this is prepended to every session on this
 # machine, it is paid for in tokens every time, and it is guidance — not a
 # manual. `roost help` is one command away for the rest.
