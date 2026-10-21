@@ -16,6 +16,13 @@
 #     agent is gone. #64 catches it from a job the sink RECORDED
 #     (tests/test-wait-done-shell.sh); a pane with no record still times out
 #     with exit 1 -- pinned below, so nobody "fixes" it later with a guess.
+#
+# Measured again on tmux 3.8 (#165), built from the release tarball: the same
+# three cases, with one fact changed. A dead remain-on-exit pane still reads
+# pane_dead 1 and keeps its badge, but #{pane_pid} prints EMPTY (3.6 and 3.7c
+# print the old pid). Section (c) went red there -- exit 0 for a dead agent --
+# because the empty field shifted the badge out of wait-done's snapshot line.
+# The blankpid case below pins that on every tmux, not only on a 3.8.
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -257,6 +264,50 @@ p="$(dead_agent error)"
 err="$("$ROOST" wait-done "$p" 5 2>&1 >/dev/null)"; rc=$?
 assert_eq "$rc" "1" "a dead pane badged error still exits 1"
 assert_contains "$err" "error state" "...naming the error state"
+T kill-window -t "$(win_of "$p")"
+
+# The same dead pane as tmux 3.8 reports it, on whatever tmux runs this file.
+# 3.8 prints #{pane_pid} EMPTY once a pane's process has gone (format.c now
+# checks the pane's fd; 3.7c and earlier print the old pid), so the checks above
+# only go red on a 3.8. A copy of the tree wraps bin/roost's `t` and blanks
+# #{pane_pid} in every list-panes format, which is what 3.8 does to that field
+# on a dead pane, so the rule is pinned on 3.4 and 3.6 too. `fired` proves the
+# wrapper really rewrote a format; without it a broken stub would report the
+# fix as working.
+blank="$ROOST_TEST_SOCKDIR/blankpid"; mkdir -p "$blank/tree" "$blank/d"
+cp -R "$HERE/bin" "$HERE/scripts" "$blank/tree/"
+grep -q '^t() { tmux ' "$blank/tree/bin/roost"; assert_true $? "blankpid: the copy still defines t() where the stub is sourced"
+sed -i.bak '/^t() { tmux /a\
+. "$ROOST_HOME/scripts/lib/test-stub.sh"
+' "$blank/tree/bin/roost"
+cat > "$blank/tree/scripts/lib/test-stub.sh" <<EOF
+# TEST STUB (tests/test-wait-done-died.sh). Rename the real t; list-panes gets
+# every #{pane_pid} in its format blanked, as tmux 3.8 prints it on a dead pane.
+eval "\$(declare -f t | sed '1s/^t /_real_t /')"
+t() {
+  if [ "\$1" = list-panes ]; then
+    local _a _out=()
+    for _a in "\$@"; do
+      case "\$_a" in *'#{pane_pid}'*) _a="\${_a//'#{pane_pid}'/}"; : > "$blank/d/fired" ;; esac
+      _out+=("\$_a")
+    done
+    _real_t "\${_out[@]}"
+  else
+    _real_t "\$@"
+  fi
+}
+EOF
+p="$(dead_agent working)"
+err="$("$blank/tree/bin/roost" wait-done "$p" 5 2>&1 >/dev/null)"; rc=$?
+[ -f "$blank/d/fired" ]; assert_true $? "blankpid: the wrapper really blanked #{pane_pid}"
+assert_eq "$rc" "2" "a dead pane whose #{pane_pid} reads empty (tmux 3.8) still exits 2"
+assert_contains "$err" "dead" "...saying the pane is dead"
+err="$("$blank/tree/bin/roost" wait-done "$(win_of "$p")" 5 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" "2" "...and so does a WINDOW holding it"
+T kill-window -t "$(win_of "$p")"
+p="$(dead_agent error)"
+"$blank/tree/bin/roost" wait-done "$p" 5 >/dev/null 2>&1
+assert_eq "$?" "1" "a dead pane badged error whose #{pane_pid} reads empty still exits 1"
 T kill-window -t "$(win_of "$p")"
 
 # --- (b) busy inside a shell with NO recorded job: not detected, on purpose ----
