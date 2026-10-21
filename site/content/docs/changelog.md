@@ -91,6 +91,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
   container image on every CI run — a check that needs no browser, which
   matters, because nothing else CI runs could tell a rendered page from a blank
   one.
+- **`roost wait-done` reports a dead agent as dead on tmux 3.8** (#165). With
+  `remain-on-exit on`, a pane whose agent was killed mid-turn stays on screen
+  as dead. On tmux 3.8, which Homebrew now installs, `wait-done` on that pane
+  or its window exited 0 at once, as if the agent had finished, and a pane
+  badged `error` exited 0 instead of 1. tmux 3.8 leaves a dead pane's process
+  id empty, and that empty field pushed the badge out of what `wait-done`
+  reads. It now exits 2 and says the pane is dead, and an `error` pane exits 1
+  again, as on earlier tmux. Nothing to do but update.
 
 ## [0.6.1]
 

@@ -2468,7 +2468,7 @@ JSON
     #     install, or an agent that was not a job of the pane's shell — still
     #     times out, exactly as before; docs/known-gaps.md.
     #
-    # snapshot() prints one "id dead pane_pid jJOB state" line per pane the
+    # snapshot() prints one "id dead pPANE_PID jJOB state" line per pane the
     # target covers,
     # and fails when the target is gone. list-panes, never display-message,
     # for the reason above: list-panes exits non-zero on a target that does not
@@ -2479,6 +2479,12 @@ JSON
     # @roost-agent-job can be empty too, so it carries a fixed `j` prefix: an
     # unrecorded pane reads `j`, never a missing field that would shift the
     # state one place left. Its value is "PGID:PANE_PID", with no space.
+    # #{pane_pid} carries a fixed `p` for the same reason (#165): tmux 3.8
+    # prints it EMPTY once the pane's process has gone (its format callback
+    # now checks the pane's fd; 3.7c and earlier print the old pid). Without
+    # the prefix a dead pane read `%N 1  j working`, `read` shifted `working`
+    # into the job field, the state came out empty, and a dead agent exited 0
+    # as finished. Strip the `p` before using the pid.
     #
     # A read loop over a captured string, not a pipe into `grep`/`awk ... exit`:
     # bin/roost runs under `set -o pipefail`, and a reader exiting early can
@@ -2488,14 +2494,14 @@ JSON
       local _all _id _dead _pp _job _st
       case "$tgt" in
         %*)
-          _all="$(t list-panes -a -F '#{pane_id} #{pane_dead} #{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null)" || return 1
+          _all="$(t list-panes -a -F '#{pane_id} #{pane_dead} p#{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null)" || return 1
           while read -r _id _dead _pp _job _st; do
             [ "$_id" = "$tgt" ] && { printf '%s %s %s %s %s\n' "$_id" "$_dead" "$_pp" "$_job" "$_st"; return 0; }
           done <<< "$_all"
           return 1
           ;;
         *)
-          t list-panes -t "$tgt" -F '#{pane_id} #{pane_dead} #{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null
+          t list-panes -t "$tgt" -F '#{pane_id} #{pane_dead} p#{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null
           ;;
       esac
     }
@@ -2656,7 +2662,7 @@ JSON
               echo "roost: '$raw' died: pane $_id is dead (its process exited) while it read $_st" >&2
               exit 2
             fi
-            if job_gone "$_pp" "$_job"; then
+            if job_gone "${_pp#p}" "$_job"; then
               echo "roost: '$raw' died: the agent in pane $_id exited inside its shell while it read $_st — the job that held its terminal has no process left, and the shell has the terminal back" >&2
               exit 2
             fi
