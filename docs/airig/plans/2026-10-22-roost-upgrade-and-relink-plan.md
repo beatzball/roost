@@ -1,14 +1,13 @@
 # `roost upgrade`, and a link that names another copy of roost — Plan
 
 Design:     docs/airig/specs/2026-10-22-roost-upgrade-and-relink-design.md
-Repository: `<roost>/.claude/worktrees/upgrade`, where `<roost>` is the
-            primary checkout; the coordinator writes the absolute path into
-            the task brief, never into this file
-Branch:     worktree-upgrade
-Base:       `main` after PR #172 (the spec) merges; the coordinator makes the
-            worktree with
-            `git -C <roost> worktree add .claude/worktrees/upgrade -b worktree-upgrade origin/main`
-            and writes the short sha here before Task 1 is dispatched: ______
+Repository: `<roost>/.claude/worktrees/upgrade-design`, where `<roost>` is
+            the primary checkout; the coordinator writes the absolute path
+            into the task brief, never into this file
+Branch:     worktree-upgrade-design — the branch PR #172 is open from; the
+            spec, this plan and the build ship in that one pull request
+Base:       785442c (`main` at 0.7.0); the design and plan are the first
+            commits on the branch
 Oracle:     automated (one human-eye check, deferred to the end)
 Unattended: no — the human merges the pull request; every task's Check is
             automated, so no task waits on a person
