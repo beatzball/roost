@@ -348,6 +348,12 @@ screen_dump() {
 # path and an internal line number, in front of a user who typed a command
 # wrong. The path is noise at best and the author's home directory at worst,
 # and the line number is meaningless to a reader. Found by review.
+roost_sq() {
+  # Single-quote one string for a POSIX shell (and fish): every ' becomes '\''.
+  local q="'"
+  printf "'%s'" "${1//$q/$q\\$q$q}"
+}
+
 need_arg() {
   if [ -z "${1:-}" ]; then
     printf '%s\n' "$2" >&2
@@ -1001,7 +1007,24 @@ JSON
     need_arg "${2:-}" "usage: roost ssh HOST [ARGS...]"; host="$2"; shift 2
     # Run roost on the remote (must be installed there); agents run remote,
     # you drive them from this terminal. Just SSH + a remote roost — no daemon.
-    exec ssh -t "$host" roost "$@"
+    #
+    # Not `ssh -t HOST roost "$@"`, for two reasons. ssh joins its arguments
+    # into ONE line and the remote's login shell runs that line with -c: a
+    # non-login shell, which reads no profile file, so a PATH or LANG set only
+    # there never arrives and `roost` itself is "command not found" on any
+    # machine that keeps it under ~/.local/bin or a Homebrew prefix. And the
+    # join means a multi-word prompt arrives as several words, so the caller
+    # had to quote it twice.
+    #
+    # So the remote line is `"$SHELL" -lc '<roost ...>'`. $SHELL expands THERE,
+    # to that user's own login shell; -l makes it read its profile, which is
+    # where PATH and LANG live; and the roost command line is quoted here, one
+    # argument at a time, so it reaches that shell as exactly the words it
+    # left with. Single quotes with the '\'' seam are the one quoting every
+    # Bourne shell and fish read the same way.
+    remote="roost"
+    for arg in "$@"; do remote="$remote $(roost_sq "$arg")"; done
+    exec ssh -t "$host" "\"\$SHELL\" -lc $(roost_sq "$remote")"
     ;;
   send)
     # --force is accepted only in front of the target. Anywhere later it would

@@ -622,6 +622,26 @@ Or copy `skills/roost/SKILL.md` into your agent's instructions.
 Run agents on another machine and drive them from here — tmux-native, no daemon. roost must be installed on the remote:
 
 ```sh
-roost ssh devbox         # ssh -t devbox roost  → attach the remote agent view
-roost ssh devbox new api # forward any subcommand to the remote roost
+roost ssh devbox              # attach the remote agent view
+roost ssh deploy@devbox       # any destination ssh accepts, user@host included
+roost ssh devbox new api      # forward any subcommand to the remote roost
+roost ssh devbox status       # ...or drive it without attaching
+roost ssh devbox send %3 "review the diff"
+roost ssh devbox read %3
 ```
+
+`roost ssh HOST ...` runs `ssh -t HOST` and, on the remote, your own login shell with the rest of the line: `"$SHELL" -lc 'roost ...'`. Each argument is quoted on the way, so a prompt of several words arrives as one word and needs no extra quoting. Three things to know before the first run:
+
+- **ssh options do not fit on the command line.** The first word is the destination; everything after it goes to the remote roost, so `roost ssh devbox -p 2222` hands `-p 2222` to roost, not to ssh. Put the port, key and user in `~/.ssh/config` under a `Host` entry and name that entry instead.
+
+- **The remote's login shell has to find `roost`, `tmux` and the agent binaries.** A login shell reads `~/.profile`, `~/.bash_profile` or `~/.zprofile`, so a `PATH` set in any of those is enough — but not one set only in `~/.bashrc` or `~/.zshrc` behind an interactive guard. Check from your own machine before you rely on it:
+
+  ```sh
+  ssh devbox '"$SHELL" -lc "command -v roost tmux claude; locale"'
+  ```
+
+  Every name that prints nothing is one the remote roost will not find either. Link it into `/usr/local/bin` on the remote, or set `PATH` in a file the login shell reads.
+
+- **The remote needs a UTF-8 locale**, or every badge glyph renders as `_`. If `locale` above shows `LANG=` empty, `C` or `POSIX`: `sudo localectl set-locale LANG=C.UTF-8` on a systemd distribution, `sudo update-locale LANG=C.UTF-8` on Debian or Ubuntu. tmux reads the locale only when its server starts, so `roost kill` on the remote and reconnect afterwards.
+
+Each of these has an entry in [Troubleshooting](/docs/troubleshooting#roost-ssh-says-roost-command-not-found).

@@ -118,6 +118,19 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`roost ssh` runs roost in the remote's login shell, and quotes every
+  argument.** It was `ssh -t HOST roost ...`, which the remote ran in a plain
+  non-login shell: no profile was read, so a `PATH` or `LANG` set there never
+  arrived, `roost` was "command not found" on any machine that keeps it under
+  `~/.local/bin` or a Homebrew prefix, `tmux` the same one step later, and a
+  remote without a locale drew every badge as `_`. And ssh joins its arguments
+  into one line, so a multi-word prompt had to be quoted twice. The remote
+  line is now `"$SHELL" -lc 'roost ...'`, built one quoted argument at a time:
+  `roost ssh devbox send %3 "review the diff"` arrives as those three words,
+  and `user@host` destinations pass through as before. The docs gained a
+  remote-agents checklist and three troubleshooting entries for the remaining
+  ways a remote can be set up wrong.
+
 - **opencode 2 in a roost pane uses your configuration again** (#154). roost
   wires opencode by setting `OPENCODE_CONFIG_DIR` in every pane. opencode 1.x
   reads that folder as well as your own; opencode 2 reads it *instead*, so
