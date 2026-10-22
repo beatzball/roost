@@ -292,6 +292,165 @@ assert_contains "$out" "ln -s \"$(adapter_target opencode)\"" \
 [ -L "$(adapter_path_in "$box" pi)" ]; assert_true $? "foreign path: pi is still linked"
 
 # ===========================================================================
+# 3b. A link to ANOTHER copy of roost -> relinked from a plain checkout,
+#     refused from a git worktree
+# ===========================================================================
+# Whether the installer may take the link over depends on whether the
+# checkout RUNNING it is a linked git worktree, so every case here runs an
+# installer from a checkout this test builds, never "$INSTALL": the checkout
+# running this suite is often a worktree itself and on CI is a plain clone,
+# so its own answer would differ by machine. git is on the shim PATH because
+# with no git the question cannot be asked and every checkout reads as plain;
+# a "plain checkout relinks" case that passed for that reason proves nothing.
+#
+# The throwaway repository is built with the runner's global git config and
+# hooks shut out, so a commit-msg or identity hook there cannot change it.
+export GIT_CONFIG_GLOBAL=/dev/null
+tgit() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@t "$@"; }
+
+OC2_GIT_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode pi)"
+real_git="$(command -v git 2>/dev/null)" && ln -s "$real_git" "$OC2_GIT_SHIM/git"
+
+# A second copy of roost. Only its adapters matter: the link's own text and
+# an existing target are what make it another copy's link.
+co2="$TMP/second-checkout"
+mkdir -p "$co2"
+cp -R "$HERE/adapters" "$co2/"
+printf 'export const mine = true; // not roost\n' > "$TMP/stranger.js"
+
+# copy_checkout DIR -- the parts of this checkout an install run reads.
+copy_checkout() {
+  mkdir -p "$1"
+  cp -R "$HERE/scripts" "$HERE/bin" "$HERE/adapters" "$HERE/tmux" "$HERE/VERSION" "$1/"
+}
+# Plain: not a git repository at all.
+plain="$TMP/plain-checkout"
+copy_checkout "$plain"
+# A repository with a primary checkout and a linked worktree carrying the SAME
+# installer, so the worktree case and its control differ in nothing else.
+repo="$TMP/wt-repo"; wt="$TMP/wt-repo-wt"
+mkdir -p "$repo"
+( cd "$repo" && tgit init -q && tgit commit -q --allow-empty -m one ) >/dev/null 2>&1
+copy_checkout "$repo"
+( cd "$repo" && tgit add -A && tgit commit -q -m two && tgit worktree add -q "$wt" -b wt ) >/dev/null 2>&1
+
+# The harness checks itself before any case leans on it: a worktree that was
+# never made would leave every "refused" assertion below passing vacuously.
+[ -x "$wt/scripts/roost-install" ]; assert_true $? "other-checkout setup: the worktree carries the installer"
+bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$wt"
+assert_eq "$?" "0" "other-checkout setup: the worktree reads as a worktree"
+bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$repo"
+assert_eq "$?" "1" "other-checkout setup: its primary checkout does not"
+
+# run_install_from CHECKOUT BOX SHIMDIR [args...] -- run_install, but the
+# installer of CHECKOUT, and with ZDOTDIR redirected as well.
+run_install_from() {
+  local co="$1" box="$2" shim="$3"; shift 3
+  mkdir -p "$box"
+  HOME="$box/home" \
+  ZDOTDIR="$box/home" \
+  XDG_CONFIG_HOME="$box/home/.config" \
+  XDG_DATA_HOME="$box/home/.local/share" \
+  COPILOT_HOME="$box/home/.copilot" \
+  PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+  CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  PATH="$shim" \
+    bash "$co/scripts/roost-install" "$@" </dev/null 2>&1
+}
+adapter_tail() { bash -c '. "'"$HERE"'/scripts/lib/roost-adapters.sh"; roost_adapter_tail "$1"' _ "$1"; }
+plant_link() { # plant_link BOX KEY TARGET
+  local p; p="$(adapter_path_in "$1" "$2")"
+  mkdir -p "$(dirname "$p")"; ln -s "$3" "$p"
+}
+
+for pair in "opencode2 opencode" "pi pi"; do
+  key="${pair% *}"; h="${pair#* }"
+  tl="$(adapter_tail "$key")"
+  old="$co2$tl"
+
+  # --- plain checkout, other-checkout link -> relinked, and said so
+  box="$TMP/oc-plain-$key"
+  plant_link "$box" "$key" "$old"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+  assert_eq "$rc" "0" "$key, plain checkout, other copy's link: exits 0"
+  [ "$P" -ef "$plain$tl" ]; assert_true $? "$key, plain checkout, other copy's link: now points at this checkout"
+  [ -L "$P" ]; assert_true $? "$key, plain checkout, other copy's link: still a symlink"
+  [ -e "$old" ]; assert_true $? "$key, plain checkout, other copy's link: the other copy's adapter is untouched"
+  assert_contains "$out" "relinked" "$key, plain checkout, other copy's link: the output says relinked"
+  assert_contains "$out" "was $old" "$key, plain checkout, other copy's link: the output names the old target"
+  assert_contains "$out" "a second copy of roost" "$key, plain checkout, other copy's link: the output says it is a second copy"
+  assert_contains "$out" "rm \"$P\" && ln -s \"$old\" \"$P\"" \
+    "$key, plain checkout, other copy's link: the printed undo puts the old link back"
+  assert_contains "$(cat "$box/records" 2>/dev/null)" \
+    "$(printf 'wrote\t%s\t%s\trm "%s" && ln -s "%s" "%s"' "$h" "$P" "$P" "$old" "$P")" \
+    "$key, plain checkout, other copy's link: --records holds wrote with the undo"
+
+  # --- plain checkout, a stranger's link (the control) -> still refused
+  box="$TMP/oc-plain-stranger-$key"
+  plant_link "$box" "$key" "$TMP/stranger.js"
+  P="$(adapter_path_in "$box" "$key")"
+  sbefore="$(cksum < "$TMP/stranger.js")"
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, plain checkout, stranger's link: exits 0"
+  assert_eq "$(readlink "$P")" "$TMP/stranger.js" "$key, plain checkout, stranger's link: the link is unchanged"
+  assert_eq "$(cksum < "$TMP/stranger.js")" "$sbefore" "$key, plain checkout, stranger's link: the file is byte-identical"
+  assert_contains "$out" "$P" "$key, plain checkout, stranger's link: the path is named"
+  case "$out" in *relinked*) s=relinked ;; *) s=refused ;; esac
+  assert_eq "$s" "refused" "$key, plain checkout, stranger's link: nothing says relinked"
+
+  # --- worktree, other-checkout link -> left alone, and the reason named
+  box="$TMP/oc-wt-$key"
+  plant_link "$box" "$key" "$old"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$wt" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+  assert_eq "$rc" "0" "$key, worktree, other copy's link: exits 0"
+  assert_eq "$(readlink "$P")" "$old" "$key, worktree, other copy's link: the link is unchanged"
+  assert_contains "$out" "this is a git worktree" "$key, worktree, other copy's link: the output says why"
+  assert_contains "$out" "points at another copy of roost, $old." \
+    "$key, worktree, other copy's link: the manual note names the other copy"
+  assert_contains "$out" "run roost install from that copy, or from this repository's primary" \
+    "$key, worktree, other copy's link: the manual note says where to run it"
+  case "$out" in *relinked*) s=relinked ;; *) s=refused ;; esac
+  assert_eq "$s" "refused" "$key, worktree, other copy's link: nothing says relinked"
+  assert_contains "$(cat "$box/records" 2>/dev/null)" "$(printf 'refused\t%s\t%s' "$h" "$P")" \
+    "$key, worktree, other copy's link: --records says refused"
+
+  # --- worktree, a stranger's link (the control) -> unchanged too
+  box="$TMP/oc-wt-stranger-$key"
+  plant_link "$box" "$key" "$TMP/stranger.js"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$wt" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, worktree, stranger's link: exits 0"
+  assert_eq "$(readlink "$P")" "$TMP/stranger.js" "$key, worktree, stranger's link: the link is unchanged"
+  assert_eq "$(cksum < "$TMP/stranger.js")" "$sbefore" "$key, worktree, stranger's link: the file is byte-identical"
+
+  # --- the SAME repository's primary checkout -> relinks. The control that
+  # proves the rule: same planted link, same installer, only the checkout
+  # kind differs.
+  box="$TMP/oc-primary-$key"
+  plant_link "$box" "$key" "$old"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$repo" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, primary checkout, other copy's link: exits 0"
+  [ "$P" -ef "$repo$tl" ]; assert_true $? "$key, primary checkout, other copy's link: relinked to the primary"
+  assert_contains "$out" "relinked" "$key, primary checkout, other copy's link: the output says relinked"
+
+  # --- --dry-run from the plain checkout -> the plan says what it replaces
+  box="$TMP/oc-dry-$key"
+  plant_link "$box" "$key" "$old"
+  before="$(tree_of "$box")"
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --dry-run --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, --dry-run, other copy's link: exits 0"
+  assert_eq "$(tree_of "$box")" "$before" "$key, --dry-run, other copy's link: nothing changed"
+  assert_contains "$out" "(was $old)" "$key, --dry-run, other copy's link: the plan says what the relink replaces"
+  case "$out" in *"relink "*"(was $old)"*) s=listed ;; *) s=missing ;; esac
+  assert_eq "$s" "listed" "$key, --dry-run, other copy's link: listed as a relink"
+done
+rm -rf "$OC2_GIT_SHIM"
+
+# ===========================================================================
 # 4. A dangling link -> relinked. It is ours and broken; replacing it loses
 #    nothing, which is exactly why roost_adapter_state reports `dangling`
 #    separately from `foreign`.

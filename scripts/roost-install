@@ -71,6 +71,17 @@ HERE="${HERE%/}"
 # no backup.
 . "$HERE/scripts/lib/roost-json.sh"
 
+# Whether THIS checkout is a linked git worktree, read once per run. It decides
+# one thing: whether a link that names another copy of roost may be taken over
+# (see the other-checkout arm in the plan below). On the machine roost is built
+# on, the live agents run from the primary checkout and every build and test
+# pane runs from a worktree under .claude/worktrees/; a `roost install --yes`
+# in one of those panes must not steal the primary's links, because the
+# worktree is deleted after its merge and the links would then point at
+# nothing. No git, or not a repository at all, reads as not a worktree.
+IN_WORKTREE=0
+roost_checkout_is_worktree "$HERE" && IN_WORKTREE=1
+
 # The hook target scripts, for the merge and for telling "already wired to
 # THIS checkout" from "wired to a different one".
 #
@@ -586,7 +597,7 @@ upstream_note() {
 # the floor here, so no associative arrays, and roost-validate already uses
 # this shape for BLOCKED_LINKS.
 #
-#   LINK_STEPS   ACTION \t HARNESS \t PATH \t TARGET \t KEY   (ACTION: link | relink)
+#   LINK_STEPS   ACTION \t HARNESS \t PATH \t TARGET \t KEY [\t OLD]   (ACTION: link | relink)
 #   UNLINK_STEPS ACTION \t HARNESS \t PATH \t TARGET \t KEY   (ACTION: unlink)
 #   OK_STEPS     HARNESS \t PATH
 #   REFUSED      HARNESS \t PATH \t TARGET \t ACTION
@@ -598,7 +609,15 @@ upstream_note() {
 # anything changes, because that is what the undo line has to put back.
 # REFUSED's ACTION is the step roost would have taken there, so the manual
 # note can say the right thing: `link`/`relink` means roost wants its adapter
-# at that path, `unlink` means it wants nothing there at all.
+# at that path, `unlink` means it wants nothing there at all, and `worktree`
+# means a link to ANOTHER copy of roost is there, which this run would relink
+# from a plain checkout and leaves alone because this checkout is a git
+# worktree. The note for that one reads the old target back off the link.
+#
+# OLD is the link's text as the plan read it, and only a relink of a link
+# that names another copy of roost carries it: the summary names it, and the
+# undo puts it back. It is the LAST field and is left off entirely, never
+# written empty, on every other row.
 #
 # A field is never left empty. IFS is a tab here, and a tab is IFS
 # whitespace, so `read` folds two tabs in a row into one and every later
@@ -640,8 +659,21 @@ for h in $HARNESSES; do
     # roost_adapter_state reports `dangling` separately from `foreign`.
     dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")$TAB$k
 " ;;
-    # other-checkout is held as foreign here until the relink rule lands (docs/airig/plans/2026-10-22-roost-upgrade-and-relink-plan.md, Task 3).
-    foreign|other-checkout) REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")${TAB}link
+    # A live link to ANOTHER copy of roost's adapter: roost's own link, made by
+    # a second checkout's install. From a plain checkout it is replaced, and
+    # the plan, the summary and the undo all name what it pointed at, so the
+    # take-over is never silent. From a git worktree it is left alone: see
+    # IN_WORKTREE at the top of this file for why.
+    other-checkout)
+      if [ "$IN_WORKTREE" -eq 0 ]; then
+        LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")$TAB$k$TAB$(readlink "$(roost_adapter_path "$k")")
+"
+      else
+        REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")${TAB}worktree
+"
+        record_outcome refused "$h" "$(roost_adapter_path "$k")"
+      fi ;;
+    foreign) REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")${TAB}link
 "
              record_outcome refused "$h" "$(roost_adapter_path "$k")" ;;
     # `none` is claude and codex: no symlink-shaped adapter exists for them.
@@ -676,7 +708,11 @@ for h in $HARNESSES; do
 "
           record_outcome refused "$h" "$p1"
         fi ;;
-      # other-checkout is held as foreign here until the relink rule lands (docs/airig/plans/2026-10-22-roost-upgrade-and-relink-plan.md, Task 3).
+      # A live 1.x link into ANOTHER copy of roost is refused like a stranger's
+      # file, on purpose. The relink rule replaces a link with this
+      # checkout's; here roost wants nothing at all, so taking it would be a
+      # removal of a link another copy still uses, and nothing has decided
+      # that. The manual note prints the `rm` for it, since it is a symlink.
       foreign|other-checkout)
         REFUSED="$REFUSED$h$TAB$p1$TAB$(roost_adapter_target opencode)${TAB}unlink
 "
@@ -904,9 +940,12 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
   # Every planned write, with the exact target path, printed BEFORE anything
   # happens. "link the opencode adapter" is not something a user can check;
   # a full path is.
-  printf '%s' "$LINK_STEPS" | while IFS="$TAB" read -r action h path target key; do
+  printf '%s' "$LINK_STEPS" | while IFS="$TAB" read -r action h path target key old; do
     [ -n "$action" ] || continue
-    printf '  %-6s %s\n         -> %s\n' "$action" "$path" "$target"
+    # A relink of a link into another copy of roost says what it replaces:
+    # that link works, so the reader is about to lose something that does.
+    was=""; [ -n "${old:-}" ] && was=" (was $old)"
+    printf '  %-6s %s%s\n         -> %s\n' "$action" "$path" "$was" "$target"
   done
   # Same column, same rule: the exact file, and what goes into it. When the
   # config path is a symlink the REAL file is the one named on the first line,
@@ -980,13 +1019,18 @@ fi
 own_file_via_dir() { [ ! -L "$1" ] && [ "$1" -ef "$2" ]; }
 
 if [ -n "$REFUSED" ]; then
-  # Two headings, because the one that fits every other refusal is false for a
-  # row that is this checkout's own file: a reader who believes the heading
-  # treats the file as someone else's and deletes it.
-  refused_foreign=""; refused_own=""
+  # Three headings, because the one that fits every other refusal is false for
+  # a row that is this checkout's own file: a reader who believes the heading
+  # treats the file as someone else's and deletes it. And a link to another
+  # copy of roost, left alone only because this is a worktree, is roost's own
+  # link, not "something that is not this checkout".
+  refused_foreign=""; refused_own=""; refused_worktree=""
   while IFS="$TAB" read -r h path target action; do
     [ -n "${h:-}" ] || continue
-    if own_file_via_dir "$path" "$target"; then
+    if [ "${action:-}" = worktree ]; then
+      refused_worktree="$refused_worktree  $path
+"
+    elif own_file_via_dir "$path" "$target"; then
       refused_own="$refused_own  $path
 "
     else
@@ -1003,6 +1047,10 @@ EOF
   if [ -n "$refused_own" ]; then
     printf 'Will NOT touch — this checkout'"'"'s own file, reached through a symlinked directory:\n'
     printf '%s\n' "$refused_own"
+  fi
+  if [ -n "$refused_worktree" ]; then
+    printf 'Will NOT touch — a link to another copy of roost, and this is a git worktree:\n'
+    printf '%s\n' "$refused_worktree"
   fi
 fi
 
@@ -1056,7 +1104,7 @@ if [ "$do_writes" -eq 1 ]; then
   # A `while read` over a pipeline runs in a subshell in bash 3.2, where
   # $failed and $UNDO would be lost on the way out. A here-string keeps the
   # loop in this shell.
-  while IFS="$TAB" read -r action h path target key; do
+  while IFS="$TAB" read -r action h path target key old; do
     [ -n "${action:-}" ] || continue
 
     # Re-checked immediately before writing rather than trusted from the plan
@@ -1078,8 +1126,17 @@ if [ "$do_writes" -eq 1 ]; then
     if [ "$action:$state" = unlink:dangling ] && ! roost_adapter_names_1x "$path"; then
       state="dangling, not a roost adapter"
     fi
+    # A link into another copy of roost is taken over only when the plan
+    # listed it as one (OLD is set) and it still names the same copy. A
+    # dangling link that became a different checkout's while the prompt sat
+    # there was never shown to the reader as a take-over, and in a worktree
+    # the plan never lists one at all, so either falls to the refusal below.
+    if [ "$action:$state" = relink:other-checkout ] \
+       && { [ -z "${old:-}" ] || [ "$(readlink "$path" 2>/dev/null)" != "$old" ]; }; then
+      state="other-checkout, not the link the plan named"
+    fi
     case "$action:$state" in
-      link:missing|relink:dangling|unlink:ok|unlink:dangling) : ;;
+      link:missing|relink:dangling|relink:other-checkout|unlink:ok|unlink:dangling) : ;;
       # Removed by someone else while the prompt sat there. What the step
       # wanted is already true, so it is the removal's `ok`.
       unlink:missing)
@@ -1126,16 +1183,38 @@ if [ "$do_writes" -eq 1 ]; then
     fi
 
     if [ "$action" = relink ]; then
-      # Only ever a link we already know is dangling, re-verified one line
-      # above. Never a bare `rm` of whatever happens to be at the path.
+      # Only ever a SYMLINK -- dangling, or a link into another copy of roost --
+      # re-verified above, and checked once more here as the unlink branch
+      # does: both states are read through the link, and `rm -f` on anything
+      # that is not one would delete a real file or directory. Never a bare
+      # `rm` of whatever happens to be at the path.
+      if [ ! -L "$path" ]; then
+        printf '  %s changed underneath this run (now: not a symlink) — left alone\n' "$h"
+        REFUSED="$REFUSED$h$TAB$path$TAB$target$TAB$action
+"
+        record_outcome refused "$h" "$path"
+        continue
+      fi
       rm -f "$path" 2>/dev/null
     fi
 
+    # The undo removes what this run made, and for a link it took over from
+    # another copy of roost it also puts that link back exactly as it was.
+    undo="rm \"$path\""
+    [ -n "${old:-}" ] && undo="rm \"$path\" && ln -s \"$old\" \"$path\""
     if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$target" "$path" 2>/dev/null; then
       printf '  %-8s %s\n' "${action}ed" "$path"
-      UNDO="${UNDO}rm \"$path\"
+      if [ -n "${old:-}" ]; then
+        # roost does not look for copies of itself; it names the one it was
+        # just pointed at, because a second copy nobody meant to keep is how
+        # this link came to point at it.
+        printf '    was %s — a second copy of roost.\n' "$old"
+        printf '    If you did not mean to keep two, remove that copy'"'"'s directory and the PATH\n'
+        printf '    line install.sh added for it.\n'
+      fi
+      UNDO="${UNDO}$undo
 "
-      record_outcome wrote "$h" "$path" "rm \"$path\""
+      record_outcome wrote "$h" "$path" "$undo"
     else
       printf '  could NOT %s %s\n' "$action" "$path" >&2
       record_outcome failed "$h" "$path"
@@ -1281,6 +1360,17 @@ if [ -n "$REFUSED" ]; then
   # something roost hands them without first saying what is there.
   while IFS="$TAB" read -r h path target action; do
     [ -n "${h:-}" ] || continue
+    # roost's own link, from a second copy of roost. No `rm && ln -s` here:
+    # the point of refusing is that a worktree should not take the link, and
+    # handing the reader the command to take it anyway would undo that.
+    if [ "${action:-}" = worktree ]; then
+      add_manual "$h: $path
+  points at another copy of roost, $(readlink "$path" 2>/dev/null).
+  This checkout is a git worktree, so roost install leaves the link alone:
+  run roost install from that copy, or from this repository's primary
+  checkout."
+      continue
+    fi
     # Roost's 1.x opencode adapter path, on a machine whose opencode is 2.x.
     # roost wants NOTHING there, so the 1.x fix below — put roost's adapter in
     # its place — would hand the user the exact file that makes opencode 2
