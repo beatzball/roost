@@ -164,6 +164,47 @@ Neither ever fails doctor.
 
 `roost init` fills the missing glyph in for you when it migrates an old `~/.config/amux/amux.conf` — but only when your other four glyphs exactly match one of the named sets, so a hand-picked set is never overwritten with something you did not choose.
 
+## `roost ssh` says `roost: command not found`
+
+The error comes from the remote machine. `roost ssh HOST` runs your login shell there — `"$SHELL" -lc 'roost ...'` — so a `PATH` set in `~/.profile`, `~/.bash_profile` or `~/.zprofile` is honoured. One set only in `~/.bashrc` or `~/.zshrc` behind an interactive guard (`[ -z "$PS1" ] && return`, or an `[[ $- == *i* ]]` test) is not: a login shell run with `-c` is not interactive. roost is installed, but in a directory the login shell does not search.
+
+Find it, then put it where every shell looks:
+
+```sh
+ssh HOST 'bash -ic "command -v roost"' 2>/dev/null      # an interactive shell, so even a guarded PATH shows
+ssh HOST 'sudo ln -s /that/path/roost /usr/local/bin/roost'
+```
+
+Or move the `PATH` line above the guard, or into `~/.profile`.
+
+A roost older than the one that runs a login shell handed the remote `ssh -t HOST roost`, a plain non-login shell that reads no profile at all. If the remote roost is current and the local one is not, update the local one first.
+
+## `roost ssh` says `tmux: command not found`
+
+Same cause as the entry above, one step further in: roost was found, and it cannot find tmux. Link tmux into `/usr/local/bin` the same way — and the agent binaries too, if `command -v claude` (or whichever harness) is empty from a remote login shell. One check finds all of them at once:
+
+```sh
+ssh HOST '"$SHELL" -lc "command -v roost tmux claude opencode codex"'
+```
+
+Every name that prints nothing is one the remote roost will not find either.
+
+## Badges show as `_` over ssh
+
+The remote tmux is running without a UTF-8 locale, so it replaces every glyph it cannot encode with `_`. Check with `ssh HOST '"$SHELL" -lc locale'`. `LANG=` empty, `C` or `POSIX` is the problem.
+
+Set it system-wide, where a login shell receives it:
+
+| Remote | Command |
+|---|---|
+| Arch, Fedora, any systemd distribution | `sudo localectl set-locale LANG=C.UTF-8` |
+| Debian, Ubuntu | `sudo update-locale LANG=C.UTF-8` |
+| anything else | `echo 'LANG=C.UTF-8' \| sudo tee -a /etc/environment` |
+
+Then `roost kill` on the remote and connect again: tmux reads the locale when its server starts, not when a client attaches.
+
+Sending your own locale instead (`SendEnv LANG LC_*` in `~/.ssh/config`) only works when the remote has that exact locale generated; `C.UTF-8` is built into glibc and needs nothing.
+
 ## Notifications never fire
 
 Only `blocked` and `error` notify. `done` fires every turn and would be noise, so it is deliberately silent.
