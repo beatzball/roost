@@ -16,6 +16,27 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0]
+
+roost now works with opencode 2, and it gives a program enough to build on.
+opencode 2 changed what a plugin is, so roost has a second adapter beside the
+1.x one, and a pane running it badges, keeps its replies, and uses your own
+configuration again rather than roost's empty one. For anything that watches
+the fleet: every pane now carries who is in it — session id, directory,
+harness, transcript — `roost events` streams every state change as one JSON
+line, `roost send --from` records who sent each prompt, a Claude pane says how
+many subagents it has out, and `roost close` ends one agent its own way and
+closes only its pane. The `prefix a` switcher is live, with colour, a filter
+and a preview of the agent's screen.
+
+Three things to know. **If you run opencode 2: run `roost install` once**, and
+`roost wiring on` once, and `unset OPENCODE_CONFIG_DIR` in any pane that was
+already open; an old roost link makes opencode 2 say `1 plugin failed`, and
+`roost doctor` names all three until they are done. **Every Claude install
+needs `roost install` again** to wire the two subagent hooks, or the new
+`subagents` field stays `null`. And `roost events` logs a closing pane only
+after `prefix r` reloads the tmux config on a server that was already running.
+
 ### Added
 
 - **`roost send --from LABEL`: who sent each prompt, kept beside the turn**
@@ -96,6 +117,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
   idle, with no stored reply, until its next turn: a reload runs the adapter's
   setup again. Whether a roost update causes that reload in an opencode
   terminal that is already open was not measured.
+
+- **Every pane says who is in it** (#141). `roost status --json` now carries
+  `session_id`, `cwd`, `harness` and `transcript` on every pane, `null` where
+  roost does not know, and the pane's record keeps the first three, so a
+  program can show a conversation, open its transcript, or bring it back
+  later. Claude Code is read at session start, codex at its first prompt, and
+  the opencode, copilot and pi adapters call the new `roost identify`, which
+  is a no-op outside roost. An opencode 2 pane is identified as the chat in
+  front of its terminal, and follows a tab switch; it has no transcript. The
+  key is `session_id`, not `session`, because `session` is already the tmux
+  session name. Codex 0.157.1 runs every hook in one shared process that
+  cannot name its pane, so a codex pane carries no identity rather than a
+  wrong one. Where a value can be stale is in `docs/known-gaps.md`. Nothing
+  to do to get it.
 
 ### Changed
 
