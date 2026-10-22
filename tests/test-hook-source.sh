@@ -85,6 +85,13 @@ assert_eq "$claude_out" "$bare_out" \
 # object was rewritten in the same round, which is why this fixture's comment
 # half changed at once: the lane was granted that block in bin/roost
 # (comments and heredoc text only, nothing executable).
+#
+# Two more for Phase 0 lane D, claude only: SubagentStart and SubagentStop,
+# appended after StopFailure, each running `--subagent-hook start|stop`, plus
+# one paragraph of prose and "the other seven" becoming "the other nine".
+# They keep a count on the pane and never a badge. Re-captured from
+# `roost hooks claude` and diffed: six added JSON lines, four prose lines,
+# one changed line, and no existing byte moved.
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"

@@ -185,15 +185,24 @@ assert_eq "$keys" "hooks" "the generated file has exactly one top-level key, hoo
 # The COUNT is asserted as well as the equality, and it is a literal on
 # purpose: two empty lists are equal too, and a `roost hooks claude` that
 # silently stopped emitting an event would keep this pair green. It moved from
-# six to seven with #91's PermissionRequest entry, and to eight with the
+# six to seven with #91's PermissionRequest entry, to eight with the
 # PostToolUseFailure entry that round 1 of #91's flock review added beside
-# PostToolUse.
+# PostToolUse, and to ten with the SubagentStart and SubagentStop pair
+# (Phase 0 lane D: a subagent count on the pane).
 install_claude
 want="$(triples "$B/home/.claude/settings.json")"
 got="$(triples "$gen")"
 [ -n "$want" ]; assert_true $? "roost install wrote claude hooks into the sandbox (the comparison below is not two empty strings)"
 assert_eq "$got" "$want" "upgrade: every generated hook command is identical to the one roost install wrote, so each runs once"
-assert_eq "$(printf '%s\n' "$got" | grep -c .)" "8" "the generated file carries all eight roost hook entries"
+assert_eq "$(printf '%s\n' "$got" | grep -c .)" "10" "the generated file carries all ten roost hook entries"
+# The pair by name, not only by count: `roost install` and this generated file
+# both come from roost_hooks_claude by construction, and this is the line that
+# says the construction still includes them. A tab-separated triple, as
+# triples() prints one; the matcher is None because the pair has none.
+assert_contains "$got" "SubagentStart"$'\t'"None"$'\t'"$HERE/scripts/roost-agent-state --subagent-hook start" \
+  "the generated settings carry the SubagentStart entry"
+assert_contains "$got" "SubagentStop"$'\t'"None"$'\t'"$HERE/scripts/roost-agent-state --subagent-hook stop" \
+  "the generated settings carry the SubagentStop entry"
 
 oc="$(wdir_of "$B/xdg")/opencode/plugin/roost.js"
 [ -L "$oc" ] && [ "$oc" -ef "$HERE/adapters/opencode/roost.js" ]

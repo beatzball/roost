@@ -975,8 +975,12 @@ JSON
 # badges error, and --stop-failure-hook records which kind of API error for
 # \`roost wait-done\` and \`read\` to print. It has no matcher on purpose: every
 # kind Claude reports is a turn that did not finish.
+# SubagentStart and SubagentStop keep a COUNT, not a state: how many subagents
+# this agent has running, and their ids, which \`roost status --json\` reports as
+# \`subagents\`. They never change the badge. Leave them off and every badge is
+# still right; the count is just never there.
 #
-# SessionStart is the odd one out: the other seven report state OUTWARD, and it
+# SessionStart is the odd one out: the other nine report OUTWARD, and it
 # is the only one that feeds context IN. It tells the agent it is inside roost
 # and gives it its own pane id, so it reaches for \`roost split\` rather than a
 # bare \`tmux split-window\` that would target the user's ordinary tmux server.

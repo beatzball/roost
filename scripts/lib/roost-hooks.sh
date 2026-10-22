@@ -140,11 +140,24 @@ _roost_hooks_root() {
 # flag off and every badge is still correct except that one case, which is why
 # it is a flag rather than an always-on stdin read — this pair fires on every
 # tool call of every live agent.
+#
+# SubagentStart and SubagentStop, last, are not state at all. They keep a
+# COUNT on the pane -- how many subagents the agent has running, and their ids
+# (@roost-subagents, @roost-subagent-ids) -- which `roost status --json`
+# reports as `subagents`. Neither touches the badge: whether background work
+# holds a pane at working is the turn-over design's question (#97), not this
+# pair's. Measured on 2.1.307 (docs/airig/specs/2026-09-29-turn-over-design.md
+# M10): both events carry agent_id and agent_type, SubagentStart fires with the
+# Agent tool's PostToolUse, and three Agent calls in one message fire three
+# SubagentStart 0.2 ms apart -- which is why the hook adds inside tmux rather
+# than in the shell. No matcher on either, for PermissionRequest's reason: a
+# matcher here would be an agent TYPE, and the user's own agent types are not
+# knowable in advance. Claude only, by Q7 of that design.
 roost_hooks_claude() {
   local target context
   if [ $# -ge 1 ]; then target="$1"
   else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
-  # SessionStart runs a DIFFERENT script from the other eight, so it cannot use
+  # SessionStart runs a DIFFERENT script from the other ten, so it cannot use
   # $target. It is derived as a sibling of $target rather than from
   # _roost_hooks_root because $target may have been injected by a caller (the
   # installer, or a test with a fixed path) and must stay the authority on
@@ -180,6 +193,12 @@ roost_hooks_claude() {
     ],
     "StopFailure": [
       { "hooks": [ { "type": "command", "command": "$target error --stop-failure-hook" } ] }
+    ],
+    "SubagentStart": [
+      { "hooks": [ { "type": "command", "command": "$target --subagent-hook start" } ] }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "$target --subagent-hook stop" } ] }
     ]
   }
 }

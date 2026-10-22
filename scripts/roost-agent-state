@@ -9,6 +9,7 @@
 # hooks — running `claude` anywhere else does nothing.
 #
 #   usage: roost-agent-state <working|blocked|error|done|idle> [--stop-hook]
+#          roost-agent-state --subagent-hook start|stop
 #
 # --stop-hook additionally reads Claude Code's Stop payload from stdin and
 # records that turn's reply on the pane, which is what `roost read` returns.
@@ -21,6 +22,12 @@
 # nobody closes. --notification-hook and --permission-request-hook go with
 # `blocked` and record the dialog (#38, #91); --stop-failure-hook goes with
 # `error` and records which kind of API error ended the turn (#55).
+#
+# The second form is not a state at all. --subagent-hook goes with Claude's
+# SubagentStart and SubagentStop events and keeps a COUNT on the pane: how many
+# subagents are running and their ids (@roost-subagents, @roost-subagent-ids).
+# It reads stdin the way --stop-hook does, touches those two options and
+# nothing else, and exits before any of the state logic below -- see its block.
 set -euo pipefail
 
 # Resolve this script's own directory even when invoked via a symlink — same
@@ -125,6 +132,152 @@ tool_hook=0
 roost_self_socket
 sock="$ROOST_SELF_SOCK"
 [ -n "$sock" ] || exit 0
+
+# A Claude SUBAGENT started or stopped (Phase 0 lane D of the fleet board).
+# Keep the count and the ids on the pane, in @roost-subagents and
+# @roost-subagent-ids, and EXIT: nothing below this block runs. Every branch
+# below is state logic -- the reply, the dialog record, the unchanged-state
+# bail, the stamp, the label, the ping -- and a subagent event is none of it.
+# A count is not a badge. Whether background work holds a pane at `working`
+# is the turn-over design's question (docs/airig/specs/2026-09-29-turn-over-
+# design.md, #97, step 1 there), and it is answered there, not here: these two
+# events never write @agent_state or @agent_since, and the test that pins that
+# is the mutation target (tests/test-agent-state.sh). Claude only, by Q7 of
+# that design: no other harness is measured, so no other adapter calls this.
+#
+# What the payloads carry is measured, not read from the source (M10 of that
+# design, Claude Code 2.1.307): both events name the agent in `agent_id` --
+# 17 lower-case hex characters every time -- and its kind in `agent_type`.
+# Only those two are taken. SubagentStop also carries everything a Stop
+# carries, the subagent's own last_assistant_message among it, and a
+# background_tasks that still lists the stopping agent as running; all of it
+# is ignored. An empty `agent_type` is Claude's prompt-suggestion fork (M4),
+# not the user's work, and changes nothing; on 2.1.307 that fork was not seen
+# at all in four runs, and the rule stands because a version that sends it
+# again must not count it.
+#
+# THE UPDATE HAPPENS INSIDE TMUX, IN ONE COMMAND, and that is the one thing
+# about this block that is not obvious from reading it. Three `Agent` calls in
+# one assistant message fire three SubagentStart hooks 0.2 ms apart (M10, one
+# run): three processes that each read the count, add one and write it back
+# would all read the same value and the pane would say 1 for 3. So the count
+# is never computed here. The hook hands tmux a format -- `#{e|+:...,1}` to
+# add, a clamped `#{e|-:...,1}` to take away, `#{m:...}` to ask whether the id
+# is listed, `#{s/.../}` to strike it from the list -- and tmux evaluates it
+# against the option's value at the moment it writes, inside one `if-shell -F`
+# whose test and whose set-options are one command line from one client.
+# Measured on tmux 3.4 (CI's) and 3.6: 50 clients each sending one such
+# increment at once left the option at 50, every run; the same 50 as a read
+# in the shell and a write back lost most of them. roost's floor is tmux 3.2
+# and these modifiers are not measured there. The one read this block makes
+# (below) decides only the list's cap and the overflow rule, where a race
+# costs an id in the list past 32 running agents, never the count.
+#
+# THE LIST IS CAPPED AT 32 IDS; THE COUNT IS NOT. The ids are one tmux option
+# value, and a pane that somehow runs a hundred agents must not grow it
+# without bound (roost_reply_encode's cap on @roost-reply is the same
+# thought). So the 33rd id is counted and not listed. A stop for an id that is
+# not listed then has two readings, and the count tells them apart: while the
+# count is above the list's length some running agents are unlisted and the
+# stop is one of theirs, so the count goes down; when the two agree every
+# running agent is listed and an unlisted id was never started -- a replayed
+# or foreign payload -- so nothing changes. That second case is the rule
+# "a stop for an id never started changes nothing", and it is why the count
+# cannot simply go down on every stop.
+#
+# THE ID IS CHECKED BEFORE IT IS A FORMAT OR AN OPTION VALUE. It is spliced
+# into `#{m:* ID *,...}` and `#{s/ ID / /:...}` and appended to a
+# space-separated list, so a space would be two ids, a `,` would end the
+# modifier's argument, a `;` would end the tmux command, a `/` the
+# substitution. The reader accepts 1-64 of [a-z0-9] and prints nothing
+# otherwise; the shell checks the same set again, because `$( )` strips a
+# trailing newline and bash drops NUL bytes, so a value can arrive here
+# already cleaned (the StopFailure branch below has the same second check
+# and says why). The letters are spelled out rather than written a-z: bash
+# 3.2 matches a range by the locale's collation, where a-z can include
+# capitals. Nothing else from the payload is ever written anywhere.
+#
+# Fails soft, like every other write in this file: a dead server, a tmux
+# without these modifiers, a machine with neither python3 nor jq each leave
+# the count where it was and exit 0, and `roost status --json` reports
+# `subagents` as null for a pane that has never been counted.
+if [ "${1:-}" = "--subagent-hook" ]; then
+  op="${2:-}"
+  case "$op" in start|stop) ;; *) exit 0 ;; esac
+  # A tty means a human typed the flag; `cat` would wait for ^D. Skip.
+  [ ! -t 0 ] || exit 0
+  payload="$(cat 2>/dev/null || true)"
+  sid=""
+  if command -v python3 >/dev/null 2>&1; then
+    sid="$(printf '%s' "$payload" | python3 -c '
+import sys, json
+OK = "abcdefghijklmnopqrstuvwxyz0123456789"
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = None
+if not isinstance(d, dict):
+    sys.exit(0)
+t = d.get("agent_type")
+a = d.get("agent_id")
+if isinstance(t, str) and t and isinstance(a, str) and 0 < len(a) <= 64 and all(c in OK for c in a):
+    sys.stdout.write(a)' 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    # \A and \z, not ^ and $: in jq's regex engine $ also matches before a
+    # trailing newline, the same trap the StopFailure reader below documents.
+    sid="$(printf '%s' "$payload" | jq -r 'if type == "object"
+        and (.agent_type | type) == "string" and .agent_type != ""
+        and (.agent_id | type) == "string" and (.agent_id | test("\\A[a-z0-9]{1,64}\\z"))
+      then .agent_id else "" end' 2>/dev/null || true)"
+  fi
+  case "$sid" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789]*) exit 0 ;; esac
+  [ "${#sid}" -le 64 ] || exit 0
+  # One read, for the two decisions tmux cannot make in a format: how many ids
+  # are listed (the cap), and whether the count is above that (the overflow
+  # rule for a stop). Unset options read as empty, so a pane that has never
+  # seen a subagent reads " " here: count "" and no ids.
+  cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
+    '#{@roost-subagents} #{@roost-subagent-ids}' 2>/dev/null || true)"
+  count="${cur%% *}"
+  case "$count" in ''|*[!0123456789]*) count=0 ;; esac
+  set -- ${cur#* }
+  n=$#
+  inc='#{e|+:#{@roost-subagents},1}'
+  dec='#{?#{e|<:#{@roost-subagents},1},0,#{e|-:#{@roost-subagents},1}}'
+  # The list wrapped in spaces, so the first and the last id match like any
+  # other; the strike leaves a space at either end, which the two outer
+  # substitutions take back off.
+  listed="#{m:* $sid *, #{@roost-subagent-ids} }"
+  add="#{?#{==:#{@roost-subagent-ids},},$sid,#{@roost-subagent-ids} $sid}"
+  strike="#{s/^ //:#{s/ \$//:#{s/ $sid / /: #{@roost-subagent-ids} }}}"
+  if [ "$op" = start ]; then
+    # Only an id that is not already listed counts: a repeated start for one
+    # agent is one agent. `#{?X,,1}` is "not X" -- true when X is empty.
+    if [ "$n" -lt 32 ]; then
+      tmux -S "$sock" if-shell -F -t "$TMUX_PANE" "#{?$listed,,1}" \
+        "set-option -p -t $TMUX_PANE -F @roost-subagents '$inc' ; set-option -p -t $TMUX_PANE -F @roost-subagent-ids '$add'" \
+        2>/dev/null || true
+    else
+      tmux -S "$sock" if-shell -F -t "$TMUX_PANE" "#{?$listed,,1}" \
+        "set-option -p -t $TMUX_PANE -F @roost-subagents '$inc'" \
+        2>/dev/null || true
+    fi
+  else
+    # Above the list's length, every stop is a running agent's (listed or
+    # not): count down, and strike the id if it is there. At or below it, only
+    # a listed id was started. The strike is a no-op for an id not listed.
+    if [ "$count" -gt "$n" ]; then
+      tmux -S "$sock" if-shell -F -t "$TMUX_PANE" "1" \
+        "set-option -p -t $TMUX_PANE -F @roost-subagents '$dec' ; set-option -p -t $TMUX_PANE -F @roost-subagent-ids '$strike'" \
+        2>/dev/null || true
+    else
+      tmux -S "$sock" if-shell -F -t "$TMUX_PANE" "$listed" \
+        "set-option -p -t $TMUX_PANE -F @roost-subagents '$dec' ; set-option -p -t $TMUX_PANE -F @roost-subagent-ids '$strike'" \
+        2>/dev/null || true
+    fi
+  fi
+  exit 0
+fi
 
 # Normalise: anything unrecognised is idle.
 case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
