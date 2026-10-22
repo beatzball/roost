@@ -1024,6 +1024,9 @@ h_adapter_fix() {
         missing)
           printf 'the %s adapter is not linked — run: mkdir -p "%s" && ln -s "%s" "%s"' \
             "$h" "$(dirname "$path")" "$want" "$path" ;;
+        other-checkout)
+          printf 'the %s adapter at %s points at another copy of roost, %s (left alone) — run: roost install from a plain checkout, or: rm "%s" && ln -s "%s" "%s"' \
+            "$h" "$path" "$(readlink "$path")" "$path" "$want" "$path" ;;
         *)
           # Never a bare `ln -sf` here. Overwriting is the tester's call to
           # make, not a command roost hands them without saying what is there.
@@ -1121,9 +1124,20 @@ offer_adapter_install() {
       missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
       # dangling is treated exactly like foreign here: same behaviour as
       # before roost_adapter_state told the two apart, not a policy change.
-      # other-checkout is held as foreign here until the relink rule lands (docs/airig/plans/2026-10-22-roost-upgrade-and-relink-plan.md, Task 3).
-      foreign|dangling|other-checkout) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$k")
+      foreign|dangling) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$k")
 " ;;
+      # A link to another copy of roost is predicted the way the installer
+      # will act on it (IN_WORKTREE in scripts/roost-install): taken over from
+      # a plain checkout, so it is offered like a missing one; left alone from
+      # a git worktree, so it is blocked. The offer runs that installer next,
+      # and the two must not say different things.
+      other-checkout)
+        if roost_checkout_is_worktree "$HERE"; then
+          BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$k")
+"
+        else
+          INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h"
+        fi ;;
     esac
   done
 
@@ -1148,6 +1162,12 @@ offer_adapter_install() {
     k="$(roost_adapter_key "$h")"
     printf '    %-9s %s\n' "$h" "$(roost_adapter_path "$k")"
     printf '    %-9s   -> %s\n' "" "$(roost_adapter_target "$k")"
+    # Said out loud: this one is replaced, not created, and the tester should
+    # see which other copy loses its link before agreeing.
+    if [ "$(roost_adapter_state "$k")" = other-checkout ]; then
+      printf '    %-9s   replaces the link to another copy of roost, %s\n' "" \
+        "$(readlink "$(roost_adapter_path "$k")")"
+    fi
     # On opencode 2, linking plugins/roost is not the whole of what the
     # installer does: it also removes roost's own 1.x link at plugin/roost.js,
     # which opencode 2 tries to load and cannot (scripts/roost-install's
