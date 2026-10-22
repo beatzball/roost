@@ -44,7 +44,7 @@ Unattended: no — the human merges the pull request; every task's Check is
 - **Message texts are given verbatim in each task.** Use them as written, so
   the tests in the same task match.
 
-## Task 1 — `other-checkout` state and the worktree test, in the shared library
+### Task 1 — `other-checkout` state and the worktree test, in the shared library
 
 **Files:** `scripts/lib/roost-adapters.sh`, new `tests/test-adapter-state.sh`
 **Depends on:** nothing
@@ -105,7 +105,7 @@ except through `foreign`'s old branch, which now reads it as `*`; both tests
 plant only strangers today).
 **Commit:** `adapters: a link that names another copy of roost is other-checkout, not foreign, and a worktree knows it is one`
 
-## Task 2 — `doctor` names the other copy and prints the command
+### Task 2 — `doctor` names the other copy and prints the command
 
 **Files:** `scripts/roost-doctor`, `tests/test-doctor.sh`
 **Depends on:** Task 1
@@ -134,7 +134,7 @@ plant only strangers today).
 **Check:** `bash tests/test-doctor.sh` → all `PASS:`.
 **Commit:** `doctor: a link to another copy of roost is named as one, and every relink line carries the command`
 
-## Task 3 — `install` relinks the other copy's link from a plain checkout, refuses it from a worktree
+### Task 3 — `install` relinks the other copy's link from a plain checkout, refuses it from a worktree
 
 **Files:** `scripts/roost-install`, `tests/test-adapter-install.sh`
 **Depends on:** Task 1
@@ -216,7 +216,7 @@ plant only strangers today).
 alias assertions (#17) still pass (Task 8 changes them, not this task).
 **Commit:** `install: relink a link that names another copy of roost, and refuse to from a git worktree`
 
-## Task 4 — the Claude hook gets the same rule; codex does not
+### Task 4 — the Claude hook gets the same rule; codex does not
 
 **Files:** `scripts/roost-install`, `tests/test-adapter-install.sh`
 **Depends on:** Task 3
@@ -253,7 +253,7 @@ alias assertions (#17) still pass (Task 8 changes them, not this task).
 **Check:** `bash tests/test-adapter-install.sh` → all `PASS:`.
 **Commit:** `install: a Claude hook from another live copy of roost is replaced from a plain checkout, refused from a worktree`
 
-## Task 5 — `validate`'s offer predicts the relink
+### Task 5 — `validate`'s offer predicts the relink
 
 **Files:** `scripts/roost-validate`, `tests/test-validate-install.sh`
 **Depends on:** Task 3
@@ -276,7 +276,7 @@ alias assertions (#17) still pass (Task 8 changes them, not this task).
 **Check:** `bash tests/test-validate-install.sh` → all `PASS:`.
 **Commit:** `validate: the offer predicts what install now does with a link to another copy of roost`
 
-## Task 6 — `scripts/roost-upgrade`: the gate, the pull, the exec
+### Task 6 — `scripts/roost-upgrade`: the gate, the pull, the exec
 
 **Files:** new `scripts/roost-upgrade`, new `tests/test-upgrade.sh`
 **Depends on:** Task 1
@@ -355,7 +355,7 @@ alias assertions (#17) still pass (Task 8 changes them, not this task).
 **Check:** `bash tests/test-upgrade.sh` → all `PASS:`, canary empty.
 **Commit:** `roost upgrade: pull with --ff-only and run the installer the pull fetched, or refuse and say why`
 
-## Task 7 — `upgrade` re-applies wiring on a running server
+### Task 7 — `upgrade` re-applies wiring on a running server
 
 **Files:** `scripts/roost-upgrade`, `tests/test-upgrade.sh`
 **Depends on:** Task 6
@@ -389,7 +389,7 @@ alias assertions (#17) still pass (Task 8 changes them, not this task).
 servers gone after.
 **Commit:** `roost upgrade: re-apply wiring on a running server, so opencode 2 needs no second step`
 
-## Task 8 — `bin/roost upgrade`, `update` as its alias, and the help line
+### Task 8 — `bin/roost upgrade`, `update` as its alias, and the help line
 
 **Files:** `bin/roost`, `tests/test-adapter-install.sh`, `tests/test-upgrade.sh`
 **Depends on:** Task 6
@@ -419,7 +419,7 @@ servers gone after.
 → all `PASS:`. `bin/roost help | grep -c upgrade` ≥ 1.
 **Commit:** `roost update means roost upgrade now; install stays the command that never fetches`
 
-## Task 9 — the installer's "behind" note, README, Getting Started
+### Task 9 — the installer's "behind" note, README, Getting Started
 
 **Files:** `scripts/roost-install`, `README.md`, `site/content/docs/getting-started.md`
 **Depends on:** Task 8
@@ -451,7 +451,7 @@ shows only lines that call it the same as `upgrade`;
 text — search for `To update the code` there and update that assertion).
 **Commit:** `docs: roost upgrade is how a machine that has roost gets the next release`
 
-## Task 10 — changelog and known gaps
+### Task 10 — changelog and known gaps
 
 **Files:** `CHANGELOG.md`, `site/content/docs/changelog.md`, `docs/known-gaps.md`
 **Depends on:** Tasks 2, 4, 5, 7, 9
@@ -479,7 +479,7 @@ text — search for `To update the code` there and update that assertion).
 prints nothing; `bash scripts/roost-release-gate check .` exits 0.
 **Commit:** `changelog: roost upgrade, and a link that names another copy of roost`
 
-## Task 11 — the whole suite, here and in an Ubuntu container
+### Task 11 — the whole suite, here and in an Ubuntu container
 
 **Files:** none (fixes found here become new commits on this branch)
 **Depends on:** Task 10
