@@ -760,6 +760,12 @@ JSON_HARNESSES="claude codex copilot"
 JSON_STEPS=""
 JSON_OK=""
 JSON_REFUSED=""
+# JSON_OTHER_LIVE  HARNESS \t DIR -- a write that replaces a hook naming another
+# copy of roost that still exists, and that copy's directory, so the write
+# report can name it. A list of its own rather than another JSON_STEPS field:
+# those rows are read with IFS=tab, and an empty field between two tabs
+# collapses and shifts every field after it.
+JSON_OTHER_LIVE=""
 
 # print  — the user asked for the block instead of a write (--print-only)
 # notool — neither python3 nor jq is here, so roost CANNOT edit JSON. Not an
@@ -852,12 +858,23 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
     # because rewriting a codex handler re-hashes it and silently un-badges a
     # machine that had already granted trust: there, doing nothing really is
     # the lesser harm. What it gains here is an honest reason, below.
+    #
+    # A Claude hook naming another copy of roost that still EXISTS is taken
+    # over too, by the rule the symlink adapters follow (see IN_WORKTREE at
+    # the top): from a plain checkout it is replaced and the run names the
+    # other copy; from a worktree it is refused, so a build pane cannot steal
+    # the primary checkout's hooks and leave them pointing at a worktree that
+    # is deleted after its merge. Rewriting a Claude hook costs nothing like a
+    # codex re-hash: Claude reads the command afresh on its next session.
     json_dead=""
     json_gone=0
+    json_other=0
+    json_other_dir=""
     if [ "$json_state" = "other-checkout" ]; then
       json_marker="${json_want##*/}"
       case "$json_detail" in
         *"$json_marker"*)
+          json_other=1
           json_deadpath="${json_detail%%"$json_marker"*}$json_marker"
           if [ ! -e "$json_deadpath" ]; then
             # Recorded for BOTH harnesses, because both have something honest
@@ -867,10 +884,15 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
             # checkout that is gone, and roost still will not rewrite it.
             json_gone=1
           fi
-          if [ "$json_gone" -eq 1 ] && [ "$h" = claude ]; then
+          if [ "$h" = claude ] && { [ "$json_gone" -eq 1 ] || [ "$IN_WORKTREE" -eq 0 ]; }; then
             # The directory, not the script: see the python probe's note on
             # why one script path is not enough.
             json_dead="${json_deadpath%/*}"
+            # The checkout itself, for the write report: CLAUDE_TARGET is
+            # always <checkout>/scripts/roost-agent-state, so the hook's own
+            # directory is <checkout>/scripts. Only a LIVE copy is named --
+            # a gone one has nothing left for the reader to remove.
+            [ "$json_gone" -eq 0 ] && json_other_dir="${json_dead%/scripts}"
             # Ask again, this time saying that the dead path counts as ours.
             # Re-probing rather than patching the counts by hand: the entry
             # has to be re-classified (it becomes `replaced`, not `kept`), and
@@ -899,6 +921,8 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
       # what keeps `--dry-run` at exit 0 while an attempted run exits 1.
       write)
         JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_kept$TAB$json_repl$TAB$json_dead$TAB$json_label
+"
+        [ -n "$json_other_dir" ] && JSON_OTHER_LIVE="$JSON_OTHER_LIVE$h$TAB$json_other_dir
 " ;;
       malformed)
         JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}0${TAB}0$TAB$TAB$json_label
@@ -916,6 +940,13 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
         # no harness and no path.
         if [ "$json_gone" -eq 1 ]; then
           JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a checkout that no longer exists, and rewriting a codex handler would re-hash it and silently un-badge this machine — fix it by hand: $json_detail
+"
+        elif [ "$h" = claude ] && [ "$json_other" -eq 1 ] && [ "$IN_WORKTREE" -eq 1 ]; then
+          # From a plain checkout the probe was re-asked above and this entry
+          # is normally a write. IN_WORKTREE is tested again anyway: a file
+          # naming a THIRD copy as well is still other-checkout after the
+          # re-ask, and must not be told this checkout is a worktree.
+          JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at another copy of roost, $json_detail, and this checkout is a git worktree — run roost install from that copy, or from the primary checkout
 "
         else
           JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a different checkout: $json_detail
@@ -1343,6 +1374,15 @@ EOF
           0) : ;;
           *) [ -n "$json_bak" ] && printf '           (the backup above still has what it said)\n' ;;
         esac
+        # The Claude hook's counterpart to "relinked ... a second copy of
+        # roost": roost does not look for copies of itself, it names the one
+        # it was just pointed at.
+        while IFS="$TAB" read -r oh odir; do
+          [ "$oh" = "$h" ] || continue
+          printf '  replaced a hook from another copy of roost, %s — if you did not mean to keep two, remove that copy and its PATH line.\n' "$odir"
+        done <<OTHER_EOF
+$JSON_OTHER_LIVE
+OTHER_EOF
         ;;
       *)
         # 1, 2 and 5 all mean the same thing to a user: nothing was written,

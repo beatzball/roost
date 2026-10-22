@@ -953,29 +953,69 @@ if command -v python3 >/dev/null 2>&1; then
     "claude already wired at another indentation: no backup was taken"
 fi
 
-# --- wired to a DIFFERENT checkout -> refuse the whole claude step ---------
+# --- wired to ANOTHER LIVE copy of roost -> replaced from a plain checkout,
+#     refused from a worktree ------------------------------------------------
 # Generated from roost-hooks.sh with another checkout's path, not typed out
 # here: a second copy of those bytes is exactly the drift the one-definition
 # rule exists to prevent, and a hand-typed near-miss would make this case pass
 # for the wrong reason.
+#
+# The other checkout's script really EXISTS: this is a second copy somebody
+# keeps, not a dead one (the sibling case below deletes it). Whether it is
+# taken over depends on whether the checkout RUNNING the installer is a git
+# worktree, so these cases run the installers case 3b built ($plain, $wt)
+# rather than "$INSTALL": the checkout running this suite is a worktree on the
+# machine it is developed on and a plain clone on CI, and its own answer would
+# differ between the two. git is on the shim so the question is really asked.
+CLAUDE_GIT_SHIM="$(make_json_shim claude opencode)"
+[ -n "${real_git:-}" ] && ln -s "$real_git" "$CLAUDE_GIT_SHIM/git"
+mkdir -p "$TMP/some-other-checkout/scripts"
+: > "$TMP/some-other-checkout/scripts/roost-agent-state"
+
+# plain checkout -> rewritten to this checkout, and said so
 box="$TMP/claudeforeign"
 cset="$box/home/.claude/settings.json"
-mkdir -p "$box/home/.claude" "$TMP/some-other-checkout/scripts"
-# The other checkout's script really EXISTS. That is the whole distinction
-# this case now carries: a second checkout somebody deliberately keeps is not
-# roost's to rewrite. The sibling case below deletes it, and the answer flips.
-: > "$TMP/some-other-checkout/scripts/roost-agent-state"
+mkdir -p "$box/home/.claude"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude wired to another live copy, plain checkout: exits 0"
+grep -qF "$plain/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+  "claude wired to another live copy, plain checkout: settings.json now names THIS checkout"
+grep -qF "$TMP/some-other-checkout/scripts/" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" \
+  "claude wired to another live copy, plain checkout: the other copy's entries are replaced, not appended beside"
+assert_eq "$(grep -c roost-session-context "$cset" 2>/dev/null)" "1" \
+  "claude wired to another live copy, plain checkout: exactly one SessionStart hook survives"
+assert_eq "$(bak_count "$cset")" "1" \
+  "claude wired to another live copy, plain checkout: a backup was taken before rewriting it"
+[ -e "$TMP/some-other-checkout/scripts/roost-agent-state" ]; assert_true $? \
+  "claude wired to another live copy, plain checkout: the other copy itself is untouched"
+assert_contains "$out" "  replaced a hook from another copy of roost, $TMP/some-other-checkout — if you did not mean to keep two, remove that copy and its PATH line." \
+  "claude wired to another live copy, plain checkout: the output names the other copy"
+case "$out" in *"different checkout"*|*"this checkout is a git worktree"*) s=refused ;; *) s=replaced ;; esac
+assert_eq "$s" "replaced" \
+  "claude wired to another live copy, plain checkout: nothing says it was refused"
+
+# worktree -> left alone, byte for byte, and the reason named
+box="$TMP/claudeforeign-wt"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
 ( . "$HERE/scripts/lib/roost-hooks.sh"
   roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
 fbefore="$(cksum < "$cset")"
-out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
-assert_eq "$rc" "0" "claude wired elsewhere: still exits 0 (a refusal is not a failure)"
+out="$(run_install_from "$wt" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude wired elsewhere, worktree: still exits 0 (a refusal is not a failure)"
 assert_eq "$(cksum < "$cset")" "$fbefore" \
-  "claude wired elsewhere: settings.json is byte-identical after"
-assert_eq "$(bak_count "$cset")" "0" "claude wired elsewhere: no backup was taken"
-assert_contains "$out" "$cset" "claude wired elsewhere: the exact file is named"
-assert_contains "$out" "different checkout" \
-  "claude wired elsewhere: the output says why it will not touch it"
+  "claude wired elsewhere, worktree: settings.json is byte-identical after"
+assert_eq "$(bak_count "$cset")" "0" "claude wired elsewhere, worktree: no backup was taken"
+assert_contains "$out" "$cset" "claude wired elsewhere, worktree: the exact file is named"
+assert_contains "$out" "a roost hook there points at another copy of roost, $TMP/some-other-checkout/scripts/roost-agent-state" \
+  "claude wired elsewhere, worktree: the output names the other copy"
+assert_contains "$out" "and this checkout is a git worktree — run roost install from that copy, or from the primary checkout" \
+  "claude wired elsewhere, worktree: the output says why it will not touch it"
+case "$out" in *"replaced a hook from another copy"*) s=replaced ;; *) s=refused ;; esac
+assert_eq "$s" "refused" "claude wired elsewhere, worktree: nothing says replaced"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "claude wired elsewhere: refusing one step does not abandon the others"
 
@@ -1230,19 +1270,20 @@ assert_eq "$s" "honest" \
 box="$TMP/claudeinject"
 cset="$box/home/.claude/settings.json"
 mkdir -p "$box/home/.claude" "$TMP/inject-checkout/scripts"
-# The other checkout EXISTS, so this stays a refusal. Its subject is how the
-# refusal MESSAGE is rendered, and a checkout that is gone is now repaired
-# instead of refused -- which would leave this case with no refusal to render
-# and both assertions below passing on nothing.
+# The other checkout EXISTS and the installer is run from the worktree case
+# 3b built, so this stays a refusal. Its subject is how the refusal MESSAGE is
+# rendered, and a checkout that is gone -- or a live one seen from a plain
+# checkout -- is now repaired instead of refused, which would leave this case
+# with no refusal to render and both assertions below passing on nothing.
 : > "$TMP/inject-checkout/scripts/roost-agent-state"
 printf '%s\n' '{ "hooks": { "Notification": [ { "hooks": [ { "type": "command", "command": "'"$TMP"'/inject-checkout/scripts/roost-agent-state working\nrm -rf /tmp/whatever" } ] } ] } }' > "$cset"
 fbefore="$(cksum < "$cset")"
-out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+out="$(run_install_from "$wt" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "claude with a newline in a command: exits 0"
 assert_eq "$(cksum < "$cset")" "$fbefore" \
   "claude with a newline in a command: settings.json is byte-identical after"
 assert_eq "$(bak_count "$cset")" "0" "claude with a newline in a command: no backup was taken"
-assert_contains "$out" "different checkout" \
+assert_contains "$out" "this checkout is a git worktree" \
   "claude with a newline in a command: the real refusal is still reported"
 case "$out" in *"whatever: left alone"*) s=leaked ;; *) s=contained ;; esac
 assert_eq "$s" "contained" \
@@ -1254,7 +1295,7 @@ assert_eq "$s" "contained" \
 # still reported, on one line, so a sanitiser that silently deletes
 # everything fails here.
 assert_contains "$out" \
-  "different checkout: $TMP/inject-checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever" \
+  "another copy of roost, $TMP/inject-checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever, and this checkout" \
   "claude with a newline in a command: the command is still reported, flattened onto one line"
 case "$out" in *"roost hooks rm"*) s=leaked ;; *) s=contained ;; esac
 assert_eq "$s" "contained" \
@@ -1363,20 +1404,40 @@ EOF
   assert_eq "$(jq '.hooks.PostToolUse | length' "$cset" 2>/dev/null)" "2" \
     "claude under jq, beside a user's hook: a re-run adds no second entry"
 
+  # Another LIVE copy, under jq: refused from a worktree, replaced from a
+  # plain checkout -- run from case 3b's two checkouts for the reason the
+  # python case above gives. git rides along so the worktree question is
+  # really asked.
+  [ -n "${real_git:-}" ] && ln -s "$real_git" "$JQ_SHIM/git"
   box="$TMP/claudejqforeign"
   cset="$box/home/.claude/settings.json"
   mkdir -p "$box/home/.claude"
   ( . "$HERE/scripts/lib/roost-hooks.sh"
     roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
   fbefore="$(cksum < "$cset")"
-  out="$(run_install "$box" "$JQ_SHIM" --yes)"; rc=$?
-  assert_eq "$rc" "0" "claude under jq, wired elsewhere: exits 0"
+  out="$(run_install_from "$wt" "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, wired elsewhere, worktree: exits 0"
   assert_eq "$(cksum < "$cset")" "$fbefore" \
-    "claude under jq, wired elsewhere: the file is byte-identical after"
+    "claude under jq, wired elsewhere, worktree: the file is byte-identical after"
   assert_eq "$(bak_count "$cset")" "0" \
-    "claude under jq, wired elsewhere: no backup was taken"
-  assert_contains "$out" "different checkout" \
-    "claude under jq, wired elsewhere: refused for the same stated reason"
+    "claude under jq, wired elsewhere, worktree: no backup was taken"
+  assert_contains "$out" "and this checkout is a git worktree" \
+    "claude under jq, wired elsewhere, worktree: refused for the same stated reason"
+
+  box="$TMP/claudejqforeign-plain"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+  out="$(run_install_from "$plain" "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, wired to another live copy, plain checkout: exits 0"
+  grep -qF "$plain/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+    "claude under jq, wired to another live copy, plain checkout: settings.json now names THIS checkout"
+  grep -qF "$TMP/some-other-checkout/scripts/" "$cset" 2>/dev/null && s=left || s=gone
+  assert_eq "$s" "gone" \
+    "claude under jq, wired to another live copy, plain checkout: the other copy's entries are replaced, not appended beside"
+  assert_contains "$out" "replaced a hook from another copy of roost, $TMP/some-other-checkout —" \
+    "claude under jq, wired to another live copy, plain checkout: the output names the other copy"
 
   # ...and the repair, under jq. python3 is preferred, so every case above ran
   # the python engine; without this the jq spelling of the dead-checkout logic
@@ -1578,6 +1639,32 @@ assert_contains "$out" "re-hash" \
   "codex wired elsewhere: the output says in plain words why rewriting would be worse"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "codex wired elsewhere: refusing one step does not abandon the others"
+
+# The control for claude's rule: from a PLAIN checkout -- the one place a
+# Claude hook from another live copy is now replaced -- codex still refuses,
+# with the same reason, and the file is left byte for byte. Run from case
+# 3b's plain copy, with git on the shim, so the answer cannot depend on what
+# kind of checkout runs this suite.
+CODEX_GIT_SHIM="$(make_json_shim codex opencode)"
+[ -n "${real_git:-}" ] && ln -s "$real_git" "$CODEX_GIT_SHIM/git"
+box="$TMP/codexforeign-plain"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_codex "$TMP/some-other-checkout/adapters/codex/roost-codex-hook" ) > "$chooks"
+fbefore="$(cksum < "$chooks")"
+out="$(run_install_from "$plain" "$box" "$CODEX_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex wired to another live copy, plain checkout: exits 0"
+assert_eq "$(cksum < "$chooks")" "$fbefore" \
+  "codex wired to another live copy, plain checkout: hooks.json is byte-identical after"
+assert_eq "$(bak_count "$chooks")" "0" \
+  "codex wired to another live copy, plain checkout: no backup was taken"
+assert_contains "$out" "a roost hook there points at a different checkout: $TMP/some-other-checkout/adapters/codex/roost-codex-hook" \
+  "codex wired to another live copy, plain checkout: the existing reason, unchanged"
+case "$out" in *"replaced a hook from another copy"*) s=replaced ;; *) s=refused ;; esac
+assert_eq "$s" "refused" \
+  "codex wired to another live copy, plain checkout: nothing says replaced"
+rm -rf "$CODEX_GIT_SHIM"
 
 # --- codex wired to a checkout that is GONE -> still refuse, but say so ----
 # The deliberate asymmetry with claude, and the reason it is deliberate.
@@ -2657,7 +2744,7 @@ bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
 n="$(grep -cE 'declare -A|\$\{[A-Za-z_]+\^\^|printf .*\\u[0-9a-fA-F]{4}' "$INSTALL" || true)"
 assert_eq "${n:-0}" "0" "scripts/roost-install uses no bash-4-only construct"
 
-rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CODEX_SHIM" "$COPILOT_SHIM"
+rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CLAUDE_GIT_SHIM" "$CODEX_SHIM" "$COPILOT_SHIM"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
