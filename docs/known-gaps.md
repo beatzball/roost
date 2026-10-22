@@ -1867,6 +1867,27 @@ succeeds.
   nothing cheap; the envelope half of #56 can at least make the pasted text
   carry the checked default beside the claimed one.
 
+### The subagent count is never reset (Phase 0 lane D)
+
+`@roost-subagents` and `@roost-subagent-ids` go up on `SubagentStart`, down
+on `SubagentStop`, and nothing else touches them. Not `SessionStart`:
+scripts/roost-session-context sets no pane option at all. Not a pane respawn:
+`respawn-pane -k` keeps every pane option. Not an agent exit: no hook fires
+for a helper still out when its Claude quits, and whether `SubagentStop`
+fires on session exit, a `/tasks` kill or an Esc'd turn is not measured (M10
+of docs/airig/specs/2026-09-29-turn-over-design.md). So a Claude that ends
+with a helper out leaves the count on the pane, and the next Claude in that
+pane counts up from it: `roost status --json` then reports a helper that no
+longer exists. Found in review on a throwaway socket: one `SubagentStart`,
+then `respawn-pane -k` of the pane, and the count still read 1 with the old
+id listed. Severity: low. The count never touches the badge, so nothing
+waits on it; it is wrong only in `status --json`, and only after a helper
+was left out. What would close it: clear both options on `SessionStart`, in
+scripts/roost-session-context, which already runs there. Which of its five
+sources should clear is that follow-up's first question: `startup` and
+`clear` plainly should, and `compact` fires mid-session with helpers
+possibly still out. Not done in lane D, whose spec did not ask for it.
+
 ## Behaviour changes
 
 ### Replies are kept on disk, and `read` prints long ones whole (#42)

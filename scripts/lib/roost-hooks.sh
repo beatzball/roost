@@ -157,7 +157,7 @@ roost_hooks_claude() {
   local target context
   if [ $# -ge 1 ]; then target="$1"
   else target="$(_roost_hooks_root)/scripts/roost-agent-state"; fi
-  # SessionStart runs a DIFFERENT script from the other ten, so it cannot use
+  # SessionStart runs a DIFFERENT script from the other nine, so it cannot use
   # $target. It is derived as a sibling of $target rather than from
   # _roost_hooks_root because $target may have been injected by a caller (the
   # installer, or a test with a fixed path) and must stay the authority on
