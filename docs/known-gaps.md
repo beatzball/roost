@@ -1984,7 +1984,7 @@ sent people looking for a checkout that was not there.
 
 **A note, not a defect.** Pointing roost at your agents used to be a separate
 manual step per harness. `curl … | sh` now does it in the same step as the
-`PATH` line, and `roost install` (`roost update` is `roost upgrade`'s alias now),
+`PATH` line, and `roost install` (`roost update` is `roost upgrade`'s alias now)
 is the re-run for later: a harness installed since, a moved or re-cloned
 checkout, a release that adds an adapter. `roost install` does not fetch new roost code.
 
@@ -2248,6 +2248,55 @@ has already produced a real bug here.
   bucket in `report_install` ("this run could not link it"), a report change
   with its own test file, and because reaching it at all needs a directory
   roost can read but not write.
+- **`roost upgrade` has no bound on its pull.** A fetch that hangs on a dead
+  network hangs the command, and the user sees git's own output. `install.sh`
+  has the same property. Severity: low; Ctrl-C ends it, and the gate has
+  already run, so nothing is half-done. What closes it: a timeout around the
+  pull in `scripts/roost-upgrade` and in `install.sh`, together.
+
+- **`roost upgrade` reads `main` literally, not `origin/HEAD`.** A checkout
+  whose default branch has another name is refused as "not main". Severity:
+  low; roost publishes from one remote whose default is `main`, and the
+  refusal names the rule and the curl line. What closes it: read the default
+  branch from `origin/HEAD` in `gate_branch`, which adds a lookup that can
+  itself fail.
+
+- **A shell opened before an upgrade keeps `OPENCODE_CONFIG_DIR`.** `upgrade`
+  re-applies wiring on the running server, which fixes every new pane, but no
+  command can change the environment of a shell that already exists, so an
+  opencode 2 pane opened before the upgrade still runs with roost's empty
+  configuration. Severity: low; only `roost doctor` says so, per pane, and
+  `unset OPENCODE_CONFIG_DIR` or a new pane clears it. What closes it:
+  nothing roost can do from outside the shell.
+
+- **A Claude hook written as `bash <other-copy>/scripts/roost-agent-state`
+  reads as gone, not live.** A leading interpreter word defeats the match, so
+  the hook is treated as a copy that no longer exists and install rewrites it
+  even from a worktree, where a live copy's hook would be refused. Predates
+  the relink work. Severity: low; it needs a hand-written hook, and the
+  rewrite is the one install already makes for a gone copy. What closes it:
+  strip a leading interpreter word before the existence test.
+
+- **A gone copy's hook and a live third copy's hook in one settings file can
+  give the claude consent line the codex wording.** The two copies report
+  different states for the same file, and the wording follows one of them.
+  Severity: cosmetic; the plan and the writes are right, only the words
+  on the consent line are. What closes it: choose the wording from every
+  state the file reported.
+
+- **The hook probes derive the script names from the patch; the merge engines
+  take them from the given script list.** Today both name the same two
+  scripts. A third hook script would have to be added in both places, or the
+  probe and the merge would disagree about which hooks are roost's. Severity:
+  latent; nothing is wrong until a script is added. What closes it: one list
+  that both read.
+
+- **The install test that makes a link's parent directory read-only SKIPs as
+  root.** `chmod 555` does not stop root from writing, and the Ubuntu
+  container runs the suite as root, so the failed-relink branch is proven only
+  on a developer machine. Severity: low; a Mac run covers it before a pull
+  request. What closes it: a way to make the write fail that root cannot
+  ignore, such as a path whose parent is a file.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at
