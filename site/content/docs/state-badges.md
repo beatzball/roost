@@ -32,10 +32,10 @@ roost install
 It touches only harnesses you already have, prints the plan before it writes
 anything, and asks once. It creates the three adapter symlinks (opencode, pi,
 copilot), merges roost's hooks into Claude's `settings.json`, writes
-codex's `hooks.json`, and turns on copilot's `EXTENSIONS` flag. `roost update`
-is a real alias for the same command — it re-wires, it does **not** fetch new
-roost code — so run either one again after installing a new harness or moving
-your checkout.
+codex's `hooks.json`, and turns on copilot's `EXTENSIONS` flag. It re-wires and
+does **not** fetch new roost code, so run it again after installing a new
+harness or moving your checkout. `roost upgrade` pulls new code and then runs
+it; `roost update` is the same command as `roost upgrade`.
 
 It is safe to repeat. Hooks you already have are kept and roost's join them, a
 second run adds no duplicates, every file it edits is backed up beside itself

@@ -1984,9 +1984,9 @@ sent people looking for a checkout that was not there.
 
 **A note, not a defect.** Pointing roost at your agents used to be a separate
 manual step per harness. `curl … | sh` now does it in the same step as the
-`PATH` line, and `roost install` — alias `roost update`, the same code path —
+`PATH` line, and `roost install` (`roost update` is `roost upgrade`'s alias now),
 is the re-run for later: a harness installed since, a moved or re-cloned
-checkout, a release that adds an adapter. Neither fetches new roost code.
+checkout, a release that adds an adapter. `roost install` does not fetch new roost code.
 
 **The only two steps `roost install` cannot do are prompts**, and it prints
 both on every run, including runs that wrote nothing:

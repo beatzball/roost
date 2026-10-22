@@ -2160,7 +2160,8 @@ fi
 #
 # The proof is byte-identical --dry-run output, from a copy of roost that is
 # NOT a git checkout: `upgrade` pulls, so a run from a repository would reach
-# the network. From a plain copy its gate refuses before any git or tmux call,
+# the network. Here the shim PATH has no git, so the first gate rule
+# (`gate_git`) refuses before any git or tmux call,
 # identically for both spellings (rc 1, same stderr). Both runs share ONE
 # sandbox so the refusal text, which names the checkout, cannot differ for a
 # reason that says nothing about the dispatch.

@@ -36,7 +36,7 @@ scripts/roost-notify        # cross-platform desktop notification delivery
 scripts/roost-doctor        # preflight checks (tmux version, truecolor, fzf, JSON
                             #   reader, hooks, adapter links, notifier)
 scripts/roost-init          # setup wizard (theme, glyphs, separator style, prints hooks)
-scripts/roost-install       # `roost install` / `roost update`: wire every installed
+scripts/roost-install       # `roost install`: wire every installed
                             #   harness to this checkout (symlinks + hook files)
 scripts/roost-settings      # live settings TUI (prefix S)
 scripts/roost-next-blocked  # select the most urgent pane: error, else blocked (prefix b)

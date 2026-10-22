@@ -185,24 +185,6 @@ harness that had none, and both claude and codex record roost's hook by
 absolute path, so a checkout you have moved or re-cloned needs wiring again
 either way.
 
-On a machine that has roost, `roost upgrade` does the same in one command: it
-runs `git pull --ff-only` in the checkout roost runs from, re-applies wiring on
-a running server, then runs the installer that pull fetched, with `--yes`,
-`--dry-run` and `--only` passed through (`--dry-run` makes the installer dry;
-the pull still happens). `roost update` is the same command. It only pulls a
-plain `main` with nothing of yours in it, and refuses before touching the
-network, printing the reason and the curl line above as the fallback, when:
-
-- the directory is not a git checkout, or git is not on `PATH`;
-- it is a git worktree;
-- it is on another branch or a detached HEAD, or `main` has no upstream to pull
-  from;
-- it has local commit(s) on `main` that are not on the upstream, or uncommitted
-  changes to tracked files.
-
-If the pull itself cannot fast-forward, it says `git pull --ff-only failed —
-nothing was wired` and stops.
-
 Roost tells a moved checkout from a second one by asking whether the path a
 hook names still exists. A hook pointing at a checkout that is gone is roost's
 own and broken, so claude's is replaced, exactly as a dangling symlink is
@@ -269,6 +251,27 @@ roost: installing from this checkout   # installed it as it stands, no pull
 
 Read the path. If it is not the install you meant to upgrade, stop there — the
 rest of the run happened to a different copy.
+
+### `roost upgrade`
+
+On a machine that has roost, `roost upgrade` does the same in one command: it
+runs `git pull --ff-only` in the checkout roost runs from, re-applies wiring on
+a running server, then runs the installer that pull fetched, with `--yes`,
+`--dry-run` and `--only` passed through (`--dry-run` makes the installer dry
+and skips the wiring step; the pull still happens). Wiring is also left alone
+on a server started from another checkout, and it says so. `roost update` is the same command. It only pulls a
+plain `main` with nothing of yours in it, and refuses before touching the
+network, printing the reason and the curl line above as the fallback, when:
+
+- the directory is not a git checkout, or git is not on `PATH`;
+- it is a git worktree;
+- it is on another branch or a detached HEAD, or `main` has no upstream to pull
+  from;
+- it has local commit(s) on `main` that are not on the upstream, or uncommitted
+  changes to tracked files.
+
+If the pull itself fails, it says `git pull --ff-only failed —
+nothing was wired` and stops.
 
 ## First run
 

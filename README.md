@@ -160,24 +160,6 @@ That last part is not busywork — a release can add an adapter, and both
 `settings.json` and `hooks.json` name roost by absolute path, so a checkout you
 moved or re-cloned has to be wired again.
 
-On a machine that has roost, `roost upgrade` does the same in one command: it
-runs `git pull --ff-only` in the checkout roost runs from, re-applies wiring on
-a running server, then runs the installer that pull fetched, with `--yes`,
-`--dry-run` and `--only` passed through (`--dry-run` makes the installer dry;
-the pull still happens). `roost update` is the same command. It only pulls a
-plain `main` with nothing of yours in it, and refuses before touching the
-network, printing the reason and the curl line above as the fallback, when:
-
-- the directory is not a git checkout, or git is not on `PATH`;
-- it is a git worktree;
-- it is on another branch or a detached HEAD, or `main` has no upstream to pull
-  from;
-- it has local commit(s) on `main` that are not on the upstream, or uncommitted
-  changes to tracked files.
-
-If the pull itself cannot fast-forward, it says `git pull --ff-only failed —
-nothing was wired` and stops.
-
 Claude and the three symlink adapters are repaired for you: roost checks
 whether the checkout a hook names still exists, and replaces the entry when it
 does not. **Codex is the exception, and it is deliberate.** Codex stores a hash
@@ -222,6 +204,27 @@ branch it took and the path it took it on: `roost: already cloned` (found that
 clone and pulled it) or `roost: installing from this checkout` (installed that
 directory as it stands, no pull). If the path is not the install you meant,
 stop — the rest of the run is about a different copy.
+
+### `roost upgrade`
+
+On a machine that has roost, `roost upgrade` does the same in one command: it
+runs `git pull --ff-only` in the checkout roost runs from, re-applies wiring on
+a running server, then runs the installer that pull fetched, with `--yes`,
+`--dry-run` and `--only` passed through (`--dry-run` makes the installer dry
+and skips the wiring step; the pull still happens). Wiring is also left alone
+on a server started from another checkout, and it says so. `roost update` is the same command. It only pulls a
+plain `main` with nothing of yours in it, and refuses before touching the
+network, printing the reason and the curl line above as the fallback, when:
+
+- the directory is not a git checkout, or git is not on `PATH`;
+- it is a git worktree;
+- it is on another branch or a detached HEAD, or `main` has no upstream to pull
+  from;
+- it has local commit(s) on `main` that are not on the upstream, or uncommitted
+  changes to tracked files.
+
+If the pull itself fails, it says `git pull --ff-only failed —
+nothing was wired` and stops.
 
 ## Quick start
 

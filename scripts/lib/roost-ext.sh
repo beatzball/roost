@@ -319,7 +319,7 @@ roost_ext_core_commands() {
     validate \
     ext \
     wiring \
-    install update \
+    install upgrade update \
     init \
     settings \
     whoami \
