@@ -205,6 +205,108 @@ is a child of `copilot`, and the opencode and pi plugins run in the agent itself
 `ps -o ppid= -p PID` **2.4 ms** per level. Claude's hook is 2 levels below the
 pane process, so that is about 5 ms per walk.
 
+### M10. Subagent hooks: `SubagentStart` and `SubagentStop` (measured, Claude Code 2.1.307)
+
+Added 2026-10-21 for Phase 0 lane D (the subagent count on the pane). Nothing
+above is changed by it, and no decision in §8 moves; it answers the three
+questions that lane's hook needs answered before it reads a payload.
+
+**Rig.** The §2 shape, rebuilt on Claude Code **2.1.307**: a throwaway `-S`
+socket under `/tmp/amx.*` ending in `/roost`, `HOME`, `XDG_CONFIG_HOME` and
+`XDG_STATE_HOME` at temp directories, a local fake Messages API on
+`ANTHROPIC_BASE_URL` that answers one request with an `Agent` tool call and
+every other with a short text, a logger on 25 of Claude's hook events (not
+`WorktreeCreate`/`WorktreeRemove`) beside this checkout's `roost hooks claude`,
+`--model haiku --setting-sources local --settings <file>`. Four runs of three
+turns each: an `Agent` call, an `Agent` call with `run_in_background: true`, a
+plain turn, then a fifth run with a three-agent turn added. 20 `Stop`,
+8 `SubagentStart`, 8 `SubagentStop` logged in the four, 7 / 5 / 5 in the
+fifth. `~/.claude/settings.json` hashed before and after each run: unchanged.
+
+Two rig notes for the next person. `--permission-mode default` is on the
+command line because 2.1.307 starts in **auto mode**, whose classifier asks the
+same API; against the fake it answered "no usable answer" and the `Agent` call
+was never run (one run, discarded). And one run — the auto-mode one — added a
+trust entry for the throwaway project directory to the **real** `~/.claude.json`
+with `HOME` redirected, the same file §2 saw change; the four measured runs did
+not. Hash it too and look for an `amx.` project key afterwards.
+
+**1. What each payload carries (measured, 8 of 8).**
+
+`SubagentStart`, in full: `session_id`, `transcript_path`, `cwd`, `prompt_id`,
+`agent_id`, `agent_type`, `hook_event_name`. The `session_id` and
+`transcript_path` are the **main** session's, `prompt_id` is the one on the
+turn's `UserPromptSubmit`, and there is no transcript path for the agent
+itself.
+
+`SubagentStop` carries everything a `Stop` carries — `session_id`,
+`transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `effort`,
+`hook_event_name`, `stop_hook_active`, `last_assistant_message` (the
+**subagent's** answer, `SUBPONG` in the rig), `background_tasks`,
+`session_crons` — plus `agent_id`, `agent_type` and `agent_transcript_path`:
+`<the main transcript's directory>/<session_id>/subagents/agent-<agent_id>.jsonl`.
+Its `background_tasks` still lists the agent that is stopping as `running`
+(8 of 8), so that field on a `SubagentStop` says nothing about the agent.
+
+`agent_id` was 17 lower-case hex characters every time, 8 of 8 distinct.
+Not known whether the length is fixed; a reader should accept 1–64 of
+`[a-z0-9]` and refuse the rest rather than assume 17.
+
+**2. The empty-`agent_type` helper fork of M4: not seen in 4 runs.** 0 of
+20 `Stop` were followed by a `SubagentStop` with `agent_type: ""`, and 0 of
+8 `SubagentStart` had one; 0 of 48 API requests carried `[SUGGESTION MODE`.
+On 2.1.283 (M4) that fork fired 5–15 ms after **every** `Stop`. Not known
+whether 2.1.307 removed it, turned it off by default, or turns it off for a
+non-Anthropic base URL or `--setting-sources local`. So M4's rule stands as a
+rule, not as something this version proves: a payload whose `agent_type` is
+empty is not the user's work and must change nothing.
+
+**3. The order relative to `Stop` (measured, 8 of 8).** On 2.1.307 an
+`Agent` call is backgrounded whether or not it asks to be: the screen said
+"Backgrounded agent" for both shapes, and the tool's `PostToolUse` fired in the
+same millisecond as `SubagentStart`, 25–33 ms after its `PreToolUse`. The
+sequence then was, every time:
+
+| event | when |
+|---|---|
+| `PreToolUse` (`Agent`) | t |
+| `SubagentStart`, `PostToolUse` (`Agent`) | t + 25–33 ms |
+| `Stop`, `background_tasks: [{type: subagent, status: running}]` | ~40 ms later |
+| `SubagentStop` | **5.6–12.0 ms after that `Stop`** |
+| `UserPromptSubmit` whose prompt is `<task-notification>…` | ~60 ms later |
+| `Stop`, `background_tasks: []` | 57–58 ms after it |
+
+The subagent's whole life in the rig is one API round trip answered in about
+10 ms, which is the shortest it can be. A real subagent ends when it ends: M3
+(2.1.283) saw its `SubagentStop` 31 s after the main `Stop`. So the order is
+`SubagentStart` → `Stop` → `SubagentStop` whenever the subagent outlives the
+main turn's last API call, and a hook that counts starts and stops sees the
+count go to 1 **before** the turn's `Stop` and back to 0 **after** it, on
+every single `Agent` call, however short.
+
+**The order is not fixed, and the start hooks overlap (measured, one run).**
+A fifth run added a turn whose one assistant message carried **three** `Agent`
+tool calls. The three `PreToolUse` fired in the same millisecond; the three
+`SubagentStart` fired at +95.2, +95.3 and +95.4 ms from the prompt — **0.2 ms
+apart, so the three hook processes run at the same time** — each in the same
+millisecond as one of the three `PostToolUse`. Then two `SubagentStop` landed
+at +148.4 and +158.5 ms, the main `Stop` at +158.5 ms (`background_tasks`
+listing all three as `running`), the third `SubagentStop` at +160.8 ms, then
+three `<task-notification>` prompts and one `Stop` with `background_tasks: []`.
+So a `SubagentStop` **can** arrive before the turn's `Stop`, and a hook that
+reads a count, adds one and writes it back loses updates: three starts 0.2 ms
+apart would read the same value. The count has to be changed where it is
+stored, in one tmux command, which tmux's `e|+` format and `set-option -F`
+give (measured on tmux 3.4 and 3.6: 50 clients each sending one
+`set-option -F '#{e|+:#{@c},1}'` at once left `@c` at 50, every time).
+
+**Not measured here.** A subagent that makes tool calls (its `PostToolUse` on
+the main pane is M3's shape); a subagent that opens a dialog; a subagent
+killed from the `/tasks` list; whether `SubagentStop` fires when the whole
+session exits with agents still running; more than three agents at once; any
+harness but Claude (Q7 — codex has events of the same two names and is on
+the list above).
+
 ### Not measured
 
 - Background work on **codex, opencode, pi, copilot.** codex has
