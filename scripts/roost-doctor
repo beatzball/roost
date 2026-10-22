@@ -493,7 +493,13 @@ if [ "$oc_v2" = 1 ]; then
     other-checkout)
       warn "opencode 2 plugin at $oc2plug points at another copy of roost, $(readlink "$oc2plug") — run: roost install, or: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\"" ;;
     *)
-      warn "opencode 2 plugin at $oc2plug is not this install — look at it first, then relink it: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\"" ;;
+      if [ -L "$oc2plug" ]; then
+        warn "opencode 2 plugin at $oc2plug is not this install — look at it first, then relink it: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\""
+      else
+        # Never print an rm for something that is not a link: it would delete
+        # the user's file or directory outright.
+        warn "opencode 2 plugin at $oc2plug is not this install, and it is not a symlink — look at it first, move it aside yourself, then: ln -s \"$oc2want\" \"$oc2plug\""
+      fi ;;
   esac
   # The one that matters (#154). roost's wiring exports OPENCODE_CONFIG_DIR to
   # every pane, and opencode 2 reads that directory INSTEAD of the user's own —
@@ -556,7 +562,13 @@ elif command -v opencode >/dev/null 2>&1; then
       other-checkout)
         warn "opencode plugin at $ocplug points at another copy of roost, $(readlink "$ocplug") — run: roost install, or: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\"" ;;
       *)
-        warn "opencode plugin at $ocplug is not this install — look at it first, then relink it: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\"" ;;
+        if [ -L "$ocplug" ]; then
+          warn "opencode plugin at $ocplug is not this install — look at it first, then relink it: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\""
+        else
+          # Never print an rm for something that is not a link: it would delete
+          # the user's file or directory outright.
+          warn "opencode plugin at $ocplug is not this install, and it is not a symlink — look at it first, move it aside yourself, then: ln -s \"$ocwant\" \"$ocplug\""
+        fi ;;
     esac
   fi
 fi
@@ -582,7 +594,17 @@ if command -v copilot >/dev/null 2>&1; then
       other-checkout)
         warn "copilot extension at $cpext points at another copy of roost, $(readlink "$cpext") — run: roost install, or: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\"" ;;
       *)
-        warn "copilot extension at $cpext is not this install — look at it first, then relink it: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\"" ;;
+        if [ -L "$cpext" ]; then
+          warn "copilot extension at $cpext is not this install — look at it first, then relink it: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\""
+        elif [ -L "$(dirname "$cpext")" ]; then
+          # roost links the file; a hand-made link on the folder would make
+          # `rm` of the file delete the other copy's tracked extension.mjs.
+          warn "copilot extension at $cpext is reached through a symlinked folder, $(dirname "$cpext") -> $(readlink "$(dirname "$cpext")") — roost links the file, not the folder; look at the folder first, then replace it: rm \"$(dirname "$cpext")\" && mkdir -p \"$(dirname "$cpext")\" && ln -s \"$cpwant\" \"$cpext\""
+        else
+          # Never print an rm for something that is not a link: it would delete
+          # the user's file or directory outright.
+          warn "copilot extension at $cpext is not this install, and it is not a symlink — look at it first, move it aside yourself, then: ln -s \"$cpwant\" \"$cpext\""
+        fi ;;
     esac
   fi
 
@@ -638,7 +660,13 @@ if command -v pi >/dev/null 2>&1; then
       other-checkout)
         warn "pi extension at $piext points at another copy of roost, $(readlink "$piext") — run: roost install, or: rm \"$piext\" && ln -s \"$piwant\" \"$piext\"" ;;
       *)
-        warn "pi extension at $piext is not this install — look at it first, then relink it: rm \"$piext\" && ln -s \"$piwant\" \"$piext\"" ;;
+        if [ -L "$piext" ]; then
+          warn "pi extension at $piext is not this install — look at it first, then relink it: rm \"$piext\" && ln -s \"$piwant\" \"$piext\""
+        else
+          # Never print an rm for something that is not a link: it would delete
+          # the user's file or directory outright.
+          warn "pi extension at $piext is not this install, and it is not a symlink — look at it first, move it aside yourself, then: ln -s \"$piwant\" \"$piext\""
+        fi ;;
     esac
   fi
 
