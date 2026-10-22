@@ -180,7 +180,7 @@ run_offer() { # run_offer BOX [validate args...]
   CODEX_HOME="$box/home/.codex" \
   CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="${SHIM:-$ALL_SHIM}" \
-    bash "$DRIVER" "$HEAD" --out "$box/report.md" "$@" </dev/null 2>&1
+    bash "$DRIVER" "${SLICE:-$HEAD}" --out "$box/report.md" "$@" </dev/null 2>&1
 }
 
 # result_of OUTPUT -> just the ===RESULT=== block, so an assertion about
@@ -571,6 +571,122 @@ assert_contains "$res" "REMOVED	opencode	$v1path	" \
   "opencode 2, roost's own dangling link (control): the link is gone"
 
 rm -rf "$V2_SHIM" "$V1_SHIM"
+
+# ===========================================================================
+# 11b. a link to ANOTHER copy of roost: predicted exactly as the installer acts
+# ===========================================================================
+# scripts/roost-install relinks such a link from a plain checkout and refuses
+# it from a git worktree (its IN_WORKTREE rule), and the offer runs that
+# installer right after it speaks, so the offer must say the same thing the
+# installer will do. Both checkouts here are built by this test, never $REPO:
+# the checkout running this suite is a worktree on the machine it is developed
+# on and a plain clone on CI, and git is on the shim PATH so the question is
+# really asked.
+tgit() { GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@t "$@"; }
+GIT_SHIM="$(make_shim opencode pi copilot)"
+real_git="$(command -v git 2>/dev/null)" && ln -s "$real_git" "$GIT_SHIM/git"
+mk_slice() { # mk_slice CHECKOUT -> a roost-validate head for that checkout
+  sed '/^# --- main /,$d' "$1/scripts/roost-validate" > "$1/scripts/roost-validate-head"
+}
+vplain="$TMP/v-plain"
+cp -R "$CO" "$vplain"; rm -rf "$vplain/.git"; mk_slice "$vplain"
+vrepo="$TMP/v-repo"; vwt="$TMP/v-repo-wt"
+cp -R "$CO" "$vrepo"
+( cd "$vrepo" && tgit init -q && tgit add -A && tgit commit -q -m one && tgit worktree add -q "$vwt" -b vwt ) >/dev/null 2>&1
+mk_slice "$vwt"
+# The setup checks itself: a worktree that was never made would leave every
+# "blocked" assertion below passing for the wrong reason.
+PATH="$GIT_SHIM" bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$vwt"
+assert_eq "$?" "0" "other-checkout offer setup: the worktree reads as a worktree"
+PATH="$GIT_SHIM" bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$vplain"
+assert_eq "$?" "1" "other-checkout offer setup: the plain checkout does not"
+
+oc2="$TMP/v-second-checkout"
+mkdir -p "$oc2"; cp -R "$REPO/adapters" "$oc2/"
+ptail="$(atarget pi)"; ptail="${ptail#"$(cd -P "$CO" && pwd)"}"
+# The adapter table resolves physical paths (/private/tmp on a Mac), so the
+# expectations below are spelled with the physical path of each checkout too.
+vplain_p="$(cd -P "$vplain" && pwd)"; vwt_p="$(cd -P "$vwt" && pwd)"
+
+# plain checkout: the link is one the run will make, and install makes it
+box="$TMP/oc-plain"
+mkdir -p "$box/home/.pi/agent/extensions"
+ln -s "$oc2$ptail" "$box/home/.pi/agent/extensions/roost.ts"
+ppath="$box/home/.pi/agent/extensions/roost.ts"
+SHIM="$GIT_SHIM" SLICE="$vplain/scripts/roost-validate-head" out="$(run_offer "$box" --install)"
+res="$(result_of "$out")"
+# After the offer's own header and not in the blocked note: the path alone
+# also appears under "left alone", so the "replaces" line is what tells them apart.
+assert_contains "$out" "replaces the link to another copy of roost, $oc2$ptail" \
+  "other-checkout, plain checkout: the offer lists the link as one it will make, and names what it replaces"
+case "${out##*These roost adapters are not linked yet}" in *"    pi        $ppath"*) s=listed ;; *) s=missing ;; esac
+assert_eq "$s" "listed" "other-checkout, plain checkout: the path is in the candidate list, after its header"
+assert_contains "$out" "$oc2$ptail" "other-checkout, plain checkout: the offer names the copy it replaces"
+case "$res" in *"BLOCKED	pi	"*) s=blocked ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "other-checkout, plain checkout: not filed as left alone"
+assert_contains "$res" "INSTALLED	$ppath" "other-checkout, plain checkout: the run reports the link as its own work"
+assert_eq "$(readlink "$ppath")" "$vplain_p$ptail" "other-checkout, plain checkout: the link now points at this checkout"
+rep_body="${out##*===REPORT===}"; rep_body="${rep_body%%===RESULT===*}"
+assert_contains "$rep_body" "ln -s \"$oc2$ptail\" \"\$HOME/.pi/agent/extensions/roost.ts\"" \
+  "other-checkout, plain checkout: the report's undo (home path redacted to \$HOME) puts the other copy's link back"
+# The report redacts the home path to $HOME, as the undo assertion above
+# spells it, so the raw $ppath could never match and this could never fail.
+case "$rep_body" in *'
+rm "$HOME/.pi/agent/extensions/roost.ts"
+'*) s=bare ;; *) s=none ;; esac
+assert_eq "$s" "none" "other-checkout, plain checkout: no bare rm line for the relinked path"
+assert_contains "$res" "relinked 1 that pointed at another copy of roost" \
+  "other-checkout, plain checkout: the decision counts the relink apart from the creates"
+
+# worktree: blocked, unchanged, and the installer is not asked to touch it
+box="$TMP/oc-wt"
+mkdir -p "$box/home/.pi/agent/extensions"
+ln -s "$oc2$ptail" "$box/home/.pi/agent/extensions/roost.ts"
+ppath="$box/home/.pi/agent/extensions/roost.ts"
+SHIM="$GIT_SHIM" SLICE="$vwt/scripts/roost-validate-head" out="$(run_offer "$box" --install)"
+res="$(result_of "$out")"
+assert_contains "$res" "BLOCKED	pi	$ppath" "other-checkout, worktree: pi is reported as left alone"
+assert_eq "$(readlink "$ppath")" "$oc2$ptail" "other-checkout, worktree: the link is exactly as it was"
+case "$res" in *"INSTALLED	$ppath"*) s=claimed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "other-checkout, worktree: not claimed as this run's work"
+
+# the manual fix, from both: the same line doctor prints. From a plain
+# checkout that is rm && ln -s to this checkout; from a worktree it is no
+# command at all, because the link it would make dangles once the worktree is
+# removed.
+cat > "$TMP/fixdriver.sh" <<'FIXDRIVER'
+#!/usr/bin/env bash
+set -u
+slice="$1"; shift
+. "$slice" "$@"
+trap - EXIT
+h_adapter_fix pi
+FIXDRIVER
+for slice in "$vplain" "$vwt"; do
+  here_p="$(cd -P "$slice" && pwd)"
+  box="$TMP/oc-fix"; rm -rf "$box"
+  mkdir -p "$box/home/.pi/agent/extensions"
+  ppath="$box/home/.pi/agent/extensions/roost.ts"
+  ln -s "$oc2$ptail" "$ppath"
+  fix="$(HOME="$box/home" XDG_CONFIG_HOME="$box/home/.config" PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+    CODEX_HOME="$box/home/.codex" COPILOT_HOME="$box/home/.copilot" PATH="$GIT_SHIM" \
+    bash "$TMP/fixdriver.sh" "$slice/scripts/roost-validate-head" --out "$box/r.md" </dev/null 2>&1)"
+  assert_contains "$fix" "points at another copy of roost, $oc2$ptail" "other-checkout fix (${slice##*/}): it names the other copy"
+  if [ "$slice" = "$vplain" ]; then
+    assert_contains "$fix" "rm \"$ppath\" && ln -s \"$here_p$ptail\" \"$ppath\"" \
+      "other-checkout fix (plain): the manual line is rm && ln -s to this checkout"
+    assert_contains "$fix" "(not relinked by this run) — run: roost install, or: rm" "other-checkout fix (plain): says it was not relinked"
+  else
+    assert_contains "$fix" "left alone, because $here_p is a git worktree and roost does not relink from one" \
+      "other-checkout fix (worktree): says why it was left alone, and names the worktree"
+    assert_contains "$fix" "run roost install from the primary checkout, or from that copy" \
+      "other-checkout fix (worktree): says where to run install"
+    case "$fix" in *'rm "'*) s=rm ;; *) s=none ;; esac
+    assert_eq "$s" "none" "other-checkout fix (worktree): no rm is printed"
+    case "$fix" in *'ln -s'*) s=ln ;; *) s=none ;; esac
+    assert_eq "$s" "none" "other-checkout fix (worktree): no ln -s is printed"
+  fi
+done
 
 # ===========================================================================
 # 12. the file itself

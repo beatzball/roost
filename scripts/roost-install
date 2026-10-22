@@ -71,6 +71,17 @@ HERE="${HERE%/}"
 # no backup.
 . "$HERE/scripts/lib/roost-json.sh"
 
+# Whether THIS checkout is a linked git worktree, read once per run. It decides
+# one thing: whether a link that names another copy of roost may be taken over
+# (see the other-checkout arm in the plan below). On the machine roost is built
+# on, the live agents run from the primary checkout and every build and test
+# pane runs from a worktree under .claude/worktrees/; a `roost install --yes`
+# in one of those panes must not steal the primary's links, because the
+# worktree is deleted after its merge and the links would then point at
+# nothing. No git, or not a repository at all, reads as not a worktree.
+IN_WORKTREE=0
+roost_checkout_is_worktree "$HERE" && IN_WORKTREE=1
+
 # The hook target scripts, for the merge and for telling "already wired to
 # THIS checkout" from "wired to a different one".
 #
@@ -384,13 +395,24 @@ def main():
 
     patch = json.loads(sys.argv[3])["hooks"]
     want = sys.argv[4]
-    # ALSO is a DIRECTORY whose commands all count as roost's own. The caller
-    # passes it only after proving on the FILESYSTEM that it is gone -- a hook
-    # wired to a checkout that has been moved, renamed or deleted. Such an
-    # entry is roost's, and broken, and safe to replace; the symlink adapters
-    # have always treated their equivalent (`dangling`) that way. Without it
-    # the entry classified as another checkout's and the whole claude step was
-    # refused on every re-run, forever.
+    # ALSO is the scripts DIRECTORY of another copy of roost, and KIND says
+    # how much of it counts as roost's own:
+    #
+    #   gone  the caller proved on the FILESYSTEM that it is gone -- a hook
+    #         wired to a checkout that has been moved, renamed or deleted.
+    #         EVERY command under it counts. Such an entry is roost's, and
+    #         broken, and safe to replace; the symlink adapters have always
+    #         treated their equivalent (`dangling`) that way. Without it the
+    #         entry classified as another checkout's and the whole claude
+    #         step was refused on every re-run, forever.
+    #   live  the copy still EXISTS, and the caller is a plain checkout taking
+    #         its hooks over. Only roost's own scripts count: a command whose
+    #         first word is exactly ALSO/<name>, for a <name> this patch
+    #         invokes (roost-agent-state, roost-session-context). Anything
+    #         else under that directory can run, and may be the user's own --
+    #         a prefix match deleted a hand-added `<other>/scripts/roost-notify`
+    #         hook, and with a roost-agent-state copied into ~/bin it deleted
+    #         the user's formatter beside it.
     #
     # A DIRECTORY rather than one script path, and that distinction cost an
     # end-to-end run to find. The claude patch invokes TWO scripts from that
@@ -404,7 +426,25 @@ def main():
     # Matched with a trailing "/" so a sibling directory whose name merely
     # starts with the same characters is not swept up with it.
     also = sys.argv[5] if len(sys.argv) > 5 else ""
+    kind = sys.argv[6] if len(sys.argv) > 6 else "gone"
     marker = want.rsplit("/", 1)[-1]
+    # For `live`: the script names this patch runs from want's directory,
+    # read out of the patch itself so a script added there is covered here
+    # without anybody remembering to. Cut at the directory, not at the first
+    # space, so a checkout path with a space in it still yields the name.
+    wantdir = want.rsplit("/", 1)[0]
+    pcmds = []
+    commands(json.loads(sys.argv[3]), pcmds)
+    names = sorted({c[len(wantdir) + 1:].split(" ", 1)[0]
+                    for c in pcmds if c.startswith(wantdir + "/")})
+    alsos = [also + "/" + n for n in names if n] if also else []
+
+    def also_owns(cmd):
+        if not also:
+            return False
+        if kind == "live":
+            return any(cmd == a or cmd.startswith(a + " ") for a in alsos)
+        return cmd.startswith(also + "/")
     hooks = data.get("hooks")
     if hooks is None:
         # A settings.json with no "hooks" key at all: the most ordinary claude
@@ -444,8 +484,8 @@ def main():
             for cmd in cmds:
                 if cmd == want or cmd.startswith(want + " "):
                     continue
-                if also and cmd.startswith(also + "/"):
-                    continue          # ours, from a checkout that is gone
+                if also_owns(cmd):
+                    continue          # ours, from another copy (see KIND)
                 mine = False
                 if marker in cmd and checkout is None:
                     checkout = cmd
@@ -477,13 +517,22 @@ PY
 json_probe__jq() {
   cat <<'JQ'
 def cmds: [ .. | objects | to_entries[] | select(.key == "command") | .value | select(type == "string") ];
-# $also is a second command prefix that counts as roost's own -- see the
-# python probe's note. Defined once and used by both ownership tests below,
-# because two copies of this predicate is exactly how one of them ends up
-# knowing about $also and the other not.
-def ours: . as $c
+# $also is another copy's scripts directory, and $kind says how much of it
+# counts as roost's own -- see the python probe's note on KIND: under `gone`
+# every command below it, under `live` only a command whose first word is
+# exactly $also/<name> for a script this patch runs. Defined once and used by
+# both ownership tests below, because two copies of this predicate is exactly
+# how one of them ends up knowing about $also and the other not.
+($want | sub("/[^/]*$"; "")) as $wantdir
+| ( [ $patch | cmds[] | select(startswith($wantdir + "/"))
+      | .[($wantdir | length) + 1:] | split(" ")[0] | select(. != "") ]
+    | unique | map($also + "/" + .) ) as $alsos
+| def ours: . as $c
   | ($c == $want or ($c | startswith($want + " ")))
-    or (($also != "") and ($c | startswith($also + "/")));
+    or (($also != "")
+        and (if $kind == "live"
+             then any($alsos[]; . as $a | $c == $a or ($c | startswith($a + " ")))
+             else ($c | startswith($also + "/")) end));
 if length != 1 then "malformed"
 else .[0] as $d
 | if ($d | type) != "object" then "malformed"
@@ -522,8 +571,10 @@ end
 JQ
 }
 
-json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO]]
-  local mode="$1" file="$2" patch="${3:-}" want="${4:-}" also="${5:-}" out
+# ALSO and KIND (gone|live, default gone): another copy's scripts directory and
+# how much of it counts as roost's -- see KIND in the python engine.
+json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO [KIND]]]
+  local mode="$1" file="$2" patch="${3:-}" want="${4:-}" also="${5:-}" kind="${6:-gone}" out
   # jq's --argjson needs a document even in flag mode, where none is used.
   [ -n "$patch" ] || patch='"'"'{"hooks":{}}'"'"'
   # -r before anything else: a file that exists and cannot be read must not
@@ -532,10 +583,10 @@ json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO]]
   [ -r "$file" ] || { printf 'unreadable'; return 0; }
   case "$(roost_json_tool)" in
     python3)
-      out="$(python3 -c "$(json_probe__py)" "$mode" "$file" "$patch" "$want" "$also" 2>/dev/null)" ;;
+      out="$(python3 -c "$(json_probe__py)" "$mode" "$file" "$patch" "$want" "$also" "$kind" 2>/dev/null)" ;;
     jq)
       out="$(jq -r --slurp --arg mode "$mode" --argjson patch "$patch" --arg want "$want" \
-               --arg also "$also" "$(json_probe__jq)" "$file" 2>/dev/null)" ;;
+               --arg also "$also" --arg kind "$kind" "$(json_probe__jq)" "$file" 2>/dev/null)" ;;
   esac
   case "$out" in
     ours|write*|other-checkout*|malformed) printf '%s' "$out" ;;
@@ -548,8 +599,7 @@ json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO]]
 }
 
 # --- is this checkout itself behind? ---------------------------------------
-# `roost update` is an alias for `roost install`, so people will
-# reasonably expect it to update roost's own code. It does not, and must not:
+# People will reasonably expect `roost install` to update roost's own code. It does not, and must not:
 # the checkout may be someone's dev tree with local work in it, and this tool
 # does not get to run `git pull` over that. All it does is SAY so.
 #
@@ -563,6 +613,11 @@ json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO]]
 # Silent on every uninteresting answer: git not installed, not a repo at all
 # (a tarball install must not print a git error at someone who did nothing
 # wrong), no upstream configured, or already current.
+#
+# `roost upgrade` is the command that DOES pull, and the note names it. That
+# is safe because upgrade refuses before touching the network on anything that
+# is not a plain `main` with no local work; this installer has no such gate,
+# which is why it only ever says so.
 upstream_note() {
   local up n word
   command -v git >/dev/null 2>&1 || return 0
@@ -578,7 +633,7 @@ upstream_note() {
   printf 'This checkout is %s %s behind %s.\n' "$n" "$word" "$up"
   printf '  roost install wires harnesses to this checkout; it does not update roost\n'
   printf '  itself, and it has not fetched — this is what git already knew locally.\n'
-  printf '  To update the code:  git -C "%s" pull\n\n' "$HERE"
+  printf '  To update the code:  roost upgrade\n\n'
 }
 
 # --- plan ------------------------------------------------------------------
@@ -586,7 +641,7 @@ upstream_note() {
 # the floor here, so no associative arrays, and roost-validate already uses
 # this shape for BLOCKED_LINKS.
 #
-#   LINK_STEPS   ACTION \t HARNESS \t PATH \t TARGET \t KEY   (ACTION: link | relink)
+#   LINK_STEPS   ACTION \t HARNESS \t PATH \t TARGET \t KEY [\t OLD]   (ACTION: link | relink)
 #   UNLINK_STEPS ACTION \t HARNESS \t PATH \t TARGET \t KEY   (ACTION: unlink)
 #   OK_STEPS     HARNESS \t PATH
 #   REFUSED      HARNESS \t PATH \t TARGET \t ACTION
@@ -598,7 +653,15 @@ upstream_note() {
 # anything changes, because that is what the undo line has to put back.
 # REFUSED's ACTION is the step roost would have taken there, so the manual
 # note can say the right thing: `link`/`relink` means roost wants its adapter
-# at that path, `unlink` means it wants nothing there at all.
+# at that path, `unlink` means it wants nothing there at all, and `worktree`
+# means a link to ANOTHER copy of roost is there, which this run would relink
+# from a plain checkout and leaves alone because this checkout is a git
+# worktree. The note for that one reads the old target back off the link.
+#
+# OLD is the link's text as the plan read it, and only a relink of a link
+# that names another copy of roost carries it: the summary names it, and the
+# undo puts it back. It is the LAST field and is left off entirely, never
+# written empty, on every other row.
 #
 # A field is never left empty. IFS is a tab here, and a tab is IFS
 # whitespace, so `read` folds two tabs in a row into one and every later
@@ -607,6 +670,10 @@ LINK_STEPS=""
 UNLINK_STEPS=""
 OK_STEPS=""
 REFUSED=""
+# Paths in REFUSED with ACTION `worktree` where roost wants NOTHING (the 1.x
+# opencode link on opencode 2), not its adapter, one per line. The row shape
+# cannot say which, and the manual note for the two differs.
+WT_UNLINK=""
 DETECTED=""
 TAB="$(printf '\t')"
 
@@ -640,6 +707,20 @@ for h in $HARNESSES; do
     # roost_adapter_state reports `dangling` separately from `foreign`.
     dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")$TAB$k
 " ;;
+    # A live link to ANOTHER copy of roost's adapter: roost's own link, made by
+    # a second checkout's install. From a plain checkout it is replaced, and
+    # the plan, the summary and the undo all name what it pointed at, so the
+    # take-over is never silent. From a git worktree it is left alone: see
+    # IN_WORKTREE at the top of this file for why.
+    other-checkout)
+      if [ "$IN_WORKTREE" -eq 0 ]; then
+        LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")$TAB$k$TAB$(readlink "$(roost_adapter_path "$k")")
+"
+      else
+        REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")${TAB}worktree
+"
+        record_outcome refused "$h" "$(roost_adapter_path "$k")"
+      fi ;;
     foreign) REFUSED="$REFUSED$h$TAB$(roost_adapter_path "$k")$TAB$(roost_adapter_target "$k")${TAB}link
 "
              record_outcome refused "$h" "$(roost_adapter_path "$k")" ;;
@@ -659,9 +740,11 @@ for h in $HARNESSES; do
   # otherwise. `-L` as well, because `ok` is an `-ef` test and is
   # also true of the checkout's own FILE reached through a symlinked plugin/
   # directory; `rm` there would delete adapters/opencode/roost.js out of the
-  # checkout. Anything else at the path — the user's own plugin, another
-  # checkout's link — is left exactly as found and named, the same promise
-  # this file's header makes for every path that is not ours.
+  # checkout. A live link into ANOTHER copy of roost's 1.x adapter is roost's
+  # own link too, and is removed the same way — but only from a plain
+  # checkout, for the reason IN_WORKTREE gives. Anything else at the path —
+  # the user's own plugin — is left exactly as found and named, the same
+  # promise this file's header makes for every path that is not ours.
   if [ "$k" = opencode2 ]; then
     p1="$(roost_adapter_path opencode)"
     p1_state="$(roost_adapter_state opencode)"
@@ -672,6 +755,23 @@ for h in $HARNESSES; do
 "
         else
           REFUSED="$REFUSED$h$TAB$p1$TAB$(roost_adapter_target opencode)${TAB}unlink
+"
+          record_outcome refused "$h" "$p1"
+        fi ;;
+      # Another copy of roost's 1.x link: a curl install made it, and a second
+      # checkout now runs install on a machine whose opencode is 2.x. opencode
+      # 2 cannot load it and prints "1 plugin failed" on every start, whichever
+      # copy it names, so it goes exactly as this checkout's own would, with
+      # the link's text as the undo. From a worktree it is left alone, and the
+      # manual note says so (WT_UNLINK marks the row for that note).
+      other-checkout)
+        if [ "$IN_WORKTREE" -eq 0 ]; then
+          UNLINK_STEPS="${UNLINK_STEPS}unlink$TAB$h$TAB$p1$TAB$(readlink "$p1")${TAB}opencode
+"
+        else
+          REFUSED="$REFUSED$h$TAB$p1$TAB$(roost_adapter_target opencode)${TAB}worktree
+"
+          WT_UNLINK="$WT_UNLINK$p1
 "
           record_outcome refused "$h" "$p1"
         fi ;;
@@ -690,10 +790,17 @@ DETECTED="${DETECTED# }"
 # The harnesses configured by editing a JSON file rather than by a symlink.
 # One name per task as they land; the machinery below is shared.
 #
-#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t KEPT \t REPLACED \t LABEL
+#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t KEPT \t REPLACED \t DEAD \t KIND \t LABEL
 #                 KEPT     entries belonging to someone else that survive
 #                 REPLACED entries of roost's own that are not the current
 #                          shape and will be overwritten by it
+#                 DEAD     another copy's scripts directory whose hooks this
+#                          write takes over, or `-`
+#                 KIND     `gone` or `live` (see json_probe), or `-`
+#                 Never an empty field: these rows are read with IFS=tab,
+#                 tab is IFS whitespace, and an empty field between two tabs
+#                 collapses and shifts every field after it -- an ordinary
+#                 write once passed its LABEL to the merge as a directory.
 #   JSON_OK       HARNESS \t REAL_PATH
 #   JSON_REFUSED  HARNESS \t REAL_PATH \t WHY   (WHY runs to end of line)
 #
@@ -796,13 +903,35 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
     # because rewriting a codex handler re-hashes it and silently un-badges a
     # machine that had already granted trust: there, doing nothing really is
     # the lesser harm. What it gains here is an honest reason, below.
+    #
+    # A Claude hook naming another copy of roost that still EXISTS is taken
+    # over too, by the rule the symlink adapters follow (see IN_WORKTREE at
+    # the top): from a plain checkout it is replaced and the run names the
+    # other copy; from a worktree it is refused, so a build pane cannot steal
+    # the primary checkout's hooks and leave them pointing at a worktree that
+    # is deleted after its merge. Rewriting a Claude hook costs nothing like a
+    # codex re-hash: Claude reads the command afresh on its next session.
+    #
+    # A LIVE copy is taken over only when the hook names roost's own layout,
+    # <other>/scripts/roost-agent-state, and the probe is then re-asked with
+    # KIND `live`, which counts as roost's only the commands that run one of
+    # roost's own scripts there exactly. A roost-agent-state copied into
+    # ~/bin, or a `//` in the path, stays "a different checkout": the
+    # directory above it is not a copy of roost, and the rest of it may be
+    # the user's own hooks.
     json_dead=""
+    json_kind=""
     json_gone=0
+    json_other=0
     if [ "$json_state" = "other-checkout" ]; then
       json_marker="${json_want##*/}"
       case "$json_detail" in
         *"$json_marker"*)
           json_deadpath="${json_detail%%"$json_marker"*}$json_marker"
+          # Known gap, older than the live-copy rule: a command that runs the
+          # script through an interpreter (`bash <copy>/scripts/...`) is cut
+          # here with the interpreter in front, so -e fails and a LIVE copy
+          # reads as gone -- and is rewritten, even from a worktree.
           if [ ! -e "$json_deadpath" ]; then
             # Recorded for BOTH harnesses, because both have something honest
             # to say about it -- but only claude acts on it. codex keeps the
@@ -810,16 +939,21 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
             # somebody else's config, it is roost's own hook pointing at a
             # checkout that is gone, and roost still will not rewrite it.
             json_gone=1
+          elif [ "$h" = claude ]; then
+            case "$json_deadpath" in */scripts/roost-agent-state) json_other=1 ;; esac
           fi
-          if [ "$json_gone" -eq 1 ] && [ "$h" = claude ]; then
+          if [ "$h" = claude ] && { [ "$json_gone" -eq 1 ] || { [ "$json_other" -eq 1 ] && [ "$IN_WORKTREE" -eq 0 ]; }; }; then
             # The directory, not the script: see the python probe's note on
             # why one script path is not enough.
             json_dead="${json_deadpath%/*}"
-            # Ask again, this time saying that the dead path counts as ours.
-            # Re-probing rather than patching the counts by hand: the entry
-            # has to be re-classified (it becomes `replaced`, not `kept`), and
-            # the engine is the only thing that knows how to do that.
-            json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want" "$json_dead")"
+            json_kind=gone
+            [ "$json_gone" -eq 1 ] || json_kind=live
+            # Ask again, this time saying that the other copy counts as ours
+            # -- all of it when gone, its two scripts when live. Re-probing
+            # rather than patching the counts by hand: the entry has to be
+            # re-classified (it becomes `replaced`, not `kept`), and the
+            # engine is the only thing that knows how to do that.
+            json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want" "$json_dead" "$json_kind")"
             json_state="${json_answer%%$TAB*}"
             json_rest="${json_answer#*$TAB}"
             [ "$json_rest" = "$json_answer" ] && json_rest=""
@@ -842,10 +976,10 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
       # better message than this could produce — and routing it that way is
       # what keeps `--dry-run` at exit 0 while an attempted run exits 1.
       write)
-        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_kept$TAB$json_repl$TAB$json_dead$TAB$json_label
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_kept$TAB$json_repl$TAB${json_dead:--}$TAB${json_kind:--}$TAB$json_label
 " ;;
       malformed)
-        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}0${TAB}0$TAB$TAB$json_label
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}0${TAB}0$TAB-$TAB-$TAB$json_label
 " ;;
       ours)
         JSON_OK="$JSON_OK$h$TAB$json_real
@@ -860,6 +994,13 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
         # no harness and no path.
         if [ "$json_gone" -eq 1 ]; then
           JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a checkout that no longer exists, and rewriting a codex handler would re-hash it and silently un-badge this machine — fix it by hand: $json_detail
+"
+        elif [ "$h" = claude ] && [ "$json_other" -eq 1 ] && [ "$IN_WORKTREE" -eq 1 ]; then
+          # From a plain checkout the probe was re-asked above and this entry
+          # is normally a write. IN_WORKTREE is tested again anyway: a file
+          # naming a THIRD copy as well is still other-checkout after the
+          # re-ask, and must not be told this checkout is a worktree.
+          JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at another copy of roost, $json_detail, and this checkout is a git worktree — run roost install from that copy, or from the primary checkout
 "
         else
           JSON_REFUSED="$JSON_REFUSED$h$TAB$json_real${TAB}a roost hook there points at a different checkout: $json_detail
@@ -902,14 +1043,17 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
   # Every planned write, with the exact target path, printed BEFORE anything
   # happens. "link the opencode adapter" is not something a user can check;
   # a full path is.
-  printf '%s' "$LINK_STEPS" | while IFS="$TAB" read -r action h path target key; do
+  printf '%s' "$LINK_STEPS" | while IFS="$TAB" read -r action h path target key old; do
     [ -n "$action" ] || continue
-    printf '  %-6s %s\n         -> %s\n' "$action" "$path" "$target"
+    # A relink of a link into another copy of roost says what it replaces:
+    # that link works, so the reader is about to lose something that does.
+    was=""; [ -n "${old:-}" ] && was=" (was $old)"
+    printf '  %-6s %s%s\n         -> %s\n' "$action" "$path" "$was" "$target"
   done
   # Same column, same rule: the exact file, and what goes into it. When the
   # config path is a symlink the REAL file is the one named on the first line,
   # because that is the file whose bytes change.
-  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg kept replaced label; do
+  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg kept replaced dead kind label; do
     [ -n "$h" ] || continue
     # Setting a boolean flag is not a merge in the sense the two hook files
     # are, and one word for both reads as "roost is about to rewrite my
@@ -925,6 +1069,11 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
       0) : ;;
       *) printf '         (a roost entry already there is replaced with the current one)\n' ;;
     esac
+    # Said here, before the prompt, because answering it is consenting to
+    # it: hooks that another copy of roost still runs move to this one.
+    # DEAD is always <other>/scripts for a live takeover (see the JSON loop).
+    [ "$kind" = live ] && \
+      printf '         (one of those is a hook from another copy of roost, %s; it is replaced)\n' "${dead%/scripts}"
     [ "$real" = "$cfg" ] || printf '         (%s is a symlink to it)\n' "$cfg"
   done
   printf '\n'
@@ -978,13 +1127,18 @@ fi
 own_file_via_dir() { [ ! -L "$1" ] && [ "$1" -ef "$2" ]; }
 
 if [ -n "$REFUSED" ]; then
-  # Two headings, because the one that fits every other refusal is false for a
-  # row that is this checkout's own file: a reader who believes the heading
-  # treats the file as someone else's and deletes it.
-  refused_foreign=""; refused_own=""
+  # Three headings, because the one that fits every other refusal is false for
+  # a row that is this checkout's own file: a reader who believes the heading
+  # treats the file as someone else's and deletes it. And a link to another
+  # copy of roost, left alone only because this is a worktree, is roost's own
+  # link, not "something that is not this checkout".
+  refused_foreign=""; refused_own=""; refused_worktree=""
   while IFS="$TAB" read -r h path target action; do
     [ -n "${h:-}" ] || continue
-    if own_file_via_dir "$path" "$target"; then
+    if [ "${action:-}" = worktree ]; then
+      refused_worktree="$refused_worktree  $path
+"
+    elif own_file_via_dir "$path" "$target"; then
       refused_own="$refused_own  $path
 "
     else
@@ -1001,6 +1155,10 @@ EOF
   if [ -n "$refused_own" ]; then
     printf 'Will NOT touch — this checkout'"'"'s own file, reached through a symlinked directory:\n'
     printf '%s\n' "$refused_own"
+  fi
+  if [ -n "$refused_worktree" ]; then
+    printf 'Will NOT touch — a link to another copy of roost, and this is a git worktree:\n'
+    printf '%s\n' "$refused_worktree"
   fi
 fi
 
@@ -1054,7 +1212,7 @@ if [ "$do_writes" -eq 1 ]; then
   # A `while read` over a pipeline runs in a subshell in bash 3.2, where
   # $failed and $UNDO would be lost on the way out. A here-string keeps the
   # loop in this shell.
-  while IFS="$TAB" read -r action h path target key; do
+  while IFS="$TAB" read -r action h path target key old; do
     [ -n "${action:-}" ] || continue
 
     # Re-checked immediately before writing rather than trusted from the plan
@@ -1076,8 +1234,24 @@ if [ "$do_writes" -eq 1 ]; then
     if [ "$action:$state" = unlink:dangling ] && ! roost_adapter_names_1x "$path"; then
       state="dangling, not a roost adapter"
     fi
+    # A link into another copy of roost is taken over only when the plan
+    # listed it as one (OLD is set) and it still names the same copy. A
+    # dangling link that became a different checkout's while the prompt sat
+    # there was never shown to the reader as a take-over, and in a worktree
+    # the plan never lists one at all, so either falls to the refusal below.
+    # The same for a removal: the plan's TARGET is the link's text as it read
+    # it, and a worktree never plans one, so a link that turned into another
+    # copy's while the prompt sat there is never removed.
+    if [ "$action:$state" = unlink:other-checkout ] \
+       && { [ "$IN_WORKTREE" -ne 0 ] || [ "$(readlink "$path" 2>/dev/null)" != "$target" ]; }; then
+      state="other-checkout, not the link the plan named"
+    fi
+    if [ "$action:$state" = relink:other-checkout ] \
+       && { [ -z "${old:-}" ] || [ "$(readlink "$path" 2>/dev/null)" != "$old" ]; }; then
+      state="other-checkout, not the link the plan named"
+    fi
     case "$action:$state" in
-      link:missing|relink:dangling|unlink:ok|unlink:dangling) : ;;
+      link:missing|relink:dangling|relink:other-checkout|unlink:ok|unlink:dangling|unlink:other-checkout) : ;;
       # Removed by someone else while the prompt sat there. What the step
       # wanted is already true, so it is the removal's `ok`.
       unlink:missing)
@@ -1124,16 +1298,51 @@ if [ "$do_writes" -eq 1 ]; then
     fi
 
     if [ "$action" = relink ]; then
-      # Only ever a link we already know is dangling, re-verified one line
-      # above. Never a bare `rm` of whatever happens to be at the path.
-      rm -f "$path" 2>/dev/null
+      # Only ever a SYMLINK -- dangling, or a link into another copy of roost --
+      # re-verified above, and checked once more here as the unlink branch
+      # does: both states are read through the link, and `rm -f` on anything
+      # that is not one would delete a real file or directory. Never a bare
+      # `rm` of whatever happens to be at the path.
+      if [ ! -L "$path" ]; then
+        printf '  %s changed underneath this run (now: not a symlink) — left alone\n' "$h"
+        REFUSED="$REFUSED$h$TAB$path$TAB$target$TAB$action
+"
+        record_outcome refused "$h" "$path"
+        continue
+      fi
+      # The removal is checked, as the unlink branch checks it. If the old
+      # link is still there, the `ln -s` below would not replace it: for a
+      # link to a DIRECTORY (opencode 2's plugins/roost) it would follow the
+      # link and create a new one INSIDE the other copy's adapter directory,
+      # then report success. A parent directory this user cannot write is
+      # enough to get there.
+      if ! { rm -f "$path" 2>/dev/null && [ ! -L "$path" ]; }; then
+        printf '  could NOT relink %s\n' "$path" >&2
+        record_outcome failed "$h" "$path"
+        failed=1
+        continue
+      fi
     fi
 
-    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$target" "$path" 2>/dev/null; then
+    # The undo removes what this run made, and for a link it took over from
+    # another copy of roost it also puts that link back exactly as it was.
+    undo="rm \"$path\""
+    [ -n "${old:-}" ] && undo="rm \"$path\" && ln -s \"$old\" \"$path\""
+    # -n: if anything is at the path by now, a link to a directory is never
+    # entered; ln fails on it instead, and that is reported as a failure.
+    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -sn "$target" "$path" 2>/dev/null; then
       printf '  %-8s %s\n' "${action}ed" "$path"
-      UNDO="${UNDO}rm \"$path\"
+      if [ -n "${old:-}" ]; then
+        # roost does not look for copies of itself; it names the one it was
+        # just pointed at, because a second copy nobody meant to keep is how
+        # this link came to point at it.
+        printf '    was %s — a second copy of roost.\n' "$old"
+        printf '    If you did not mean to keep two, remove that copy'"'"'s directory and the PATH\n'
+        printf '    line install.sh added for it.\n'
+      fi
+      UNDO="${UNDO}$undo
 "
-      record_outcome wrote "$h" "$path" "rm \"$path\""
+      record_outcome wrote "$h" "$path" "$undo"
     else
       printf '  could NOT %s %s\n' "$action" "$path" >&2
       record_outcome failed "$h" "$path"
@@ -1147,8 +1356,11 @@ EOF
   # here-string again, and for the same reason: $failed and $UNDO must survive
   # the loop.
   json_reindented=0
-  while IFS="$TAB" read -r h real cfg kept replaced dead label; do
+  while IFS="$TAB" read -r h real cfg kept replaced dead kind label; do
     [ -n "${h:-}" ] || continue
+    # `-` is JSON_STEPS' spelling of an empty field; see its header.
+    [ "$dead" = - ] && dead=""
+    [ "$kind" = - ] && kind=""
 
     # Whether the file was there BEFORE this write decides what the undo line
     # says, and it has to be read now: after the merge the file exists either
@@ -1162,12 +1374,14 @@ EOF
     # not captured: that message is the most useful thing this command can
     # give someone whose settings.json will not parse.
     case "$h" in
-      # $dead, when the plan found one, is a hook command pointing at a
-      # checkout that no longer exists. The probe was re-asked with it and
-      # said a write is due; the merge has to be told the same thing, or it
-      # would leave that entry in place and APPEND roost's beside it -- two
-      # hooks, one of which cannot run. Empty for every ordinary install.
-      claude) json_bak="$(roost_json_merge "$real" claude-hooks "$CLAUDE_TARGET" ${dead:+"$dead"})"; rc=$? ;;
+      # $dead, when the plan found one, is the scripts directory of another
+      # copy of roost whose hooks this write takes over -- one that no longer
+      # exists ($kind gone) or, from a plain checkout, one that does ($kind
+      # live). The probe was re-asked with both and said a write is due; the
+      # merge has to be told the same thing, or it would leave those entries
+      # in place and APPEND roost's beside them. Empty for every ordinary
+      # install.
+      claude) json_bak="$(roost_json_merge "$real" claude-hooks "$CLAUDE_TARGET" ${dead:+"$dead" "$kind"})"; rc=$? ;;
       # Adding a NEW event to a hooks.json codex has already been trusted with
       # is measured-safe on 0.151.0: the handlers already trusted keep firing,
       # because their hashes are over their own parsed structs and nothing
@@ -1224,6 +1438,11 @@ EOF
           0) : ;;
           *) [ -n "$json_bak" ] && printf '           (the backup above still has what it said)\n' ;;
         esac
+        # The Claude hook's counterpart to "relinked ... a second copy of
+        # roost": roost does not look for copies of itself, it names the one
+        # it was just pointed at.
+        [ "$kind" = live ] && \
+          printf '  replaced a hook from another copy of roost, %s — if you did not mean to keep two, remove that copy and its PATH line.\n' "${dead%/scripts}"
         ;;
       *)
         # 1, 2 and 5 all mean the same thing to a user: nothing was written,
@@ -1279,6 +1498,22 @@ if [ -n "$REFUSED" ]; then
   # something roost hands them without first saying what is there.
   while IFS="$TAB" read -r h path target action; do
     [ -n "${h:-}" ] || continue
+    # roost's own link, from a second copy of roost. No `rm && ln -s` here:
+    # the point of refusing is that a worktree should not take the link, and
+    # handing the reader the command to take it anyway would undo that.
+    if [ "${action:-}" = worktree ]; then
+      case "$WT_UNLINK" in
+        *"$path
+"*) wt_what="points at another copy of roost's 1.x adapter, $(readlink "$path" 2>/dev/null), which opencode 2 cannot load" ;;
+        *) wt_what="points at another copy of roost, $(readlink "$path" 2>/dev/null)" ;;
+      esac
+      add_manual "$h: $path
+  $wt_what.
+  This checkout is a git worktree, so roost install leaves the link alone:
+  run roost install from that copy, or from this repository's primary
+  checkout."
+      continue
+    fi
     # Roost's 1.x opencode adapter path, on a machine whose opencode is 2.x.
     # roost wants NOTHING there, so the 1.x fix below — put roost's adapter in
     # its place — would hand the user the exact file that makes opencode 2
@@ -1319,11 +1554,22 @@ if [ -n "$REFUSED" ]; then
       add_manual "$oc_note"
       continue
     fi
-    add_manual "$h: something that is not this checkout is at
+    # The `rm` only for a symlink, the rule scripts/roost-doctor follows:
+    # handed for a regular file or a directory it deletes the thing itself,
+    # which may be the only copy of someone's own plugin.
+    if [ -L "$path" ]; then
+      add_manual "$h: something that is not this checkout is at
     $path
   roost install will not replace it. If you are sure you want roost's adapter
   there instead, look at the file first, then:
     rm \"$path\" && ln -s \"$target\" \"$path\""
+    else
+      add_manual "$h: something that is not this checkout is at
+    $path
+  roost install will not replace it, and
+  it is not a symlink — look at it first, move it aside yourself, then:
+    ln -s \"$target\" \"$path\""
+    fi
   done <<EOF
 $REFUSED
 EOF

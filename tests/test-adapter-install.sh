@@ -285,11 +285,255 @@ assert_eq "$rc" "0" "foreign path: still exits 0 (a refusal is not a failure)"
 assert_eq "$(cksum < "$fpath")" "$fbefore" "foreign path: the file is byte-identical after"
 [ ! -L "$fpath" ]; assert_true $? "foreign path: it was not replaced by a symlink"
 assert_contains "$out" "$fpath" "foreign path: the exact path is named in the output"
-assert_contains "$out" "rm \"$fpath\"" "foreign path: the manual rm && ln -s is printed"
+# A regular file: the note never hands over an `rm` for it, which would
+# delete the user's plugin itself. It says to move it aside instead.
+case "$out" in *"rm \"$fpath\""*) s=printed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "foreign path: no rm is printed for a regular file"
+assert_contains "$out" "it is not a symlink — look at it first, move it aside yourself, then:" \
+  "foreign path: the note says to move the file aside"
 assert_contains "$out" "ln -s \"$(adapter_target opencode)\"" \
   "foreign path: the manual command names the right target"
 # The other two are unaffected by one harness being refused.
 [ -L "$(adapter_path_in "$box" pi)" ]; assert_true $? "foreign path: pi is still linked"
+
+# ===========================================================================
+# 3b. A link to ANOTHER copy of roost -> relinked from a plain checkout,
+#     refused from a git worktree
+# ===========================================================================
+# Whether the installer may take the link over depends on whether the
+# checkout RUNNING it is a linked git worktree, so every case here runs an
+# installer from a checkout this test builds, never "$INSTALL": the checkout
+# running this suite is often a worktree itself and on CI is a plain clone,
+# so its own answer would differ by machine. git is on the shim PATH because
+# with no git the question cannot be asked and every checkout reads as plain;
+# a "plain checkout relinks" case that passed for that reason proves nothing.
+#
+# The throwaway repository is built with the runner's global git config and
+# hooks shut out, so a commit-msg or identity hook there cannot change it.
+export GIT_CONFIG_GLOBAL=/dev/null
+tgit() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@t "$@"; }
+
+OC2_GIT_SHIM="$(make_versioned_shim 'opencode v2.0.20' opencode pi)"
+real_git="$(command -v git 2>/dev/null)" && ln -s "$real_git" "$OC2_GIT_SHIM/git"
+
+# A second copy of roost. Only its adapters matter: the link's own text and
+# an existing target are what make it another copy's link.
+co2="$TMP/second-checkout"
+mkdir -p "$co2"
+cp -R "$HERE/adapters" "$co2/"
+printf 'export const mine = true; // not roost\n' > "$TMP/stranger.js"
+
+# copy_checkout DIR -- the parts of this checkout an install run reads.
+copy_checkout() {
+  mkdir -p "$1"
+  cp -R "$HERE/scripts" "$HERE/bin" "$HERE/adapters" "$HERE/tmux" "$HERE/VERSION" "$1/"
+}
+# Plain: not a git repository at all.
+plain="$TMP/plain-checkout"
+copy_checkout "$plain"
+# A repository with a primary checkout and a linked worktree carrying the SAME
+# installer, so the worktree case and its control differ in nothing else.
+repo="$TMP/wt-repo"; wt="$TMP/wt-repo-wt"
+mkdir -p "$repo"
+( cd "$repo" && tgit init -q && tgit commit -q --allow-empty -m one ) >/dev/null 2>&1
+copy_checkout "$repo"
+( cd "$repo" && tgit add -A && tgit commit -q -m two && tgit worktree add -q "$wt" -b wt ) >/dev/null 2>&1
+
+# The harness checks itself before any case leans on it: a worktree that was
+# never made would leave every "refused" assertion below passing vacuously.
+[ -x "$wt/scripts/roost-install" ]; assert_true $? "other-checkout setup: the worktree carries the installer"
+bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$wt"
+assert_eq "$?" "0" "other-checkout setup: the worktree reads as a worktree"
+bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$repo"
+assert_eq "$?" "1" "other-checkout setup: its primary checkout does not"
+
+# run_install_from CHECKOUT BOX SHIMDIR [args...] -- run_install, but the
+# installer of CHECKOUT, and with ZDOTDIR redirected as well.
+run_install_from() {
+  local co="$1" box="$2" shim="$3"; shift 3
+  mkdir -p "$box"
+  HOME="$box/home" \
+  ZDOTDIR="$box/home" \
+  XDG_CONFIG_HOME="$box/home/.config" \
+  XDG_DATA_HOME="$box/home/.local/share" \
+  COPILOT_HOME="$box/home/.copilot" \
+  PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+  CODEX_HOME="$box/home/.codex" \
+  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  PATH="$shim" \
+    bash "$co/scripts/roost-install" "$@" </dev/null 2>&1
+}
+adapter_tail() { bash -c '. "'"$HERE"'/scripts/lib/roost-adapters.sh"; roost_adapter_tail "$1"' _ "$1"; }
+plant_link() { # plant_link BOX KEY TARGET
+  local p; p="$(adapter_path_in "$1" "$2")"
+  mkdir -p "$(dirname "$p")"; ln -s "$3" "$p"
+}
+
+for pair in "opencode2 opencode" "pi pi"; do
+  key="${pair% *}"; h="${pair#* }"
+  tl="$(adapter_tail "$key")"
+  old="$co2$tl"
+
+  # --- plain checkout, other-checkout link -> relinked, and said so
+  box="$TMP/oc-plain-$key"
+  plant_link "$box" "$key" "$old"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+  assert_eq "$rc" "0" "$key, plain checkout, other copy's link: exits 0"
+  [ "$P" -ef "$plain$tl" ]; assert_true $? "$key, plain checkout, other copy's link: now points at this checkout"
+  [ -L "$P" ]; assert_true $? "$key, plain checkout, other copy's link: still a symlink"
+  [ -e "$old" ]; assert_true $? "$key, plain checkout, other copy's link: the other copy's adapter is untouched"
+  assert_contains "$out" "relinked" "$key, plain checkout, other copy's link: the output says relinked"
+  assert_contains "$out" "was $old" "$key, plain checkout, other copy's link: the output names the old target"
+  assert_contains "$out" "a second copy of roost" "$key, plain checkout, other copy's link: the output says it is a second copy"
+  assert_contains "$out" "rm \"$P\" && ln -s \"$old\" \"$P\"" \
+    "$key, plain checkout, other copy's link: the printed undo puts the old link back"
+  assert_contains "$(cat "$box/records" 2>/dev/null)" \
+    "$(printf 'wrote\t%s\t%s\trm "%s" && ln -s "%s" "%s"' "$h" "$P" "$P" "$old" "$P")" \
+    "$key, plain checkout, other copy's link: --records holds wrote with the undo"
+
+  # --- plain checkout, a stranger's link (the control) -> still refused
+  box="$TMP/oc-plain-stranger-$key"
+  plant_link "$box" "$key" "$TMP/stranger.js"
+  P="$(adapter_path_in "$box" "$key")"
+  sbefore="$(cksum < "$TMP/stranger.js")"
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, plain checkout, stranger's link: exits 0"
+  assert_eq "$(readlink "$P")" "$TMP/stranger.js" "$key, plain checkout, stranger's link: the link is unchanged"
+  assert_eq "$(cksum < "$TMP/stranger.js")" "$sbefore" "$key, plain checkout, stranger's link: the file is byte-identical"
+  assert_contains "$out" "$P" "$key, plain checkout, stranger's link: the path is named"
+  case "$out" in *relinked*) s=relinked ;; *) s=refused ;; esac
+  assert_eq "$s" "refused" "$key, plain checkout, stranger's link: nothing says relinked"
+
+  # --- worktree, other-checkout link -> left alone, and the reason named
+  box="$TMP/oc-wt-$key"
+  plant_link "$box" "$key" "$old"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$wt" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+  assert_eq "$rc" "0" "$key, worktree, other copy's link: exits 0"
+  assert_eq "$(readlink "$P")" "$old" "$key, worktree, other copy's link: the link is unchanged"
+  assert_contains "$out" "this is a git worktree" "$key, worktree, other copy's link: the output says why"
+  assert_contains "$out" "points at another copy of roost, $old." \
+    "$key, worktree, other copy's link: the manual note names the other copy"
+  assert_contains "$out" "run roost install from that copy, or from this repository's primary" \
+    "$key, worktree, other copy's link: the manual note says where to run it"
+  case "$out" in *relinked*) s=relinked ;; *) s=refused ;; esac
+  assert_eq "$s" "refused" "$key, worktree, other copy's link: nothing says relinked"
+  assert_contains "$(cat "$box/records" 2>/dev/null)" "$(printf 'refused\t%s\t%s' "$h" "$P")" \
+    "$key, worktree, other copy's link: --records says refused"
+
+  # --- worktree, a stranger's link (the control) -> unchanged too
+  box="$TMP/oc-wt-stranger-$key"
+  plant_link "$box" "$key" "$TMP/stranger.js"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$wt" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, worktree, stranger's link: exits 0"
+  assert_eq "$(readlink "$P")" "$TMP/stranger.js" "$key, worktree, stranger's link: the link is unchanged"
+  assert_eq "$(cksum < "$TMP/stranger.js")" "$sbefore" "$key, worktree, stranger's link: the file is byte-identical"
+
+  # --- the SAME repository's primary checkout -> relinks. The control that
+  # proves the rule: same planted link, same installer, only the checkout
+  # kind differs.
+  box="$TMP/oc-primary-$key"
+  plant_link "$box" "$key" "$old"
+  P="$(adapter_path_in "$box" "$key")"
+  out="$(run_install_from "$repo" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, primary checkout, other copy's link: exits 0"
+  [ "$P" -ef "$repo$tl" ]; assert_true $? "$key, primary checkout, other copy's link: relinked to the primary"
+  assert_contains "$out" "relinked" "$key, primary checkout, other copy's link: the output says relinked"
+
+  # --- --dry-run from the plain checkout -> the plan says what it replaces
+  box="$TMP/oc-dry-$key"
+  plant_link "$box" "$key" "$old"
+  before="$(tree_of "$box")"
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --dry-run --yes)"; rc=$?
+  assert_eq "$rc" "0" "$key, --dry-run, other copy's link: exits 0"
+  assert_eq "$(tree_of "$box")" "$before" "$key, --dry-run, other copy's link: nothing changed"
+  assert_contains "$out" "(was $old)" "$key, --dry-run, other copy's link: the plan says what the relink replaces"
+  case "$out" in *"relink "*"(was $old)"*) s=listed ;; *) s=missing ;; esac
+  assert_eq "$s" "listed" "$key, --dry-run, other copy's link: listed as a relink"
+done
+
+# --- the 1.x plugin path on opencode 2, linking ANOTHER copy's 1.x adapter.
+# opencode 2 cannot load it whichever copy it names, so from a plain checkout
+# it is removed like this checkout's own; from a worktree it is left alone.
+old1="$co2$(adapter_tail opencode)"
+box="$TMP/oc1x-plain"
+plant_link "$box" opencode "$old1"
+P1="$(adapter_path_in "$box" opencode)"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, other copy's 1.x link, plain checkout: exits 0"
+[ ! -e "$P1" ] && [ ! -L "$P1" ]; assert_true $? "opencode 2, other copy's 1.x link, plain checkout: removed"
+[ -e "$old1" ]; assert_true $? "opencode 2, other copy's 1.x link, plain checkout: the other copy's adapter is untouched"
+assert_contains "$out" "removed  $P1" "opencode 2, other copy's 1.x link, plain checkout: the output names it"
+assert_contains "$(cat "$box/records" 2>/dev/null)" \
+  "$(printf 'removed\topencode\t%s\tln -s "%s" "%s"' "$P1" "$old1" "$P1")" \
+  "opencode 2, other copy's 1.x link, plain checkout: --records holds removed with the ln -s undo"
+
+box="$TMP/oc1x-wt"
+plant_link "$box" opencode "$old1"
+P1="$(adapter_path_in "$box" opencode)"
+out="$(run_install_from "$wt" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, other copy's 1.x link, worktree: exits 0"
+assert_eq "$(readlink "$P1")" "$old1" "opencode 2, other copy's 1.x link, worktree: the link is unchanged"
+assert_contains "$out" "this is a git worktree" "opencode 2, other copy's 1.x link, worktree: the heading says why"
+assert_contains "$out" "points at another copy of roost's 1.x adapter, $old1, which opencode 2 cannot load" \
+  "opencode 2, other copy's 1.x link, worktree: the manual note names the 1.x adapter"
+assert_contains "$out" "run roost install from that copy, or from this repository's primary" \
+  "opencode 2, other copy's 1.x link, worktree: the manual note says where to run it"
+
+box="$TMP/oc1x-stranger"
+plant_link "$box" opencode "$TMP/stranger.js"
+P1="$(adapter_path_in "$box" opencode)"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$(readlink "$P1")" "$TMP/stranger.js" "opencode 2, stranger's link at the 1.x path, plain checkout: unchanged"
+assert_eq "$(cksum < "$TMP/stranger.js")" "$sbefore" "opencode 2, stranger's link at the 1.x path: the file is byte-identical"
+
+# --- the manual note for a stranger at the pi path: `rm` only for a symlink.
+box="$TMP/pi-regular"
+Ppi="$(adapter_path_in "$box" pi)"
+mkdir -p "$(dirname "$Ppi")"; printf 'mine\n' > "$Ppi"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"
+assert_contains "$out" "/adapters/pi/roost.ts\" \"$Ppi\"" "pi, regular file: the note gives the ln -s"
+assert_contains "$out" "it is not a symlink — look at it first, move it aside yourself, then:" \
+  "pi, regular file: the note says to move it aside"
+case "$out" in *"rm \"$Ppi\""*) s=printed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "pi, regular file: the note never prints rm for it"
+assert_eq "$(cat "$Ppi")" "mine" "pi, regular file: the file is untouched"
+box="$TMP/pi-stranger-link"
+plant_link "$box" pi "$TMP/stranger.js"
+Ppi="$(adapter_path_in "$box" pi)"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"
+assert_contains "$out" "rm \"$Ppi\" && ln -s" "pi, stranger's symlink: the note prints rm && ln -s"
+
+# --- a relink whose old link cannot be removed FAILS. The parent is made
+# read-only, so `rm` of the old link fails; an unchecked `ln -s` would then
+# follow the still-live directory link and create a link inside the other
+# copy's adapter directory while reporting success.
+box="$TMP/oc-relink-blocked"
+plant_link "$box" opencode2 "$co2$(adapter_tail opencode2)"
+P="$(adapter_path_in "$box" opencode2)"
+inside_before="$(ls -a "$co2$(adapter_tail opencode2)")"
+chmod 555 "$(dirname "$P")"
+if [ -w "$(dirname "$P")" ]; then
+  # root ignores the mode, so there is no way to make the rm fail here.
+  printf '  SKIP: relink with an unremovable old link (running as root)\n'
+else
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+  [ "$rc" -ne 0 ]; assert_true $? "relink, old link cannot be removed: exits non-zero"
+  assert_contains "$out" "could NOT relink $P" "relink, old link cannot be removed: says so"
+  case "$out" in *relinked*) s=relinked ;; *) s=no ;; esac
+  assert_eq "$s" "no" "relink, old link cannot be removed: nothing says relinked"
+  assert_eq "$(readlink "$P")" "$co2$(adapter_tail opencode2)" "relink, old link cannot be removed: the link is unchanged"
+  assert_eq "$(ls -a "$co2$(adapter_tail opencode2)")" "$inside_before" \
+    "relink, old link cannot be removed: nothing new inside the other copy's adapter"
+  assert_contains "$(cat "$box/records" 2>/dev/null)" "$(printf 'failed\topencode\t%s' "$P")" \
+    "relink, old link cannot be removed: --records says failed"
+fi
+chmod 755 "$(dirname "$P")"
+rm -rf "$OC2_GIT_SHIM"
+# The throwaway git config is for the repository above only.
+unset GIT_CONFIG_GLOBAL
 
 # ===========================================================================
 # 4. A dangling link -> relinked. It is ours and broken; replacing it loses
@@ -709,31 +953,150 @@ if command -v python3 >/dev/null 2>&1; then
     "claude already wired at another indentation: no backup was taken"
 fi
 
-# --- wired to a DIFFERENT checkout -> refuse the whole claude step ---------
+# --- wired to ANOTHER LIVE copy of roost -> replaced from a plain checkout,
+#     refused from a worktree ------------------------------------------------
 # Generated from roost-hooks.sh with another checkout's path, not typed out
 # here: a second copy of those bytes is exactly the drift the one-definition
 # rule exists to prevent, and a hand-typed near-miss would make this case pass
 # for the wrong reason.
+#
+# The other checkout's script really EXISTS: this is a second copy somebody
+# keeps, not a dead one (the sibling case below deletes it). Whether it is
+# taken over depends on whether the checkout RUNNING the installer is a git
+# worktree, so these cases run the installers case 3b built ($plain, $wt)
+# rather than "$INSTALL": the checkout running this suite is a worktree on the
+# machine it is developed on and a plain clone on CI, and its own answer would
+# differ between the two. git is on the shim so the question is really asked.
+CLAUDE_GIT_SHIM="$(make_json_shim claude opencode)"
+[ -n "${real_git:-}" ] && ln -s "$real_git" "$CLAUDE_GIT_SHIM/git"
+mkdir -p "$TMP/some-other-checkout/scripts"
+: > "$TMP/some-other-checkout/scripts/roost-agent-state"
+
+# plain checkout -> rewritten to this checkout, and said so
 box="$TMP/claudeforeign"
 cset="$box/home/.claude/settings.json"
-mkdir -p "$box/home/.claude" "$TMP/some-other-checkout/scripts"
-# The other checkout's script really EXISTS. That is the whole distinction
-# this case now carries: a second checkout somebody deliberately keeps is not
-# roost's to rewrite. The sibling case below deletes it, and the answer flips.
-: > "$TMP/some-other-checkout/scripts/roost-agent-state"
+mkdir -p "$box/home/.claude"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude wired to another live copy, plain checkout: exits 0"
+grep -qF "$plain/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+  "claude wired to another live copy, plain checkout: settings.json now names THIS checkout"
+grep -qF "$TMP/some-other-checkout/scripts/" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" \
+  "claude wired to another live copy, plain checkout: the other copy's entries are replaced, not appended beside"
+assert_eq "$(grep -c roost-session-context "$cset" 2>/dev/null)" "1" \
+  "claude wired to another live copy, plain checkout: exactly one SessionStart hook survives"
+assert_eq "$(bak_count "$cset")" "1" \
+  "claude wired to another live copy, plain checkout: a backup was taken before rewriting it"
+[ -e "$TMP/some-other-checkout/scripts/roost-agent-state" ]; assert_true $? \
+  "claude wired to another live copy, plain checkout: the other copy itself is untouched"
+assert_contains "$out" "  replaced a hook from another copy of roost, $TMP/some-other-checkout — if you did not mean to keep two, remove that copy and its PATH line." \
+  "claude wired to another live copy, plain checkout: the output names the other copy"
+case "$out" in *"different checkout"*|*"this checkout is a git worktree"*) s=refused ;; *) s=replaced ;; esac
+assert_eq "$s" "replaced" \
+  "claude wired to another live copy, plain checkout: nothing says it was refused"
+
+# worktree -> left alone, byte for byte, and the reason named
+box="$TMP/claudeforeign-wt"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
 ( . "$HERE/scripts/lib/roost-hooks.sh"
   roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
 fbefore="$(cksum < "$cset")"
-out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
-assert_eq "$rc" "0" "claude wired elsewhere: still exits 0 (a refusal is not a failure)"
+out="$(run_install_from "$wt" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude wired elsewhere, worktree: still exits 0 (a refusal is not a failure)"
 assert_eq "$(cksum < "$cset")" "$fbefore" \
-  "claude wired elsewhere: settings.json is byte-identical after"
-assert_eq "$(bak_count "$cset")" "0" "claude wired elsewhere: no backup was taken"
-assert_contains "$out" "$cset" "claude wired elsewhere: the exact file is named"
-assert_contains "$out" "different checkout" \
-  "claude wired elsewhere: the output says why it will not touch it"
+  "claude wired elsewhere, worktree: settings.json is byte-identical after"
+assert_eq "$(bak_count "$cset")" "0" "claude wired elsewhere, worktree: no backup was taken"
+assert_contains "$out" "$cset" "claude wired elsewhere, worktree: the exact file is named"
+assert_contains "$out" "a roost hook there points at another copy of roost, $TMP/some-other-checkout/scripts/roost-agent-state" \
+  "claude wired elsewhere, worktree: the output names the other copy"
+assert_contains "$out" "and this checkout is a git worktree — run roost install from that copy, or from the primary checkout" \
+  "claude wired elsewhere, worktree: the output says why it will not touch it"
+case "$out" in *"replaced a hook from another copy"*) s=replaced ;; *) s=refused ;; esac
+assert_eq "$s" "refused" "claude wired elsewhere, worktree: nothing says replaced"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "claude wired elsewhere: refusing one step does not abandon the others"
+
+# --- a live copy is matched by roost's two scripts EXACTLY, never by prefix --
+# Taking over a gone copy may drop everything under its directory: nothing
+# there can run. A LIVE copy's directory can hold the user's own hooks, so
+# only commands that run roost-agent-state or roost-session-context there
+# count as roost's. These were found by review: a prefix match deleted both
+# of the hooks pinned below.
+#
+# claude_live_extra FILE OTHER EXTRA -- roost's hooks for OTHER, plus the
+# user's own Stop hook EXTRA.
+claude_live_extra() {
+  ( . "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "$2/scripts/roost-agent-state" ) \
+    | sed 's|"Stop": \[|"Stop": [ { "hooks": [ { "type": "command", "command": "'"$3"'" } ] },|' > "$1"
+}
+# A Stop hook of the user's own that runs ANOTHER script from the live copy.
+box="$TMP/claudelive-extra"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+claude_live_extra "$cset" "$TMP/some-other-checkout" "$TMP/some-other-checkout/scripts/roost-notify done finished"
+assert_eq "$(grep -c roost-notify "$cset")" "1" "claude live copy, user's roost-notify hook: setup plants it"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude live copy, user's roost-notify hook: exits 0"
+assert_eq "$(grep -c "$TMP/some-other-checkout/scripts/roost-notify done finished" "$cset" 2>/dev/null)" "1" \
+  "claude live copy, user's roost-notify hook: the user's hook is KEPT"
+grep -qF "$TMP/some-other-checkout/scripts/roost-agent-state" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" "claude live copy, user's roost-notify hook: the other copy's roost-agent-state hooks are replaced"
+grep -qF "$TMP/some-other-checkout/scripts/roost-session-context" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" "claude live copy, user's roost-notify hook: the other copy's roost-session-context hook is replaced"
+grep -qF "$plain/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+  "claude live copy, user's roost-notify hook: settings.json now names THIS checkout"
+assert_contains "$out" "kept the 1 entry already in those events" \
+  "claude live copy, user's roost-notify hook: the write says it kept the user's entry"
+assert_contains "$out" "replaced a hook from another copy of roost, $TMP/some-other-checkout —" \
+  "claude live copy, user's roost-notify hook: the output names the other copy"
+
+# A roost-agent-state copied into a bin directory, beside the user's own
+# formatter. That directory is not a copy of roost, so this is not a takeover
+# at all: refused, and the file left byte for byte.
+box="$TMP/claudelive-bin"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude" "$box/home/bin"
+: > "$box/home/bin/roost-agent-state"; : > "$box/home/bin/my-format"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s/roost-agent-state idle"}]}],"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"%s/my-format"}]}]}}\n' \
+  "$box/home/bin" "$box/home/bin" > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude, roost-agent-state copied into ~/bin: exits 0"
+assert_eq "$(cksum < "$cset")" "$fbefore" "claude, roost-agent-state copied into ~/bin: settings.json is byte-identical"
+assert_eq "$(bak_count "$cset")" "0" "claude, roost-agent-state copied into ~/bin: no backup was taken"
+assert_contains "$out" "a roost hook there points at a different checkout: $box/home/bin/roost-agent-state" \
+  "claude, roost-agent-state copied into ~/bin: refused as a different checkout"
+case "$out" in *"another copy of roost"*) s=named ;; *) s=quiet ;; esac
+assert_eq "$s" "quiet" "claude, roost-agent-state copied into ~/bin: ~/bin is never called a copy of roost"
+
+# The plan says it BEFORE the prompt: answering y is consenting to it.
+box="$TMP/claudelive-dry"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --dry-run)"; rc=$?
+assert_eq "$rc" "0" "claude live copy, --dry-run: exits 0"
+assert_eq "$(cksum < "$cset")" "$fbefore" "claude live copy, --dry-run: nothing written"
+assert_contains "$out" "         (one of those is a hook from another copy of roost, $TMP/some-other-checkout; it is replaced)" \
+  "claude live copy, --dry-run: the plan names the other copy before consent"
+assert_contains "$out" "         roost's Claude hooks" \
+  "claude live copy, --dry-run: the plan row's label is the label alone"
+tab="$(printf '\t')"
+case "$out" in *"scripts${tab}roost's"*) s=garbled ;; *) s=clean ;; esac
+assert_eq "$s" "clean" "claude live copy, --dry-run: no directory leaks into the label"
+
+# An ordinary write with no other copy anywhere says nothing about one.
+box="$TMP/claude-nocopy"
+mkdir -p "$box/home/.claude"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude, no other copy: exits 0"
+case "$out" in *"another copy"*) s=named ;; *) s=quiet ;; esac
+assert_eq "$s" "quiet" "claude, no other copy: nothing mentions another copy"
 
 # --- wired to a checkout that is GONE -> repair it, do not refuse forever ---
 # Found by the multi-model review of #27. A moved, renamed or re-cloned
@@ -986,19 +1349,20 @@ assert_eq "$s" "honest" \
 box="$TMP/claudeinject"
 cset="$box/home/.claude/settings.json"
 mkdir -p "$box/home/.claude" "$TMP/inject-checkout/scripts"
-# The other checkout EXISTS, so this stays a refusal. Its subject is how the
-# refusal MESSAGE is rendered, and a checkout that is gone is now repaired
-# instead of refused -- which would leave this case with no refusal to render
-# and both assertions below passing on nothing.
+# The other checkout EXISTS and the installer is run from the worktree case
+# 3b built, so this stays a refusal. Its subject is how the refusal MESSAGE is
+# rendered, and a checkout that is gone -- or a live one seen from a plain
+# checkout -- is now repaired instead of refused, which would leave this case
+# with no refusal to render and both assertions below passing on nothing.
 : > "$TMP/inject-checkout/scripts/roost-agent-state"
 printf '%s\n' '{ "hooks": { "Notification": [ { "hooks": [ { "type": "command", "command": "'"$TMP"'/inject-checkout/scripts/roost-agent-state working\nrm -rf /tmp/whatever" } ] } ] } }' > "$cset"
 fbefore="$(cksum < "$cset")"
-out="$(run_install "$box" "$CLAUDE_SHIM" --yes)"; rc=$?
+out="$(run_install_from "$wt" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "claude with a newline in a command: exits 0"
 assert_eq "$(cksum < "$cset")" "$fbefore" \
   "claude with a newline in a command: settings.json is byte-identical after"
 assert_eq "$(bak_count "$cset")" "0" "claude with a newline in a command: no backup was taken"
-assert_contains "$out" "different checkout" \
+assert_contains "$out" "this checkout is a git worktree" \
   "claude with a newline in a command: the real refusal is still reported"
 case "$out" in *"whatever: left alone"*) s=leaked ;; *) s=contained ;; esac
 assert_eq "$s" "contained" \
@@ -1010,7 +1374,7 @@ assert_eq "$s" "contained" \
 # still reported, on one line, so a sanitiser that silently deletes
 # everything fails here.
 assert_contains "$out" \
-  "different checkout: $TMP/inject-checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever" \
+  "another copy of roost, $TMP/inject-checkout/scripts/roost-agent-state workingrm -rf /tmp/whatever, and this checkout" \
   "claude with a newline in a command: the command is still reported, flattened onto one line"
 case "$out" in *"roost hooks rm"*) s=leaked ;; *) s=contained ;; esac
 assert_eq "$s" "contained" \
@@ -1119,20 +1483,55 @@ EOF
   assert_eq "$(jq '.hooks.PostToolUse | length' "$cset" 2>/dev/null)" "2" \
     "claude under jq, beside a user's hook: a re-run adds no second entry"
 
+  # Another LIVE copy, under jq: refused from a worktree, replaced from a
+  # plain checkout -- run from case 3b's two checkouts for the reason the
+  # python case above gives. git rides along so the worktree question is
+  # really asked.
+  [ -n "${real_git:-}" ] && ln -s "$real_git" "$JQ_SHIM/git"
   box="$TMP/claudejqforeign"
   cset="$box/home/.claude/settings.json"
   mkdir -p "$box/home/.claude"
   ( . "$HERE/scripts/lib/roost-hooks.sh"
     roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
   fbefore="$(cksum < "$cset")"
-  out="$(run_install "$box" "$JQ_SHIM" --yes)"; rc=$?
-  assert_eq "$rc" "0" "claude under jq, wired elsewhere: exits 0"
+  out="$(run_install_from "$wt" "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, wired elsewhere, worktree: exits 0"
   assert_eq "$(cksum < "$cset")" "$fbefore" \
-    "claude under jq, wired elsewhere: the file is byte-identical after"
+    "claude under jq, wired elsewhere, worktree: the file is byte-identical after"
   assert_eq "$(bak_count "$cset")" "0" \
-    "claude under jq, wired elsewhere: no backup was taken"
-  assert_contains "$out" "different checkout" \
-    "claude under jq, wired elsewhere: refused for the same stated reason"
+    "claude under jq, wired elsewhere, worktree: no backup was taken"
+  assert_contains "$out" "and this checkout is a git worktree" \
+    "claude under jq, wired elsewhere, worktree: refused for the same stated reason"
+
+  box="$TMP/claudejqforeign-plain"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  ( . "$HERE/scripts/lib/roost-hooks.sh"
+    roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+  out="$(run_install_from "$plain" "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, wired to another live copy, plain checkout: exits 0"
+  grep -qF "$plain/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+    "claude under jq, wired to another live copy, plain checkout: settings.json now names THIS checkout"
+  grep -qF "$TMP/some-other-checkout/scripts/" "$cset" 2>/dev/null && s=left || s=gone
+  assert_eq "$s" "gone" \
+    "claude under jq, wired to another live copy, plain checkout: the other copy's entries are replaced, not appended beside"
+  assert_contains "$out" "replaced a hook from another copy of roost, $TMP/some-other-checkout —" \
+    "claude under jq, wired to another live copy, plain checkout: the output names the other copy"
+
+  # The exact-script rule under jq, probe and merge both.
+  box="$TMP/claudejqlive-extra"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  claude_live_extra "$cset" "$TMP/some-other-checkout" "$TMP/some-other-checkout/scripts/roost-notify done finished"
+  out="$(run_install_from "$plain" "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, live copy, user's roost-notify hook: exits 0"
+  assert_eq "$(grep -c "$TMP/some-other-checkout/scripts/roost-notify done finished" "$cset" 2>/dev/null)" "1" \
+    "claude under jq, live copy, user's roost-notify hook: the user's hook is KEPT"
+  grep -qF "$TMP/some-other-checkout/scripts/roost-" "$cset" 2>/dev/null && \
+    grep -vF roost-notify "$cset" | grep -qF "$TMP/some-other-checkout/scripts/" && s=left || s=gone
+  assert_eq "$s" "gone" "claude under jq, live copy, user's roost-notify hook: the other copy's two scripts are replaced"
+  assert_contains "$out" "kept the 1 entry already in those events" \
+    "claude under jq, live copy, user's roost-notify hook: the write says it kept the user's entry"
 
   # ...and the repair, under jq. python3 is preferred, so every case above ran
   # the python engine; without this the jq spelling of the dead-checkout logic
@@ -1334,6 +1733,32 @@ assert_contains "$out" "re-hash" \
   "codex wired elsewhere: the output says in plain words why rewriting would be worse"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "codex wired elsewhere: refusing one step does not abandon the others"
+
+# The control for claude's rule: from a PLAIN checkout -- the one place a
+# Claude hook from another live copy is now replaced -- codex still refuses,
+# with the same reason, and the file is left byte for byte. Run from case
+# 3b's plain copy, with git on the shim, so the answer cannot depend on what
+# kind of checkout runs this suite.
+CODEX_GIT_SHIM="$(make_json_shim codex opencode)"
+[ -n "${real_git:-}" ] && ln -s "$real_git" "$CODEX_GIT_SHIM/git"
+box="$TMP/codexforeign-plain"
+chooks="$box/home/.codex/hooks.json"
+mkdir -p "$box/home/.codex"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_codex "$TMP/some-other-checkout/adapters/codex/roost-codex-hook" ) > "$chooks"
+fbefore="$(cksum < "$chooks")"
+out="$(run_install_from "$plain" "$box" "$CODEX_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "codex wired to another live copy, plain checkout: exits 0"
+assert_eq "$(cksum < "$chooks")" "$fbefore" \
+  "codex wired to another live copy, plain checkout: hooks.json is byte-identical after"
+assert_eq "$(bak_count "$chooks")" "0" \
+  "codex wired to another live copy, plain checkout: no backup was taken"
+assert_contains "$out" "a roost hook there points at a different checkout: $TMP/some-other-checkout/adapters/codex/roost-codex-hook" \
+  "codex wired to another live copy, plain checkout: the existing reason, unchanged"
+case "$out" in *"replaced a hook from another copy"*) s=replaced ;; *) s=refused ;; esac
+assert_eq "$s" "refused" \
+  "codex wired to another live copy, plain checkout: nothing says replaced"
+rm -rf "$CODEX_GIT_SHIM"
 
 # --- codex wired to a checkout that is GONE -> still refuse, but say so ----
 # The deliberate asymmetry with claude, and the reason it is deliberate.
@@ -1572,10 +1997,10 @@ assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
 # ===========================================================================
 # 16. Saying when the checkout itself is behind its upstream
 # ===========================================================================
-# `roost update` is an alias for `roost install`, so people will
-# reasonably expect it to update roost's own code. It does not, and must not:
-# the checkout may be someone's dev tree with local work in it. All this does
-# is SAY so, from what git already knows locally -- never a fetch, which would
+# People will reasonably expect `roost install` to update roost's own code. It
+# does not, and must not: the checkout may be someone's dev tree with local
+# work in it, and `roost upgrade` is the command with a gate for that. All
+# install does is SAY so, from what git already knows locally -- never a fetch, which would
 # be a surprise network call inside an installer, and never a pull.
 #
 # A scratch checkout carrying the files roost-install needs to run. Copies,
@@ -1660,12 +2085,10 @@ EOF
   assert_eq "$s" "complete" "behind upstream: the scratch checkout has every file the installer sources"
   assert_contains "$out" "1 commit behind $upname" \
     "behind upstream: the line names how far behind and what it tracks"
-  # Resolved with `cd -P`, because the installer resolves its OWN location
-  # that way and /tmp is a symlink to /private/tmp on macOS -- the raw $co
-  # would never match, on that platform only.
-  co_real="$(cd -P "$co" && pwd)"
-  assert_contains "$out" "git -C \"$co_real\" pull" \
-    "behind upstream: the line prints the command to run, against the right checkout"
+  assert_contains "$out" "To update the code:  roost upgrade" \
+    "behind upstream: the line names the command to run"
+  case "$out" in *"git -C"*) s=old ;; *) s=new ;; esac
+  assert_eq "$s" "new" "behind upstream: the line no longer prints a raw git pull"
   grep -Eq '(^| )(pull|fetch)( |$)' "$gitlog" && s=ran || s=never
   assert_eq "$s" "never" "behind upstream: the run neither pulled nor fetched"
   assert_eq "$(git -C "$co" rev-parse HEAD)" \
@@ -1728,19 +2151,20 @@ else
 fi
 
 # ===========================================================================
-# 17. bin/roost exposes it as `install` and `update`
+# 17. bin/roost exposes `install`, `upgrade`, and `update` as upgrade's alias
 # ===========================================================================
-# `update` has to be a real alias -- the SAME script, reached with the SAME
-# arguments -- rather than a second dispatch arm that happens to do the same
-# thing today. A second arm would satisfy "both are mentioned in the help"
-# and still diverge the first time either side gained a flag, silently, on
-# the command a user reaches for after every `git pull`.
+# `update` has to be a real alias of `upgrade` -- the SAME script, reached with
+# the SAME arguments -- rather than a second dispatch arm that happens to do
+# the same thing today. A second arm would satisfy "both are mentioned in the
+# help" and still diverge the first time either side gained a flag, silently.
 #
-# The proof is byte-identical --dry-run output. Both runs deliberately share
-# ONE sandbox: the plan quotes the harness home paths, so two boxes would
-# differ for a reason that says nothing about the dispatch, and case 5 has
-# already established that --dry-run writes nothing for a shared box to carry
-# from the first run into the second.
+# The proof is byte-identical --dry-run output, from a copy of roost that is
+# NOT a git checkout: `upgrade` pulls, so a run from a repository would reach
+# the network. Here the shim PATH has no git, so the first gate rule
+# (`gate_git`) refuses before any git or tmux call,
+# identically for both spellings (rc 1, same stderr). Both runs share ONE
+# sandbox so the refusal text, which names the checkout, cannot differ for a
+# reason that says nothing about the dispatch.
 ROOST_BIN="$HERE/bin/roost"
 
 run_roost() { # run_roost BOX SHIMDIR [args...]
@@ -1754,29 +2178,37 @@ run_roost() { # run_roost BOX SHIMDIR [args...]
   CODEX_HOME="$box/home/.codex" \
   CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
-    bash "$ROOST_BIN" "$@" </dev/null 2>&1
+    env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ROOST_SELF_SOCK \
+    bash "${RUN_BIN:-$ROOST_BIN}" "$@" </dev/null 2>&1
 }
 
 dispatch_box="$TMP/dispatchbox"
 inst_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" install --dry-run)"; inst_rc=$?
-upd_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" update --dry-run)";  upd_rc=$?
-
 assert_eq "$inst_rc" "0" "roost install --dry-run exits 0"
-assert_eq "$upd_rc"  "0" "roost update --dry-run exits 0"
 # Pin the installer's own closing line, not a word that also appears in the
 # plan above it. "dry-run" alone matches the `--dry-run` flag echoed in the
 # usage text as well, so a dispatch that fell through to the usage error
-# would still match it -- and the identity assertion below would then be
-# comparing two identical usage errors and passing.
+# would still match it.
 assert_contains "$inst_out" "--dry-run: nothing above was written." \
   "roost install --dry-run reaches the installer's own plan"
-assert_contains "$upd_out" "--dry-run: nothing above was written." \
-  "roost update --dry-run reaches the installer's own plan"
-assert_eq "$upd_out" "$inst_out" \
-  "roost update --dry-run is byte-identical to roost install --dry-run"
+
+nogit="$TMP/dispatch-nogit"
+copy_checkout "$nogit"
+RUN_BIN="$nogit/bin/roost"
+up_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" upgrade --dry-run)"; up_rc=$?
+upd_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" update --dry-run)"; upd_rc=$?
+unset RUN_BIN
+assert_eq "$up_rc"  "1" "roost upgrade --dry-run from a non-checkout is refused (exit 1)"
+assert_eq "$upd_rc" "1" "roost update --dry-run from a non-checkout is refused (exit 1)"
+# The refusal is what proves `upgrade` reached scripts/roost-upgrade at all:
+# a dispatch that fell through to the usage error would print something else.
+assert_contains "$up_out" "roost upgrade: refused" \
+  "roost upgrade --dry-run reaches the upgrade script's own gate"
+assert_eq "$upd_out" "$up_out" \
+  "roost update --dry-run is byte-identical to roost upgrade --dry-run"
 
 # Arguments really are forwarded, not swallowed. Without a `shift` in
-# bin/roost's install|update arm the installer is handed `install --help`:
+# bin/roost's install arm the installer is handed `install --help`:
 # the SUBCOMMAND arrives as its first argument, hits the installer's `*)` arm
 # and exits 2 with `roost install: unknown argument 'install'`, so --help is
 # never looked at. Measured by deleting that one line -- 7 assertions in this
@@ -1784,7 +2216,7 @@ assert_eq "$upd_out" "$inst_out" \
 # catch it, because the refusal names the subcommand and the two spellings
 # therefore differ; what it cannot tell you is that the failure was a usage
 # error rather than a dropped flag, which is what this loop is here to pin.
-for sub in install update; do
+for sub in install; do
   out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" "$sub" --help)"; rc=$?
   assert_eq "$rc" "0" "roost $sub --help exits 0"
   assert_contains "$out" "usage: roost install [-y|--yes] [--dry-run]" \
@@ -1801,23 +2233,27 @@ done
 # bin/roost's help is read back out of its own header comment, so this is
 # also the check that the header carries both lines.
 help_out="$(ROOST_BANNER=blocks bash "$ROOST_BIN" help)"
-for sub in install update; do
+for sub in install upgrade update; do
   n="$(printf '%s\n' "$help_out" | grep -c "roost $sub" || true)"
   assert_eq "$n" "1" "roost help lists \`roost $sub\` on exactly one line"
 done
 
-# `roost update` does NOT fetch new roost code, and the one line it gets has
-# to say so. Someone who types it expecting an upgrade and gets a silent
-# re-link has been misled by this file, not by their own guess.
+# `roost install` must say it never fetches, and `roost upgrade` that it pulls:
+# someone who types either expecting the other has been misled by this file,
+# not by their own guess. `update` must say it is the same as `upgrade`.
 #
-# Asserted against the extracted `roost update` LINE, never the whole help
-# text: "install" appears on several lines of that block, and a phrase-level
-# match against all of it would stay green with the update line deleted.
-upd_line="$(printf '%s\n' "$help_out" | grep 'roost update')"
-assert_contains "$upd_line" "alias for" \
-  "the roost update help line says it is an alias"
-assert_contains "$upd_line" "does not pull new code" \
-  "the roost update help line says it does not fetch new roost code"
+# Asserted against each extracted LINE, never the whole help text: "install"
+# appears on several lines of that block, and a phrase-level match against all
+# of it would stay green with one of these lines deleted.
+inst_line="$(printf '%s\n' "$help_out" | grep 'roost install ')"
+assert_contains "$inst_line" "never fetches" \
+  "the roost install help line says it never fetches code"
+up_line="$(printf '%s\n' "$help_out" | grep 'roost upgrade ')"
+assert_contains "$up_line" "fast-forward only" \
+  "the roost upgrade help line says it pulls, fast-forward only"
+upd_line="$(printf '%s\n' "$help_out" | grep 'roost update ')"
+assert_contains "$upd_line" "the same as" \
+  "the roost update help line says it is the same as upgrade"
 
 # ===========================================================================
 # 18. --records: the machine-readable record of what this run actually wrote
@@ -2282,19 +2718,25 @@ assert_eq "$s" "absent" \
 assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
   "opencode 2, foreign plugin/roost.js: plugins/roost is still linked"
 
-# Another checkout's 1.x link is foreign too -- it is not THIS checkout's, and
-# "it is probably ours" is not a reason to delete it.
+# Another checkout's 1.x link is roost's own link from a second copy, and
+# opencode 2 cannot load it whichever copy it names, so it is removed like
+# this checkout's own. Run from case 3b's plain copy, which is no git
+# repository at all: the checkout running this suite may be a worktree, and
+# with no git on this shim its `.git` file would read as one. Case 3b runs the
+# same link from a real worktree and its primary.
 box="$TMP/oc2-other1x"
 p1="$(adapter_path_in "$box" opencode)"
 mkdir -p "${p1%/*}" "$TMP/other-checkout/adapters/opencode"
 printf '// another checkout\n' > "$TMP/other-checkout/adapters/opencode/roost.js"
 ln -s "$TMP/other-checkout/adapters/opencode/roost.js" "$p1"
-out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
+out="$(run_install_from "$plain" "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "opencode 2, another checkout's 1.x link: exits 0"
-assert_eq "$(readlink "$p1" 2>/dev/null)" "$TMP/other-checkout/adapters/opencode/roost.js" \
-  "opencode 2, another checkout's 1.x link: left exactly as it was"
-assert_contains "$out" "rm \"$p1\"" \
-  "opencode 2, another checkout's 1.x link: the manual note names the rm"
+[ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
+  "opencode 2, another checkout's 1.x link: removed"
+[ -f "$TMP/other-checkout/adapters/opencode/roost.js" ]; assert_true $? \
+  "opencode 2, another checkout's 1.x link: the other checkout's file is untouched"
+assert_contains "$out" "ln -s \"$TMP/other-checkout/adapters/opencode/roost.js\" \"$p1\"" \
+  "opencode 2, another checkout's 1.x link: the undo puts it back"
 
 # The checkout's own 1.x FILE, reached through a plugin/ directory that is
 # itself a symlink into the checkout. roost_adapter_state says `ok` (an -ef
@@ -2407,7 +2849,7 @@ bash -n "$INSTALL"; assert_true $? "scripts/roost-install parses as bash"
 n="$(grep -cE 'declare -A|\$\{[A-Za-z_]+\^\^|printf .*\\u[0-9a-fA-F]{4}' "$INSTALL" || true)"
 assert_eq "${n:-0}" "0" "scripts/roost-install uses no bash-4-only construct"
 
-rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CODEX_SHIM" "$COPILOT_SHIM"
+rm -rf "$ALL_SHIM" "$ALL_JSON_SHIM" "$CLAUDE_SHIM" "$CLAUDE_GIT_SHIM" "$CODEX_SHIM" "$COPILOT_SHIM"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

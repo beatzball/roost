@@ -16,7 +16,50 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`roost upgrade`: pull new roost code and wire every agent to it, in one
+  command.** It runs `git pull --ff-only` in the checkout roost runs from,
+  re-applies wiring on a running roost server, then runs the installer the pull
+  just fetched, so a release that adds an adapter wires it in the same run. Its
+  flags are the installer's, passed straight through: `--yes`, `--dry-run`,
+  `--only`. The re-apply is what unsets roost's own `OPENCODE_CONFIG_DIR` on a
+  server started before the upgrade when opencode is 2.x, so the opencode 2 case
+  needs no `roost wiring on` afterwards; a server that is not running is wired
+  when it next starts, and nothing is printed; a server started from another
+  checkout, or one with wiring off, is skipped and a line says which.
+  `--dry-run` skips the wiring step and prints a line saying so, makes the
+  installer dry, and still pulls. Before anything touches the network it
+  refuses, naming the rule, when the checkout is not a git checkout, is a
+  worktree, is not on `main`, has no upstream, has local commits, or has
+  uncommitted changes to tracked files (untracked files are fine). A failed pull
+  wires nothing. A refusal prints the `curl ... | sh` line as the fallback,
+  which still works on a machine with no roost at all. `roost update` now means
+  `roost upgrade`; `roost install` stays the command that never fetches. The one
+  thing to know: **a dev tree is refused, by design.** A checkout on a branch,
+  or with commits that are not on its upstream, is somebody's working copy, and
+  upgrade will not pull into it.
+
 ### Changed
+
+- **A link to another copy of roost is roost's to fix.** A plugin link whose
+  text names a roost adapter in a different checkout, and whose target still
+  exists, used to read as `foreign` and be refused. It is now its own state,
+  `other-checkout`. From a plain checkout `roost install` lists it as a relink
+  (`relink PATH (was OLD)`, with `-> TARGET` on the next line), asks for it with
+  the rest, does it under `--yes`, records the old target as the undo, and says
+  in the summary what the link used to point at, because that is a second copy
+  of roost. On opencode 2 the same goes for another copy's 1.x link. From a git
+  worktree `install` refuses and says to run it from that copy or from the
+  primary checkout, so a build pane running `roost install --yes` cannot take
+  the live links from the checkout that owns them. If the old link cannot be
+  removed, install fails rather than link into the other copy. `foreign` is
+  unchanged: a stranger's file is still never touched, and codex's hook is still
+  never rewritten. A Claude hook from another live copy of roost is treated the
+  same way, replaced from a plain checkout and refused from a worktree; roost's
+  two hook scripts are matched exactly, and the consent line says so before you
+  answer. `roost validate` predicts the same: its offer says the link will be
+  relinked from a plain checkout and left alone from a worktree.
 
 - **CI runs the test suite in four shards per runner** (#169). A pull request
   waited 12 minutes for `test (macos-latest)` and 7 for Ubuntu, because the
@@ -30,6 +73,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
   65-second one. A plain `bash tests/run.sh` with no `SHARD` runs everything,
   exactly as before. A repository rule that named `test (macos-latest)` as a
   required check has to name the new jobs instead.
+
+### Fixed
+
+- **`roost doctor` prints the command when a plugin link is not this install.**
+  The opencode 2, opencode 1, copilot and pi lines said "relink it to WANT" and
+  gave no command. Each now ends in `rm "PATH" && ln -s "WANT" "PATH"`, and a
+  link to another copy of roost is named as one, with `roost install` as the
+  first thing to run. From a git worktree that line names the worktree and
+  hands over no command, for the same reason `roost install` refuses there,
+  and `roost validate`'s offer says the same. `doctor` prints an `rm` only for
+  a symlink: for a file or directory it says to move it aside yourself.
 
 ## [0.7.0]
 

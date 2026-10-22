@@ -108,11 +108,12 @@ Options:
 ### `roost install` — the *other* one, for later
 
 `roost install` is that second half on its own, run whenever you like.
-`roost update` is a real alias for it: the same code path and the same flags.
-**Neither fetches new roost code** — both re-wire the checkout you already have
-to whatever is installed on the machine now. Re-run either after installing a
+**It does not fetch new roost code**: it re-wires the checkout you already have
+to whatever is installed on the machine now. Re-run it after installing a
 harness roost had not seen, after moving or re-cloning your checkout, or after
-a roost release that adds an adapter.
+a roost release that adds an adapter. To pull new code as well, use
+`roost upgrade` (see Upgrading below); `roost update` is the same command as
+`roost upgrade`.
 
 It is safe to repeat. Hooks you already have are kept and roost's own join
 them — a `PostToolUse` formatter of your own survives — and a second run adds
@@ -147,7 +148,7 @@ config and scripts no matter where you run it from.
 
 ## Upgrading
 
-**The upgrade command is the install command.** Run it again:
+**Run the install command again.** It works on a machine with or without roost:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
@@ -193,16 +194,37 @@ Worth knowing:
 - **`--ff-only` refuses rather than clobbers.** A clone with local commits or a
   diverged branch warns `could not update; keeping what is there`, and the run
   carries on with the `PATH` and wiring steps rather than aborting.
-- **`roost install` / `roost update` do not fetch.** They re-wire the checkout
-  you have; they never touch roost's own code. When git already knows locally
-  that the checkout is behind, they say how far and print the `git pull` to run
-  — they do not fetch to find out.
+- **`roost install` does not fetch.** `roost upgrade` does. `install` re-wires
+  the checkout you have and never touches roost's own code. When git already
+  knows locally that the checkout is behind, it says how far and prints
+  `roost upgrade` as the command to run — it does not fetch to find out.
 
 **Check it upgraded the copy you meant.** The first two lines it prints are the
 branch it took and the path it took it on: `roost: already cloned` (found that
 clone and pulled it) or `roost: installing from this checkout` (installed that
 directory as it stands, no pull). If the path is not the install you meant,
 stop — the rest of the run is about a different copy.
+
+### `roost upgrade`
+
+On a machine that has roost, `roost upgrade` does the same in one command: it
+runs `git pull --ff-only` in the checkout roost runs from, re-applies wiring on
+a running server, then runs the installer that pull fetched, with `--yes`,
+`--dry-run` and `--only` passed through (`--dry-run` makes the installer dry
+and skips the wiring step; the pull still happens). Wiring is also left alone
+on a server started from another checkout, and it says so. `roost update` is the same command. It only pulls a
+plain `main` with nothing of yours in it, and refuses before touching the
+network, printing the reason and the curl line above as the fallback, when:
+
+- the directory is not a git checkout, or git is not on `PATH`;
+- it is a git worktree;
+- it is on another branch or a detached HEAD, or `main` has no upstream to pull
+  from;
+- it has local commit(s) on `main` that are not on the upstream, or uncommitted
+  changes to tracked files.
+
+If the pull itself fails, it says `git pull --ff-only failed —
+nothing was wired` and stops.
 
 ## Quick start
 
@@ -278,7 +300,7 @@ scripts/roost-notify        # notification delivery: the desktop chain per platf
 scripts/roost-doctor        # preflight checks (tmux version, truecolor, fzf, JSON
                             #   reader, hooks, adapter links, notifier)
 scripts/roost-init          # setup wizard (theme, glyphs, separator style, prints hooks)
-scripts/roost-install       # `roost install` / `roost update`: wire every installed
+scripts/roost-install       # `roost install`: wire every installed
                             #   harness to THIS checkout — three adapter symlinks, the
                             #   claude and codex hook files, copilot's EXTENSIONS flag.
                             #   Refuses rather than replace a file that is not roost's

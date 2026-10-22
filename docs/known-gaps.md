@@ -1984,9 +1984,9 @@ sent people looking for a checkout that was not there.
 
 **A note, not a defect.** Pointing roost at your agents used to be a separate
 manual step per harness. `curl … | sh` now does it in the same step as the
-`PATH` line, and `roost install` — alias `roost update`, the same code path —
+`PATH` line, and `roost install` (`roost update` is `roost upgrade`'s alias now)
 is the re-run for later: a harness installed since, a moved or re-cloned
-checkout, a release that adds an adapter. Neither fetches new roost code.
+checkout, a release that adds an adapter. `roost install` does not fetch new roost code.
 
 **The only two steps `roost install` cannot do are prompts**, and it prints
 both on every run, including runs that wrote nothing:
@@ -2248,6 +2248,71 @@ has already produced a real bug here.
   bucket in `report_install` ("this run could not link it"), a report change
   with its own test file, and because reaching it at all needs a directory
   roost can read but not write.
+- **`roost upgrade` has no bound on its pull.** A fetch that hangs on a dead
+  network hangs the command, and the user sees git's own output. `install.sh`
+  has the same property. Severity: low; Ctrl-C ends it, and the gate has
+  already run, so nothing is half-done. What closes it: a timeout around the
+  pull in `scripts/roost-upgrade` and in `install.sh`, together.
+
+- **`roost upgrade` reads `main` literally, not `origin/HEAD`.** A checkout
+  whose default branch has another name is refused as "not main". Severity:
+  low; roost publishes from one remote whose default is `main`, and the
+  refusal names the rule and the curl line. What closes it: read the default
+  branch from `origin/HEAD` in `gate_branch`, which adds a lookup that can
+  itself fail.
+
+- **A shell opened before an upgrade keeps `OPENCODE_CONFIG_DIR`.** `upgrade`
+  re-applies wiring on the running server, which fixes every new pane, but no
+  command can change the environment of a shell that already exists, so an
+  opencode 2 pane opened before the upgrade still runs with roost's empty
+  configuration. Severity: low; only `roost doctor` says so, per pane, and
+  `unset OPENCODE_CONFIG_DIR` or a new pane clears it. What closes it:
+  nothing roost can do from outside the shell.
+
+- **A Claude hook written as `bash <other-copy>/scripts/roost-agent-state`
+  reads as gone, not live.** A leading interpreter word defeats the match, so
+  the hook is treated as a copy that no longer exists and install rewrites it
+  even from a worktree, where a live copy's hook would be refused. Predates
+  the relink work. Severity: low; it needs a hand-written hook, and the
+  rewrite is the one install already makes for a gone copy. What closes it:
+  strip a leading interpreter word before the existence test.
+
+- **A gone copy's hook and a live third copy's hook in one settings file give
+  the refusal the codex reason.** When the first roost command found is the
+  gone copy's, install reports the "Will NOT edit" reason that explains why a
+  codex handler is never rewritten (it would re-hash it and silently
+  un-badge the machine), whichever harness the file belongs to. From a plain
+  checkout the whole file is then refused and left untouched, so no takeover
+  happens. Severity: low; a conservative refusal that writes nothing, with
+  the wrong reason text. What closes it: pick the reason from every command
+  the file holds, not the first, and let a claude file with a live third copy
+  go through the relink path.
+
+- **The hook probes derive the script names from the patch; the merge engines
+  take them from the given script list.** Today both name the same two
+  scripts. A third hook script would have to be added in both places, or the
+  probe and the merge would disagree about which hooks are roost's. Severity:
+  latent; nothing is wrong until a script is added. What closes it: one list
+  that both read.
+
+- **The install test that makes a link's parent directory read-only SKIPs as
+  root.** `chmod 555` does not stop root from writing, and the Ubuntu
+  container runs the suite as root, so the failed-relink branch is proven only
+  on a developer machine. Severity: low; a Mac run covers it before a pull
+  request. What closes it: still open. Running that one case as a non-root
+  user in the container might work; it has not been tried, and making the
+  parent immutable needs capabilities the container may not grant.
+
+- **A copilot extension reached through a hand-made folder link gets
+  install's generic note.** When `extensions/roost` is a symlink to
+  `<other>/adapters/copilot`, the path roost wants is a regular file — the
+  other copy's tracked `extension.mjs` — so `roost install`'s manual note says
+  "it is not a symlink — look at it first, move it aside yourself". `roost
+  doctor` has a line of its own for the same input that names the folder and
+  says roost links the file, not the folder. Severity: wording only; nothing
+  is deleted, because install never prints or runs `rm` for something that is
+  not a symlink. What closes it: install tests `-L "$(dirname "$path")"` the
+  way doctor does, and prints the folder-link note.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at

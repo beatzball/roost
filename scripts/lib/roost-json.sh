@@ -96,7 +96,7 @@ def _commands(node, out):
             _commands(value, out)
 
 
-def _is_roosts(entry, wants, deaddir=""):
+def _is_roosts(entry, wants, deaddir="", kind="gone"):
     # True only when the entry has at least one command and EVERY one of them
     # invokes one of THIS checkout's targets. A mixed entry — somebody who
     # hand-merged roost's command into their own group — is deliberately not
@@ -119,14 +119,27 @@ def _is_roosts(entry, wants, deaddir=""):
     for command in commands:
         if any(command == w or command.startswith(w + " ") for w in wants):
             continue
-        # DEADDIR is a directory the caller has proved is gone -- a checkout
-        # that was moved, renamed or deleted. Everything under it is roost's
-        # and cannot run, so it is ours to replace. Kept separate from WANTS
-        # because it is a directory prefix, not a command prefix: the dead
+        # DEADDIR is another copy of roost's scripts directory, and KIND says
+        # how much of it is ours to replace.
+        #
+        # gone: the caller has proved it is gone -- a checkout that was
+        # moved, renamed or deleted. Everything under it is roost's and
+        # cannot run. A directory prefix, not a command prefix: the dead
         # checkout's roost-session-context has to match as well as its
         # roost-agent-state, and only a directory covers both.
-        if deaddir and command.startswith(deaddir + "/"):
-            continue
+        #
+        # live: the copy still exists and its hooks are being taken over.
+        # Only a command whose first word is exactly DEADDIR/<name>, for the
+        # <name> of one of WANTS, is ours. Everything else under a live
+        # directory can run and may be the user's own hook; a prefix match
+        # deleted exactly that.
+        if deaddir:
+            if kind == "live":
+                if any(command == d or command.startswith(d + " ")
+                       for d in (deaddir + "/" + w.rsplit("/", 1)[-1] for w in wants)):
+                    continue
+            elif command.startswith(deaddir + "/"):
+                continue
         return False
     return True
 
@@ -175,11 +188,12 @@ def main():
             # always at least one; claude passes two (see _is_roosts).
             # Fixed arity, set by roost_json_merge: PATCH, then two target
             # scripts (the second empty for codex, which has only one), then
-            # the optional dead directory. Spelled out by index rather than
-            # sliced off the end, so adding an argument later is a change
-            # somebody has to make deliberately here.
+            # the optional other-copy directory and its KIND (gone|live). Spelled
+            # out by index rather than sliced off the end, so adding an
+            # argument later is a change somebody has to make deliberately here.
             wants = [a for a in args[1:3] if a]
             deaddir = args[3] if len(args) > 3 else ""
+            kind = args[4] if len(args) > 4 and args[4] else "gone"
             if not wants:
                 raise ValueError("no target script")
             hooks = data.setdefault("hooks", {})
@@ -192,7 +206,7 @@ def main():
                     raise ValueError(
                         "hooks.%s is not an array, so roost cannot add an "
                         "entry to it without deciding what it meant" % event)
-                kept = [e for e in existing if not _is_roosts(e, wants, deaddir)]
+                kept = [e for e in existing if not _is_roosts(e, wants, deaddir, kind)]
                 hooks[event] = kept + patch["hooks"][event]
         elif mode == "copilot-flag":
             flags = data.setdefault("enabledFeatureFlags", {})
@@ -286,9 +300,10 @@ roost_json__jq_run() {
       # want2 is the claude patch's SECOND target script (roost-session-
       # context); codex passes only one and leaves it empty. See the python
       # engine's _is_roosts for why a single want is not enough.
-      # want2 is the claude patch's SECOND target script; deaddir is a
-      # directory the caller has proved is gone. See the python engine.
-      local patch="${1:-}" want="${2:-}" want2="${3:-}" deaddir="${4:-}"
+      # want2 is the claude patch's SECOND target script; deaddir is another
+      # copy's scripts directory and kind (gone|live) how much of it counts as
+      # roost's. See the python engine's _is_roosts.
+      local patch="${1:-}" want="${2:-}" want2="${3:-}" deaddir="${4:-}" kind="${5:-gone}"
       if [ -z "$patch" ]; then
         printf "roost-json: cannot apply mode 'hooks-merge': no patch document\n" >&2
         return 1
@@ -308,19 +323,23 @@ roost_json__jq_run() {
           "$input" >&2
         return 1
       fi
-      jq --indent 2 --argjson patch "$patch" --arg want "$want" --arg want2 "$want2" --arg deaddir "$deaddir" '
+      jq --indent 2 --argjson patch "$patch" --arg want "$want" --arg want2 "$want2" --arg deaddir "$deaddir" --arg kind "$kind" '
         def cmds: [ .. | objects | to_entries[] | select(.key == "command") | .value | select(type == "string") ];
         # The same test as python3'"'"'s _is_roosts: at least one command, and
         # every one of them invoking one of this checkout'"'"'s targets. The
         # empty string is filtered out so codex, which passes only one target,
         # cannot match an entry whose command happens to be "".
         ([$want, $want2] | map(select(. != ""))) as $wants
+        | ($wants | map($deaddir + "/" + (split("/") | .[-1]))) as $deadwants
         | def is_roosts: (cmds) as $c
           | (($c | length) > 0)
             and (all($c[]; . as $cm
                   | any($wants[]; . as $w
                       | $cm == $w or ($cm | startswith($w + " ")))
-                    or (($deaddir != "") and ($cm | startswith($deaddir + "/")))));
+                    or (($deaddir != "")
+                        and (if $kind == "live"
+                             then any($deadwants[]; . as $d | $cm == $d or ($cm | startswith($d + " ")))
+                             else ($cm | startswith($deaddir + "/")) end))));
         reduce ($patch.hooks | keys_unsorted[]) as $ev
           (.hooks = (.hooks // {});
            .hooks[$ev] = (((.hooks[$ev] // []) | map(select(is_roosts | not)))
@@ -339,7 +358,8 @@ roost_json__jq_run() {
 
 # roost_json_merge FILE MODE [ARGS...] -> apply MODE to FILE (treated as "{}"
 # when FILE does not exist), writing the result atomically. Modes:
-#   claude-hooks TARGET_SCRIPT   add the eight roost hook entries to .hooks
+#   claude-hooks TARGET_SCRIPT [OTHER_SCRIPTS_DIR [gone|live]]
+#                                add the eight roost hook entries to .hooks
 #   codex-hooks  TARGET_SCRIPT   add the four roost handlers to .hooks
 #   copilot-flag                 set .enabledFeatureFlags.EXTENSIONS = true
 #
@@ -435,15 +455,19 @@ roost_json_merge() {
         printf "roost-json: mode '%s' needs a TARGET_SCRIPT\n" "$mode" >&2
         return 1
       fi
-      # An OPTIONAL DIRECTORY that the caller has proved is gone -- the
-      # scripts directory of a checkout that was moved, renamed or deleted.
-      # scripts/roost-install passes one after checking the filesystem: every
-      # entry under it is roost's and cannot run, so the merge must DROP those
-      # rather than leave them and append beside them. A directory, not one
-      # script path, because the claude patch invokes two scripts from it and
-      # matching only one left the other behind. Empty for every ordinary
-      # install.
-      local deaddir="${2:-}"
+      # An OPTIONAL DIRECTORY, the scripts directory of another copy of
+      # roost, and its KIND (default gone):
+      #   gone  scripts/roost-install checked the filesystem and that copy is
+      #         gone. Every entry under it is roost's and cannot run, so the
+      #         merge must DROP those rather than leave them and append beside
+      #         them. A directory, not one script path, because the claude
+      #         patch invokes two scripts from it and matching only one left
+      #         the other behind.
+      #   live  that copy exists and its hooks are being taken over: only a
+      #         command that runs one of roost's own scripts there, exactly,
+      #         is dropped. Anything else under it may be the user's own.
+      # Both empty for every ordinary install.
+      local deaddir="${2:-}" deadkind="${3:-}"
       engine_mode=hooks-merge
       case "$mode" in
         # The TARGET goes through as well as the patch. hooks-merge needs it
@@ -456,8 +480,8 @@ roost_json_merge() {
         # the same reason roost_hooks_claude derives it that way — $target may
         # have been injected by a caller or a test, and it stays the single
         # authority on which directory these hooks point at.
-        claude-hooks) set -- "$(roost_hooks_claude "$target")" "$target" "${target%/*}/roost-session-context" "$deaddir" ;;
-        codex-hooks)  set -- "$(roost_hooks_codex  "$target")" "$target" "" "$deaddir" ;;
+        claude-hooks) set -- "$(roost_hooks_claude "$target")" "$target" "${target%/*}/roost-session-context" "$deaddir" "$deadkind" ;;
+        codex-hooks)  set -- "$(roost_hooks_codex  "$target")" "$target" "" "$deaddir" "$deadkind" ;;
       esac
       ;;
   esac

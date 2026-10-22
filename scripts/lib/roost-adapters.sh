@@ -134,7 +134,32 @@ roost_adapter_target() {
   esac
 }
 
-# roost_adapter_state HARNESS -> ok | missing | dangling | foreign | none
+# roost_adapter_tail HARNESS -> the path tail every roost checkout's adapter
+# for that harness ends in. The one list roost_adapter_target prints from,
+# written once more here so a link's TEXT can be matched without resolving
+# it (a target under a moved home still names the adapter).
+roost_adapter_tail() {
+  case "$1" in
+    opencode)  printf '/adapters/opencode/roost.js' ;;
+    opencode2) printf '/adapters/opencode/v2' ;;
+    pi)        printf '/adapters/pi/roost.ts' ;;
+    copilot)   printf '/adapters/copilot/extension.mjs' ;;
+  esac
+}
+
+# roost_adapter_link_names HARNESS PATH — true when the symlink at PATH has
+# text ending in HARNESS's adapter tail. A trailing slash is stripped first: a
+# directory link may carry one.
+roost_adapter_link_names() {
+  local text tail; text="$(readlink "$2")" || return 1
+  text="${text%/}"
+  # A harness with no tail (claude, codex) would make the glob below `*`, which
+  # matches every link, so an empty tail must never match.
+  tail="$(roost_adapter_tail "$1")"; [ -n "$tail" ] || return 1
+  case "$text" in *"$tail") return 0 ;; *) return 1 ;; esac
+}
+
+# roost_adapter_state HARNESS -> ok | missing | dangling | other-checkout | foreign | none
 #
 # Reports what is AT the path. What to do about each value is each caller's
 # own policy, not this function's — roost validate currently treats dangling
@@ -147,8 +172,10 @@ roost_adapter_target() {
 #             OURS to have broken — the checkout it pointed at moved or was
 #             deleted — not a tester's own file, so a caller is free to treat
 #             it differently from foreign.
+#   other-checkout  a live symlink whose text names a roost adapter in a DIFFERENT checkout — roost's own link, from a second copy of roost
 #   foreign   something else occupies the path and is NOT a dangling link:
-#             another live checkout's symlink, or the tester's own extension.
+#             the tester's own extension, or any other file or link that is
+#             not roost's.
 #             "it is probably ours" is not a good enough reason to delete a
 #             file (AGENTS.md §9 — verify, do not assume) — a caller that
 #             wants to leave these alone reports the exact fix instead.
@@ -168,9 +195,38 @@ roost_adapter_state() {
   if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
   elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'dangling'
   elif [ "$path" -ef "$want" ]; then printf 'ok'
+  elif [ -L "$path" ] && roost_adapter_link_names "$h" "$path"; then printf 'other-checkout'
   else printf 'foreign'
   fi
 }
+
+# roost_checkout_is_worktree [DIR] — true when DIR (default: this checkout) is
+# a linked git worktree and not the primary checkout. In the primary checkout
+# --git-common-dir and --git-dir are both `.git`; in a worktree --git-dir is
+# `<primary>/.git/worktrees/<name>` while the common dir stays the primary's.
+# Each is made absolute against DIR first, because git prints them relative
+# in the primary checkout and absolute elsewhere. False, not an error, when
+# git is missing or DIR is not in a work tree, EXCEPT when DIR holds a `.git`
+# FILE: see _roost_gitfile_says below.
+#
+# When git cannot answer, a `.git` file (a gitfile, which is what a worktree
+# or a submodule has) reads as a worktree. Failing closed matters here: a
+# worktree on a machine whose `git` on PATH is a stub, or where git refuses
+# the directory with "dubious ownership", must not read as the primary
+# checkout and take the primary's links. A `.git` directory, or no `.git` at
+# all, still reads as not a worktree.
+roost_checkout_is_worktree() {
+  local dir="${1:-$(_roost_adapter_root)}" common gitdir
+  command -v git >/dev/null 2>&1 || { _roost_gitfile_says "$dir"; return; }
+  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || { _roost_gitfile_says "$dir"; return; }
+  gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)" || { _roost_gitfile_says "$dir"; return; }
+  common="$(cd -P "$dir" && cd -P "$common" 2>/dev/null && pwd)" || { _roost_gitfile_says "$dir"; return; }
+  gitdir="$(cd -P "$dir" && cd -P "$gitdir" 2>/dev/null && pwd)" || { _roost_gitfile_says "$dir"; return; }
+  [ "$common" != "$gitdir" ]
+}
+# _roost_gitfile_says DIR — the fallback when git gives no answer: true when
+# DIR/.git is a regular file.
+_roost_gitfile_says() { [ -f "$1/.git" ]; }
 
 # roost_adapter_names_1x PATH — true when PATH is a symlink whose text names a
 # roost 1.x opencode adapter, in this checkout or any other. The same test

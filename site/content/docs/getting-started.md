@@ -113,12 +113,13 @@ for after the first day:
 
 ```sh
 roost install    # wire every installed harness to this checkout
-roost update     # the same thing — a real alias, not a second command
+roost upgrade    # pull new roost code, then wire every agent to it
+roost update     # the same as roost upgrade
 ```
 
-**Neither of them fetches new roost code.** They re-wire the checkout you
-already have to whatever is installed on the machine *now*. Run either one
-when you:
+**`roost install` does not fetch new roost code.** It re-wires the checkout you
+already have to whatever is installed on the machine *now*. `roost upgrade`
+pulls first; see Upgrading below. Run `roost install` when you:
 
 - install a harness roost had not seen when you first ran it
 - move, re-clone, or switch to a different roost checkout (claude and the three
@@ -169,8 +170,8 @@ config and scripts no matter where you run it from.
 
 ## Upgrading
 
-**To upgrade roost, run the install command again.** There is no separate
-upgrade command:
+**To upgrade roost, run the install command again.** It works on a machine with
+or without roost:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh
@@ -229,10 +230,11 @@ Four things to know:
   keeping what is there` and carries on with the `PATH` and wiring steps rather
   than stopping. Nothing of yours is rewritten; sort that checkout out yourself
   when you want the new code.
-- **`roost install` and `roost update` do not fetch new code.** They wire your
-  harnesses to the checkout you already have, and that is all. When git already
-  knows locally that your checkout is behind, they tell you how far and print
-  the `git pull` to run — they never go to the network to find out.
+- **`roost install` does not fetch new code.** `roost upgrade` does. `install`
+  wires your harnesses to the checkout you already have, and that is all. When
+  git already knows locally that your checkout is behind, it tells you how far
+  and prints `roost upgrade` as the command to run — it never goes to the
+  network to find out.
 
 ### Check it upgraded the copy you meant
 
@@ -249,6 +251,27 @@ roost: installing from this checkout   # installed it as it stands, no pull
 
 Read the path. If it is not the install you meant to upgrade, stop there — the
 rest of the run happened to a different copy.
+
+### `roost upgrade`
+
+On a machine that has roost, `roost upgrade` does the same in one command: it
+runs `git pull --ff-only` in the checkout roost runs from, re-applies wiring on
+a running server, then runs the installer that pull fetched, with `--yes`,
+`--dry-run` and `--only` passed through (`--dry-run` makes the installer dry
+and skips the wiring step; the pull still happens). Wiring is also left alone
+on a server started from another checkout, and it says so. `roost update` is the same command. It only pulls a
+plain `main` with nothing of yours in it, and refuses before touching the
+network, printing the reason and the curl line above as the fallback, when:
+
+- the directory is not a git checkout, or git is not on `PATH`;
+- it is a git worktree;
+- it is on another branch or a detached HEAD, or `main` has no upstream to pull
+  from;
+- it has local commit(s) on `main` that are not on the upstream, or uncommitted
+  changes to tracked files.
+
+If the pull itself fails, it says `git pull --ff-only failed —
+nothing was wired` and stops.
 
 ## First run
 
