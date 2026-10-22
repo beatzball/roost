@@ -7,6 +7,23 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0]
+
+roost now updates itself. `roost upgrade` pulls the next release into the
+checkout roost runs from, re-wires a running server, and runs the installer it
+just fetched, so the `roost install` and `roost wiring on` that 0.7.0 asked for
+on opencode 2 are one command now. `roost update` means the same thing. When a
+plugin link points at a second copy of roost, `doctor` prints the exact command
+and `install` relinks it from a plain checkout; from a git worktree both leave
+the link alone and say so. `roost ssh` runs the remote roost in a login shell
+and quotes every argument, so a remote that keeps roost under `~/.local/bin`
+works, and a multi-word prompt arrives as typed. CI runs the test suite in
+four shards per runner.
+
+One thing to know. **`roost upgrade` refuses a dev tree, by design.** A
+checkout on a branch, with local commits, or with changes to tracked files
+gets the `curl ... | sh` line instead, and nothing is pulled into it.
+
 ### Added
 
 - **`roost upgrade`: pull new roost code and wire every agent to it, in one
@@ -75,6 +92,19 @@ and this project uses [Semantic Versioning](https://semver.org/).
   hands over no command, for the same reason `roost install` refuses there,
   and `roost validate`'s offer says the same. `doctor` prints an `rm` only for
   a symlink: for a file or directory it says to move it aside yourself.
+
+- **`roost ssh` runs roost in the remote's login shell, and quotes every
+  argument.** It was `ssh -t HOST roost ...`, which the remote ran in a plain
+  non-login shell: no profile was read, so a `PATH` or `LANG` set there never
+  arrived, `roost` was "command not found" on any machine that keeps it under
+  `~/.local/bin` or a Homebrew prefix, `tmux` the same one step later, and a
+  remote without a locale drew every badge as `_`. And ssh joins its arguments
+  into one line, so a multi-word prompt had to be quoted twice. The remote
+  line is now `"$SHELL" -lc 'roost ...'`, built one quoted argument at a time:
+  `roost ssh devbox send %3 "review the diff"` arrives as those three words,
+  and `user@host` destinations pass through as before. The docs gained a
+  remote-agents checklist and three troubleshooting entries for the remaining
+  ways a remote can be set up wrong.
 
 ## [0.7.0]
 
@@ -221,19 +251,6 @@ after `prefix r` reloads the tmux config on a server that was already running.
   them.
 
 ### Fixed
-
-- **`roost ssh` runs roost in the remote's login shell, and quotes every
-  argument.** It was `ssh -t HOST roost ...`, which the remote ran in a plain
-  non-login shell: no profile was read, so a `PATH` or `LANG` set there never
-  arrived, `roost` was "command not found" on any machine that keeps it under
-  `~/.local/bin` or a Homebrew prefix, `tmux` the same one step later, and a
-  remote without a locale drew every badge as `_`. And ssh joins its arguments
-  into one line, so a multi-word prompt had to be quoted twice. The remote
-  line is now `"$SHELL" -lc 'roost ...'`, built one quoted argument at a time:
-  `roost ssh devbox send %3 "review the diff"` arrives as those three words,
-  and `user@host` destinations pass through as before. The docs gained a
-  remote-agents checklist and three troubleshooting entries for the remaining
-  ways a remote can be set up wrong.
 
 - **opencode 2 in a roost pane uses your configuration again** (#154). roost
   wires opencode by setting `OPENCODE_CONFIG_DIR` in every pane. opencode 1.x
