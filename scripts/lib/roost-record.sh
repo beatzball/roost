@@ -21,6 +21,12 @@
 #                       back in the same tmux command that stored it; `read`
 #                       serves the turn file only while the pane still holds
 #                       exactly this (roost_record_match)
+#     replies/000001.sent_by  who sent the prompt that started that turn (#56):
+#                       the `--from LABEL` of the `roost send`, else `pane:%N`
+#                       for a send from a pane on this server, else `human`.
+#                       Written by `send` through roost_record_put_turn_field,
+#                       and BEFORE the turn file: the label is known when the
+#                       turn begins, the reply only when it ends
 #
 # The server's boot key is in the path because tmux restarts pane ids at %0 on
 # every server start (measured on tmux 3.3a, 3.4 and 3.6): keyed by socket and
@@ -28,7 +34,8 @@
 #
 # Names reserved for later work (see the spec): name, session, window, cwd,
 # state, harness, session_id, and further per-turn sidecars
-# `replies/NNNNNN.<field>` (`.pane` is the one #42 uses). Three of them are
+# `replies/NNNNNN.<field>` (`.pane` is the one #42 uses, `.sent_by` the one
+# #56 uses). Three of them are
 # written now, and not from this file: `session_id`, `cwd` and `harness`, by
 # scripts/lib/roost-identity.sh (#141), which creates the directory the way
 # roost_record_append does. Nothing here writes them. A reader here counts a turn only when its name is
@@ -379,15 +386,22 @@ roost_record__socket() {
   ROOST_RECORD_SOCKET_SEEN="$s"
 }
 
-# roost_record_append DIR SOCKET TEXT -> ROOST_RECORD_TURN, and 0; 1 when
-# nothing was recorded. The caller then sets @roost-reply exactly as before.
+# roost_record_ensure DIR SOCKET -> 0, with ROOST_RECORD_CREATED set to 1 when
+# this call made the pane directory, once DIR is a record this roost may write
+# into: its directories exist, private, with a schema file and (when SOCKET is
+# given) a socket file. 1 when it cannot be — not creatable, or a schema this
+# roost does not understand. SOCKET may be "" for a writer that does not know
+# it; the next writer that does backfills it.
 #
-# Called once per turn, from the two places that set @roost-reply, and never on
-# the PostToolUse path. Measured on the design machine: +7 to +17 ms on a turn
-# end of 85 to 95 ms, most of it the forks for mkdir, mktemp, ln and rm.
-roost_record_append() {
-  local LC_ALL=C dir="$1" sock="$2" text="$3" tmp n f created=0 st=0
-  ROOST_RECORD_TURN=""
+# Split out of roost_record_append, unchanged, when `send` gained a sidecar to
+# write BEFORE a pane's first turn exists (#56): the two writers must make a
+# record the same way, and a record `send` created is still the one the hook
+# then appends into. A caller that creates a record runs roost_record_sweep
+# afterwards, as roost_record_append always has, because creation is the
+# once-per-pane moment the sweep is tied to.
+roost_record_ensure() {
+  local dir="$1" sock="$2" st=0
+  ROOST_RECORD_CREATED=0
   [ -n "$dir" ] || return 1
 
   # 0700 on the two directories this creates: a record holds what an agent
@@ -404,7 +418,7 @@ roost_record_append() {
     mkdir -p "${dir%/*}" 2>/dev/null || return 1
     chmod 700 "${dir%/*}" 2>/dev/null || true
     if mkdir -m 700 "$dir" 2>/dev/null; then
-      created=1
+      ROOST_RECORD_CREATED=1
     else
       [ -d "$dir" ] || return 1
     fi
@@ -427,6 +441,20 @@ roost_record_append() {
   if [ ! -d "$dir/replies" ]; then
     mkdir -m 700 "$dir/replies" 2>/dev/null || [ -d "$dir/replies" ] || return 1
   fi
+  return 0
+}
+
+# roost_record_append DIR SOCKET TEXT -> ROOST_RECORD_TURN, and 0; 1 when
+# nothing was recorded. The caller then sets @roost-reply exactly as before.
+#
+# Called once per turn, from the two places that set @roost-reply, and never on
+# the PostToolUse path. Measured on the design machine: +7 to +17 ms on a turn
+# end of 85 to 95 ms, most of it the forks for mkdir, mktemp, ln and rm.
+roost_record_append() {
+  local LC_ALL=C dir="$1" sock="$2" text="$3" tmp n f created=0
+  ROOST_RECORD_TURN=""
+  roost_record_ensure "$dir" "$sock" || return 1
+  created="$ROOST_RECORD_CREATED"
 
   # mktemp, not .tmp.$$: inside a subshell $$ is the PARENT's pid, and two
   # writers forked from one shell then shared a temp name and deleted each
@@ -499,7 +527,8 @@ roost_record_prune() {
     roost_record_turn_file "$1" "$ROOST_RECORD_MIN"
     f="$ROOST_RECORD_FILE"
     [ -f "$f" ] || return 0
-    # The turn's sidecars go with it — `.pane` today, any `.<field>` later.
+    # The turn's sidecars go with it — `.pane` and `.sent_by` today, any
+    # `.<field>` later.
     rm -f "$f" "$f".* || return 0
     roost_record_scan "$1/replies"
   done
@@ -564,6 +593,50 @@ roost_record_put_pane() {
   [ -n "$3" ] || return 1
   roost_record_turn_file "$1" "$2"
   roost_record__put "$ROOST_RECORD_FILE.pane" "$3"
+}
+
+# roost_record_put_turn_field DIR N FIELD VALUE [SOCKET] — write one per-turn
+# sidecar, `replies/NNNNNN.FIELD`, whole or not at all: a mktemp file in the
+# same directory, 0600 as mktemp makes it, then mv, which is rename(2). A
+# second write for the same turn and field replaces the first the same way.
+# 0 when it was written; 1 when nothing was.
+#
+# `send --from` is the first caller (#56), and `roost answer` (#142) is the
+# next: one writer here, so a new field is one call and not a second copy of
+# the temp-and-rename dance. FIELD is `[a-z_]+` — the sidecar name is a file
+# name, and the digit-only readers above stay blind to it only because it
+# carries a suffix; VALUE is one non-empty line, so a reader can `read -r` it.
+# N is checked the way roost_record_append checks its own number: digits, at
+# most 15 of them, leading zeros allowed and dropped so `007` and `7` name the
+# same turn.
+#
+# THE TURN FILE NEED NOT EXIST YET, and usually does not: `send` knows the turn
+# number when the turn BEGINS (the badge left done/idle, so the next recorded
+# reply is base + 1), and the reply that becomes the turn file is written by the
+# Stop hook when the turn ENDS. So the record directory is created here when
+# this is the pane's first turn, the way the hook would create it, and the
+# sweep that creation triggers runs here for the same reason it runs there.
+#
+# What that leaves open, on purpose: a turn that begins and then errors
+# records no reply, so its predicted number is taken by the NEXT turn, which
+# inherits this sidecar unless another `send` rewrites it. `send` cannot know
+# that at the time it writes, and the Stop hook's error path must not pay to
+# clear a file for every failed turn. Rare, visible in `read --json`, and
+# recorded in docs/known-gaps.md rather than guessed at here.
+roost_record_put_turn_field() {
+  local LC_ALL=C dir="$1" n="$2" field="$3" value="$4" sock="${5:-}"
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#n}" -le 15 ] || return 1
+  n=$((10#$n))
+  case "$field" in ''|*[!a-z_]*) return 1 ;; esac
+  case "$value" in ''|*$'\n'*) return 1 ;; esac
+  roost_record_ensure "$dir" "$sock" || return 1
+  roost_record_turn_file "$dir" "$n"
+  roost_record__put "$ROOST_RECORD_FILE.$field" "$value" || return 1
+  if [ "$ROOST_RECORD_CREATED" = 1 ]; then
+    roost_record_sweep
+  fi
+  return 0
 }
 
 # roost_record_match REPLY DIR N -> 0, with ROOST_RECORD_TEXT set, when turn N's
