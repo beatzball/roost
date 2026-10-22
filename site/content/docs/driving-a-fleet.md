@@ -430,7 +430,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 ### `roost status --json`
 
 ```json
-{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl"}]}
+{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1}]}
 ```
 
 | field | type | meaning |
@@ -454,6 +454,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `panes[].cwd` | string or `null` | the directory the agent's session started in, absolute |
 | `panes[].harness` | string or `null` | which agent it is: `claude`, `codex`, `opencode`, `copilot`, `pi`, or the name an adapter passed to `roost identify` |
 | `panes[].transcript` | string or `null` | the path of the agent's transcript, when its harness keeps one file per session (Claude Code, codex, pi) |
+| `panes[].subagents` | integer or `null` | how many subagents the agent has running right now. `0` once they have all finished; `null` for a pane that has never run one, and for every harness but Claude Code, which is the only one that reports it. A count, not a state: `state` still says whether the agent itself is busy |
 
 The last four are always present, and `null` until the agent's first event says who it is — a pane that has never run an agent has four `null`s. Nothing clears them when the agent exits, so they stay until another agent in the pane says who it is: a pane back at its shell prompt still names the last agent that ran there. They follow the agent, not the pane: clearing a conversation gives it a new `session_id`, and resuming one brings its old `session_id` back in a new pane. roost records what the harness says now and never links the two.
 

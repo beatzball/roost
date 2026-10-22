@@ -79,6 +79,8 @@ Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
 | `PostToolUseFailure` (`--tool-hook`) | ⏳ working |
 | `Stop` | ✅ done |
 | `StopFailure` | 💥 error |
+| `SubagentStart` | — (counts a subagent) |
+| `SubagentStop` | — (counts one down) |
 
 Some of those are subtler than they look:
 
@@ -88,6 +90,7 @@ Some of those are subtler than they look:
 - **`--tool-hook` on those two is about background agents.** A background agent finishing a tool call fires `PostToolUse` on the *main* pane, and without the flag that cleared a 🛑 a **different** agent's dialog had put there. The flag lets the hook read the payload's `agent_id` — and it reads it only when the pane already shows 🛑, so the common case is still one lookup and an exit. Leave the flag off and every badge is still correct except that one.
 - **After No or Esc, Claude fires no hook at all.** `--permission-request-hook` and `--notification-hook` record the path of Claude's own transcript beside the 🛑, and `roost send`, `read` and `wait-done` read that transcript before believing the badge. When the newest records in it are Claude's own "request interrupted" records, written after the badge, they clear it. They never set a state, and anything they cannot prove leaves the badge red.
 - **`StopFailure` is what ends a failed turn.** When a turn ends on an API error — a rate limit, an overload, a model that does not exist — Claude fires `StopFailure` instead of `Stop`, and nothing after it. roost badges that 💥 error, and `roost wait-done` exits 1 with the reason, for example *Claude ended the turn on an API error (rate_limit)*. While Claude is still retrying, the pane stays ⏳ working, because it is. A subagent's API error does not change the badge: the main turn goes on.
+- **`SubagentStart` and `SubagentStop` keep a count, not a badge.** They record how many subagents the agent has running, and their ids, on the pane, and `roost status --json` reports the number as `subagents`. Neither touches the badge: a pane with three helpers out reads whatever its own turn reads, and a turn that ends while a helper is still running reads ✅ done, as it does today. Whether background work should hold a pane at ⏳ is a separate decision (the turn-over design, #97), and this count is the measurement it will be made from. Only Claude Code reports it. The other harnesses have no equivalent wired, so their panes read `null` there, and a Claude wired before these two events were added reads `null` until you run `roost install` again.
 
 **If you wired Claude before `StopFailure` or `PermissionRequest` was added, run `roost install` again.** Your other hooks keep working, so nothing looks wrong for a while. Without `StopFailure`, a turn that fails leaves the pane reading ⏳ working on an agent that has stopped. Without `PermissionRequest`, a permission dialog is painted 🛑 six seconds late — and one answered faster than that is never painted at all, so `roost send` types into it. `roost doctor` warns about a `settings.json` missing either one, and `roost install` adds just that entry and leaves the rest as it found them.
 
