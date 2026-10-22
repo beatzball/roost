@@ -117,8 +117,17 @@ nogit="$TMP/nogit"; mkdir -p "$nogit"
 for b in $CORE_BINS; do
   real="$(command -v "$b" 2>/dev/null)" && ln -s "$real" "$nogit/$b" 2>/dev/null
 done
-( PATH="$nogit"; roost_checkout_is_worktree "$TMP/repo-wt" ); assert_eq "$?" "1" \
-  "with no git on PATH a worktree reads as not one"
+# With no git, the answer falls back to the shape of `.git`, and fails
+# closed: a gitfile is a worktree's, so it reads as one.
+( PATH="$nogit"; roost_checkout_is_worktree "$repo" ); assert_eq "$?" "1" \
+  "with no git on PATH a primary checkout (a .git directory) still reads as not a worktree"
+( PATH="$nogit"; roost_checkout_is_worktree "$TMP/repo-wt" ); assert_eq "$?" "0" \
+  "with no git on PATH a worktree (a .git file) still reads as one"
+( PATH="$nogit"; roost_checkout_is_worktree "$TMP/plain" ); assert_eq "$?" "1" \
+  "with no git on PATH a plain directory is not a worktree"
+mkdir -p "$TMP/gitfile-only"; : > "$TMP/gitfile-only/.git"
+roost_checkout_is_worktree "$TMP/gitfile-only"; assert_eq "$?" "0" \
+  "a directory with a .git file git cannot read fails closed as a worktree"
 
 # --- the canary must be empty ------------------------------------------------
 assert_eq "$(canary_leaks)" "" "nothing wrote outside the scratch homes"

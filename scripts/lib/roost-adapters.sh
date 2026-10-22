@@ -206,17 +206,27 @@ roost_adapter_state() {
 # `<primary>/.git/worktrees/<name>` while the common dir stays the primary's.
 # Each is made absolute against DIR first, because git prints them relative
 # in the primary checkout and absolute elsewhere. False, not an error, when
-# git is missing or DIR is not in a work tree: the caller asks "should I
-# worry", and no answer means no.
+# git is missing or DIR is not in a work tree, EXCEPT when DIR holds a `.git`
+# FILE: see _roost_gitfile_says below.
+#
+# When git cannot answer, a `.git` file (a gitfile, which is what a worktree
+# or a submodule has) reads as a worktree. Failing closed matters here: a
+# worktree on a machine whose `git` on PATH is a stub, or where git refuses
+# the directory with "dubious ownership", must not read as the primary
+# checkout and take the primary's links. A `.git` directory, or no `.git` at
+# all, still reads as not a worktree.
 roost_checkout_is_worktree() {
   local dir="${1:-$(_roost_adapter_root)}" common gitdir
-  command -v git >/dev/null 2>&1 || return 1
-  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || return 1
-  gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)" || return 1
-  common="$(cd -P "$dir" && cd -P "$common" 2>/dev/null && pwd)" || return 1
-  gitdir="$(cd -P "$dir" && cd -P "$gitdir" 2>/dev/null && pwd)" || return 1
+  command -v git >/dev/null 2>&1 || { _roost_gitfile_says "$dir"; return; }
+  common="$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null)" || { _roost_gitfile_says "$dir"; return; }
+  gitdir="$(git -C "$dir" rev-parse --git-dir 2>/dev/null)" || { _roost_gitfile_says "$dir"; return; }
+  common="$(cd -P "$dir" && cd -P "$common" 2>/dev/null && pwd)" || { _roost_gitfile_says "$dir"; return; }
+  gitdir="$(cd -P "$dir" && cd -P "$gitdir" 2>/dev/null && pwd)" || { _roost_gitfile_says "$dir"; return; }
   [ "$common" != "$gitdir" ]
 }
+# _roost_gitfile_says DIR — the fallback when git gives no answer: true when
+# DIR/.git is a regular file.
+_roost_gitfile_says() { [ -f "$1/.git" ]; }
 
 # roost_adapter_names_1x PATH — true when PATH is a symlink whose text names a
 # roost 1.x opencode adapter, in this checkout or any other. The same test

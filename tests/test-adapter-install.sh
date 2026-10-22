@@ -505,7 +505,35 @@ plant_link "$box" pi "$TMP/stranger.js"
 Ppi="$(adapter_path_in "$box" pi)"
 out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"
 assert_contains "$out" "rm \"$Ppi\" && ln -s" "pi, stranger's symlink: the note prints rm && ln -s"
+
+# --- a relink whose old link cannot be removed FAILS. The parent is made
+# read-only, so `rm` of the old link fails; an unchecked `ln -s` would then
+# follow the still-live directory link and create a link inside the other
+# copy's adapter directory while reporting success.
+box="$TMP/oc-relink-blocked"
+plant_link "$box" opencode2 "$co2$(adapter_tail opencode2)"
+P="$(adapter_path_in "$box" opencode2)"
+inside_before="$(ls -a "$co2$(adapter_tail opencode2)")"
+chmod 555 "$(dirname "$P")"
+if [ -w "$(dirname "$P")" ]; then
+  # root ignores the mode, so there is no way to make the rm fail here.
+  printf '  SKIP: relink with an unremovable old link (running as root)\n'
+else
+  out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+  [ "$rc" -ne 0 ]; assert_true $? "relink, old link cannot be removed: exits non-zero"
+  assert_contains "$out" "could NOT relink $P" "relink, old link cannot be removed: says so"
+  case "$out" in *relinked*) s=relinked ;; *) s=no ;; esac
+  assert_eq "$s" "no" "relink, old link cannot be removed: nothing says relinked"
+  assert_eq "$(readlink "$P")" "$co2$(adapter_tail opencode2)" "relink, old link cannot be removed: the link is unchanged"
+  assert_eq "$(ls -a "$co2$(adapter_tail opencode2)")" "$inside_before" \
+    "relink, old link cannot be removed: nothing new inside the other copy's adapter"
+  assert_contains "$(cat "$box/records" 2>/dev/null)" "$(printf 'failed\topencode\t%s' "$P")" \
+    "relink, old link cannot be removed: --records says failed"
+fi
+chmod 755 "$(dirname "$P")"
 rm -rf "$OC2_GIT_SHIM"
+# The throwaway git config is for the repository above only.
+unset GIT_CONFIG_GLOBAL
 
 # ===========================================================================
 # 4. A dangling link -> relinked. It is ours and broken; replacing it loses
@@ -2500,14 +2528,16 @@ assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
 
 # Another checkout's 1.x link is roost's own link from a second copy, and
 # opencode 2 cannot load it whichever copy it names, so it is removed like
-# this checkout's own. This shim has no git, so the run reads as a plain
-# checkout; case 3b runs the same link from a real worktree and its primary.
+# this checkout's own. Run from case 3b's plain copy, which is no git
+# repository at all: the checkout running this suite may be a worktree, and
+# with no git on this shim its `.git` file would read as one. Case 3b runs the
+# same link from a real worktree and its primary.
 box="$TMP/oc2-other1x"
 p1="$(adapter_path_in "$box" opencode)"
 mkdir -p "${p1%/*}" "$TMP/other-checkout/adapters/opencode"
 printf '// another checkout\n' > "$TMP/other-checkout/adapters/opencode/roost.js"
 ln -s "$TMP/other-checkout/adapters/opencode/roost.js" "$p1"
-out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
+out="$(run_install_from "$plain" "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "opencode 2, another checkout's 1.x link: exits 0"
 [ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
   "opencode 2, another checkout's 1.x link: removed"

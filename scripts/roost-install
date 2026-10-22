@@ -1220,14 +1220,27 @@ if [ "$do_writes" -eq 1 ]; then
         record_outcome refused "$h" "$path"
         continue
       fi
-      rm -f "$path" 2>/dev/null
+      # The removal is checked, as the unlink branch checks it. If the old
+      # link is still there, the `ln -s` below would not replace it: for a
+      # link to a DIRECTORY (opencode 2's plugins/roost) it would follow the
+      # link and create a new one INSIDE the other copy's adapter directory,
+      # then report success. A parent directory this user cannot write is
+      # enough to get there.
+      if ! { rm -f "$path" 2>/dev/null && [ ! -L "$path" ]; }; then
+        printf '  could NOT relink %s\n' "$path" >&2
+        record_outcome failed "$h" "$path"
+        failed=1
+        continue
+      fi
     fi
 
     # The undo removes what this run made, and for a link it took over from
     # another copy of roost it also puts that link back exactly as it was.
     undo="rm \"$path\""
     [ -n "${old:-}" ] && undo="rm \"$path\" && ln -s \"$old\" \"$path\""
-    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -s "$target" "$path" 2>/dev/null; then
+    # -n: if anything is at the path by now, a link to a directory is never
+    # entered; ln fails on it instead, and that is reported as a failure.
+    if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -sn "$target" "$path" 2>/dev/null; then
       printf '  %-8s %s\n' "${action}ed" "$path"
       if [ -n "${old:-}" ]; then
         # roost does not look for copies of itself; it names the one it was
