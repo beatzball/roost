@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# roost upgrade — pull new roost code into THIS checkout, then run the
+# installer that pull fetched.
+#
+# The gate is the point of this file. A pull is only safe on a checkout that
+# is nobody's working copy: a plain `main`, tracking an upstream, with no
+# local commits and no edits to tracked files. Anything else is refused BEFORE
+# the network is touched, with the rule that failed and the curl line to run
+# instead. Untracked files are not a refusal: `pull --ff-only` tolerates them,
+# and if one would be overwritten git says so and nothing is wired.
+#
+# Every flag except -h|--help is the installer's, passed through untouched.
+# --dry-run makes the INSTALLER dry; the pull still happens.
+set -euo pipefail
+
+# The whole body is a function, called on the last line. bash reads a script
+# as it runs it, and the pull below can rewrite this very file; a function is
+# parsed in full before it starts, so a pull can never splice new lines into
+# the run that is executing.
+main() {
+  # --- this checkout -------------------------------------------------------
+  # Resolved from this file's own location, never from an inherited
+  # $ROOST_HOME, for the reason scripts/roost-install gives: every pane of a
+  # roost session exports the ROOST_HOME of whichever checkout started the
+  # server, and an upgrade run from a second checkout must pull that one.
+  local _self _dir HERE
+  _self="${BASH_SOURCE[0]}"
+  while [ -L "$_self" ]; do
+    _dir="$(cd -P "$(dirname "$_self")" && pwd)"
+    _self="$(readlink "$_self")"
+    case "$_self" in /*) : ;; *) _self="$_dir/$_self" ;; esac
+  done
+  HERE="$(cd -P "$(dirname "$_self")/.." && pwd)"
+  HERE="${HERE%/}"
+
+  # roost_checkout_is_worktree — the same answer the installer uses.
+  . "$HERE/scripts/lib/roost-adapters.sh"
+
+  # A GIT_DIR or GIT_WORK_TREE inherited from the caller's shell would point
+  # every `git -C "$HERE"` below at a different repository, and the pull with
+  # it. This command is about $HERE and nothing else.
+  unset GIT_DIR GIT_WORK_TREE
+
+  local a
+  for a in "$@"; do
+    case "$a" in
+      -h|--help) usage; return 0 ;;
+    esac
+  done
+
+  # --- the gate: in order, the first rule that holds is the one named --------
+  # Each check assumes the ones before it passed. All of them read only what
+  # is on disk; nothing here touches the network.
+  local f reason
+  for f in gate_git gate_checkout gate_worktree gate_branch gate_upstream \
+           gate_local_commits gate_tracked; do
+    reason="$("$f" "$HERE")"
+    if [ -n "$reason" ]; then
+      refuse "$f" "$reason"
+      return 1
+    fi
+  done
+
+  # --- what will happen, from what git already knows ---------------------------
+  # No fetch first: the count is what the last fetch saw, which is honest
+  # about being local and costs no second trip to the network.
+  local upstream short version behind
+  upstream="$(git -C "$HERE" rev-parse --abbrev-ref '@{upstream}')"
+  short="$(git -C "$HERE" rev-parse --short HEAD)"
+  version="$(cat "$HERE/VERSION" 2>/dev/null || printf 'unknown')"
+  behind="$(git -C "$HERE" rev-list --count 'HEAD..@{upstream}')"
+  if [ "$behind" = 0 ]; then
+    printf 'roost: upgrading %s from %s (%s) — already current with %s\n' \
+      "$HERE" "$short" "$version" "$upstream"
+  else
+    printf 'roost: upgrading %s from %s (%s) — %s commit(s) behind %s\n' \
+      "$HERE" "$short" "$version" "$behind" "$upstream"
+  fi
+
+  # --- the pull --------------------------------------------------------------
+  # A failed pull stops here. Wiring the old code after it would report an
+  # upgrade over a machine that was not upgraded.
+  if ! git -C "$HERE" pull --ff-only --quiet; then
+    printf 'roost upgrade: git pull --ff-only failed — nothing was wired\n' >&2
+    return 1
+  fi
+
+  reapply_wiring "$HERE"
+
+  # An exec of the PATH, not a function sourced from it: the file on disk is
+  # now the installer the pull fetched, so a release that adds an adapter
+  # wires it in this same run. Anything read into this process before the
+  # pull would be the old installer.
+  exec "$HERE/scripts/roost-install" "$@"
+}
+
+usage() {
+  cat <<'EOF'
+usage: roost upgrade [-y|--yes] [--dry-run] [--only H[,H...]]
+  Pull new roost code into this checkout (git pull --ff-only), re-apply
+  wiring on a running server, then run roost install with the flags given.
+  Refused when this checkout is not a plain `main` with no local work.
+EOF
+}
+
+gate_git() {
+  command -v git >/dev/null 2>&1 || printf 'git is not on PATH'
+}
+
+# Inside a work tree is not enough: the top of that tree must be $HERE. A
+# plain copy of roost unpacked inside someone's dotfiles repository is inside
+# THEIR work tree, and pulling would update their repository, not roost.
+gate_checkout() {
+  local top
+  if [ "$(git -C "$1" rev-parse --is-inside-work-tree 2>/dev/null)" != true ] ||
+     ! top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" ||
+     [ "$(cd -P "$top" 2>/dev/null && pwd)" != "$1" ]; then
+    printf '%s is not a git checkout' "$1"
+  fi
+}
+
+gate_worktree() {
+  if roost_checkout_is_worktree "$1"; then printf '%s is a git worktree' "$1"; fi
+}
+
+gate_branch() {
+  local b
+  if ! b="$(git -C "$1" symbolic-ref --short -q HEAD)"; then
+    printf '%s is on a detached HEAD' "$1"
+  elif [ "$b" != main ]; then
+    printf '%s is on branch %s, not main' "$1" "$b"
+  fi
+}
+
+gate_upstream() {
+  git -C "$1" rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1 ||
+    printf 'main has no upstream to pull from'
+}
+
+gate_local_commits() {
+  local n up
+  up="$(git -C "$1" rev-parse --abbrev-ref '@{upstream}')"
+  n="$(git -C "$1" rev-list --count '@{upstream}..HEAD')"
+  if [ "$n" != 0 ]; then
+    printf '%s has %s local commit(s) on main that are not on %s' "$1" "$n" "$up"
+  fi
+}
+
+gate_tracked() {
+  if [ -n "$(git -C "$1" status --porcelain --untracked-files=no)" ]; then
+    printf '%s has uncommitted changes to tracked files' "$1"
+  fi
+}
+
+# refuse RULE REASON -> the reason, then the fallback, on stderr. A working copy is
+# told to sort itself out first, because `curl | sh` would hit the same wall;
+# a checkout that is simply not pullable is told to reinstall.
+refuse() {
+  printf 'roost upgrade: refused — %s\n' "$2" >&2
+  case "$1" in
+    gate_worktree|gate_branch|gate_local_commits|gate_tracked)
+      printf '  This looks like a working copy. Sort it out by hand, or install a plain copy with:\n' >&2 ;;
+    *)
+      printf '  To install or reinstall roost:\n' >&2 ;;
+  esac
+  printf '  curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh\n' >&2
+}
+
+# Re-apply wiring on a running roost server — Task 7 fills this in.
+reapply_wiring() { :; }
+
+main "$@"
+exit
