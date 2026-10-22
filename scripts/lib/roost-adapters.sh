@@ -151,9 +151,12 @@ roost_adapter_tail() {
 # text ending in HARNESS's adapter tail. A trailing slash is stripped first: a
 # directory link may carry one.
 roost_adapter_link_names() {
-  local text; text="$(readlink "$2")" || return 1
+  local text tail; text="$(readlink "$2")" || return 1
   text="${text%/}"
-  case "$text" in *"$(roost_adapter_tail "$1")") return 0 ;; *) return 1 ;; esac
+  # A harness with no tail (claude, codex) would make the glob below `*`, which
+  # matches every link, so an empty tail must never match.
+  tail="$(roost_adapter_tail "$1")"; [ -n "$tail" ] || return 1
+  case "$text" in *"$tail") return 0 ;; *) return 1 ;; esac
 }
 
 # roost_adapter_state HARNESS -> ok | missing | dangling | other-checkout | foreign | none
@@ -171,7 +174,8 @@ roost_adapter_link_names() {
 #             it differently from foreign.
 #   other-checkout  a live symlink whose text names a roost adapter in a DIFFERENT checkout — roost's own link, from a second copy of roost
 #   foreign   something else occupies the path and is NOT a dangling link:
-#             another live checkout's symlink, or the tester's own extension.
+#             the tester's own extension, or any other file or link that is
+#             not roost's.
 #             "it is probably ours" is not a good enough reason to delete a
 #             file (AGENTS.md §9 — verify, do not assume) — a caller that
 #             wants to leave these alone reports the exact fix instead.

@@ -92,10 +92,13 @@ done
 # --- roost_checkout_is_worktree ----------------------------------------------
 repo="$TMP/repo"
 mkdir -p "$repo"
+# The author's global git config and hooks must never be read: a commit-msg or
+# identity hook there would make this setup depend on the machine running it.
+export GIT_CONFIG_GLOBAL=/dev/null
+tgit() { git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@t "$@"; }
 (
-  cd "$repo" && git init -q && git config user.email t@example.invalid \
-    && git config user.name t && git commit -q --allow-empty -m one \
-    && git worktree add -q "$TMP/repo-wt" -b wt
+  cd "$repo" && tgit init -q && tgit commit -q --allow-empty -m one \
+    && tgit worktree add -q "$TMP/repo-wt" -b wt
 ) >/dev/null 2>&1
 
 roost_checkout_is_worktree "$repo"; assert_eq "$?" "1" \
@@ -110,13 +113,12 @@ roost_checkout_is_worktree "$TMP/plain"; assert_eq "$?" "1" \
 # tests/test-adapter-install.sh's make_harness_shim builds its machine, minus
 # any harness stubs.
 CORE_BINS="bash sh cat cp mv rm mkdir mktemp dirname readlink ln find grep sed date env printf true false chmod stat cmp"
-nogit="$(mktemp -d)"
+nogit="$TMP/nogit"; mkdir -p "$nogit"
 for b in $CORE_BINS; do
   real="$(command -v "$b" 2>/dev/null)" && ln -s "$real" "$nogit/$b" 2>/dev/null
 done
 ( PATH="$nogit"; roost_checkout_is_worktree "$TMP/repo-wt" ); assert_eq "$?" "1" \
   "with no git on PATH a worktree reads as not one"
-rm -rf "$nogit"
 
 # --- the canary must be empty ------------------------------------------------
 assert_eq "$(canary_leaks)" "" "nothing wrote outside the scratch homes"
