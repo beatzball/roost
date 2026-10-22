@@ -1019,6 +1019,85 @@ assert_eq "$s" "refused" "claude wired elsewhere, worktree: nothing says replace
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? \
   "claude wired elsewhere: refusing one step does not abandon the others"
 
+# --- a live copy is matched by roost's two scripts EXACTLY, never by prefix --
+# Taking over a gone copy may drop everything under its directory: nothing
+# there can run. A LIVE copy's directory can hold the user's own hooks, so
+# only commands that run roost-agent-state or roost-session-context there
+# count as roost's. These were found by review: a prefix match deleted both
+# of the hooks pinned below.
+#
+# claude_live_extra FILE OTHER EXTRA -- roost's hooks for OTHER, plus the
+# user's own Stop hook EXTRA.
+claude_live_extra() {
+  ( . "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude "$2/scripts/roost-agent-state" ) \
+    | sed 's|"Stop": \[|"Stop": [ { "hooks": [ { "type": "command", "command": "'"$3"'" } ] },|' > "$1"
+}
+# A Stop hook of the user's own that runs ANOTHER script from the live copy.
+box="$TMP/claudelive-extra"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+claude_live_extra "$cset" "$TMP/some-other-checkout" "$TMP/some-other-checkout/scripts/roost-notify done finished"
+assert_eq "$(grep -c roost-notify "$cset")" "1" "claude live copy, user's roost-notify hook: setup plants it"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude live copy, user's roost-notify hook: exits 0"
+assert_eq "$(grep -c "$TMP/some-other-checkout/scripts/roost-notify done finished" "$cset" 2>/dev/null)" "1" \
+  "claude live copy, user's roost-notify hook: the user's hook is KEPT"
+grep -qF "$TMP/some-other-checkout/scripts/roost-agent-state" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" "claude live copy, user's roost-notify hook: the other copy's roost-agent-state hooks are replaced"
+grep -qF "$TMP/some-other-checkout/scripts/roost-session-context" "$cset" 2>/dev/null && s=left || s=gone
+assert_eq "$s" "gone" "claude live copy, user's roost-notify hook: the other copy's roost-session-context hook is replaced"
+grep -qF "$plain/scripts/roost-agent-state" "$cset" 2>/dev/null; assert_true $? \
+  "claude live copy, user's roost-notify hook: settings.json now names THIS checkout"
+assert_contains "$out" "kept the 1 entry already in those events" \
+  "claude live copy, user's roost-notify hook: the write says it kept the user's entry"
+assert_contains "$out" "replaced a hook from another copy of roost, $TMP/some-other-checkout —" \
+  "claude live copy, user's roost-notify hook: the output names the other copy"
+
+# A roost-agent-state copied into a bin directory, beside the user's own
+# formatter. That directory is not a copy of roost, so this is not a takeover
+# at all: refused, and the file left byte for byte.
+box="$TMP/claudelive-bin"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude" "$box/home/bin"
+: > "$box/home/bin/roost-agent-state"; : > "$box/home/bin/my-format"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"%s/roost-agent-state idle"}]}],"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"%s/my-format"}]}]}}\n' \
+  "$box/home/bin" "$box/home/bin" > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude, roost-agent-state copied into ~/bin: exits 0"
+assert_eq "$(cksum < "$cset")" "$fbefore" "claude, roost-agent-state copied into ~/bin: settings.json is byte-identical"
+assert_eq "$(bak_count "$cset")" "0" "claude, roost-agent-state copied into ~/bin: no backup was taken"
+assert_contains "$out" "a roost hook there points at a different checkout: $box/home/bin/roost-agent-state" \
+  "claude, roost-agent-state copied into ~/bin: refused as a different checkout"
+case "$out" in *"another copy of roost"*) s=named ;; *) s=quiet ;; esac
+assert_eq "$s" "quiet" "claude, roost-agent-state copied into ~/bin: ~/bin is never called a copy of roost"
+
+# The plan says it BEFORE the prompt: answering y is consenting to it.
+box="$TMP/claudelive-dry"
+cset="$box/home/.claude/settings.json"
+mkdir -p "$box/home/.claude"
+( . "$HERE/scripts/lib/roost-hooks.sh"
+  roost_hooks_claude "$TMP/some-other-checkout/scripts/roost-agent-state" ) > "$cset"
+fbefore="$(cksum < "$cset")"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --dry-run)"; rc=$?
+assert_eq "$rc" "0" "claude live copy, --dry-run: exits 0"
+assert_eq "$(cksum < "$cset")" "$fbefore" "claude live copy, --dry-run: nothing written"
+assert_contains "$out" "         (one of those is a hook from another copy of roost, $TMP/some-other-checkout; it is replaced)" \
+  "claude live copy, --dry-run: the plan names the other copy before consent"
+assert_contains "$out" "         roost's Claude hooks" \
+  "claude live copy, --dry-run: the plan row's label is the label alone"
+tab="$(printf '\t')"
+case "$out" in *"scripts${tab}roost's"*) s=garbled ;; *) s=clean ;; esac
+assert_eq "$s" "clean" "claude live copy, --dry-run: no directory leaks into the label"
+
+# An ordinary write with no other copy anywhere says nothing about one.
+box="$TMP/claude-nocopy"
+mkdir -p "$box/home/.claude"
+out="$(run_install_from "$plain" "$box" "$CLAUDE_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "claude, no other copy: exits 0"
+case "$out" in *"another copy"*) s=named ;; *) s=quiet ;; esac
+assert_eq "$s" "quiet" "claude, no other copy: nothing mentions another copy"
+
 # --- wired to a checkout that is GONE -> repair it, do not refuse forever ---
 # Found by the multi-model review of #27. A moved, renamed or re-cloned
 # checkout leaves a settings.json whose hook command is a path that no longer
@@ -1438,6 +1517,21 @@ EOF
     "claude under jq, wired to another live copy, plain checkout: the other copy's entries are replaced, not appended beside"
   assert_contains "$out" "replaced a hook from another copy of roost, $TMP/some-other-checkout —" \
     "claude under jq, wired to another live copy, plain checkout: the output names the other copy"
+
+  # The exact-script rule under jq, probe and merge both.
+  box="$TMP/claudejqlive-extra"
+  cset="$box/home/.claude/settings.json"
+  mkdir -p "$box/home/.claude"
+  claude_live_extra "$cset" "$TMP/some-other-checkout" "$TMP/some-other-checkout/scripts/roost-notify done finished"
+  out="$(run_install_from "$plain" "$box" "$JQ_SHIM" --yes)"; rc=$?
+  assert_eq "$rc" "0" "claude under jq, live copy, user's roost-notify hook: exits 0"
+  assert_eq "$(grep -c "$TMP/some-other-checkout/scripts/roost-notify done finished" "$cset" 2>/dev/null)" "1" \
+    "claude under jq, live copy, user's roost-notify hook: the user's hook is KEPT"
+  grep -qF "$TMP/some-other-checkout/scripts/roost-" "$cset" 2>/dev/null && \
+    grep -vF roost-notify "$cset" | grep -qF "$TMP/some-other-checkout/scripts/" && s=left || s=gone
+  assert_eq "$s" "gone" "claude under jq, live copy, user's roost-notify hook: the other copy's two scripts are replaced"
+  assert_contains "$out" "kept the 1 entry already in those events" \
+    "claude under jq, live copy, user's roost-notify hook: the write says it kept the user's entry"
 
   # ...and the repair, under jq. python3 is preferred, so every case above ran
   # the python engine; without this the jq spelling of the dead-checkout logic

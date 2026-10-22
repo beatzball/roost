@@ -395,13 +395,24 @@ def main():
 
     patch = json.loads(sys.argv[3])["hooks"]
     want = sys.argv[4]
-    # ALSO is a DIRECTORY whose commands all count as roost's own. The caller
-    # passes it only after proving on the FILESYSTEM that it is gone -- a hook
-    # wired to a checkout that has been moved, renamed or deleted. Such an
-    # entry is roost's, and broken, and safe to replace; the symlink adapters
-    # have always treated their equivalent (`dangling`) that way. Without it
-    # the entry classified as another checkout's and the whole claude step was
-    # refused on every re-run, forever.
+    # ALSO is the scripts DIRECTORY of another copy of roost, and KIND says
+    # how much of it counts as roost's own:
+    #
+    #   gone  the caller proved on the FILESYSTEM that it is gone -- a hook
+    #         wired to a checkout that has been moved, renamed or deleted.
+    #         EVERY command under it counts. Such an entry is roost's, and
+    #         broken, and safe to replace; the symlink adapters have always
+    #         treated their equivalent (`dangling`) that way. Without it the
+    #         entry classified as another checkout's and the whole claude
+    #         step was refused on every re-run, forever.
+    #   live  the copy still EXISTS, and the caller is a plain checkout taking
+    #         its hooks over. Only roost's own scripts count: a command whose
+    #         first word is exactly ALSO/<name>, for a <name> this patch
+    #         invokes (roost-agent-state, roost-session-context). Anything
+    #         else under that directory can run, and may be the user's own --
+    #         a prefix match deleted a hand-added `<other>/scripts/roost-notify`
+    #         hook, and with a roost-agent-state copied into ~/bin it deleted
+    #         the user's formatter beside it.
     #
     # A DIRECTORY rather than one script path, and that distinction cost an
     # end-to-end run to find. The claude patch invokes TWO scripts from that
@@ -415,7 +426,25 @@ def main():
     # Matched with a trailing "/" so a sibling directory whose name merely
     # starts with the same characters is not swept up with it.
     also = sys.argv[5] if len(sys.argv) > 5 else ""
+    kind = sys.argv[6] if len(sys.argv) > 6 else "gone"
     marker = want.rsplit("/", 1)[-1]
+    # For `live`: the script names this patch runs from want's directory,
+    # read out of the patch itself so a script added there is covered here
+    # without anybody remembering to. Cut at the directory, not at the first
+    # space, so a checkout path with a space in it still yields the name.
+    wantdir = want.rsplit("/", 1)[0]
+    pcmds = []
+    commands(json.loads(sys.argv[3]), pcmds)
+    names = sorted({c[len(wantdir) + 1:].split(" ", 1)[0]
+                    for c in pcmds if c.startswith(wantdir + "/")})
+    alsos = [also + "/" + n for n in names if n] if also else []
+
+    def also_owns(cmd):
+        if not also:
+            return False
+        if kind == "live":
+            return any(cmd == a or cmd.startswith(a + " ") for a in alsos)
+        return cmd.startswith(also + "/")
     hooks = data.get("hooks")
     if hooks is None:
         # A settings.json with no "hooks" key at all: the most ordinary claude
@@ -455,8 +484,8 @@ def main():
             for cmd in cmds:
                 if cmd == want or cmd.startswith(want + " "):
                     continue
-                if also and cmd.startswith(also + "/"):
-                    continue          # ours, from a checkout that is gone
+                if also_owns(cmd):
+                    continue          # ours, from another copy (see KIND)
                 mine = False
                 if marker in cmd and checkout is None:
                     checkout = cmd
@@ -488,13 +517,22 @@ PY
 json_probe__jq() {
   cat <<'JQ'
 def cmds: [ .. | objects | to_entries[] | select(.key == "command") | .value | select(type == "string") ];
-# $also is a second command prefix that counts as roost's own -- see the
-# python probe's note. Defined once and used by both ownership tests below,
-# because two copies of this predicate is exactly how one of them ends up
-# knowing about $also and the other not.
-def ours: . as $c
+# $also is another copy's scripts directory, and $kind says how much of it
+# counts as roost's own -- see the python probe's note on KIND: under `gone`
+# every command below it, under `live` only a command whose first word is
+# exactly $also/<name> for a script this patch runs. Defined once and used by
+# both ownership tests below, because two copies of this predicate is exactly
+# how one of them ends up knowing about $also and the other not.
+($want | sub("/[^/]*$"; "")) as $wantdir
+| ( [ $patch | cmds[] | select(startswith($wantdir + "/"))
+      | .[($wantdir | length) + 1:] | split(" ")[0] | select(. != "") ]
+    | unique | map($also + "/" + .) ) as $alsos
+| def ours: . as $c
   | ($c == $want or ($c | startswith($want + " ")))
-    or (($also != "") and ($c | startswith($also + "/")));
+    or (($also != "")
+        and (if $kind == "live"
+             then any($alsos[]; . as $a | $c == $a or ($c | startswith($a + " ")))
+             else ($c | startswith($also + "/")) end));
 if length != 1 then "malformed"
 else .[0] as $d
 | if ($d | type) != "object" then "malformed"
@@ -533,8 +571,10 @@ end
 JQ
 }
 
-json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO]]
-  local mode="$1" file="$2" patch="${3:-}" want="${4:-}" also="${5:-}" out
+# ALSO and KIND (gone|live, default gone): another copy's scripts directory and
+# how much of it counts as roost's -- see KIND in the python engine.
+json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO [KIND]]]
+  local mode="$1" file="$2" patch="${3:-}" want="${4:-}" also="${5:-}" kind="${6:-gone}" out
   # jq's --argjson needs a document even in flag mode, where none is used.
   [ -n "$patch" ] || patch='"'"'{"hooks":{}}'"'"'
   # -r before anything else: a file that exists and cannot be read must not
@@ -543,10 +583,10 @@ json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO]]
   [ -r "$file" ] || { printf 'unreadable'; return 0; }
   case "$(roost_json_tool)" in
     python3)
-      out="$(python3 -c "$(json_probe__py)" "$mode" "$file" "$patch" "$want" "$also" 2>/dev/null)" ;;
+      out="$(python3 -c "$(json_probe__py)" "$mode" "$file" "$patch" "$want" "$also" "$kind" 2>/dev/null)" ;;
     jq)
       out="$(jq -r --slurp --arg mode "$mode" --argjson patch "$patch" --arg want "$want" \
-               --arg also "$also" "$(json_probe__jq)" "$file" 2>/dev/null)" ;;
+               --arg also "$also" --arg kind "$kind" "$(json_probe__jq)" "$file" 2>/dev/null)" ;;
   esac
   case "$out" in
     ours|write*|other-checkout*|malformed) printf '%s' "$out" ;;
@@ -746,10 +786,17 @@ DETECTED="${DETECTED# }"
 # The harnesses configured by editing a JSON file rather than by a symlink.
 # One name per task as they land; the machinery below is shared.
 #
-#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t KEPT \t REPLACED \t LABEL
+#   JSON_STEPS    HARNESS \t REAL_PATH \t CONFIG_PATH \t KEPT \t REPLACED \t DEAD \t KIND \t LABEL
 #                 KEPT     entries belonging to someone else that survive
 #                 REPLACED entries of roost's own that are not the current
 #                          shape and will be overwritten by it
+#                 DEAD     another copy's scripts directory whose hooks this
+#                          write takes over, or `-`
+#                 KIND     `gone` or `live` (see json_probe), or `-`
+#                 Never an empty field: these rows are read with IFS=tab,
+#                 tab is IFS whitespace, and an empty field between two tabs
+#                 collapses and shifts every field after it -- an ordinary
+#                 write once passed its LABEL to the merge as a directory.
 #   JSON_OK       HARNESS \t REAL_PATH
 #   JSON_REFUSED  HARNESS \t REAL_PATH \t WHY   (WHY runs to end of line)
 #
@@ -760,12 +807,6 @@ JSON_HARNESSES="claude codex copilot"
 JSON_STEPS=""
 JSON_OK=""
 JSON_REFUSED=""
-# JSON_OTHER_LIVE  HARNESS \t DIR -- a write that replaces a hook naming another
-# copy of roost that still exists, and that copy's directory, so the write
-# report can name it. A list of its own rather than another JSON_STEPS field:
-# those rows are read with IFS=tab, and an empty field between two tabs
-# collapses and shifts every field after it.
-JSON_OTHER_LIVE=""
 
 # print  — the user asked for the block instead of a write (--print-only)
 # notool — neither python3 nor jq is here, so roost CANNOT edit JSON. Not an
@@ -866,16 +907,27 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
     # the primary checkout's hooks and leave them pointing at a worktree that
     # is deleted after its merge. Rewriting a Claude hook costs nothing like a
     # codex re-hash: Claude reads the command afresh on its next session.
+    #
+    # A LIVE copy is taken over only when the hook names roost's own layout,
+    # <other>/scripts/roost-agent-state, and the probe is then re-asked with
+    # KIND `live`, which counts as roost's only the commands that run one of
+    # roost's own scripts there exactly. A roost-agent-state copied into
+    # ~/bin, or a `//` in the path, stays "a different checkout": the
+    # directory above it is not a copy of roost, and the rest of it may be
+    # the user's own hooks.
     json_dead=""
+    json_kind=""
     json_gone=0
     json_other=0
-    json_other_dir=""
     if [ "$json_state" = "other-checkout" ]; then
       json_marker="${json_want##*/}"
       case "$json_detail" in
         *"$json_marker"*)
-          json_other=1
           json_deadpath="${json_detail%%"$json_marker"*}$json_marker"
+          # Known gap, older than the live-copy rule: a command that runs the
+          # script through an interpreter (`bash <copy>/scripts/...`) is cut
+          # here with the interpreter in front, so -e fails and a LIVE copy
+          # reads as gone -- and is rewritten, even from a worktree.
           if [ ! -e "$json_deadpath" ]; then
             # Recorded for BOTH harnesses, because both have something honest
             # to say about it -- but only claude acts on it. codex keeps the
@@ -883,21 +935,21 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
             # somebody else's config, it is roost's own hook pointing at a
             # checkout that is gone, and roost still will not rewrite it.
             json_gone=1
+          elif [ "$h" = claude ]; then
+            case "$json_deadpath" in */scripts/roost-agent-state) json_other=1 ;; esac
           fi
-          if [ "$h" = claude ] && { [ "$json_gone" -eq 1 ] || [ "$IN_WORKTREE" -eq 0 ]; }; then
+          if [ "$h" = claude ] && { [ "$json_gone" -eq 1 ] || { [ "$json_other" -eq 1 ] && [ "$IN_WORKTREE" -eq 0 ]; }; }; then
             # The directory, not the script: see the python probe's note on
             # why one script path is not enough.
             json_dead="${json_deadpath%/*}"
-            # The checkout itself, for the write report: CLAUDE_TARGET is
-            # always <checkout>/scripts/roost-agent-state, so the hook's own
-            # directory is <checkout>/scripts. Only a LIVE copy is named --
-            # a gone one has nothing left for the reader to remove.
-            [ "$json_gone" -eq 0 ] && json_other_dir="${json_dead%/scripts}"
-            # Ask again, this time saying that the dead path counts as ours.
-            # Re-probing rather than patching the counts by hand: the entry
-            # has to be re-classified (it becomes `replaced`, not `kept`), and
-            # the engine is the only thing that knows how to do that.
-            json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want" "$json_dead")"
+            json_kind=gone
+            [ "$json_gone" -eq 1 ] || json_kind=live
+            # Ask again, this time saying that the other copy counts as ours
+            # -- all of it when gone, its two scripts when live. Re-probing
+            # rather than patching the counts by hand: the entry has to be
+            # re-classified (it becomes `replaced`, not `kept`), and the
+            # engine is the only thing that knows how to do that.
+            json_answer="$(json_probe "$json_probe_mode" "$json_real" "$json_patch" "$json_want" "$json_dead" "$json_kind")"
             json_state="${json_answer%%$TAB*}"
             json_rest="${json_answer#*$TAB}"
             [ "$json_rest" = "$json_answer" ] && json_rest=""
@@ -920,12 +972,10 @@ if [ "$SYMLINKS_ONLY" -eq 0 ]; then
       # better message than this could produce — and routing it that way is
       # what keeps `--dry-run` at exit 0 while an attempted run exits 1.
       write)
-        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_kept$TAB$json_repl$TAB$json_dead$TAB$json_label
-"
-        [ -n "$json_other_dir" ] && JSON_OTHER_LIVE="$JSON_OTHER_LIVE$h$TAB$json_other_dir
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg$TAB$json_kept$TAB$json_repl$TAB${json_dead:--}$TAB${json_kind:--}$TAB$json_label
 " ;;
       malformed)
-        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}0${TAB}0$TAB$TAB$json_label
+        JSON_STEPS="${JSON_STEPS}$h$TAB$json_real$TAB$json_cfg${TAB}0${TAB}0$TAB-$TAB-$TAB$json_label
 " ;;
       ours)
         JSON_OK="$JSON_OK$h$TAB$json_real
@@ -999,7 +1049,7 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
   # Same column, same rule: the exact file, and what goes into it. When the
   # config path is a symlink the REAL file is the one named on the first line,
   # because that is the file whose bytes change.
-  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg kept replaced label; do
+  printf '%s' "$JSON_STEPS" | while IFS="$TAB" read -r h real cfg kept replaced dead kind label; do
     [ -n "$h" ] || continue
     # Setting a boolean flag is not a merge in the sense the two hook files
     # are, and one word for both reads as "roost is about to rewrite my
@@ -1015,6 +1065,11 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
       0) : ;;
       *) printf '         (a roost entry already there is replaced with the current one)\n' ;;
     esac
+    # Said here, before the prompt, because answering it is consenting to
+    # it: hooks that another copy of roost still runs move to this one.
+    # DEAD is always <other>/scripts for a live takeover (see the JSON loop).
+    [ "$kind" = live ] && \
+      printf '         (one of those is a hook from another copy of roost, %s; it is replaced)\n' "${dead%/scripts}"
     [ "$real" = "$cfg" ] || printf '         (%s is a symlink to it)\n' "$cfg"
   done
   printf '\n'
@@ -1297,8 +1352,11 @@ EOF
   # here-string again, and for the same reason: $failed and $UNDO must survive
   # the loop.
   json_reindented=0
-  while IFS="$TAB" read -r h real cfg kept replaced dead label; do
+  while IFS="$TAB" read -r h real cfg kept replaced dead kind label; do
     [ -n "${h:-}" ] || continue
+    # `-` is JSON_STEPS' spelling of an empty field; see its header.
+    [ "$dead" = - ] && dead=""
+    [ "$kind" = - ] && kind=""
 
     # Whether the file was there BEFORE this write decides what the undo line
     # says, and it has to be read now: after the merge the file exists either
@@ -1312,12 +1370,14 @@ EOF
     # not captured: that message is the most useful thing this command can
     # give someone whose settings.json will not parse.
     case "$h" in
-      # $dead, when the plan found one, is a hook command pointing at a
-      # checkout that no longer exists. The probe was re-asked with it and
-      # said a write is due; the merge has to be told the same thing, or it
-      # would leave that entry in place and APPEND roost's beside it -- two
-      # hooks, one of which cannot run. Empty for every ordinary install.
-      claude) json_bak="$(roost_json_merge "$real" claude-hooks "$CLAUDE_TARGET" ${dead:+"$dead"})"; rc=$? ;;
+      # $dead, when the plan found one, is the scripts directory of another
+      # copy of roost whose hooks this write takes over -- one that no longer
+      # exists ($kind gone) or, from a plain checkout, one that does ($kind
+      # live). The probe was re-asked with both and said a write is due; the
+      # merge has to be told the same thing, or it would leave those entries
+      # in place and APPEND roost's beside them. Empty for every ordinary
+      # install.
+      claude) json_bak="$(roost_json_merge "$real" claude-hooks "$CLAUDE_TARGET" ${dead:+"$dead" "$kind"})"; rc=$? ;;
       # Adding a NEW event to a hooks.json codex has already been trusted with
       # is measured-safe on 0.151.0: the handlers already trusted keep firing,
       # because their hashes are over their own parsed structs and nothing
@@ -1377,12 +1437,8 @@ EOF
         # The Claude hook's counterpart to "relinked ... a second copy of
         # roost": roost does not look for copies of itself, it names the one
         # it was just pointed at.
-        while IFS="$TAB" read -r oh odir; do
-          [ "$oh" = "$h" ] || continue
-          printf '  replaced a hook from another copy of roost, %s — if you did not mean to keep two, remove that copy and its PATH line.\n' "$odir"
-        done <<OTHER_EOF
-$JSON_OTHER_LIVE
-OTHER_EOF
+        [ "$kind" = live ] && \
+          printf '  replaced a hook from another copy of roost, %s — if you did not mean to keep two, remove that copy and its PATH line.\n' "${dead%/scripts}"
         ;;
       *)
         # 1, 2 and 5 all mean the same thing to a user: nothing was written,
