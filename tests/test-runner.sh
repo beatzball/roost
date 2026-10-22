@@ -10,6 +10,11 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 # Exercise this against an isolated COPY of run.sh with fixture test files,
 # so the crashing fixture is never picked up by a normal `bash tests/run.sh`
 # run (which globs tests/test-*.sh in this directory).
+# The copy honours SHARD=k/n (#169) and would shard these fixtures too,
+# skipping the one that is meant to die. run.sh unsets it before it starts a
+# file, so this only matters when the file is run by hand from a shell that
+# exported it — and then it would fail for a reason nothing here names.
+unset SHARD
 fixdir="$(mktemp -d /tmp/amx.XXXX)"
 trap 'rm -rf "$fixdir"' EXIT
 cp "$HERE/tests/run.sh" "$fixdir/run.sh"

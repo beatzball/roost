@@ -465,7 +465,21 @@ bash tests/test-panes.sh   # a single file
 
 Tests spin up a throwaway tmux server; they do not touch your real one. CI runs
 the same two commands on `ubuntu-latest` and `macos-latest`
-(`.github/workflows/ci.yml`).
+(`.github/workflows/ci.yml`), the suite split four ways per runner.
+
+```sh
+SHARD=2/4 bash tests/run.sh          # shard 2 of 4, the way one CI job runs it
+SHARD=2/4 bash tests/run.sh --list   # which files that shard holds; runs nothing
+```
+
+A shard prints the same per-file lines and the same `N passed, M failed`
+summary for its files, so four shard totals add up to a full run's. Files are
+spread by measured seconds (a table at the top of `tests/run.sh`, longest
+first onto the lightest shard), not by count, so the slowest files land in
+different jobs; a new test file joins a shard the moment it exists, and
+`tests/test-run-shards.sh` pins the assignment. To find the shard a file is
+in, grep the four `--list` outputs, or read the "Which files this shard runs"
+step of each CI job.
 
 `tests/live/opencode-smoke.sh` drives real opencode against a local model to
 check the adapter end to end. It is **not** part of `tests/run.sh` — run it by

@@ -30,10 +30,26 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # The suite is split four ways per runner (#169). Run as one job the macOS
+  # leg took 12 minutes (733 s for the 58 files, measured on PR #168's run);
+  # each shard here takes roughly a quarter, so a pull request waits for the
+  # slowest shard plus setup. tests/run.sh owns the split: SHARD=k/n runs
+  # the files its weight table assigns to shard k, recomputed from the glob
+  # in every job, so a new test file is in exactly one shard with nothing to
+  # add here. Four, not more: job setup is about 20 s on top of the brew or
+  # apt install, and the 102 s test file is the floor no shard count gets
+  # under. To change the count, change the list below and nothing else; the
+  # shards rebalance. The job names are `test (<os>, k/4)`; a required-check
+  # rule that named `test (macos-latest)` has to be updated to match.
   test:
     strategy:
+      # One red shard must not cancel the other seven: a flaky file in shard
+      # 2 would otherwise leave shards 1, 3 and 4 "cancelled", and the next
+      # push pays for all four again instead of the one that failed.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        shard: ['1/4', '2/4', '3/4', '4/4']
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -55,9 +71,22 @@ jobs:
         run: node --version
       - name: tmux version
         run: tmux -V
+      - name: Which files this shard runs
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: bash tests/run.sh --list
       - name: Run test suite
+        env:
+          SHARD: ${{ matrix.shard }}
         run: bash tests/run.sh
+      # Once per runner, not once per shard: the validator takes a second
+      # and does not read a test file, so running it four times says nothing
+      # the first run did not. It rides with shard 1 only so that `needs:
+      # [test]` still covers it. `startsWith`, not `== '1/4'`: a literal
+      # would match nothing once the list above becomes 1/6..6/6, and the
+      # validator would stop running with every job green.
       - name: Contrast validator
+        if: startsWith(matrix.shard, '1/')
         run: python3 tests/test-contrast.py
 
   # Release bookkeeping. The logic lives in scripts/roost-release-gate, not
