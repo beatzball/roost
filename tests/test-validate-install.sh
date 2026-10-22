@@ -650,7 +650,10 @@ assert_eq "$(readlink "$ppath")" "$oc2$ptail" "other-checkout, worktree: the lin
 case "$res" in *"INSTALLED	$ppath"*) s=claimed ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "other-checkout, worktree: not claimed as this run's work"
 
-# the manual fix, from both: the same rm && ln -s line doctor prints
+# the manual fix, from both: the same line doctor prints. From a plain
+# checkout that is rm && ln -s to this checkout; from a worktree it is no
+# command at all, because the link it would make dangles once the worktree is
+# removed.
 cat > "$TMP/fixdriver.sh" <<'FIXDRIVER'
 #!/usr/bin/env bash
 set -u
@@ -668,13 +671,20 @@ for slice in "$vplain" "$vwt"; do
   fix="$(HOME="$box/home" XDG_CONFIG_HOME="$box/home/.config" PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
     CODEX_HOME="$box/home/.codex" COPILOT_HOME="$box/home/.copilot" PATH="$GIT_SHIM" \
     bash "$TMP/fixdriver.sh" "$slice/scripts/roost-validate-head" --out "$box/r.md" </dev/null 2>&1)"
-  assert_contains "$fix" "rm \"$ppath\" && ln -s \"$here_p$ptail\" \"$ppath\"" \
-    "other-checkout fix (${slice##*/}): the manual line is rm && ln -s to this checkout"
   assert_contains "$fix" "points at another copy of roost, $oc2$ptail" "other-checkout fix (${slice##*/}): it names the other copy"
   if [ "$slice" = "$vplain" ]; then
+    assert_contains "$fix" "rm \"$ppath\" && ln -s \"$here_p$ptail\" \"$ppath\"" \
+      "other-checkout fix (plain): the manual line is rm && ln -s to this checkout"
     assert_contains "$fix" "(not relinked by this run) — run: roost install, or: rm" "other-checkout fix (plain): says it was not relinked"
   else
-    assert_contains "$fix" "(left alone: this is a git worktree, and roost does not relink from one) — run roost install from the primary checkout, or: rm" "other-checkout fix (worktree): says why it was left alone"
+    assert_contains "$fix" "left alone, because $here_p is a git worktree and roost does not relink from one" \
+      "other-checkout fix (worktree): says why it was left alone, and names the worktree"
+    assert_contains "$fix" "run roost install from the primary checkout, or from that copy" \
+      "other-checkout fix (worktree): says where to run install"
+    case "$fix" in *'rm "'*) s=rm ;; *) s=none ;; esac
+    assert_eq "$s" "none" "other-checkout fix (worktree): no rm is printed"
+    case "$fix" in *'ln -s'*) s=ln ;; *) s=none ;; esac
+    assert_eq "$s" "none" "other-checkout fix (worktree): no ln -s is printed"
   fi
 done
 

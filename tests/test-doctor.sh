@@ -495,6 +495,33 @@ l="$(printf '%s\n' "$out" | grep 'copilot extension at')"
 assert_contains "$l" "reached through a symlinked folder" "copilot, a folder link: doctor names the folder"
 assert_contains "$l" "$co2/adapters/copilot" "copilot, a folder link: the line shows where the folder points"
 assert_eq "$(oc_has "$out" "rm \"$CP\"")" "no" "copilot, a folder link: no rm of the file inside the other copy"
+rm "$cphome2/.copilot/extensions/roost"
+
+# The other two arms, copilot (a file link, the way roost install makes it)
+# and opencode 1.x, from a plain copy and from a worktree, with the same
+# assertions as opencode 2 and pi above.
+# wt_pair LABEL GREP P WANT_TAIL OLD HOME_DIR [VAR=VAL ...]
+wt_pair() {
+  local label="$1" pat="$2" p="$3" tail="$4" old="$5" home="$6" l; shift 6
+  l="$(DOC="$dplain/scripts/roost-doctor" run_doctor "$home" COLORTERM=truecolor "$@" 2>&1 | grep "$pat")"
+  assert_contains "$l" "points at another copy of roost, $old — run: roost install, or: rm \"$p\" && ln -s \"$dplain$tail\" \"$p\"" \
+    "$label, other checkout, from a plain copy: the exact relink command is printed"
+  l="$(DOC="$dwt/scripts/roost-doctor" run_doctor "$home" COLORTERM=truecolor "$@" 2>&1 | grep "$pat")"
+  assert_contains "$l" "$dwt is a git worktree" "$label, other checkout, from a worktree: the line names the worktree"
+  assert_contains "$l" "run roost install from the primary checkout" "$label, other checkout, from a worktree: it says where to run install"
+  assert_eq "$(oc_has "$l" "rm \"")" "no" "$label, other checkout, from a worktree: no rm is printed"
+  assert_eq "$(oc_has "$l" "ln -s")" "no" "$label, other checkout, from a worktree: no ln -s is printed"
+}
+mkdir -p "$(dirname "$CP")"
+ln -s "$co2/adapters/copilot/extension.mjs" "$CP"
+wt_pair copilot 'copilot extension at' "$CP" /adapters/copilot/extension.mjs "$co2/adapters/copilot/extension.mjs" \
+  "$cphome2" PATH="$cpshim:$PATH"
+OP="$ocdir/opencode/plugin/roost.js"
+mkdir -p "$(dirname "$OP")"
+ln -s "$co2/adapters/opencode/roost.js" "$OP"
+wt_pair "opencode 1.x" 'opencode plugin at' "$OP" /adapters/opencode/roost.js "$co2/adapters/opencode/roost.js" \
+  "$EMPTY" XDG_CONFIG_HOME="$ocdir" PATH="$oc1shim:$PATH"
+rm "$OP"
 rm -rf "$cphome2" "$cpshim"
 rm -rf "$pihome2" "$pishim" "$co2" "$stranger" "$dco"
 

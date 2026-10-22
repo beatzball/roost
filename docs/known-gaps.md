@@ -2302,6 +2302,17 @@ has already produced a real bug here.
   request. What closes it: still open. Running that one case as a non-root
   user in the container might work; it has not been tried, and making the
   parent immutable needs capabilities the container may not grant.
+
+- **A copilot extension reached through a hand-made folder link gets
+  install's generic note.** When `extensions/roost` is a symlink to
+  `<other>/adapters/copilot`, the path roost wants is a regular file — the
+  other copy's tracked `extension.mjs` — so `roost install`'s manual note says
+  "it is not a symlink — look at it first, move it aside yourself". `roost
+  doctor` has a line of its own for the same input that names the folder and
+  says roost links the file, not the folder. Severity: wording only; nothing
+  is deleted, because install never prints or runs `rm` for something that is
+  not a symlink. What closes it: install tests `-L "$(dirname "$path")"` the
+  way doctor does, and prints the folder-link note.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at

@@ -1027,9 +1027,11 @@ h_adapter_fix() {
         other-checkout)
           # Which text is true depends on the same thing the offer decided on:
           # a plain checkout would have relinked it, a worktree never does.
+          # From a worktree there is no command to hand over, as in roost
+          # doctor: a link pointed at a worktree dangles once it is removed.
           if roost_checkout_is_worktree "$HERE"; then
-            printf 'the %s adapter at %s points at another copy of roost, %s (left alone: this is a git worktree, and roost does not relink from one) — run roost install from the primary checkout, or: rm "%s" && ln -s "%s" "%s"' \
-              "$h" "$path" "$(readlink "$path")" "$path" "$want" "$path"
+            printf 'the %s adapter at %s points at another copy of roost, %s (left alone, because %s is a git worktree and roost does not relink from one) — run roost install from the primary checkout, or from that copy' \
+              "$h" "$path" "$(readlink "$path")" "$HERE"
           else
             printf 'the %s adapter at %s points at another copy of roost, %s (not relinked by this run) — run: roost install, or: rm "%s" && ln -s "%s" "%s"' \
               "$h" "$path" "$(readlink "$path")" "$path" "$want" "$path"
@@ -1468,8 +1470,8 @@ removing a link this run did not create is not an undo of anything."
     para "**Left alone.** Something that is not this checkout's adapter already sits
 at each path below — another checkout's link, a link to a checkout that has been
 deleted, or an extension of your own. roost validate does not replace any of
-them, so the harness is skipped instead and section 5 carries the exact command
-if you decide you want it relinked."
+them, so the harness is skipped instead and section 5 says what to run if you
+decide you want it relinked."
     printf '| Harness | Path already in use |\n|---|---|\n' >> "$BODY"
     printf '%s' "$BLOCKED_LINKS" | while IFS="$(printf '\t')" read -r h path; do
       [ -n "$h" ] && printf '| %s | `%s` |\n' "$h" "$path" | redact >> "$BODY"
