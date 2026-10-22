@@ -1121,7 +1121,8 @@ offer_adapter_install() {
       missing) INSTALL_CANDIDATES="$INSTALL_CANDIDATES $h" ;;
       # dangling is treated exactly like foreign here: same behaviour as
       # before roost_adapter_state told the two apart, not a policy change.
-      foreign|dangling) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$k")
+      # other-checkout is held as foreign here until the relink rule lands (docs/airig/plans/2026-10-22-roost-upgrade-and-relink-plan.md, Task 3).
+      foreign|dangling|other-checkout) BLOCKED_LINKS="$BLOCKED_LINKS$h	$(roost_adapter_path "$k")
 " ;;
     esac
   done
