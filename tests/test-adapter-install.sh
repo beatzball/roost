@@ -1997,10 +1997,10 @@ assert_file_absent "$TMP/copilotnotool/home/.copilot/settings.json" \
 # ===========================================================================
 # 16. Saying when the checkout itself is behind its upstream
 # ===========================================================================
-# `roost update` is an alias for `roost install`, so people will
-# reasonably expect it to update roost's own code. It does not, and must not:
-# the checkout may be someone's dev tree with local work in it. All this does
-# is SAY so, from what git already knows locally -- never a fetch, which would
+# People will reasonably expect `roost install` to update roost's own code. It
+# does not, and must not: the checkout may be someone's dev tree with local
+# work in it, and `roost upgrade` is the command with a gate for that. All
+# install does is SAY so, from what git already knows locally -- never a fetch, which would
 # be a surprise network call inside an installer, and never a pull.
 #
 # A scratch checkout carrying the files roost-install needs to run. Copies,
@@ -2085,12 +2085,10 @@ EOF
   assert_eq "$s" "complete" "behind upstream: the scratch checkout has every file the installer sources"
   assert_contains "$out" "1 commit behind $upname" \
     "behind upstream: the line names how far behind and what it tracks"
-  # Resolved with `cd -P`, because the installer resolves its OWN location
-  # that way and /tmp is a symlink to /private/tmp on macOS -- the raw $co
-  # would never match, on that platform only.
-  co_real="$(cd -P "$co" && pwd)"
-  assert_contains "$out" "git -C \"$co_real\" pull" \
-    "behind upstream: the line prints the command to run, against the right checkout"
+  assert_contains "$out" "To update the code:  roost upgrade" \
+    "behind upstream: the line names the command to run"
+  case "$out" in *"git -C"*) s=old ;; *) s=new ;; esac
+  assert_eq "$s" "new" "behind upstream: the line no longer prints a raw git pull"
   grep -Eq '(^| )(pull|fetch)( |$)' "$gitlog" && s=ran || s=never
   assert_eq "$s" "never" "behind upstream: the run neither pulled nor fetched"
   assert_eq "$(git -C "$co" rev-parse HEAD)" \

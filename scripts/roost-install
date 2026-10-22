@@ -599,8 +599,7 @@ json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO [KIND]]]
 }
 
 # --- is this checkout itself behind? ---------------------------------------
-# `roost update` is an alias for `roost install`, so people will
-# reasonably expect it to update roost's own code. It does not, and must not:
+# People will reasonably expect `roost install` to update roost's own code. It does not, and must not:
 # the checkout may be someone's dev tree with local work in it, and this tool
 # does not get to run `git pull` over that. All it does is SAY so.
 #
@@ -614,6 +613,11 @@ json_probe() { # json_probe MODE FILE [PATCH WANT [ALSO [KIND]]]
 # Silent on every uninteresting answer: git not installed, not a repo at all
 # (a tarball install must not print a git error at someone who did nothing
 # wrong), no upstream configured, or already current.
+#
+# `roost upgrade` is the command that DOES pull, and the note names it. That
+# is safe because upgrade refuses before touching the network on anything that
+# is not a plain `main` with no local work; this installer has no such gate,
+# which is why it only ever says so.
 upstream_note() {
   local up n word
   command -v git >/dev/null 2>&1 || return 0
@@ -629,7 +633,7 @@ upstream_note() {
   printf 'This checkout is %s %s behind %s.\n' "$n" "$word" "$up"
   printf '  roost install wires harnesses to this checkout; it does not update roost\n'
   printf '  itself, and it has not fetched — this is what git already knew locally.\n'
-  printf '  To update the code:  git -C "%s" pull\n\n' "$HERE"
+  printf '  To update the code:  roost upgrade\n\n'
 }
 
 # --- plan ------------------------------------------------------------------
