@@ -626,6 +626,10 @@ LINK_STEPS=""
 UNLINK_STEPS=""
 OK_STEPS=""
 REFUSED=""
+# Paths in REFUSED with ACTION `worktree` where roost wants NOTHING (the 1.x
+# opencode link on opencode 2), not its adapter, one per line. The row shape
+# cannot say which, and the manual note for the two differs.
+WT_UNLINK=""
 DETECTED=""
 TAB="$(printf '\t')"
 
@@ -692,9 +696,11 @@ for h in $HARNESSES; do
   # otherwise. `-L` as well, because `ok` is an `-ef` test and is
   # also true of the checkout's own FILE reached through a symlinked plugin/
   # directory; `rm` there would delete adapters/opencode/roost.js out of the
-  # checkout. Anything else at the path — the user's own plugin, another
-  # checkout's link — is left exactly as found and named, the same promise
-  # this file's header makes for every path that is not ours.
+  # checkout. A live link into ANOTHER copy of roost's 1.x adapter is roost's
+  # own link too, and is removed the same way — but only from a plain
+  # checkout, for the reason IN_WORKTREE gives. Anything else at the path —
+  # the user's own plugin — is left exactly as found and named, the same
+  # promise this file's header makes for every path that is not ours.
   if [ "$k" = opencode2 ]; then
     p1="$(roost_adapter_path opencode)"
     p1_state="$(roost_adapter_state opencode)"
@@ -708,12 +714,24 @@ for h in $HARNESSES; do
 "
           record_outcome refused "$h" "$p1"
         fi ;;
-      # A live 1.x link into ANOTHER copy of roost is refused like a stranger's
-      # file, on purpose. The relink rule replaces a link with this
-      # checkout's; here roost wants nothing at all, so taking it would be a
-      # removal of a link another copy still uses, and nothing has decided
-      # that. The manual note prints the `rm` for it, since it is a symlink.
-      foreign|other-checkout)
+      # Another copy of roost's 1.x link: a curl install made it, and a second
+      # checkout now runs install on a machine whose opencode is 2.x. opencode
+      # 2 cannot load it and prints "1 plugin failed" on every start, whichever
+      # copy it names, so it goes exactly as this checkout's own would, with
+      # the link's text as the undo. From a worktree it is left alone, and the
+      # manual note says so (WT_UNLINK marks the row for that note).
+      other-checkout)
+        if [ "$IN_WORKTREE" -eq 0 ]; then
+          UNLINK_STEPS="${UNLINK_STEPS}unlink$TAB$h$TAB$p1$TAB$(readlink "$p1")${TAB}opencode
+"
+        else
+          REFUSED="$REFUSED$h$TAB$p1$TAB$(roost_adapter_target opencode)${TAB}worktree
+"
+          WT_UNLINK="$WT_UNLINK$p1
+"
+          record_outcome refused "$h" "$p1"
+        fi ;;
+      foreign)
         REFUSED="$REFUSED$h$TAB$p1$TAB$(roost_adapter_target opencode)${TAB}unlink
 "
         record_outcome refused "$h" "$p1" ;;
@@ -1131,12 +1149,19 @@ if [ "$do_writes" -eq 1 ]; then
     # dangling link that became a different checkout's while the prompt sat
     # there was never shown to the reader as a take-over, and in a worktree
     # the plan never lists one at all, so either falls to the refusal below.
+    # The same for a removal: the plan's TARGET is the link's text as it read
+    # it, and a worktree never plans one, so a link that turned into another
+    # copy's while the prompt sat there is never removed.
+    if [ "$action:$state" = unlink:other-checkout ] \
+       && { [ "$IN_WORKTREE" -ne 0 ] || [ "$(readlink "$path" 2>/dev/null)" != "$target" ]; }; then
+      state="other-checkout, not the link the plan named"
+    fi
     if [ "$action:$state" = relink:other-checkout ] \
        && { [ -z "${old:-}" ] || [ "$(readlink "$path" 2>/dev/null)" != "$old" ]; }; then
       state="other-checkout, not the link the plan named"
     fi
     case "$action:$state" in
-      link:missing|relink:dangling|relink:other-checkout|unlink:ok|unlink:dangling) : ;;
+      link:missing|relink:dangling|relink:other-checkout|unlink:ok|unlink:dangling|unlink:other-checkout) : ;;
       # Removed by someone else while the prompt sat there. What the step
       # wanted is already true, so it is the removal's `ok`.
       unlink:missing)
@@ -1364,8 +1389,13 @@ if [ -n "$REFUSED" ]; then
     # the point of refusing is that a worktree should not take the link, and
     # handing the reader the command to take it anyway would undo that.
     if [ "${action:-}" = worktree ]; then
+      case "$WT_UNLINK" in
+        *"$path
+"*) wt_what="points at another copy of roost's 1.x adapter, $(readlink "$path" 2>/dev/null), which opencode 2 cannot load" ;;
+        *) wt_what="points at another copy of roost, $(readlink "$path" 2>/dev/null)" ;;
+      esac
       add_manual "$h: $path
-  points at another copy of roost, $(readlink "$path" 2>/dev/null).
+  $wt_what.
   This checkout is a git worktree, so roost install leaves the link alone:
   run roost install from that copy, or from this repository's primary
   checkout."
@@ -1411,11 +1441,22 @@ if [ -n "$REFUSED" ]; then
       add_manual "$oc_note"
       continue
     fi
-    add_manual "$h: something that is not this checkout is at
+    # The `rm` only for a symlink, the rule scripts/roost-doctor follows:
+    # handed for a regular file or a directory it deletes the thing itself,
+    # which may be the only copy of someone's own plugin.
+    if [ -L "$path" ]; then
+      add_manual "$h: something that is not this checkout is at
     $path
   roost install will not replace it. If you are sure you want roost's adapter
   there instead, look at the file first, then:
     rm \"$path\" && ln -s \"$target\" \"$path\""
+    else
+      add_manual "$h: something that is not this checkout is at
+    $path
+  roost install will not replace it, and
+  it is not a symlink — look at it first, move it aside yourself, then:
+    ln -s \"$target\" \"$path\""
+    fi
   done <<EOF
 $REFUSED
 EOF

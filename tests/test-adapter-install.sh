@@ -285,7 +285,12 @@ assert_eq "$rc" "0" "foreign path: still exits 0 (a refusal is not a failure)"
 assert_eq "$(cksum < "$fpath")" "$fbefore" "foreign path: the file is byte-identical after"
 [ ! -L "$fpath" ]; assert_true $? "foreign path: it was not replaced by a symlink"
 assert_contains "$out" "$fpath" "foreign path: the exact path is named in the output"
-assert_contains "$out" "rm \"$fpath\"" "foreign path: the manual rm && ln -s is printed"
+# A regular file: the note never hands over an `rm` for it, which would
+# delete the user's plugin itself. It says to move it aside instead.
+case "$out" in *"rm \"$fpath\""*) s=printed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "foreign path: no rm is printed for a regular file"
+assert_contains "$out" "it is not a symlink — look at it first, move it aside yourself, then:" \
+  "foreign path: the note says to move the file aside"
 assert_contains "$out" "ln -s \"$(adapter_target opencode)\"" \
   "foreign path: the manual command names the right target"
 # The other two are unaffected by one harness being refused.
@@ -448,6 +453,58 @@ for pair in "opencode2 opencode" "pi pi"; do
   case "$out" in *"relink "*"(was $old)"*) s=listed ;; *) s=missing ;; esac
   assert_eq "$s" "listed" "$key, --dry-run, other copy's link: listed as a relink"
 done
+
+# --- the 1.x plugin path on opencode 2, linking ANOTHER copy's 1.x adapter.
+# opencode 2 cannot load it whichever copy it names, so from a plain checkout
+# it is removed like this checkout's own; from a worktree it is left alone.
+old1="$co2$(adapter_tail opencode)"
+box="$TMP/oc1x-plain"
+plant_link "$box" opencode "$old1"
+P1="$(adapter_path_in "$box" opencode)"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes --records "$box/records")"; rc=$?
+assert_eq "$rc" "0" "opencode 2, other copy's 1.x link, plain checkout: exits 0"
+[ ! -e "$P1" ] && [ ! -L "$P1" ]; assert_true $? "opencode 2, other copy's 1.x link, plain checkout: removed"
+[ -e "$old1" ]; assert_true $? "opencode 2, other copy's 1.x link, plain checkout: the other copy's adapter is untouched"
+assert_contains "$out" "removed  $P1" "opencode 2, other copy's 1.x link, plain checkout: the output names it"
+assert_contains "$(cat "$box/records" 2>/dev/null)" \
+  "$(printf 'removed\topencode\t%s\tln -s "%s" "%s"' "$P1" "$old1" "$P1")" \
+  "opencode 2, other copy's 1.x link, plain checkout: --records holds removed with the ln -s undo"
+
+box="$TMP/oc1x-wt"
+plant_link "$box" opencode "$old1"
+P1="$(adapter_path_in "$box" opencode)"
+out="$(run_install_from "$wt" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$rc" "0" "opencode 2, other copy's 1.x link, worktree: exits 0"
+assert_eq "$(readlink "$P1")" "$old1" "opencode 2, other copy's 1.x link, worktree: the link is unchanged"
+assert_contains "$out" "this is a git worktree" "opencode 2, other copy's 1.x link, worktree: the heading says why"
+assert_contains "$out" "points at another copy of roost's 1.x adapter, $old1, which opencode 2 cannot load" \
+  "opencode 2, other copy's 1.x link, worktree: the manual note names the 1.x adapter"
+assert_contains "$out" "run roost install from that copy, or from this repository's primary" \
+  "opencode 2, other copy's 1.x link, worktree: the manual note says where to run it"
+
+box="$TMP/oc1x-stranger"
+plant_link "$box" opencode "$TMP/stranger.js"
+P1="$(adapter_path_in "$box" opencode)"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"; rc=$?
+assert_eq "$(readlink "$P1")" "$TMP/stranger.js" "opencode 2, stranger's link at the 1.x path, plain checkout: unchanged"
+assert_eq "$(cksum < "$TMP/stranger.js")" "$sbefore" "opencode 2, stranger's link at the 1.x path: the file is byte-identical"
+
+# --- the manual note for a stranger at the pi path: `rm` only for a symlink.
+box="$TMP/pi-regular"
+Ppi="$(adapter_path_in "$box" pi)"
+mkdir -p "$(dirname "$Ppi")"; printf 'mine\n' > "$Ppi"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"
+assert_contains "$out" "/adapters/pi/roost.ts\" \"$Ppi\"" "pi, regular file: the note gives the ln -s"
+assert_contains "$out" "it is not a symlink — look at it first, move it aside yourself, then:" \
+  "pi, regular file: the note says to move it aside"
+case "$out" in *"rm \"$Ppi\""*) s=printed ;; *) s=absent ;; esac
+assert_eq "$s" "absent" "pi, regular file: the note never prints rm for it"
+assert_eq "$(cat "$Ppi")" "mine" "pi, regular file: the file is untouched"
+box="$TMP/pi-stranger-link"
+plant_link "$box" pi "$TMP/stranger.js"
+Ppi="$(adapter_path_in "$box" pi)"
+out="$(run_install_from "$plain" "$box" "$OC2_GIT_SHIM" --yes)"
+assert_contains "$out" "rm \"$Ppi\" && ln -s" "pi, stranger's symlink: the note prints rm && ln -s"
 rm -rf "$OC2_GIT_SHIM"
 
 # ===========================================================================
@@ -2441,8 +2498,10 @@ assert_eq "$s" "absent" \
 assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
   "opencode 2, foreign plugin/roost.js: plugins/roost is still linked"
 
-# Another checkout's 1.x link is foreign too -- it is not THIS checkout's, and
-# "it is probably ours" is not a reason to delete it.
+# Another checkout's 1.x link is roost's own link from a second copy, and
+# opencode 2 cannot load it whichever copy it names, so it is removed like
+# this checkout's own. This shim has no git, so the run reads as a plain
+# checkout; case 3b runs the same link from a real worktree and its primary.
 box="$TMP/oc2-other1x"
 p1="$(adapter_path_in "$box" opencode)"
 mkdir -p "${p1%/*}" "$TMP/other-checkout/adapters/opencode"
@@ -2450,10 +2509,12 @@ printf '// another checkout\n' > "$TMP/other-checkout/adapters/opencode/roost.js
 ln -s "$TMP/other-checkout/adapters/opencode/roost.js" "$p1"
 out="$(run_install "$box" "$OCI_V2_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "opencode 2, another checkout's 1.x link: exits 0"
-assert_eq "$(readlink "$p1" 2>/dev/null)" "$TMP/other-checkout/adapters/opencode/roost.js" \
-  "opencode 2, another checkout's 1.x link: left exactly as it was"
-assert_contains "$out" "rm \"$p1\"" \
-  "opencode 2, another checkout's 1.x link: the manual note names the rm"
+[ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
+  "opencode 2, another checkout's 1.x link: removed"
+[ -f "$TMP/other-checkout/adapters/opencode/roost.js" ]; assert_true $? \
+  "opencode 2, another checkout's 1.x link: the other checkout's file is untouched"
+assert_contains "$out" "ln -s \"$TMP/other-checkout/adapters/opencode/roost.js\" \"$p1\"" \
+  "opencode 2, another checkout's 1.x link: the undo puts it back"
 
 # The checkout's own 1.x FILE, reached through a plugin/ directory that is
 # itself a symlink into the checkout. roost_adapter_state says `ok` (an -ef
