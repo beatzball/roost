@@ -77,7 +77,7 @@ a shell command, a log tail, or a pager is not an agent and never shows a state.
 ```sh
 me="$(roost whoami)"
 helper="$(roost spawn claude)"        # a co-agent in its own window → its %N
-out="$(roost send "$helper" "[from $me] review the diff and reply with issues")"; rc=$?
+out="$(roost send --from "$me" "$helper" "[from $me] review the diff and reply with issues")"; rc=$?
 read -r pane turn <<<"$out"           # "%N TURN", or empty — see below
 if [ -n "$turn" ]; then
   roost wait-done --turn "$turn" "$pane" 120
@@ -95,14 +95,19 @@ are real and cost tokens — only spawn what you need.
 ## Message an agent
 
 `roost send TARGET "text"` pastes the text, submits it, and then waits briefly
-for the target to actually BEGIN a turn. Until roost adds sender attribution,
-prefix who you are so the receiver can reply (as above).
+for the target to actually BEGIN a turn. Pass `--from "$me"` (your own `%N`,
+from `roost whoami`) so the record says who sent it: it is kept beside the turn
+and `roost read --json` shows it as `sent_by`. It is NOT put into the text, so
+keep the `[from $me]` prefix at the front of the prompt as well (as above) —
+that is what lets the receiver reply to you, and it stays until roost adds an
+envelope. The label is one word of at most 64 bytes, or `send` refuses it with
+exit 2 before pasting anything.
 
 On an agent that was idle or finished, `send` prints one line on stdout — **the
 pane it delivered to, and the turn your prompt started**:
 
 ```sh
-out="$(roost send "$helper" "[from $me] review the diff")"; rc=$?
+out="$(roost send --from "$me" "$helper" "[from $me] review the diff")"; rc=$?
 read -r pane turn <<<"$out"
 ```
 
@@ -176,7 +181,7 @@ When `send` gave you a pane and a turn, use them. This is the only form that can
 *prove* the answer you get back is the answer to the prompt you sent:
 
 ```sh
-out="$(roost send "$helper" "[from $me] review the diff")"; rc=$?
+out="$(roost send --from "$me" "$helper" "[from $me] review the diff")"; rc=$?
 read -r pane turn <<<"$out"
 if [ -n "$turn" ]; then
   roost wait-done --turn "$turn" "$pane" 120
@@ -406,9 +411,9 @@ instead of your answer.
 
 ## The coordination idiom
 
-1. `roost whoami` — confirm you're in roost and learn your address.
+1. `me="$(roost whoami)"` — confirm you're in roost and learn your address.
 2. `roost status` — find a target, or `roost spawn`/`roost split` a helper.
-3. `out="$(roost send TARGET "[from <you>] <task>")"; rc=$?` then
+3. `out="$(roost send --from "$me" TARGET "[from $me] <task>")"; rc=$?` then
    `read -r pane turn <<<"$out"` — keep both, and read `$rc` from `send`, not
    from `read`. Exit 4 means the text landed but no turn began: do not resend.
 4. `roost wait-done [--turn "$turn"] "${pane:-TARGET}" [timeout]` — pane-precise

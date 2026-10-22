@@ -18,6 +18,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`roost send --from LABEL`: who sent each prompt, kept beside the turn**
+  (#56, the attribution half). Every send that names a turn now records who
+  sent the prompt next to that turn's kept reply, as `replies/NNNNNN.sent_by`:
+  the label you pass, else `pane:%N` for a send from a pane on this server,
+  else `human`. `roost read --json` shows it as `sent_by`, and `roost send
+  --json` says what it kept. A label is one word of at most 64 bytes;
+  anything else is refused with exit 2 before anything is pasted. The text
+  pasted into the agent is unchanged, and a send without the flag is
+  byte-identical to before, so keep the `[from %N]` prefix until the envelope
+  ships. The first prompt into a fresh Claude pane keeps no label: it has no
+  badge yet, so `send` does not number that turn. Nothing to do to get it.
+
 - **`roost close`: end one agent and close its pane** (#143). roost could open
   an agent and could not close one: `roost kill` takes a session or the whole
   server, so ending a single agent meant `tmux kill-pane` by hand, which kills

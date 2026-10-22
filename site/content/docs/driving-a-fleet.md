@@ -203,6 +203,23 @@ The wait is bounded by `@roost-send-turn-timeout`, in seconds, default `10`. Any
 tmux -L roost set-option -g @roost-send-turn-timeout 0
 ```
 
+### Who sent it: `roost send --from`
+
+Every prompt that starts a numbered turn is recorded with who sent it, beside that turn in the pane's kept replies (`replies/000007.sent_by` next to `replies/000007`). `roost read --json` shows it as `sent_by`, and `roost send --json` says what was kept.
+
+```sh
+me="$(roost whoami)"
+roost send --from "$me" api "run the tests"
+```
+
+The label is one word of at most 64 bytes, with no space and no control character; anything else is refused with exit `2` before anything is pasted. Without `--from`, the label is `pane:%N` when the send came from a pane on this server, and `human` otherwise — a send typed at a shell outside roost.
+
+Three things to know:
+
+- **The text pasted into the agent does not change.** `--from` records who sent it; it does not tell the receiving agent. Until roost adds an envelope, keep writing `[from %N]` at the front of a prompt when the receiver needs to reply to you.
+- **No turn, no label.** The label is kept only when `send` names a turn (the `%N TURN` line), so every case above that prints nothing keeps nothing: a pane that is not an agent, a target already mid-turn, replies not recorded, a turn that errored. A pane straight from `roost spawn claude` has no badge until its first prompt, so that first prompt is not numbered and keeps no label either; every later one does.
+- **It is a claim.** `--from` takes whatever word you give it. The default `pane:%N` is checked against the server; a label you pass is not.
+
 ### Exit codes for `roost send`
 
 `roost send` verifies its own submit rather than trusting a fire-and-forget `send-keys`, and its exit code says what went wrong:
@@ -451,7 +468,7 @@ A codex pane is identified at its first prompt, because that is when codex first
 ### `roost read --json`
 
 ```json
-{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"text":"Tests pass.","lossy":false}
+{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:%1"}
 ```
 
 | field | type | meaning |
@@ -464,6 +481,8 @@ A codex pane is identified at its first prompt, because that is when codex first
 | `error_reason` | string or `null` | why the pane is in error, when its adapter recorded a reason |
 | `text` | string | the reply, whole; or the last `LINES` non-blank lines of the screen. No trailing newline |
 | `lossy` | bool | `text` may differ from the bytes the agent wrote: invalid UTF-8 was replaced, or tmux 3.4/3.5a had already rewritten the reply (below) |
+| `turn` | integer or `null` | the kept turn whose file supplied `text`, numbered as `roost send` numbers them. `null` when replies are not recorded, when `text` is the screen, or when what the pane holds is not a kept turn's reply |
+| `sent_by` | string or `null` | who sent the prompt that started that turn: the `roost send --from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`, and for a turn that was not started through `roost send` |
 
 `--json` and `--render` cannot be combined: one is for programs and the other is for people.
 
@@ -476,7 +495,7 @@ A codex pane is identified at its first prompt, because that is when codex first
 ### `roost send --json`
 
 ```json
-{"schema":1,"command":"send","target":"api","pane":"%3","turn":7,"started":true,"state":"working"}
+{"schema":1,"command":"send","target":"api","pane":"%3","turn":7,"started":true,"state":"working","sent_by":"pane:%1"}
 ```
 
 | field | type | meaning |
@@ -486,6 +505,7 @@ A codex pane is identified at its first prompt, because that is when codex first
 | `turn` | integer or `null` | the turn this prompt started, for `wait-done --turn` and `read --turn`. `null` when there is no number to give: the target is not an agent, it was already mid-turn, or its replies are not recorded |
 | `started` | bool | `true` when roost proved a new turn began. `false` means it did not watch — the target had no badge, or was already `working`/`blocked`, or the bound is set to `0` |
 | `state` | string or `null` | the agent state just after the wait |
+| `sent_by` | string or `null` | who sent the prompt, as kept beside the turn: the `--from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`: with no turn there is nothing to keep it beside |
 
 A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began. Read the exit status first.
 

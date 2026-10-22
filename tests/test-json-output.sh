@@ -198,32 +198,34 @@ assert_eq "$(cat "$work/wh_j.err")" "$(cat "$work/wh_h.err")" "whoami --json out
 # "turn" (#42) is the kept turn whose file supplied "text", and null for every
 # pane here: none of them has a kept reply, because tests/lib.sh switches pane
 # records off. Additive under the schema-1 rule, so ROOST_JSON_SCHEMA is still 1.
+# "sent_by" (#56) is the label kept beside that turn, so it is null wherever
+# "turn" is; section 3b below turns records on and reads a real one.
 read_case() {  # read_case NAME TARGET EXPECTED-JSON LABEL
   cap "$1" "$ROOST" read --json "$2"
   cap "$1_h" "$ROOST" read "$2"
   doc_is "$1" "$3" "$4"
   cmp -s "$work/$1.err" "$work/$1_h.err"; assert_true $? "$4: stderr is byte-identical to the human mode"
 }
-read_case r0 %0 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false}' \
+read_case r0 %0 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false,"sent_by":null}' \
   "read --json returns a recorded reply"
 assert_eq "$(rc r0)" 0 "read --json on a reply exits 0"
-read_case rn main:api '{"schema":1,"command":"read","target":"main:api","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false}' \
+read_case rn main:api '{"schema":1,"command":"read","target":"main:api","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false,"sent_by":null}' \
   "read --json keeps the target as typed and resolves the pane"
-read_case r1 %1 '{"schema":1,"command":"read","target":"%1","pane":"%1","source":"reply","state":"working","stale":true,"error_reason":null,"turn":null,"text":"old reply from web","lossy":false}' \
+read_case r1 %1 '{"schema":1,"command":"read","target":"%1","pane":"%1","source":"reply","state":"working","stale":true,"error_reason":null,"turn":null,"text":"old reply from web","lossy":false,"sent_by":null}' \
   "read --json marks a reply on a working pane stale"
-read_case r2 %2 '{"schema":1,"command":"read","target":"%2","pane":"%2","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false}' \
+read_case r2 %2 '{"schema":1,"command":"read","target":"%2","pane":"%2","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false,"sent_by":null}' \
   "read --json falls back to the screen and says so in source"
 assert_eq "$(jv r2 'd["text"]')" "$(cat "$work/r2_h.out")" "read --json screen text is the human stdout without its final newline"
-read_case r3 %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"screen","state":"error","stale":false,"error_reason":"rate_limit","turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false}' \
+read_case r3 %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"screen","state":"error","stale":false,"error_reason":"rate_limit","turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false,"sent_by":null}' \
   "read --json carries an errored pane's recorded reason"
-read_case r4 %4 '{"schema":1,"command":"read","target":"%4","pane":"%4","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"","lossy":false}' \
+read_case r4 %4 '{"schema":1,"command":"read","target":"%4","pane":"%4","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"","lossy":false,"sent_by":null}' \
   "read --json on a blank screen is a valid empty document"
 assert_eq "$(rc r4)" 0 "read --json on a blank screen exits 0 (the human mode's exit 1 is a separate bug)"
 # A reply stored on an ERRORED pane is stale too: every adapter drops the reply
 # of a failed turn, so whatever is stored is an earlier turn's. The human mode
 # says so on stderr; `stale` must say the same, and the reason must come along.
 as_pane %3 "$ROOST" reply "an earlier turn's answer"
-read_case r3r %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"reply","state":"error","stale":true,"error_reason":"rate_limit","turn":null,"text":"an earlier turn'"'"'s answer","lossy":false}' \
+read_case r3r %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"reply","state":"error","stale":true,"error_reason":"rate_limit","turn":null,"text":"an earlier turn'"'"'s answer","lossy":false,"sent_by":null}' \
   "read --json marks a reply on an errored pane stale and carries the reason"
 T set-option -pu -t %3 @roost-reply
 cap r99 "$ROOST" read --json %99
@@ -371,6 +373,48 @@ doc_is st2 "$(status_doc '"helper"')" "status --json is exact again once the hos
 as_pane %0 "$ROOST" reply "$nulval"
 cap nul "$ROOST" read --json %0
 assert_eq "$(jv nul 'd["text"]')" "xy" "a NUL given to roost reply never reaches read --json: the shell drops it first"
+
+# --- 3b. sent_by beside the turn (#56) ----------------------------------------
+
+# sent_by is the label `roost send --from` kept beside the turn whose file
+# supplied "text", read from `replies/NNNNNN.sent_by`; null when there is no
+# turn, or no sidecar beside it. Records are ON for these lines only, in a
+# directory under $work, through the same env the hook and `reply` honour.
+rboot="$(T display -p '#{start_time}-#{pid}')"
+rrec="$work/rec/$rboot/0"
+env ROOST_RECORD_DIR="$work/rec" TMUX="$s,$spid,0" TMUX_PANE=%0 "$ROOST" reply "kept one"
+env ROOST_RECORD_DIR="$work/rec" TMUX="$s,$spid,0" TMUX_PANE=%0 "$ROOST" reply "kept two"
+[ -f "$rrec/replies/000002" ]; assert_true $? "two turns are kept for %0 (control)"
+printf 'coord' > "$rrec/replies/000002.sent_by"
+cap rs env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json %0
+doc_is rs '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":2,"text":"kept two","lossy":false,"sent_by":"coord"}' \
+  "read --json carries the sent_by kept beside the turn it serves"
+cap rs1 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json --turn 1 %0
+doc_is rs1 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"record","state":"done","stale":false,"error_reason":null,"turn":1,"text":"kept one","lossy":false,"sent_by":null}' \
+  "read --json --turn on a turn with no sidecar says sent_by null"
+cap rs2 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json --turn 2 %0
+assert_eq "$(jv rs2 'd["sent_by"]')" coord "read --json --turn carries the sidecar of that turn"
+# The sidecar is one line by construction; a file edited to hold more serves
+# its first line rather than a value with a newline in it.
+printf 'first\nsecond\n' > "$rrec/replies/000002.sent_by"
+cap rs3 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json %0
+assert_eq "$(jv rs3 'd["sent_by"]')" first "a sidecar with more than one line serves its first line"
+cap rs_h env ROOST_RECORD_DIR="$work/rec" "$ROOST" read %0
+assert_eq "$(cat "$work/rs_h.out")|$(cat "$work/rs_h.err")" "kept two|" "the human read prints the reply, and nothing about who sent it"
+# The pane value is the truth: when it no longer matches the kept turn, there
+# is no turn to read a sidecar for, and sent_by is null with it.
+T set -p -t %0 @roost-reply "set by hand"
+cap rs4 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json %0
+assert_eq "$(jv rs4 'd["turn"], d["sent_by"]')" "(None, None)" "a pane value that is not the kept turn's has no turn and no sent_by"
+# A pane that is gone serves its last kept turn, and that turn's sidecar.
+T new-window -t side: -n gone 'exec sleep 600'
+pg="$(T list-panes -a -F '#{pane_id}' | tail -n 1)"
+env ROOST_RECORD_DIR="$work/rec" TMUX="$s,$spid,0" TMUX_PANE="$pg" "$ROOST" reply "last words"
+printf 'pane:%%1' > "$work/rec/$rboot/${pg#%}/replies/000001.sent_by"
+T kill-pane -t "$pg"
+cap rs5 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json "$pg"
+assert_eq "$(jv rs5 'd["source"], d["turn"], d["sent_by"]')" "('record', 1, 'pane:%1')" "read --json on a gone pane carries its last turn's sent_by"
+T set -pu -t %0 @roost-reply-turn
 
 # --- 4. the encoder, fuzzed -----------------------------------------------------
 

@@ -2,6 +2,13 @@
 # state (#41). docs/airig/specs/2026-09-15-json-output-design.md is the
 # contract: every document, every field, and what counts as a breaking change.
 #
+# The `read` document is assembled in bin/roost from values that branch has
+# already read for the human mode, plus two that come from the pane record
+# (scripts/lib/roost-record.sh): `turn`, the kept turn whose file supplied
+# `text` (#42), and `sent_by`, the label `send --from` kept beside that turn
+# (#56) -- both null when there is no kept turn to point at. Additive fields
+# under the schema-1 rule of the design.
+#
 # Sourced, not executed, `roost_jsonout_*` prefix. Sourced INSIDE each `--json`
 # branch of bin/roost, never at the top, the way roost-reply.sh is sourced
 # inside `reply`: a command that did not ask for JSON pays nothing, and `roost

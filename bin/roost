@@ -2055,8 +2055,13 @@ JSON
         if [ "$RF_LIVE" = 1 ]; then
           json_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
         fi
+        # sent_by (#56): the label `send --from` kept beside this turn, from
+        # its `.sent_by` sidecar; null when the turn has none. Read only for
+        # --json, so the human mode's file reads are unchanged.
+        roost_record_get_turn_field "$RF_DIR" "$want" sent_by || true
         roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "$json_state" \
-          stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" || roost_jsonout_fail read
+          stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" \
+          sent_by z "$ROOST_RECORD_FIELD" || roost_jsonout_fail read
         exit 0
       fi
       if [ "$render" -eq 1 ]; then
@@ -2082,8 +2087,11 @@ JSON
                 echo "roost read: '$raw' is gone — this is its last recorded reply (turn $ROOST_RECORD_MAX)." >&2
                 if [ "$json" -eq 1 ]; then
                   . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+                  # The last kept turn's sent_by (#56), as on the --turn path.
+                  roost_record_get_turn_field "$RF_DIR" "$ROOST_RECORD_MAX" sent_by || true
                   roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "" \
-                    stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" || roost_jsonout_fail read
+                    stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" \
+                    sent_by z "$ROOST_RECORD_FIELD" || roost_jsonout_fail read
                   exit 0
                 fi
                 if [ "$render" -eq 1 ]; then
@@ -2200,8 +2208,17 @@ JSON
         if [ -z "$json_turn" ] && roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
           json_text_kind=T
         fi
+        # sent_by (#56) belongs to the TURN, so it is read only when the pane
+        # value was matched to a kept turn above: a reply the pane holds that
+        # no turn file agrees with has no turn, and so no sender, to report.
+        json_sent_by=""
+        if [ -n "$json_turn" ]; then
+          roost_record_get_turn_field "$RF_DIR" "$json_turn" sent_by || true
+          json_sent_by="$ROOST_RECORD_FIELD"
+        fi
         roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
-          stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" || roost_jsonout_fail read
+          stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" \
+          sent_by z "$json_sent_by" || roost_jsonout_fail read
         exit 0
       fi
       # $lines is deliberately NOT applied. A recorded reply is returned whole:
@@ -2276,7 +2293,8 @@ JSON
       json_why=""
       if [ "$json_state" = "error" ]; then json_why="$why"; fi
       roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s screen state z "$json_state" \
-        stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail read
+        stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" \
+        sent_by z "" || roost_jsonout_fail read
       exit 0
     fi
     screen_dump "$tgt" "$lines"

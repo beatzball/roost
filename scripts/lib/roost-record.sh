@@ -639,6 +639,22 @@ roost_record_put_turn_field() {
   return 0
 }
 
+# roost_record_get_turn_field DIR N FIELD -> ROOST_RECORD_FIELD, the first
+# line of `replies/NNNNNN.FIELD`, or "" when there is no such sidecar. The
+# first line only, by `read -r` and no fork, the way roost_record__socket reads
+# its one line: the writer above stores one line, and a file edited by hand to
+# hold more must not hand a reader a value with a newline in it. FIELD is
+# checked as the writer checks it, so a caller cannot read a path through it.
+roost_record_get_turn_field() {
+  local LC_ALL=C v=""
+  ROOST_RECORD_FIELD=""
+  case "$3" in ''|*[!a-z_]*) return 1 ;; esac
+  roost_record_turn_file "$1" "$2"
+  [ -f "$ROOST_RECORD_FILE.$3" ] || return 1
+  IFS= read -r v < "$ROOST_RECORD_FILE.$3" || [ -n "$v" ] || return 1
+  ROOST_RECORD_FIELD="$v"
+}
+
 # roost_record_match REPLY DIR N -> 0, with ROOST_RECORD_TEXT set, when turn N's
 # file may be printed in place of REPLY, the pane's current @roost-reply. This
 # is the rule that makes "the pane wins" mechanical.

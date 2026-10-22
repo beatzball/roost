@@ -487,6 +487,10 @@ assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" 
 assert_eq "$("$ROOST" read --turn -1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" "...counting back steps over the sidecar"
 assert_eq "$("$ROOST" read "$p" 2>/dev/null)" "REPLY-TO[first prompt]" "...and plain read agrees"
 [ -f "$(side "$p" 1)" ]; assert_true $? "the sidecar survives the turn being recorded beside it"
+assert_contains "$("$ROOST" read --json --turn 1 "$p" 2>/dev/null)" '"sent_by":"coord"' \
+  "read --json --turn 1 carries the label from the sidecar"
+assert_contains "$("$ROOST" read --json "$p" 2>/dev/null)" '"sent_by":"coord"' \
+  "...and so does plain read --json while the pane still holds that turn"
 assert_eq "$(ls "$rec/replies" | grep -v '\.pane$' | tr '\n' ' ')" "000001 000001.sent_by " \
   "the turn and its .sent_by, and no temp file"
 
@@ -495,6 +499,7 @@ outside "$ROOST" send "$p" "second prompt" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 0 "a send without --from is unchanged: exit 0"
 assert_eq "$(cat "$(side "$p" 2)")" human "...and its sidecar says human when the caller is not in a pane"
 "$ROOST" wait-done --turn 2 "$p" 30 >/dev/null 2>&1
+assert_contains "$("$ROOST" read --json "$p" 2>/dev/null)" '"sent_by":"human"' "...which read --json then reports"
 
 # 13c. without --from, from a live pane on THIS server: pane:%N.
 helper="$(T new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"
