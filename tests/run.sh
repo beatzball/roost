@@ -95,20 +95,43 @@ shard_files() {
 # green job, and a shard that ran nothing is exactly the failure mode the
 # "died mid-run" check below exists to catch for one file. Exit 2 is distinct
 # from the 1 a failing suite returns, so a workflow can tell the two apart.
+#
+# Each half is checked ON ITS OWN, all digits and non-empty, before any
+# arithmetic touches it. The first version matched the whole spec against one
+# pattern, and `SHARD=1/2/3` slipped through: k was 1, n was "2/3", the `-gt`
+# comparison errored — which is false, not a refusal — and the greedy loop ran
+# over garbage and handed back an empty set, so the run printed "0 passed,
+# 0 failed" and exited 0 with a failing file in the directory. Two reviewers
+# found it; tests/test-run-shards.sh now pins that spec and `1/4/4`.
 shard_k=1 shard_n=1 shard_set=""
 if [ -n "${SHARD:-}" ]; then
-  case "$SHARD" in
-    */*) shard_k="${SHARD%%/*}" shard_n="${SHARD#*/}" ;;
-    *)   shard_k="" ;;
-  esac
-  case "$shard_k/$shard_n" in
-    *[!0-9/]*|/*|*/|*//*) shard_k="" ;;
-  esac
+  shard_k="${SHARD%%/*}" shard_n="${SHARD#*/}"
+  case "$SHARD" in */*) ;; *) shard_k="" ;; esac
+  case "$shard_k" in ""|*[!0-9]*) shard_k="" ;; esac
+  case "$shard_n" in ""|*[!0-9]*) shard_k="" ;; esac
   if [ -z "$shard_k" ] || [ "$shard_k" -lt 1 ] || [ "$shard_k" -gt "$shard_n" ]; then
     printf 'RUNNER: SHARD must be k/n with 1 <= k <= n, got [%s]\n' "$SHARD" >&2
     exit 2
   fi
   shard_set=" $(shard_files "$shard_k" "$shard_n" | tr '\n' ' ') "
+  # Second line of defence, for a failure the spec check cannot see: a shard
+  # that holds NO file while there are at least n files. Longest-first greedy
+  # gives each of the n shards one of the first n files, so with n or more
+  # files every shard is non-empty by construction, and an empty one means
+  # the assignment itself broke — a `sort` that printed nothing, a glob that
+  # found nothing from a wrong directory. Without this, that is eight green
+  # jobs that ran nothing. Fewer files than shards is the one honest empty
+  # shard (the fixture test's 3 shards over 2 files) and still exits 0.
+  shard_total=0
+  for t in test-*.sh; do [ -e "$t" ] && shard_total=$((shard_total + 1)); done
+  case "$shard_set" in
+    *[!\ ]*) ;;
+    *) if [ "$shard_total" -ge "$shard_n" ]; then
+         printf 'RUNNER: shard %s of %s holds no file although there are %d test files — the assignment failed, refusing to report a green run of nothing\n' \
+           "$shard_k" "$shard_n" "$shard_total" >&2
+         exit 2
+       fi ;;
+  esac
   # SHARD has done its job; it must not reach the test files. They run with
   # the environment a developer's `bash tests/test-x.sh` gives them, and two
   # of them (tests/test-runner.sh, tests/test-run-shards.sh) run a COPY of

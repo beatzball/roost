@@ -82,9 +82,11 @@ jobs:
       # Once per runner, not once per shard: the validator takes a second
       # and does not read a test file, so running it four times says nothing
       # the first run did not. It rides with shard 1 only so that `needs:
-      # [test]` still covers it.
+      # [test]` still covers it. `startsWith`, not `== '1/4'`: a literal
+      # would match nothing once the list above becomes 1/6..6/6, and the
+      # validator would stop running with every job green.
       - name: Contrast validator
-        if: matrix.shard == '1/4'
+        if: startsWith(matrix.shard, '1/')
         run: python3 tests/test-contrast.py
 
   # Release bookkeeping. The logic lives in scripts/roost-release-gate, not

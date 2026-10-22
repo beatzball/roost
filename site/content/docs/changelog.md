@@ -136,7 +136,7 @@ after `prefix r` reloads the tmux config on a server that was already running.
 
 - **CI runs the test suite in four shards per runner** (#169). A pull request
   waited 12 minutes for `test (macos-latest)` and 7 for Ubuntu, because the
-  58 test files ran one after another. Each runner now runs four jobs,
+  test files ran one after another. Each runner now runs four jobs,
   `test (<os>, 1/4)` to `test (<os>, 4/4)`, and the wait is the slowest of
   them. `tests/run.sh` does the split: `SHARD=k/n bash tests/run.sh` runs
   shard `k` of `n`, prints the same per-file lines and the same

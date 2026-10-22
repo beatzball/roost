@@ -161,9 +161,29 @@ assert_eq "$clean" "1" "the shard holding only the healthy file still exits 0"
 # A bad spec is refused before anything runs, with exit 2 — distinct from the
 # 1 of a failing suite — because a typo that quietly ran everything, or
 # nothing, would look like a green job.
-for bad in 4 0/4 5/4 a/b 1/ /4 1//4; do
+# `1/2/3` and `1/4/4` are the two that once got through: a combined pattern
+# took "2/3" for n, the `-gt` errored instead of refusing, and the run was a
+# green nothing. Each half is checked on its own now.
+for bad in 4 0/4 5/4 a/b 1/ /4 1//4 1/2/3 1/4/4 2/2/3; do
   out="$(cd "$fixdir" && SHARD="$bad" bash run.sh 2>&1)"; rc=$?
   assert_eq "$rc" "2" "SHARD=$bad is refused with exit 2"
   printf '%s' "$out" | grep -q '== test-'; [ $? -ne 0 ]
   assert_true $? "SHARD=$bad runs no file"
 done
+
+# The second line of defence: an assignment that breaks underneath a valid
+# spec. `sort` is what shard_files leans on, so a `sort` that prints nothing
+# (here: shadowed on PATH by a script that exits silently) empties every
+# shard. With three fixture files and three shards no shard may be empty, so
+# run.sh must refuse with exit 2 and run nothing — not print "0 passed,
+# 0 failed" and exit 0. The control is the SHARD=1/3 run above, same files,
+# real sort, exit 0.
+shim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\nexit 0\n' > "$shim/sort"
+chmod +x "$shim/sort"
+out="$(cd "$fixdir" && PATH="$shim:$PATH" SHARD=1/3 bash run.sh 2>&1)"; rc=$?
+rm -rf "$shim"
+assert_eq "$rc" "2" "a shard emptied by a broken assignment is refused with exit 2"
+assert_contains "$out" "holds no file" "the refusal says the shard holds no file"
+printf '%s' "$out" | grep -q '== test-'; [ $? -ne 0 ]
+assert_true $? "a shard emptied by a broken assignment runs no file"
