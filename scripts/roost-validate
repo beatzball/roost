@@ -1025,8 +1025,15 @@ h_adapter_fix() {
           printf 'the %s adapter is not linked — run: mkdir -p "%s" && ln -s "%s" "%s"' \
             "$h" "$(dirname "$path")" "$want" "$path" ;;
         other-checkout)
-          printf 'the %s adapter at %s points at another copy of roost, %s (left alone) — run: roost install from a plain checkout, or: rm "%s" && ln -s "%s" "%s"' \
-            "$h" "$path" "$(readlink "$path")" "$path" "$want" "$path" ;;
+          # Which text is true depends on the same thing the offer decided on:
+          # a plain checkout would have relinked it, a worktree never does.
+          if roost_checkout_is_worktree "$HERE"; then
+            printf 'the %s adapter at %s points at another copy of roost, %s (left alone: this is a git worktree, and roost does not relink from one) — run roost install from the primary checkout, or: rm "%s" && ln -s "%s" "%s"' \
+              "$h" "$path" "$(readlink "$path")" "$path" "$want" "$path"
+          else
+            printf 'the %s adapter at %s points at another copy of roost, %s (not relinked by this run) — run: roost install, or: rm "%s" && ln -s "%s" "%s"' \
+              "$h" "$path" "$(readlink "$path")" "$path" "$want" "$path"
+          fi ;;
         *)
           # Never a bare `ln -sf` here. Overwriting is the tester's call to
           # make, not a command roost hands them without saying what is there.
@@ -1099,10 +1106,12 @@ INSTALLED_LINKS=""      # newline-separated paths this run created
 BLOCKED_LINKS=""        # newline-separated "harness<TAB>path" it refused to touch
 ALREADY_LINKED=""       # newline-separated "harness<TAB>path" linked by someone else
 REMOVED_LINKS=""        # newline-separated "harness<TAB>path<TAB>undo" this run removed
+INSTALLED_UNDOS=""      # newline-separated "path<TAB>undo", the installer's own undo for each INSTALLED_LINKS entry
+RELINKED_LINKS=""       # newline-separated paths that held another copy's link and were replaced
 INSTALL_CANDIDATES=""   # space-separated harness names that could be linked
 
 offer_adapter_install() {
-  local h k path ans created=0 removed=0 only install_out install_rc records verb
+  local h k path ans created=0 relinked=0 removed=0 only install_out install_rc records verb undo
   local v1_going=""
 
   if [ "$LOCAL" -eq 1 ]; then
@@ -1321,15 +1330,29 @@ offer_adapter_install() {
     # Matched on harness AND path: a harness can own more than one record in a
     # full run (copilot has both a symlink and a settings file), and only the
     # line about THIS path answers the question being asked.
+    undo=""
     while IFS="$(printf '\t')" read -r v vh vpath vundo; do
-      [ "${vh:-}" = "$h" ] && [ "${vpath:-}" = "$path" ] && verb="$v"
+      [ "${vh:-}" = "$h" ] && [ "${vpath:-}" = "$path" ] && { verb="$v"; undo="${vundo:-}"; }
     done < "$records"
     case "$verb" in
       wrote)
         INSTALLED_LINKS="$INSTALLED_LINKS$path
 "
-        created=$((created + 1))
-        printf '  linked %s\n' "$path" ;;
+        # The installer's own undo, kept with the path: for a relink it puts
+        # the OLD link back, which a rebuilt `rm` of the new one would not.
+        [ -n "$undo" ] || undo="rm \"$path\""
+        INSTALLED_UNDOS="$INSTALLED_UNDOS$path	$undo
+"
+        case "$undo" in
+          *" && ln -s "*)
+            RELINKED_LINKS="$RELINKED_LINKS$path
+"
+            relinked=$((relinked + 1))
+            printf '  relinked %s\n' "$path" ;;
+          *)
+            created=$((created + 1))
+            printf '  linked %s\n' "$path" ;;
+        esac ;;
       # Correct on disk, and not this run's doing. Neither an undo line nor a
       # "left alone because something that is not ours is there" row: both
       # would be false, and the second is the one that would send a tester
@@ -1362,7 +1385,8 @@ offer_adapter_install() {
   fi
   printf '\n'
   INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s); see the undo below"
-  [ "$removed" -gt 0 ] && INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s) and removed $removed opencode 1.x link(s); see the undo below"
+  [ "$relinked" -gt 0 ] && INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s) and relinked $relinked that pointed at another copy of roost; see the undo below"
+  [ "$removed" -gt 0 ] && INSTALL_DECISION="${INSTALL_DECISION%; see the undo below} and removed $removed opencode 1.x link(s); see the undo below"
   return 0
 }
 
@@ -1370,14 +1394,25 @@ offer_adapter_install() {
 # report that changed the machine it ran on and did not say so is worse than
 # one that skipped.
 report_install() {
+  local n_all n_re what
   sub "Adapter links"
   para "**$INSTALL_DECISION**"
   if [ -n "$INSTALLED_LINKS$REMOVED_LINKS" ]; then
-    if [ -z "$REMOVED_LINKS" ]; then
+    if [ -z "$REMOVED_LINKS" ] && [ -z "$RELINKED_LINKS" ]; then
       para "**This run created the following symlinks on this machine.** They are
 symlinks into the roost checkout and nothing else was written — no hooks file,
 no trust granted, no settings edited, no provider configuration. To undo them,
 run these lines; removing a symlink cannot affect anything it pointed at:"
+    elif [ -z "$REMOVED_LINKS" ]; then
+      # A relink replaced a link that pointed at another copy of roost, so
+      # "removing a symlink cannot affect anything" would be misleading: the
+      # undo for that one puts the other copy's link back.
+      para "**This run created and relinked symlinks on this machine.** It linked
+the roost checkout where nothing was, and replaced a link that pointed at
+another copy of roost. Nothing else was written — no hooks file, no trust
+granted, no settings edited, no provider configuration. To undo all of it, run
+these lines; an \`rm\` line removes a link this run made, and an \`ln -s\` line
+puts back exactly the link that was replaced:"
     else
       # "Nothing else was written" would be false here, so it is not said.
       # The removal is named in its own words, with what it was and why,
@@ -1398,8 +1433,8 @@ the link that was removed:"
     # tester's machine back is worse than printing nothing. $HOME expands
     # inside double quotes, survives a path with a space in it, and reveals
     # exactly as little as the tilde did.
-    printf '%s' "$INSTALLED_LINKS" | while read -r path; do
-      [ -n "$path" ] && printf 'rm "%s"\n' "$path" | redact | sed 's|^rm "~/|rm "$HOME/|' >> "$BODY"
+    printf '%s' "$INSTALLED_UNDOS" | while IFS="$(printf '\t')" read -r path undo; do
+      [ -n "$path" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
     done
     # In the same block, after the `rm` lines, so undoing the whole run is one
     # paste and it runs in reverse: the 2.x link goes, then the 1.x link comes
@@ -1410,13 +1445,13 @@ the link that was removed:"
       [ -n "$h" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
     done
     printf '```\n\n' >> "$BODY"
-    if [ -z "$REMOVED_LINKS" ]; then
-      record WARN 1 "this run wrote to your machine" \
-        "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) after you agreed; the undo commands are in §1"
-    else
-      record WARN 1 "this run wrote to your machine" \
-        "it created $(printf '%s' "$INSTALLED_LINKS" | grep -c . ) adapter symlink(s) and removed $(printf '%s' "$REMOVED_LINKS" | grep -c . ) opencode 1.x link(s) after you agreed; the undo commands are in §1"
-    fi
+    n_all="$(printf '%s' "$INSTALLED_LINKS" | grep -c . )"
+    n_re="$(printf '%s' "$RELINKED_LINKS" | grep -c . )"
+    what="created $((n_all - n_re)) adapter symlink(s)"
+    [ "$n_re" -gt 0 ] && what="$what and relinked $n_re that pointed at another copy of roost"
+    [ -n "$REMOVED_LINKS" ] && what="$what and removed $(printf '%s' "$REMOVED_LINKS" | grep -c . ) opencode 1.x link(s)"
+    record WARN 1 "this run wrote to your machine" \
+      "it $what after you agreed; the undo commands are in §1"
   fi
   if [ -n "$ALREADY_LINKED" ]; then
     para "**Already linked, but not by this run.** Each path below was correct by the
