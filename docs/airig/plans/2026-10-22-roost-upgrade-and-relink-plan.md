@@ -6,8 +6,8 @@ Repository: `<roost>/.claude/worktrees/upgrade-design`, where `<roost>` is
             into the task brief, never into this file
 Branch:     worktree-upgrade-design — the branch PR #172 is open from; the
             spec, this plan and the build ship in that one pull request
-Base:       785442c (`main` at 0.7.0); the design and plan are the first
-            commits on the branch
+Base:       d9c5484 (`main`, one commit after 0.7.0); the design and plan
+            are the first commits on the branch
 Oracle:     automated (one human-eye check, deferred to the end)
 Unattended: no — the human merges the pull request; every task's Check is
             automated, so no task waits on a person
