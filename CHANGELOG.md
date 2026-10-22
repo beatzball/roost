@@ -14,8 +14,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   sent the prompt next to that turn's kept reply, as `replies/NNNNNN.sent_by`:
   the label you pass, else `pane:%N` for a send from a pane on this server,
   else `human`. `roost read --json` shows it as `sent_by`, and `roost send
-  --json` says what it kept. A label is one word of at most 64 bytes;
-  anything else is refused with exit 2 before anything is pasted. The text
+  --json` says what it kept. A label is one word of at most 64 bytes that
+  does not begin with a dash; anything else is refused with exit 2 before
+  anything is pasted, and a bare `%N` is kept as `pane:%N` so one sender
+  has one name. The text
   pasted into the agent is unchanged, and a send without the flag is
   byte-identical to before, so keep the `[from %N]` prefix until the envelope
   ships. A turn that ends with no reply (an API error, an interrupt) takes

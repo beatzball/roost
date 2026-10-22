@@ -18,7 +18,7 @@
 #   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] [--json] [--from LABEL] TGT TEXT
-#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force. On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes; exit 2 if not); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --json prints one JSON document instead, for a program
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force. On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
@@ -1026,9 +1026,15 @@ JSON
     # the sidecar's reader measure it. Non-ASCII is fine; it is the bytes that
     # are kept. Nothing else is interpreted, because this value is a file's
     # CONTENT and never a path, an option or a format string.
+    #
+    # Except a leading dash (flock review, fix loop 1): `roost send --from
+    # --json %1 hi` is a mistyped flag order, not a sender called `--json`,
+    # and taking it as a label would record that name AND print the human
+    # `%N TURN` line to a program that asked for a document. Refused, so the
+    # mistake stays loud.
     send_label_ok() {
       local LC_ALL=C
-      case "$1" in ''|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;; esac
+      case "$1" in ''|-*|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;; esac
       [ "${#1}" -le 64 ]
     }
     force=0
@@ -1053,9 +1059,20 @@ JSON
         # The label itself is not echoed back: it may be the very control
         # byte that got it refused, and stderr is a terminal.
         if ! send_label_ok "$from"; then
-          echo "roost send: --from needs one word of at most 64 bytes, with no space or control character — nothing was sent" >&2
+          echo "roost send: --from needs one word of at most 64 bytes, with no space or control character and not beginning with a dash — nothing was sent" >&2
           exit 2
         fi
+        # A bare %N — what `roost whoami` prints, and what skills/roost/SKILL.md
+        # tells a coordinator to pass — names the same sender as the checked
+        # default's `pane:%N`, and is kept in that spelling, so one sender has
+        # one name in the record and a consumer grouping by sent_by does not
+        # split a coordinator in two (flock review, fix loop 1). Only `%` and
+        # digits, nothing else; it is not checked against the server, because
+        # a passed label is still a claim (docs/known-gaps.md) — only a claim
+        # spelled the one way.
+        case "$from" in
+          %[0-9]*) case "${from#%}" in *[!0-9]*) ;; *) from="pane:$from" ;; esac ;;
+        esac
         # Drop "send", the flag and its label, then put the subcommand back,
         # for the same reason as the two-word shift below.
         shift 3

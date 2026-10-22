@@ -212,7 +212,7 @@ me="$(roost whoami)"
 roost send --from "$me" api "run the tests"
 ```
 
-The label is one word of at most 64 bytes, with no space and no control character; anything else is refused with exit `2` before anything is pasted. Without `--from`, the label is `pane:%N` when the send came from a pane on this server, and `human` otherwise — a send typed at a shell outside roost.
+The label is one word of at most 64 bytes, with no space and no control character, and it does not begin with a dash (so a mistyped `--from --json` is an error, not a sender called `--json`); anything else is refused with exit `2` before anything is pasted. A bare `%N` is kept as `pane:%N`, the spelling the default uses, so one sender has one name in the record. Without `--from`, the label is `pane:%N` when the send came from a pane on this server, and `human` otherwise — a send typed at a shell outside roost.
 
 Three things to know:
 

@@ -522,7 +522,7 @@ assert_eq "$(cat "$(side "$p" 5)")" human "a TMUX naming another server's pid is
 wait_state "$p" done
 screen_before="$(T capture-pane -p -t "$p")"
 n_before="$(ls "$rec/replies" | grep -c 'sent_by$')"
-for bad in "two words" "$(printf 'tab\there')" "$(printf 'ctl\001here')" "$(printf '%065d' 0)" ""; do
+for bad in "two words" "$(printf 'tab\there')" "$(printf 'ctl\001here')" "$(printf '%065d' 0)" "" "--json" "-" "-x"; do
   err="$(outside "$ROOST" send --from "$bad" "$p" "never pasted" 2>&1 >/dev/null)"; rc=$?
   shown="$(printf '%s' "$bad" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-12)"
   assert_eq "$rc" 2 "a bad label [$shown] is refused with exit 2"
@@ -534,6 +534,12 @@ assert_eq "$(ls "$rec/replies" | grep -c 'sent_by$')" "$n_before" "...and no sid
 err="$(outside "$ROOST" send --from 2>&1 >/dev/null)"; rc=$?
 assert_eq "$rc" 2 "--from with no label is refused with exit 2"
 assert_contains "$err" "--from" "...naming the flag"
+# A flag in the label slot is a mistyped flag order, not a sender called
+# `--json`: refused, so a program that asked for a document gets exit 2 and
+# nothing on stdout, never the human line with a label it did not mean.
+out="$(outside "$ROOST" send --from --json "$p" "never pasted" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "2|" "--from --json is an error, not a label named --json, and prints nothing"
+assert_eq "$(state "$p")" done "...and starts no turn"
 # The two edges that ARE accepted: exactly 64 bytes, and non-ASCII.
 label64="$(printf '%064d' 0)"
 outside "$ROOST" send --from "$label64" "$p" "sixth prompt" >/dev/null 2>&1; rc=$?
@@ -676,6 +682,28 @@ for arm in "idle --stop-hook" "error --stop-failure-hook"; do
   assert_contains "$("$ROOST" read --json "$p5" 2>/dev/null)" '"sent_by":null' "...and the hand-typed turn after it reads null"
 done
 T kill-pane -t "$p5" 2>/dev/null || true
+
+# 13i. a bare %N is the sender pane:%N, and is kept in that spelling. `roost
+# whoami` prints %N and the skill says `--from "$me"`, while the default the
+# checked path writes is `pane:%N`; one record must not hold one coordinator
+# under two names. Only % followed by digits is folded; anything else is a
+# word like any other.
+wait_state "$p" done
+last="$(ls "$rec/replies" | grep '^[0-9][0-9]*$' | sort | tail -n 1)"
+next=$((10#$last + 1))
+doc="$(outside "$ROOST" send --json --from "%7" "$p" "bare pane id" 2>/dev/null)"; rc=$?
+assert_eq "$rc" 0 "a bare %N label is accepted"
+assert_contains "$doc" '"sent_by":"pane:%7"' "...and kept as pane:%N, the spelling the default uses"
+assert_eq "$(cat "$(side "$p" "$next")")" "pane:%7" "...in the sidecar too"
+"$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
+next=$((next + 1))
+outside "$ROOST" send --from "pane:%7" "$p" "spelled pane id" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" "$next")")" "pane:%7" "pane:%N is already that spelling and is kept as given"
+"$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
+next=$((next + 1))
+outside "$ROOST" send --from "%7x" "$p" "not a pane id" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" "$next")")" "%7x" "% followed by anything but digits is a word, kept as given"
+"$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
 
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"

@@ -96,8 +96,9 @@ are real and cost tokens — only spawn what you need.
 
 `roost send TARGET "text"` pastes the text, submits it, and then waits briefly
 for the target to actually BEGIN a turn. Pass `--from "$me"` (your own `%N`,
-from `roost whoami`) so the record says who sent it: it is kept beside the turn
-and `roost read --json` shows it as `sent_by`. It is NOT put into the text, so
+from `roost whoami`; it is kept as `pane:%N`, the spelling the default uses) so
+the record says who sent it: it is kept beside the turn and `roost read --json`
+shows it as `sent_by`. It is NOT put into the text, so
 keep the `[from $me]` prefix at the front of the prompt as well (as above) —
 that is what lets the receiver reply to you, and it stays until roost adds an
 envelope. The label is one word of at most 64 bytes, or `send` refuses it with
