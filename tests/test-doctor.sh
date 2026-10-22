@@ -388,17 +388,52 @@ rm "$ocdir/opencode/plugins/roost"
 # A link to ANOTHER copy of roost (a second checkout) is named as one, and
 # every relink line carries the command. The control is a link to a stranger's
 # directory, which gets "look at it first" instead of an offer of roost install.
+#
+# Which line an other-checkout link gets depends on whether the checkout doctor
+# RUNS FROM is a git worktree: from one, the link is left alone and no rm is
+# printed, because a link pointed at a worktree dangles once it is removed. So
+# the other-checkout cases run a doctor from a checkout built here, never
+# "$DOC": this suite is often run from a worktree itself and on CI from a plain
+# clone, and its own answer would differ by machine. The same pair as
+# tests/test-adapter-install.sh case 3b: a plain copy, which is no git
+# repository at all, and a linked worktree of a throwaway repository, with the
+# runner's global git config and hooks shut out.
 co2="$(mktemp -d /tmp/amx.XXXX)"
 cp -R "$HERE/adapters" "$co2/"
 stranger="$(mktemp -d /tmp/amx.XXXX)"
+# -P: doctor names its own checkout by its physical path (/tmp is a link on macOS).
+dco="$(cd -P "$(mktemp -d /tmp/amx.XXXX)" && pwd)"
+dplain="$dco/plain"; drepo="$dco/repo"; dwt="$dco/repo-wt"
+copy_checkout() { mkdir -p "$1" && cp -R "$HERE/scripts" "$HERE/bin" "$HERE/adapters" "$HERE/tmux" "$HERE/VERSION" "$1/"; }
+dgit() { GIT_CONFIG_GLOBAL=/dev/null git -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@t.example "$@"; }
+copy_checkout "$dplain"
+copy_checkout "$drepo"
+( cd "$drepo" && dgit init -q -b main && dgit add -A && dgit commit -q -m one && dgit worktree add -q "$dwt" -b wt ) >/dev/null 2>&1
+# The harness checks itself first: a worktree that was never made, or a plain
+# copy that git reads as one, would make every assertion below pass or fail for
+# the wrong reason.
+[ -x "$dwt/scripts/roost-doctor" ]; assert_true $? "other-checkout setup: the worktree carries doctor"
+bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$dwt"
+assert_eq "$?" "0" "other-checkout setup: the worktree reads as a worktree"
+bash -c '. "$1/scripts/lib/roost-adapters.sh"; roost_checkout_is_worktree "$1"' _ "$dplain"
+assert_eq "$?" "1" "other-checkout setup: the plain copy does not"
 P="$ocdir/opencode/plugins/roost"
 ln -s "$co2/adapters/opencode/v2" "$P"
-out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+out="$(DOC="$dplain/scripts/roost-doctor" run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
 l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
 assert_contains "$l" "points at another copy of roost" "opencode 2, other checkout: doctor names it"
 assert_contains "$l" "run: roost install" "opencode 2, other checkout: roost install is offered"
 assert_contains "$l" "$co2/adapters/opencode/v2" "opencode 2, other checkout: the line shows where the link points"
-assert_contains "$l" "rm \"$P\" && ln -s \"$HERE/adapters/opencode/v2\" \"$P\"" "opencode 2, other checkout: the exact relink command is printed"
+assert_contains "$l" "rm \"$P\" && ln -s \"$dplain/adapters/opencode/v2\" \"$P\"" "opencode 2, other checkout: the exact relink command is printed"
+# From a git worktree, the same link: named, left alone, and no command that
+# would point it at the worktree.
+out="$(DOC="$dwt/scripts/roost-doctor" run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
+assert_contains "$l" "points at another copy of roost, $co2/adapters/opencode/v2" "opencode 2, other checkout, from a worktree: doctor names it and where it points"
+assert_contains "$l" "$dwt is a git worktree" "opencode 2, other checkout, from a worktree: the line names the worktree"
+assert_contains "$l" "run roost install from the primary checkout" "opencode 2, other checkout, from a worktree: it says where to run install"
+assert_eq "$(oc_has "$l" "rm \"")" "no" "opencode 2, other checkout, from a worktree: no rm is printed"
+assert_eq "$(oc_has "$l" "ln -s")" "no" "opencode 2, other checkout, from a worktree: no ln -s is printed"
 rm "$P"
 ln -s "$stranger" "$P"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
@@ -416,12 +451,19 @@ printf '#!/bin/sh\nexit 0\n' > "$pishim/pi"; chmod +x "$pishim/pi"
 P="$pihome2/.pi/agent/extensions/roost.ts"
 mkdir -p "$(dirname "$P")"
 ln -s "$co2/adapters/pi/roost.ts" "$P"
-out="$(run_doctor "$pihome2" COLORTERM=truecolor PATH="$pishim:$PATH" 2>&1)"
+out="$(DOC="$dplain/scripts/roost-doctor" run_doctor "$pihome2" COLORTERM=truecolor PATH="$pishim:$PATH" 2>&1)"
 l="$(printf '%s\n' "$out" | grep 'pi extension at')"
 assert_contains "$l" "points at another copy of roost" "pi, other checkout: doctor names it"
 assert_contains "$l" "run: roost install" "pi, other checkout: roost install is offered"
 assert_contains "$l" "$co2/adapters/pi/roost.ts" "pi, other checkout: the line shows where the link points"
-assert_contains "$l" "rm \"$P\" && ln -s \"$HERE/adapters/pi/roost.ts\" \"$P\"" "pi, other checkout: the exact relink command is printed"
+assert_contains "$l" "rm \"$P\" && ln -s \"$dplain/adapters/pi/roost.ts\" \"$P\"" "pi, other checkout: the exact relink command is printed"
+out="$(DOC="$dwt/scripts/roost-doctor" run_doctor "$pihome2" COLORTERM=truecolor PATH="$pishim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'pi extension at')"
+assert_contains "$l" "points at another copy of roost, $co2/adapters/pi/roost.ts" "pi, other checkout, from a worktree: doctor names it and where it points"
+assert_contains "$l" "$dwt is a git worktree" "pi, other checkout, from a worktree: the line names the worktree"
+assert_contains "$l" "run roost install from the primary checkout" "pi, other checkout, from a worktree: it says where to run install"
+assert_eq "$(oc_has "$l" "rm \"")" "no" "pi, other checkout, from a worktree: no rm is printed"
+assert_eq "$(oc_has "$l" "ln -s")" "no" "pi, other checkout, from a worktree: no ln -s is printed"
 rm "$P"
 printf 'x\n' > "$stranger/roost.ts"
 ln -s "$stranger/roost.ts" "$P"
@@ -454,7 +496,7 @@ assert_contains "$l" "reached through a symlinked folder" "copilot, a folder lin
 assert_contains "$l" "$co2/adapters/copilot" "copilot, a folder link: the line shows where the folder points"
 assert_eq "$(oc_has "$out" "rm \"$CP\"")" "no" "copilot, a folder link: no rm of the file inside the other copy"
 rm -rf "$cphome2" "$cpshim"
-rm -rf "$pihome2" "$pishim" "$co2" "$stranger"
+rm -rf "$pihome2" "$pishim" "$co2" "$stranger" "$dco"
 
 # A real directory at the path -- the user's own plugin, or a copy -- is not
 # this install, and doctor names where it should point rather than deleting.

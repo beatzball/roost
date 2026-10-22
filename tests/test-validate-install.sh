@@ -629,8 +629,10 @@ assert_eq "$(readlink "$ppath")" "$vplain_p$ptail" "other-checkout, plain checko
 rep_body="${out##*===REPORT===}"; rep_body="${rep_body%%===RESULT===*}"
 assert_contains "$rep_body" "ln -s \"$oc2$ptail\" \"\$HOME/.pi/agent/extensions/roost.ts\"" \
   "other-checkout, plain checkout: the report's undo (home path redacted to \$HOME) puts the other copy's link back"
+# The report redacts the home path to $HOME, as the undo assertion above
+# spells it, so the raw $ppath could never match and this could never fail.
 case "$rep_body" in *'
-rm "'"$ppath"'"
+rm "$HOME/.pi/agent/extensions/roost.ts"
 '*) s=bare ;; *) s=none ;; esac
 assert_eq "$s" "none" "other-checkout, plain checkout: no bare rm line for the relinked path"
 assert_contains "$res" "relinked 1 that pointed at another copy of roost" \

@@ -380,6 +380,21 @@ pihome="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 piext="$pihome/extensions/roost.ts"
 piwant="$(cd "$(dirname "$0")/.." && pwd)/adapters/pi/roost.ts"
 
+# Whether this checkout is a git worktree, read once for the four
+# other-checkout lines below. From one, roost install leaves a link to another
+# copy of roost alone (IN_WORKTREE in scripts/roost-install), and roost validate
+# says so: a link pointed at a worktree dangles the moment it is removed. So
+# from a worktree those lines name it and hand over no rm && ln -s; the line
+# for a plain checkout is unchanged. Named by its physical path, the one
+# roost_adapter_target prints.
+doc_in_wt=0
+roost_checkout_is_worktree && doc_in_wt=1
+doc_here="$(cd -P "$(dirname "$0")/.." && pwd)"
+# warn_left_alone WHAT PATH -- the other-checkout line, from a worktree.
+warn_left_alone() {
+  warn "$1 at $2 points at another copy of roost, $(readlink "$2") — left alone, because $doc_here is a git worktree and roost does not relink from one: run roost install from the primary checkout, or from that copy"
+}
+
 # --- stale amux references (Phase 5 trigger) ---
 # The amux compatibility shims (amux-agent-state and friends) are deleted
 # once roost doctor reports clean on these checks on every machine the author
@@ -491,7 +506,11 @@ if [ "$oc_v2" = 1 ]; then
       # the mkdir -p.
       warn "opencode $ocver found, roost's opencode 2 plugin not installed — run: mkdir -p \"$(dirname "$oc2plug")\" && ln -s \"$oc2want\" \"$oc2plug\", or run: roost install" ;;
     other-checkout)
-      warn "opencode 2 plugin at $oc2plug points at another copy of roost, $(readlink "$oc2plug") — run: roost install, or: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\"" ;;
+      if [ "$doc_in_wt" = 1 ]; then
+        warn_left_alone "opencode 2 plugin" "$oc2plug"
+      else
+        warn "opencode 2 plugin at $oc2plug points at another copy of roost, $(readlink "$oc2plug") — run: roost install, or: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\""
+      fi ;;
     *)
       if [ -L "$oc2plug" ]; then
         warn "opencode 2 plugin at $oc2plug is not this install — look at it first, then relink it: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\""
@@ -560,7 +579,11 @@ elif command -v opencode >/dev/null 2>&1; then
     # `roost install`.
     case "$(roost_adapter_state opencode)" in
       other-checkout)
-        warn "opencode plugin at $ocplug points at another copy of roost, $(readlink "$ocplug") — run: roost install, or: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\"" ;;
+        if [ "$doc_in_wt" = 1 ]; then
+          warn_left_alone "opencode plugin" "$ocplug"
+        else
+          warn "opencode plugin at $ocplug points at another copy of roost, $(readlink "$ocplug") — run: roost install, or: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\""
+        fi ;;
       *)
         if [ -L "$ocplug" ]; then
           warn "opencode plugin at $ocplug is not this install — look at it first, then relink it: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\""
@@ -592,7 +615,11 @@ if command -v copilot >/dev/null 2>&1; then
     # `roost install`.
     case "$(roost_adapter_state copilot)" in
       other-checkout)
-        warn "copilot extension at $cpext points at another copy of roost, $(readlink "$cpext") — run: roost install, or: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\"" ;;
+        if [ "$doc_in_wt" = 1 ]; then
+          warn_left_alone "copilot extension" "$cpext"
+        else
+          warn "copilot extension at $cpext points at another copy of roost, $(readlink "$cpext") — run: roost install, or: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\""
+        fi ;;
       *)
         if [ -L "$cpext" ]; then
           warn "copilot extension at $cpext is not this install — look at it first, then relink it: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\""
@@ -658,7 +685,11 @@ if command -v pi >/dev/null 2>&1; then
     # `roost install`.
     case "$(roost_adapter_state pi)" in
       other-checkout)
-        warn "pi extension at $piext points at another copy of roost, $(readlink "$piext") — run: roost install, or: rm \"$piext\" && ln -s \"$piwant\" \"$piext\"" ;;
+        if [ "$doc_in_wt" = 1 ]; then
+          warn_left_alone "pi extension" "$piext"
+        else
+          warn "pi extension at $piext points at another copy of roost, $(readlink "$piext") — run: roost install, or: rm \"$piext\" && ln -s \"$piwant\" \"$piext\""
+        fi ;;
       *)
         if [ -L "$piext" ]; then
           warn "pi extension at $piext is not this install — look at it first, then relink it: rm \"$piext\" && ln -s \"$piwant\" \"$piext\""
