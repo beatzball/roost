@@ -419,4 +419,61 @@ else
     "12 concurrent stops bring it back to 0"
   assert_eq "$(tmux -S "$s" show-options -pqv -t "$parp" @roost-subagent-ids)" "" \
     "...with an empty list"
+
+  # Past the cap the count is a limit, not a promise, and this pins the limit
+  # exactly as docs/known-gaps.md ("Past 32 subagents at once...") states it,
+  # so a future fix has to change these lines on purpose. From the 33rd agent
+  # running at once the hook cannot tell an unlisted running agent from an id
+  # it never saw: a stop for an unknown id counts one down, and stopping the
+  # 32 listed ids reads 0 while the 33rd is still running. The third documented
+  # case, a few more than 32 listed under concurrent starts, is a race and is
+  # not pinned. The algorithm is unchanged by this test; only the edge is.
+  edgep="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$edgep" edgep
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$edgep" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+      <<< "$(sp SubagentStart "$(printf 'c0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  ecount() { tmux -S "$s" show-options -pqv -t "$edgep" @roost-subagents; }
+  eids()   { tmux -S "$s" show-options -pqv -t "$edgep" @roost-subagent-ids; }
+  assert_eq "$(ecount)" "33" "past the cap: 33 starts -> 33 counted"
+  assert_eq "$(eids | wc -w | tr -d ' ')" "32" "past the cap: ...32 listed, the 33rd is not"
+  env TMUX="$s,0,0" TMUX_PANE="$edgep" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+    <<< "$(sp SubagentStop c000000000000099 general-purpose)"
+  assert_eq "$(ecount)" "32" \
+    "past the cap: a stop for an id never started counts one down (documented limit, not a promise)"
+  assert_eq "$(eids | wc -w | tr -d ' ')" "32" "past the cap: ...and the list is untouched"
+  i=1
+  while [ "$i" -le 32 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$edgep" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+      <<< "$(sp SubagentStop "$(printf 'c0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  assert_eq "$(ecount)" "0" \
+    "past the cap: stopping the 32 listed reads 0 while the 33rd still runs (documented limit)"
+  assert_eq "$(eids)" "" "past the cap: ...with an empty list, the 33rd never in it"
+  # The second documented case: a repeated start of the unlisted 33rd counts
+  # again, so 33 agents read 34, and stopping all 33 leaves a ghost 1.
+  repp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$repp" repp
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$repp" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+      <<< "$(sp SubagentStart "$(printf 'd0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  env TMUX="$s,0,0" TMUX_PANE="$repp" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+    <<< "$(sp SubagentStart d000000000000033 general-purpose)"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$repp" @roost-subagents)" "34" \
+    "past the cap: a repeated start of the unlisted 33rd counts again (documented limit)"
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$repp" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+      <<< "$(sp SubagentStop "$(printf 'd0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$repp" @roost-subagents)" "1" \
+    "past the cap: ...and stopping all 33 leaves a ghost 1 (documented limit)"
 fi

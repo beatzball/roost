@@ -1888,6 +1888,40 @@ sources should clear is that follow-up's first question: `startup` and
 `clear` plainly should, and `compact` fires mid-session with helpers
 possibly still out. Not done in lane D, whose spec did not ask for it.
 
+### Past 32 subagents at once the count is a limit, not a promise (Phase 0 lane D)
+
+The id list on the pane (`@roost-subagent-ids`) is capped at 32 ids and the
+count (`@roost-subagents`) is not, so from the 33rd subagent RUNNING AT ONCE
+some running agents are unlisted. From there the hook cannot tell an
+unlisted running agent from an id it has never seen, and three things
+follow. None of them happens at 32 or fewer, and tests/test-agent-state.sh
+("past the cap") pins each so a fix must change the test on purpose.
+
+- **A stop for an id that was never started changes the count.** While the
+  count is above the list's length every stop counts one down, because the
+  rule "a stop for an unknown id changes nothing" needs the list to say what
+  is known. 33 starts and one stop for an id never started reads 32.
+- **A repeated start of an unlisted id counts again.** A second
+  `SubagentStart` for the 33rd agent, which is not listed, reads as a new
+  agent: 34 for 33 running, and stopping all 33 leaves a ghost 1.
+- **Concurrent starts can list a few more than 32.** The cap is read in the
+  shell before the write, and the count is changed inside tmux; many starts
+  at once can each see fewer than 32 and all append. Found in review: three
+  trials of 40 concurrent distinct starts counted 40 every time and listed
+  33, 32 and 35 ids.
+
+The trigger is 33 or more subagents running at once in one Claude, a shape
+no rig run has produced. The lane spec asked for two things that conflict
+past the cap: an unknown stop that changes nothing, and a list that cannot
+grow without bound; this cut keeps the bound and the count for honest
+payloads, and gives up the unknown-stop rule only above it. Severity: low.
+The count never touches a badge, so nothing waits on it; it is wrong only in
+`status --json`, and only on a pane past the cap. What would close it: a
+list whose cap is enforced inside the same tmux command as the count (so the
+third case ends), and a count that is only ever the list's length (so the
+first two end, at the price that the 33rd agent is not counted at all). That
+is a different trade, not a fix to this one, and it is a follow-up.
+
 ## Behaviour changes
 
 ### Replies are kept on disk, and `read` prints long ones whole (#42)

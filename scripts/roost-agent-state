@@ -183,7 +183,10 @@ sock="$ROOST_SELF_SOCK"
 # running agent is listed and an unlisted id was never started -- a replayed
 # or foreign payload -- so nothing changes. That second case is the rule
 # "a stop for an id never started changes nothing", and it is why the count
-# cannot simply go down on every stop.
+# cannot simply go down on every stop. Past the cap that rule is a limit, not
+# a promise: docs/known-gaps.md ("Past 32 subagents at once the count is a
+# limit, not a promise") lists the three ways the count can be wrong from the
+# 33rd running agent on, and tests/test-agent-state.sh pins each one.
 #
 # THE ID IS CHECKED BEFORE IT IS A FORMAT OR AN OPTION VALUE. It is spliced
 # into `#{m:* ID *,...}` and `#{s/ ID / /:...}` and appended to a
