@@ -10,8 +10,24 @@ set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
 TMP="$(cd -P "$TMP" && pwd)"
+
+# --- tmux, kept away from the live servers ------------------------------------
+# The script re-applies wiring on a RUNNING roost server, and with no
+# ROOST_SOCKET it looks for `-L roost` — the author's live server, unless
+# TMUX_TMPDIR points elsewhere. So every case below runs with TMUX_TMPDIR at a
+# throwaway directory (the guard in tests/lib.sh refuses to go on otherwise),
+# and $TMUX is dropped so nothing can find the server this suite runs inside.
+# The one server this file starts is addressed by a socket PATH ending in
+# /roost — roost-wiring only wires a socket that ends /roost, and a path,
+# unlike `-L roost`, cannot resolve to the real directory if TMUX_TMPDIR were
+# ever lost.
+SOCKDIR="$(mktemp -d /tmp/amx.XXXX)"   # short: the ~104-byte socket path limit
+export TMUX_TMPDIR="$SOCKDIR/tmpdir"; mkdir -p "$TMUX_TMPDIR"
+roost_test_tmux_named_guard
+unset TMUX TMUX_PANE ROOST_SOCKET ROOST_SELF_SOCK OPENCODE_CONFIG_DIR
+UPG_SOCK="$SOCKDIR/roost"
+trap 'tmux -S "$UPG_SOCK" kill-server 2>/dev/null; rm -rf "$TMP" "$SOCKDIR"' EXIT
 
 # --- the sandbox canary -----------------------------------------------------
 # Every variable an installer can be steered by, exported at one directory
@@ -66,6 +82,7 @@ G clone -q "$TMP/origin.git" "$clone"
 # The code under test, committed so it is what the clone's main tracks.
 cp "$HERE/scripts/roost-upgrade" "$clone/scripts/roost-upgrade"
 cp -R "$HERE/scripts/lib" "$clone/scripts/"
+cp "$HERE/scripts/roost-wiring" "$clone/scripts/roost-wiring"
 G -C "$clone" add -A; G -C "$clone" commit -qm "the code"
 G -C "$clone" push -q origin main
 G -C "$seed" pull -q --ff-only
@@ -297,6 +314,57 @@ assert_eq "$RC" "0" "--dry-run: rc 0"
 assert_eq "$(G -C "$clone" rev-parse HEAD)" "$new" \
   "--dry-run: the pull still happened (only the installer is dry)"
 assert_eq "$(tail -n 1 "$LOG")" "installer-v6 --dry-run" "--dry-run: passed through to the installer"
+
+# --- wiring is re-applied on a running server ----------------------------------
+# The opencode 2 story in one command: a server wired while opencode was 1.x
+# carries roost's OPENCODE_CONFIG_DIR, and the upgrade's apply — run with a
+# 2.x opencode on PATH — must take it away. The stubs go IN FRONT of the
+# normal PATH rather than replacing it: the run also needs git, tmux and
+# cksum, and only `opencode` has to be the stub.
+opencode_stub() { # opencode_stub VERSIONLINE -> prints a dir to put first on PATH
+  local d; d="$(mktemp -d "$TMP/oc.XXXX")"
+  printf "#!/bin/sh\necho '%s'\n" "$1" > "$d/opencode"; chmod +x "$d/opencode"
+  printf '%s' "$d"
+}
+OC1="$(opencode_stub '1.18.30')"; OC2="$(opencode_stub 'opencode v2.0.20')"
+WXDG="$TMP/wiring-xdg"
+WDIR_OC="$WXDG/roost/wiring/$(printf '%s' "$clone" | cksum | cut -d' ' -f1)/opencode"
+ts() { tmux -S "$UPG_SOCK" "$@"; }
+
+reset_clone
+new="$(seed_commit v9)"; G -C "$clone" fetch -q origin
+ts -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
+PATH="$OC1:$PATH" XDG_CONFIG_HOME="$WXDG" ROOST_SOCKET="$UPG_SOCK" \
+  "$clone/scripts/roost-wiring" apply
+assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "OPENCODE_CONFIG_DIR=$WDIR_OC" \
+  "wiring: with opencode 1.x the server carries roost's OPENCODE_CONFIG_DIR (setup)"
+
+OUT="$(PATH="$OC2:$PATH" XDG_CONFIG_HOME="$WXDG" ROOST_SOCKET="$UPG_SOCK" \
+  bash "$clone/scripts/roost-upgrade" --yes 2>"$TMP/err")"; RC=$?
+ERR="$(cat "$TMP/err")"
+assert_eq "$RC" "0" "wiring: rc 0"
+assert_contains "$OUT" "roost: wiring re-applied on the running server" "wiring: says it re-applied"
+assert_eq "$(G -C "$clone" rev-parse HEAD)" "$new" "wiring: the pull happened"
+# `set-environment -gu` removes the variable from the global environment
+# outright, so show-environment fails for it (tmux 3.6 here, and the same
+# assertion tests/test-wiring.sh makes) rather than printing `-NAME`.
+ts show-environment -g OPENCODE_CONFIG_DIR >/dev/null 2>&1
+assert_eq "$?" "1" "wiring: with opencode 2.x on PATH the upgrade removed roost's OPENCODE_CONFIG_DIR"
+assert_eq "$(tail -n 1 "$LOG")" "installer-v9 --yes" "wiring: the installer still ran after"
+
+# Control: the same run with no server on that socket wires nothing, says
+# nothing about wiring, and still upgrades.
+ts kill-server
+reset_clone
+new="$(seed_commit v10)"; G -C "$clone" fetch -q origin
+OUT="$(PATH="$OC2:$PATH" XDG_CONFIG_HOME="$WXDG" ROOST_SOCKET="$UPG_SOCK" \
+  bash "$clone/scripts/roost-upgrade" --yes 2>"$TMP/err")"; RC=$?
+assert_eq "$RC" "0" "no server: rc 0"
+case "$OUT$(cat "$TMP/err")" in *wiring*) false ;; *) true ;; esac
+assert_true $? "no server: no wiring line"
+assert_eq "$(G -C "$clone" rev-parse HEAD)" "$new" "no server: the pull happened"
+assert_eq "$(tail -n 1 "$LOG")" "installer-v10 --yes" "no server: the installer ran"
+ts list-sessions >/dev/null 2>&1; assert_eq "$?" "1" "no server: the throwaway server is gone"
 
 # --- the canary must be empty ------------------------------------------------
 assert_eq "$(canary_leaks)" "" "nothing wrote outside the scratch homes"

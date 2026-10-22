@@ -181,8 +181,29 @@ refuse() {
   printf '  curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh\n' >&2
 }
 
-# Re-apply wiring on a running roost server — Task 7 fills this in.
-reapply_wiring() { :; }
+# reapply_wiring HERE — run the NEW checkout's `roost wiring apply` on a
+# roost server that is already running, the step a starting server takes in
+# bin/roost's ensure_session. A server started before the upgrade keeps the
+# environment it was wired with; for opencode 2 that is an OPENCODE_CONFIG_DIR
+# that replaces the user's own configuration in every new pane (#154), and
+# apply is what takes it away. Without this, the upgrade needs a second step.
+#
+# The socket is the one roost-wiring itself reads: $ROOST_SOCKET, default
+# `roost`, a path when it holds a `/`. No server there means nothing to do,
+# silently: it applies wiring when it starts. A failed apply is reported and
+# never fatal — the code is pulled, and the installer still has to run.
+reapply_wiring() {
+  local here="$1" sock flag
+  sock="${ROOST_SOCKET:-roost}"
+  case "$sock" in */*) flag="-S" ;; *) flag="-L" ;; esac
+  command -v tmux >/dev/null 2>&1 || return 0
+  tmux "$flag" "$sock" list-sessions >/dev/null 2>&1 || return 0
+  if ROOST_SOCKET="$sock" "$here/scripts/roost-wiring" apply; then
+    printf 'roost: wiring re-applied on the running server\n'
+  else
+    printf 'roost: wiring could not be re-applied (roost doctor says more)\n' >&2
+  fi
+}
 
 main "$@"
 exit
