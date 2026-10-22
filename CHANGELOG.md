@@ -71,8 +71,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   The opencode 2, opencode 1, copilot and pi lines said "relink it to WANT" and
   gave no command. Each now ends in `rm "PATH" && ln -s "WANT" "PATH"`, and a
   link to another copy of roost is named as one, with `roost install` as the
-  first thing to run. `doctor` prints an `rm` only for a symlink: for a file or
-  directory it says to move it aside yourself.
+  first thing to run. From a git worktree that line names the worktree and
+  hands over no command, for the same reason `roost install` refuses there,
+  and `roost validate`'s offer says the same. `doctor` prints an `rm` only for
+  a symlink: for a file or directory it says to move it aside yourself.
 
 ## [0.7.0]
 
