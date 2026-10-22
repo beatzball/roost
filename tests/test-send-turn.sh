@@ -445,6 +445,266 @@ assert_contains "$doc" '"turn":null' "send --json says turn null on a turn that 
 assert_contains "$doc" '"started":true' "...and started true, because a turn did begin"
 wait
 
+# --- 13. who sent it: --from LABEL and the sent_by sidecar (#56) ------------
+#
+# The label is kept BESIDE the turn, as `replies/NNNNNN.sent_by` in the pane's
+# record, and the text pasted into the pane is unchanged: no envelope in this
+# cut, so a `send` without the flag is byte-identical to what it was. The
+# fixture echoes the prompt back inside its reply, which is what proves that
+# second half: an envelope would show up inside REPLY-TO[...].
+boot="$(T display -p '#{start_time}-#{pid}')"
+side() { printf '%s/%s/%s/replies/%06d.sent_by' "$ROOST_RECORD_DIR" "$boot" "${1#%}" "$2"; }
+# Run with neither TMUX nor TMUX_PANE: this file may itself be running inside a
+# roost pane, and the default label is decided from exactly those two.
+outside() { env -u TMUX -u TMUX_PANE "$@"; }
+
+# 13a. the FIRST prompt of a fresh agent that already wears a badge. No record
+# exists yet, and the label must still land. The fixture has no badge until
+# its first turn, and neither does a fresh Claude pane (its SessionStart hook
+# injects context and stamps nothing), so `send` does not watch either one and
+# their first prompt keeps no label — docs/known-gaps.md says so. A harness
+# that starts on a badge (opencode 2 at adapter load, codex after an
+# interrupt) is the case here, so the badge is stamped by hand through the
+# real hook.
+p="$(newagent 2 0.4)"
+spid="$(T display -p '#{pid}')"
+env TMUX="$s,$spid,0" TMUX_PANE="$p" "$HOOK" idle </dev/null
+assert_eq "$(state "$p")" idle "detector proof: the fresh agent is badged idle before its first prompt"
+rec="$ROOST_RECORD_DIR/$boot/${p#%}"
+[ ! -d "$rec" ]; assert_true $? "detector proof: a fresh agent has no record yet"
+out="$(outside "$ROOST" send --from coord "$p" "first prompt" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "0|$p 1" "send --from on a fresh agent still exits 0 and names turn 1"
+[ -f "$(side "$p" 1)" ]; assert_true $? "...and replies/000001.sent_by exists before the turn has even finished"
+printf '%s' coord | cmp -s - "$(side "$p" 1)"; assert_true $? "...holding exactly the label, no newline"
+assert_eq "$(ls -l "$(side "$p" 1)" | cut -c1-10)" "-rw-------" "...private to the user"
+assert_eq "$(ls -ld "$rec" | cut -c1-10)" "drwx------" "...in a record directory send made private, as the hook does"
+assert_eq "$(cat "$rec/schema")" 1 "...with the schema file the hook would have written"
+assert_eq "$(cat "$rec/socket")" "$s" "...and the socket, so forget --gone can check it later"
+"$ROOST" wait-done --turn 1 "$p" 30 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 "wait-done --turn 1 still returns: a sidecar is not a turn"
+assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" \
+  "read --turn 1 reads the turn, and the prompt arrived with no envelope"
+assert_eq "$("$ROOST" read --turn -1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" "...counting back steps over the sidecar"
+assert_eq "$("$ROOST" read "$p" 2>/dev/null)" "REPLY-TO[first prompt]" "...and plain read agrees"
+[ -f "$(side "$p" 1)" ]; assert_true $? "the sidecar survives the turn being recorded beside it"
+assert_contains "$("$ROOST" read --json --turn 1 "$p" 2>/dev/null)" '"sent_by":"coord"' \
+  "read --json --turn 1 carries the label from the sidecar"
+assert_contains "$("$ROOST" read --json "$p" 2>/dev/null)" '"sent_by":"coord"' \
+  "...and so does plain read --json while the pane still holds that turn"
+assert_eq "$(ls "$rec/replies" | grep -v '\.pane$' | tr '\n' ' ')" "000001 000001.sent_by " \
+  "the turn and its .sent_by, and no temp file"
+
+# 13b. without --from, from outside any pane: human.
+outside "$ROOST" send "$p" "second prompt" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 "a send without --from is unchanged: exit 0"
+assert_eq "$(cat "$(side "$p" 2)")" human "...and its sidecar says human when the caller is not in a pane"
+"$ROOST" wait-done --turn 2 "$p" 30 >/dev/null 2>&1
+assert_contains "$("$ROOST" read --json "$p" 2>/dev/null)" '"sent_by":"human"' "...which read --json then reports"
+
+# 13c. without --from, from a live pane on THIS server: pane:%N.
+helper="$(T new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"
+require_pane "$helper" "sending pane"
+env TMUX="$s,$spid,0" TMUX_PANE="$helper" "$ROOST" send "$p" "third prompt" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" 3)")" "pane:$helper" "a send from a live pane on this server is labelled pane:%N"
+"$ROOST" wait-done --turn 3 "$p" 30 >/dev/null 2>&1
+# A $TMUX_PANE that is not a pane HERE. The user's everyday tmux sets the same
+# two variables, and a %N from that server is a stranger's id on this one. A
+# pane this server does not have, and a pid that is not this server's, both
+# read as human -- never as some other pane.
+env TMUX="$s,$spid,0" TMUX_PANE="%999" "$ROOST" send "$p" "fourth prompt" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" 4)")" human "a TMUX_PANE this server does not have is human"
+"$ROOST" wait-done --turn 4 "$p" 30 >/dev/null 2>&1
+env TMUX="/nowhere/roost,1,0" TMUX_PANE="$helper" "$ROOST" send "$p" "fifth prompt" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" 5)")" human "a TMUX naming another server's pid is human, even with a pane id this server has"
+"$ROOST" wait-done --turn 5 "$p" 30 >/dev/null 2>&1
+
+# 13d. a label that cannot be kept is refused BEFORE anything is pasted.
+wait_state "$p" done
+screen_before="$(T capture-pane -p -t "$p")"
+n_before="$(ls "$rec/replies" | grep -c 'sent_by$')"
+for bad in "two words" "$(printf 'tab\there')" "$(printf 'ctl\001here')" "$(printf '%065d' 0)" "" "--json" "-" "-x"; do
+  err="$(outside "$ROOST" send --from "$bad" "$p" "never pasted" 2>&1 >/dev/null)"; rc=$?
+  shown="$(printf '%s' "$bad" | LC_ALL=C tr -c '[:print:]' '?' | cut -c1-12)"
+  assert_eq "$rc" 2 "a bad label [$shown] is refused with exit 2"
+  assert_contains "$err" "--from" "...naming the flag"
+done
+assert_eq "$(T capture-pane -p -t "$p")" "$screen_before" "...and nothing reached the pane"
+assert_eq "$(state "$p")" done "...no turn began"
+assert_eq "$(ls "$rec/replies" | grep -c 'sent_by$')" "$n_before" "...and no sidecar was written"
+err="$(outside "$ROOST" send --from 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" 2 "--from with no label is refused with exit 2"
+assert_contains "$err" "--from" "...naming the flag"
+# A flag in the label slot is a mistyped flag order, not a sender called
+# `--json`: refused, so a program that asked for a document gets exit 2 and
+# nothing on stdout, never the human line with a label it did not mean.
+out="$(outside "$ROOST" send --from --json "$p" "never pasted" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "2|" "--from --json is an error, not a label named --json, and prints nothing"
+assert_eq "$(state "$p")" done "...and starts no turn"
+# The two edges that ARE accepted: exactly 64 bytes, and non-ASCII.
+label64="$(printf '%064d' 0)"
+outside "$ROOST" send --from "$label64" "$p" "sixth prompt" >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(cat "$(side "$p" 6)")" "0|$label64" "a 64-byte label is the longest accepted"
+"$ROOST" wait-done --turn 6 "$p" 30 >/dev/null 2>&1
+utf="$(printf 'caf\303\251')"
+outside "$ROOST" send --from "$utf" "$p" "seventh prompt" >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(cat "$(side "$p" 7)")" "0|$utf" "a UTF-8 label is kept as its bytes"
+"$ROOST" wait-done --turn 7 "$p" 30 >/dev/null 2>&1
+# A repeated --from is not consumed: it lands in the target slot and fails as
+# "no such target", exactly as a repeated --force or --json does.
+err="$(outside "$ROOST" send --from a --from b "$p" "x" 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" 2 "a repeated --from exits 2"
+assert_contains "$err" "no such target '--from'" "...as the target it fell through to"
+
+# 13e. --json carries the label, and null when there was no turn to keep it by.
+wait_state "$p" done
+doc="$(outside "$ROOST" send --json --from coord "$p" "json prompt" 2>/dev/null)"
+assert_contains "$doc" '"sent_by":"coord"' "send --json carries sent_by"
+assert_contains "$doc" '"turn":8' "...beside the turn it was kept by"
+"$ROOST" wait-done --turn 8 "$p" 30 >/dev/null 2>&1
+doc="$(outside "$ROOST" send --from coord --json "$p" "json prompt again" 2>/dev/null)"
+assert_contains "$doc" '"sent_by":"coord"' "...with the flags in either order"
+"$ROOST" wait-done --turn 9 "$p" 30 >/dev/null 2>&1
+doc="$(outside "$ROOST" send --json "$p" "json no flag" 2>/dev/null)"
+assert_contains "$doc" '"sent_by":"human"' "...and says human when the flag was not given"
+"$ROOST" wait-done --turn 10 "$p" 30 >/dev/null 2>&1
+doc="$(outside "$ROOST" send --json --from coord "$p" "" 2>/dev/null)"
+assert_contains "$doc" '"sent_by":null' "a bare Enter starts no turn, so sent_by is null"
+sh="$(T new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"
+require_pane "$sh" "plain shell for --from"
+sleep 0.5
+doc="$(outside "$ROOST" send --json --from coord "$sh" "printf 'SHELL-%s\n' OK" 2>/dev/null)"; rc=$?
+assert_eq "$rc" 0 "send --from into a pane with no badge still exits 0"
+assert_contains "$doc" '"sent_by":null' "...and sent_by is null: no turn, so nowhere to keep it"
+
+# 13f. exit 4 writes nothing: no turn began, so there is no turn to keep it by.
+# The slow agent is parked on a finished turn by the hook directly, rather than
+# by a warm-up send that would itself exit 4 and then need the whole delay
+# waited out.
+T set-option -g @roost-send-turn-timeout 2
+p4="$(newagent 20 0)"
+printf '{"last_assistant_message":"seeded"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p4" "$HOOK" done --stop-hook
+assert_eq "$(state "$p4")" done "detector proof: the slow agent is parked on a finished turn"
+rec4="$ROOST_RECORD_DIR/$boot/${p4#%}"
+assert_file_absent "$rec4/replies/000001.sent_by" "detector proof: a turn the hook recorded on its own has no sidecar"
+outside "$ROOST" send --from coord "$p4" "never starts" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 4 "detector proof: this send exits 4"
+assert_eq "$(ls "$rec4/replies" | grep -c 'sent_by$')" 0 "a send that exits 4 writes no sidecar"
+assert_file_absent "$(side "$p4" 2)" "...not even for the turn it predicted"
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
+
+# 13g. recording off: the label has nowhere to go, and nothing is written.
+poff="$(T new-window -d -P -F '#{pane_id}' "exec env ROOST_RECORD_DIR= /bin/sh $AGENT $HOOK 0 0")"
+require_pane "$poff" "recording-off agent for --from"
+n=50
+while [ "$n" -gt 0 ]; do
+  T capture-pane -p -t "$poff" 2>/dev/null | grep -q READY && break
+  sleep 0.1; n=$((n - 1))
+done
+env ROOST_RECORD_DIR="" "$ROOST" send "$poff" "warm up" >/dev/null 2>&1
+wait_state "$poff" done
+doc="$(outside env ROOST_RECORD_DIR="" "$ROOST" send --json --from coord "$poff" "no record" 2>/dev/null)"; rc=$?
+assert_eq "$rc" 0 "recording off: send --from still exits 0"
+assert_contains "$doc" '"started":true' "...and still proves the turn began"
+assert_contains "$doc" '"sent_by":null' "...but sent_by is null: there is no turn number to keep it by"
+assert_file_absent "$ROOST_RECORD_DIR/$boot/${poff#%}" "...and no record was made for it"
+
+# 13h. an errored turn takes its label with it (flock review, fix loop 1). The
+# sequence exactly as the reviewer ran it: a turn that `send --from` started
+# and that then ERRORS records no reply, so the number `send` predicted goes
+# to the NEXT recorded turn — here a prompt the human typed by hand. Before
+# the fix that turn read `sent_by: coord`: a label about a prompt the
+# coordinator never sent, and nothing in the document to tell it from a true
+# one. The sidecar is dropped where every harness passes on its way into a
+# NEW turn — scripts/roost-agent-state, on the stamp of `working` from a
+# finished state — and before the badge moves, so a `send` watching that
+# badge writes its own label only afterwards.
+#
+# A slow agent, so the turn `send` starts is still running when the hook is
+# told, by hand, that it errored. The fixture's own sleeping turn is killed
+# with the pane at the end, before it could record anything.
+p5="$(newagent 0 60)"
+printf '{"last_assistant_message":"seeded"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+assert_eq "$(state "$p5")" done "detector proof: turn 1 is seeded and the agent reads done"
+rec5="$ROOST_RECORD_DIR/$boot/${p5#%}"
+out="$(outside "$ROOST" send --from coord "$p5" "from the coordinator" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "0|$p5 2" "detector proof: send --from names turn 2, the prediction"
+assert_eq "$(state "$p5")" working "detector proof: that turn is running"
+assert_eq "$(cat "$(side "$p5" 2)")" coord "detector proof: its sidecar says coord"
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" error --stop-hook </dev/null
+assert_eq "$(state "$p5")" error "detector proof: the turn ended as an error"
+assert_file_absent "$rec5/replies/000002" "detector proof: and recorded no turn 2"
+# The human types a prompt: the harness stamps working, works, and ends done
+# with an answer — which becomes turn 2.
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null
+assert_file_absent "$(side "$p5" 2)" "a new turn starting takes the errored turn's label away"
+printf '{"last_assistant_message":"typed by the human"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+assert_eq "$("$ROOST" read --turn 2 "$p5" 2>/dev/null)" "typed by the human" \
+  "detector proof: the hand-typed turn is turn 2"
+assert_contains "$("$ROOST" read --json --turn 2 "$p5" 2>/dev/null)" '"sent_by":null' \
+  "read --json --turn 2 says nobody known sent it: null, not coord"
+assert_contains "$("$ROOST" read --json "$p5" 2>/dev/null)" '"sent_by":null' "...and plain read --json agrees"
+assert_eq "$(ls "$rec5/replies" | grep -c 'sent_by$')" 0 "...and no sidecar is left in the record"
+# A label that belongs to the turn now starting is kept: the drop runs BEFORE
+# the badge moves, and `send` writes only after it has seen it move. The
+# fixture is asleep in its own turn, so the working stamp comes by hand, from
+# the background, as a harness's prompt-submit hook would. A dialog answered
+# in the middle of the turn (blocked, then working again) is not a new turn,
+# and keeps the label too.
+( sleep 0.5; env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null ) &
+out="$(outside "$ROOST" send --from coord "$p5" "again from the coordinator" 2>/dev/null)"; rc=$?
+wait
+assert_eq "$rc|$out" "0|$p5 3" "detector proof: the next send names turn 3"
+assert_eq "$(cat "$(side "$p5" 3)")" coord "...and its label survives the stamp that started it"
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" blocked </dev/null
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null
+assert_eq "$(cat "$(side "$p5" 3)")" coord "a dialog answered mid-turn is not a new turn: the label stays"
+printf '{"last_assistant_message":"answered the coordinator"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+assert_contains "$("$ROOST" read --json --turn 3 "$p5" 2>/dev/null)" '"sent_by":"coord"' \
+  "...and turn 3 reads coord"
+# The other two arms that end a turn unrecorded, through the same drop: an
+# interrupt (codex, `idle --stop-hook`) and Claude's StopFailure.
+for arm in "idle --stop-hook" "error --stop-failure-hook"; do
+  last5="$(ls "$rec5/replies" | grep '^[0-9][0-9]*$' | sort | tail -n 1)"
+  next5=$((10#$last5 + 1))
+  ( sleep 0.5; env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null ) &
+  outside "$ROOST" send --from coord "$p5" "once more" >/dev/null 2>&1
+  wait
+  [ -f "$(side "$p5" "$next5")" ]; assert_true $? "detector proof ($arm): the send filed a label for turn $next5"
+  printf '{"error":"rate_limit"}' | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" $arm
+  env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null
+  assert_file_absent "$(side "$p5" "$next5")" "a turn ended by \`$arm\` takes its label with it"
+  printf '{"last_assistant_message":"typed by the human again"}' \
+    | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+  assert_contains "$("$ROOST" read --json "$p5" 2>/dev/null)" '"sent_by":null' "...and the hand-typed turn after it reads null"
+done
+T kill-pane -t "$p5" 2>/dev/null || true
+
+# 13i. a bare %N is the sender pane:%N, and is kept in that spelling. `roost
+# whoami` prints %N and the skill says `--from "$me"`, while the default the
+# checked path writes is `pane:%N`; one record must not hold one coordinator
+# under two names. Only % followed by digits is folded; anything else is a
+# word like any other.
+wait_state "$p" done
+last="$(ls "$rec/replies" | grep '^[0-9][0-9]*$' | sort | tail -n 1)"
+next=$((10#$last + 1))
+doc="$(outside "$ROOST" send --json --from "%7" "$p" "bare pane id" 2>/dev/null)"; rc=$?
+assert_eq "$rc" 0 "a bare %N label is accepted"
+assert_contains "$doc" '"sent_by":"pane:%7"' "...and kept as pane:%N, the spelling the default uses"
+assert_eq "$(cat "$(side "$p" "$next")")" "pane:%7" "...in the sidecar too"
+"$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
+next=$((next + 1))
+outside "$ROOST" send --from "pane:%7" "$p" "spelled pane id" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" "$next")")" "pane:%7" "pane:%N is already that spelling and is kept as given"
+"$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
+next=$((next + 1))
+outside "$ROOST" send --from "%7x" "$p" "not a pane id" >/dev/null 2>&1
+assert_eq "$(cat "$(side "$p" "$next")")" "%7x" "% followed by anything but digits is a word, kept as given"
+"$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
+
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
 assert_eq "$found" "" "nothing was written into HOME/XDG during this file"

@@ -269,8 +269,8 @@ roost read: ('$pt' is in error state: a reason; roost screen reads the screen wi
 tmux -S "$s" set-option -p -t "$pt" @agent_state done
 tmux -S "$s" set-option -p -t "$pt" @roost-reply "SET BY HAND"
 json="$("$ROOST" read --json "$pt")"
-assert_eq "$json" "{\"schema\":1,\"command\":\"read\",\"target\":\"$pt\",\"pane\":\"$pt\",\"source\":\"reply\",\"state\":\"done\",\"stale\":false,\"error_reason\":null,\"turn\":null,\"text\":\"SET BY HAND\",\"lossy\":false}" \
-  "no record: --json is unchanged but for the added \"turn\":null"
+assert_eq "$json" "{\"schema\":1,\"command\":\"read\",\"target\":\"$pt\",\"pane\":\"$pt\",\"source\":\"reply\",\"state\":\"done\",\"stale\":false,\"error_reason\":null,\"turn\":null,\"text\":\"SET BY HAND\",\"lossy\":false,\"sent_by\":null}" \
+  "no record: --json is unchanged but for the added \"turn\":null and \"sent_by\":null"
 # With a record and a reply under the cap, the output is the same bytes as a
 # pane that has no record at all.
 pr="$(new_pane)"; require_pane "$pr" "record, small"
@@ -717,3 +717,109 @@ assert_eq "$(tmux -S "$s" show-options -pqv -t "$pe" @roost-reply)" "" "...and l
 "$ROOST" read "$pe" >/dev/null 2>"$work/err"
 assert_contains "$(cat "$work/err")" "no recorded reply for '$pe'" "...so read falls back to the screen"
 assert_eq "$("$ROOST" read --turn 2 "$pe")" "ANSWER TWO" "...and the record is intact: --turn 2 still reads"
+
+# --- 19. per-turn sidecars: roost_record_put_turn_field (#56) --------------
+
+# `send --from` keeps who sent a prompt beside the turn it started, as
+# `replies/NNNNNN.sent_by`. The writer lives in the library so that the next
+# field (#142's "who answered") is one call rather than a second mktemp-and-mv.
+# The library was sourced in section 11.
+pf="$(new_pane)"; require_pane "$pf" "turn field"
+as_pane "$pf" "$ROOST" reply "ONE"; as_pane "$pf" "$ROOST" reply "TWO"
+fd="$(recdir "$pf")"
+roost_record_put_turn_field "$fd" 2 sent_by coord; assert_true $? "put_turn_field writes a sidecar beside turn 2"
+printf '%s' coord | cmp -s - "$fd/replies/000002.sent_by"; assert_true $? "...holding exactly the value, no newline"
+assert_eq "$(ls -l "$fd/replies/000002.sent_by" | cut -c1-10)" "-rw-------" "...private to the user"
+assert_eq "$(ls -A "$fd/replies" | grep -c '^\.')" 0 "...and leaves no temp file"
+roost_record_put_turn_field "$fd" 2 sent_by other; assert_true $? "a second write replaces the value"
+assert_eq "$(cat "$fd/replies/000002.sent_by")" other "...whole"
+roost_record_put_turn_field "$fd" 7 sent_by coord; assert_true $? \
+  "a sidecar may precede its turn file: send writes it before the Stop hook writes the reply"
+[ -f "$fd/replies/000007.sent_by" ] && [ ! -e "$fd/replies/000007" ]; assert_true $? "...so turn 7 has a sidecar and no file yet"
+roost_record_put_turn_field "$fd" 007 sent_by coord; assert_true $? "a turn with leading zeros is the same turn"
+assert_eq "$(ls "$fd/replies" | grep -c '^000007')" 1 "...and names the same file"
+# Invisible to every reader of turns.
+assert_eq "$(turns_in "$pf")" 2 "the digit-only reader counts two turns, not three"
+assert_eq "$("$ROOST" read --turn -1 "$pf")" "TWO" "read --turn -1 is still turn 2"
+as_pane "$pf" "$ROOST" reply "THREE"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pf" @roost-reply-turn)" 3 \
+  "the next turn is 3: a sidecar for turn 7 does not move the numbering"
+"$ROOST" read --turn 7 "$pf" >/dev/null 2>"$work/err"; rc=$?
+assert_eq "$rc" 1 "read --turn 7 is not recorded: a sidecar alone is not a turn"
+# What is refused, and all of it before anything is written.
+before="$(ls -A "$fd/replies" | tr '\n' ' ')"
+for f in Sent_by sent-by sent_by1 ''; do
+  roost_record_put_turn_field "$fd" 2 "$f" x; rc=$?
+  assert_eq "$rc" 1 "a field [$f] outside [a-z_]+ is refused"
+done
+roost_record_put_turn_field "$fd" 2 sent_by $'two\nlines'; rc=$?; assert_eq "$rc" 1 "a value with a newline is refused"
+roost_record_put_turn_field "$fd" 2 sent_by ''; rc=$?; assert_eq "$rc" 1 "an empty value is refused"
+roost_record_put_turn_field "$fd" x sent_by coord; rc=$?; assert_eq "$rc" 1 "a turn that is not a number is refused"
+roost_record_put_turn_field "$fd" 1000000000000000 sent_by coord; rc=$?
+assert_eq "$rc" 1 "a turn past 15 digits is refused, as a turn file there would be"
+assert_eq "$(ls -A "$fd/replies" | tr '\n' ' ')" "$before" "...and none of them wrote anything"
+# Pruning takes it with its turn, as it takes .pane.
+pps2="$(new_pane)"; require_pane "$pps2" "prune turn fields"
+for n in 1 2 3 4 5; do
+  ROOST_RECORD_KEEP=3 as_pane "$pps2" "$ROOST" reply "SIDE $n"
+  roost_record_put_turn_field "$(recdir "$pps2")" "$n" sent_by "who$n"
+done
+assert_eq "$(ls "$(recdir "$pps2")/replies" | grep -v '\.pane$' | tr '\n' ' ')" \
+  "000003 000003.sent_by 000004 000004.sent_by 000005 000005.sent_by " "pruning removes a turn's .sent_by with it"
+# A record that does not exist yet is made the way the hook makes one, so the
+# first prompt of a fresh agent keeps its label too.
+pfn="$(new_pane)"; require_pane "$pfn" "no record yet"
+nd="$(recdir "$pfn")"
+# The writer makes the root the way the hook does, and the hook has already
+# resolved it; a caller that sources the library bare resolves it here.
+roost_record_root
+[ ! -d "$nd" ]; assert_true $? "no record before the first sidecar (control)"
+roost_record_put_turn_field "$nd" 1 sent_by coord "$s"; assert_true $? "put_turn_field on a pane with no record creates one"
+assert_eq "$(cat "$nd/schema")|$(cat "$nd/socket")" "1|$s" "...with schema 1 and the socket it was given"
+assert_eq "$(ls -ld "$nd" | cut -c1-10)|$(ls -ld "$nd/replies" | cut -c1-10)" "drwx------|drwx------" \
+  "...private, as the hook makes them"
+as_pane "$pfn" "$ROOST" reply "FIRST"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$pfn" @roost-reply-turn)" 1 "the first reply is then turn 1"
+assert_eq "$("$ROOST" read --turn 1 "$pfn")" FIRST "...and reads"
+assert_eq "$(cat "$nd/replies/000001.sent_by")" coord "...with its sidecar beside it"
+# Creating a record runs the 30-day sweep, as the hook's first turn does: it
+# is the one-per-pane moment, and a record send created would otherwise never
+# trigger one, because the hook then finds the directory already there.
+plant "$REC/1000000000-8/5" "$work/no-such/roost"
+touch -t "$old_stamp" "$REC/1000000000-8/5/replies"
+pfs="$(new_pane)"; require_pane "$pfs" "sweep on sidecar"
+roost_record_put_turn_field "$(recdir "$pfs")" 1 sent_by coord "$s"
+assert_file_absent "$REC/1000000000-8/5" "a record created for a sidecar runs the sweep, as the hook's first turn does"
+# Never into a record this roost does not understand.
+printf '2\n' > "$nd/schema"
+before="$(ls -R "$nd")"
+roost_record_put_turn_field "$nd" 2 sent_by coord; rc=$?
+assert_eq "$rc" 1 "a record with a newer schema is refused"
+assert_eq "$(ls -R "$nd")" "$before" "...and nothing is written into it"
+printf '1\n' > "$nd/schema"
+
+# roost_record_drop_pending: the sidecars filed beside the turn that has NOT
+# been recorded yet — MAX + 1, the number `send` predicts — go; every recorded
+# turn and its sidecars stay. scripts/roost-agent-state calls it when a NEW
+# turn begins, so a label an errored turn left behind can never land on the
+# turn that takes its number (flock review, fix loop 1).
+dp="$work/drop"; mkdir -p "$dp/replies"; printf '1\n' > "$dp/schema"
+printf 'one' > "$dp/replies/000001"
+printf 'coord' > "$dp/replies/000001.sent_by"; printf 'one' > "$dp/replies/000001.pane"
+printf 'coord' > "$dp/replies/000002.sent_by"; printf 'x' > "$dp/replies/000002.pane"
+roost_record_drop_pending "$dp"; rc=$?
+assert_eq "$rc" 0 "drop_pending returns 0"
+assert_eq "$(ls "$dp/replies" | tr '\n' ' ')" "000001 000001.pane 000001.sent_by " \
+  "it removes every sidecar of turn MAX+1 and nothing of a recorded turn"
+roost_record_drop_pending "$dp"; rc=$?
+assert_eq "$rc|$(ls "$dp/replies" | tr '\n' ' ')" "0|000001 000001.pane 000001.sent_by " \
+  "with nothing pending it changes nothing, and is still 0"
+rm -rf "$dp/replies"; mkdir "$dp/replies"
+printf 'coord' > "$dp/replies/000001.sent_by"
+roost_record_drop_pending "$dp"
+assert_eq "$(ls "$dp/replies")" "" "with no turn recorded, turn 1's sidecar is the pending one"
+rm -rf "$dp/replies"
+roost_record_drop_pending "$dp"; rc=$?
+assert_eq "$rc" 0 "no replies directory: nothing to do, still 0"
+roost_record_drop_pending "$work/nowhere"; rc=$?
+assert_eq "$rc" 0 "no record at all: still 0"

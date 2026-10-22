@@ -17,8 +17,8 @@
 #   roost view [-n NAME] CMD...  show CMD to the human: a pane beside you if there is room, a window if not. No focus steal; a second call with the same NAME replaces the first
 #   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
-#   roost send [--force] [--json] TGT TEXT
-#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force. On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --json prints one JSON document instead, for a program
+#   roost send [--force] [--json] [--from LABEL] TGT TEXT
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW). Refuses a 🛑 blocked target unless --force. On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
@@ -1010,22 +1010,81 @@ JSON
     # fails as "no such target", which is exactly what `roost send --force
     # --force X Y` did before this loop existed. Keeping that shape means the
     # new flag cannot change the outcome of any call that was already valid.
+    #
+    # --from LABEL (#56) is the third flag in these slots, and the one that
+    # takes a word of its own. The label is who is sending: it is kept beside
+    # the turn this prompt starts (roost_record_put_turn_field, further down),
+    # and it is NOT put into the text — the pane receives exactly the bytes it
+    # would have received without the flag. The envelope half of #56 is a
+    # separate cut. Checked HERE, before the target is even resolved, so a
+    # label that cannot be kept refuses the whole send at exit 2 with nothing
+    # pasted: a label that was silently dropped would leave a turn attributed
+    # to nobody, which is the record lying by omission.
+    #
+    # One word — no space, no control byte — of at most 64 BYTES, counted
+    # under LC_ALL=C so a UTF-8 label is measured the way the file system and
+    # the sidecar's reader measure it. Non-ASCII is fine; it is the bytes that
+    # are kept. Nothing else is interpreted, because this value is a file's
+    # CONTENT and never a path, an option or a format string.
+    #
+    # Except a leading dash (flock review, fix loop 1): `roost send --from
+    # --json %1 hi` is a mistyped flag order, not a sender called `--json`,
+    # and taking it as a label would record that name AND print the human
+    # `%N TURN` line to a program that asked for a document. Refused, so the
+    # mistake stays loud.
+    send_label_ok() {
+      local LC_ALL=C
+      case "$1" in ''|-*|*[[:space:]]*|*[[:cntrl:]]*) return 1 ;; esac
+      [ "${#1}" -le 64 ]
+    }
     force=0
     json=0
-    while [ "${2:-}" = "--force" ] || [ "${2:-}" = "--json" ]; do
+    from="" from_given=0
+    while [ "${2:-}" = "--force" ] || [ "${2:-}" = "--json" ] || [ "${2:-}" = "--from" ]; do
       if [ "$2" = "--force" ]; then
         if [ "$force" -eq 1 ]; then break; fi
         force=1
-      else
+      elif [ "$2" = "--json" ]; then
         if [ "$json" -eq 1 ]; then break; fi
         json=1
+      else
+        if [ "$from_given" -eq 1 ]; then break; fi
+        from_given=1
+        if [ "$#" -lt 3 ]; then
+          echo "roost send: --from needs a label — who is sending, one word of at most 64 bytes" >&2
+          echo "usage: roost send [--force] [--json] [--from LABEL] [SESSION:]WINDOW TEXT..." >&2
+          exit 2
+        fi
+        from="$3"
+        # The label itself is not echoed back: it may be the very control
+        # byte that got it refused, and stderr is a terminal.
+        if ! send_label_ok "$from"; then
+          echo "roost send: --from needs one word of at most 64 bytes, with no space or control character and not beginning with a dash — nothing was sent" >&2
+          exit 2
+        fi
+        # A bare %N — what `roost whoami` prints, and what skills/roost/SKILL.md
+        # tells a coordinator to pass — names the same sender as the checked
+        # default's `pane:%N`, and is kept in that spelling, so one sender has
+        # one name in the record and a consumer grouping by sent_by does not
+        # split a coordinator in two (flock review, fix loop 1). Only `%` and
+        # digits, nothing else; it is not checked against the server, because
+        # a passed label is still a claim (docs/known-gaps.md) — only a claim
+        # spelled the one way.
+        case "$from" in
+          %[0-9]*) case "${from#%}" in *[!0-9]*) ;; *) from="pane:$from" ;; esac ;;
+        esac
+        # Drop "send", the flag and its label, then put the subcommand back,
+        # for the same reason as the two-word shift below.
+        shift 3
+        set -- send "$@"
+        continue
       fi
       # Drop "send" and the flag, then put the subcommand back so every
       # positional reference below keeps its original number.
       shift 2
       set -- send "$@"
     done
-    need_arg "${2:-}" "usage: roost send [--force] [--json] [SESSION:]WINDOW TEXT..."; raw="$2"; shift 2
+    need_arg "${2:-}" "usage: roost send [--force] [--json] [--from LABEL] [SESSION:]WINDOW TEXT..."; raw="$2"; shift 2
     tgt="$(target "$raw")"
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
     # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
@@ -1125,13 +1184,15 @@ JSON
       # describes, and a pane that submits nothing has no turn to start. --json
       # still prints a document, because a program that asked for one must get
       # one on every exit 0 — with turn null and started false, which is the
-      # honest answer rather than an absent one.
+      # honest answer rather than an absent one. sent_by is null for the same
+      # reason: no turn, so no turn to keep a label beside (#56).
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         roost_jsonout_emit send target s "$raw" \
           pane z "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" \
           turn i "" started b 0 \
           state z "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" \
+          sent_by z "" \
           || roost_jsonout_fail send
       fi
       exit 0
@@ -1730,6 +1791,56 @@ JSON
       fi
     fi
 
+    # WHO SENT IT (#56), kept beside the turn as `replies/NNNNNN.sent_by` —
+    # and only once there IS a turn to keep it beside. Everything above has
+    # just proved one began and named it; a send that exits 4 never reaches
+    # here, and a target with no number (not an agent, mid-turn, recording off,
+    # an errored turn) has nowhere to file a label, so none is filed and --json
+    # says null. The sidecar is written NOW, before the Stop hook writes the
+    # turn file, because now is when the number is known. If this turn then
+    # ends with no reply, nothing takes its number but the NEXT turn, and the
+    # hook drops this file as that turn starts (roost_record_drop_pending):
+    # the label never lands on a prompt this send did not send.
+    #
+    # The default label, when --from was not given, is decided from the two
+    # variables tmux gives every pane. `pane:%N` only when $TMUX names THIS
+    # server by pid and $TMUX_PANE is a pane it has: the same two checks
+    # `reply` makes before it trusts $TMUX_PANE, and for the same reason — the
+    # user's everyday tmux sets both variables too, and a %N from that server
+    # is a stranger's id over here. Anything less certain is `human`, which is
+    # what a send typed at a shell outside any pane is. One tmux call, and only
+    # on this path.
+    #
+    # The write fails soft: a record that cannot be written has never failed a
+    # send, and the sidecar is no exception. sent_by in the document names the
+    # label only when the file holds it.
+    sent_by=""
+    if [ -n "$turn_num" ] && [ -n "$turn_dir" ]; then
+      if [ "$from_given" -eq 0 ]; then
+        from=human
+        case "${TMUX_PANE:-}" in
+          %[0-9]*)
+            if [ -n "${TMUX:-}" ]; then
+              caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
+              if [ "$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}' 2>/dev/null || true)" = "$caller_pid $TMUX_PANE" ]; then
+                from="pane:$TMUX_PANE"
+              fi
+            fi ;;
+        esac
+      fi
+      # A record that does not exist yet (this is the pane's first turn) is
+      # created by the writer, and it files the socket path so that `forget
+      # --gone` can later ask the right server about it. Asked only in that
+      # case: every later send finds the directory and pays nothing.
+      sidecar_sock=""
+      if [ ! -d "$turn_dir" ]; then
+        sidecar_sock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+      fi
+      if roost_record_put_turn_field "$turn_dir" "$turn_num" sent_by "$from" "$sidecar_sock"; then
+        sent_by="$from"
+      fi
+    fi
+
     # One line on stdout, "%N TURN": the pane this prompt went into, and the
     # turn it started. Both fields or neither.
     #
@@ -1758,6 +1869,7 @@ JSON
         pane z "$turn_pane" \
         turn i "$turn_num" started b "$turn_started" \
         state z "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" \
+        sent_by z "$sent_by" \
         || roost_jsonout_fail send
       exit 0
     fi
@@ -1962,8 +2074,13 @@ JSON
         if [ "$RF_LIVE" = 1 ]; then
           json_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
         fi
+        # sent_by (#56): the label `send --from` kept beside this turn, from
+        # its `.sent_by` sidecar; null when the turn has none. Read only for
+        # --json, so the human mode's file reads are unchanged.
+        roost_record_get_turn_field "$RF_DIR" "$want" sent_by || true
         roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "$json_state" \
-          stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" || roost_jsonout_fail read
+          stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" \
+          sent_by z "$ROOST_RECORD_FIELD" || roost_jsonout_fail read
         exit 0
       fi
       if [ "$render" -eq 1 ]; then
@@ -1989,8 +2106,11 @@ JSON
                 echo "roost read: '$raw' is gone — this is its last recorded reply (turn $ROOST_RECORD_MAX)." >&2
                 if [ "$json" -eq 1 ]; then
                   . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+                  # The last kept turn's sent_by (#56), as on the --turn path.
+                  roost_record_get_turn_field "$RF_DIR" "$ROOST_RECORD_MAX" sent_by || true
                   roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "" \
-                    stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" || roost_jsonout_fail read
+                    stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" \
+                    sent_by z "$ROOST_RECORD_FIELD" || roost_jsonout_fail read
                   exit 0
                 fi
                 if [ "$render" -eq 1 ]; then
@@ -2107,8 +2227,17 @@ JSON
         if [ -z "$json_turn" ] && roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$tgt"; then
           json_text_kind=T
         fi
+        # sent_by (#56) belongs to the TURN, so it is read only when the pane
+        # value was matched to a kept turn above: a reply the pane holds that
+        # no turn file agrees with has no turn, and so no sender, to report.
+        json_sent_by=""
+        if [ -n "$json_turn" ]; then
+          roost_record_get_turn_field "$RF_DIR" "$json_turn" sent_by || true
+          json_sent_by="$ROOST_RECORD_FIELD"
+        fi
         roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
-          stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" || roost_jsonout_fail read
+          stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" \
+          sent_by z "$json_sent_by" || roost_jsonout_fail read
         exit 0
       fi
       # $lines is deliberately NOT applied. A recorded reply is returned whole:
@@ -2183,7 +2312,8 @@ JSON
       json_why=""
       if [ "$json_state" = "error" ]; then json_why="$why"; fi
       roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s screen state z "$json_state" \
-        stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail read
+        stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" \
+        sent_by z "" || roost_jsonout_fail read
       exit 0
     fi
     screen_dump "$tgt" "$lines"

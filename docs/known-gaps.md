@@ -1821,6 +1821,52 @@ last one, a keypress into the wrong screen.
   unusual things at once. What would close it: count the shell's child
   processes before deciding nothing is there.
 
+### Who sent a prompt (#56): what the `sent_by` sidecar does not cover
+
+`roost send` keeps who sent each prompt beside the turn it started, as
+`replies/NNNNNN.sent_by` in the pane's record: the `--from LABEL`, else
+`pane:%N` for a send from a pane on this server, else `human`. The label is
+written when the turn BEGINS, because that is when `send` knows the turn's
+number; the reply that becomes the turn file arrives when the turn ends.
+Three things follow, none of which changes what is pasted or whether a send
+succeeds.
+
+- **The first prompt into a fresh Claude pane keeps no label.** `send` only
+  watches for a turn, and so only numbers one, on a pane that wears a badge
+  (its own rule: no badge means not an agent). Claude's SessionStart hook
+  injects context and stamps nothing, so a pane straight from `roost spawn
+  claude` has no badge until its first prompt, and that prompt — a
+  coordinator's brief, usually — is not numbered and gets no sidecar. Every
+  later prompt does. Harnesses that start on a badge (opencode 2 at adapter
+  load, codex after an interrupt) keep the first one too, and
+  tests/test-send-turn.sh section 13a pins that path. Severity: low — one
+  known turn per Claude pane, always the first. What would close it: a
+  SessionStart stamp of `idle` from the Claude adapter (#141's session-start
+  signal is the natural place), after which `send` watches from the start.
+- **A turn that lives through an opencode retry loses its label.** A turn
+  that ends with no reply — an API error, an interrupt — is never recorded,
+  so the number `send` predicted goes to the next turn. Its label does not go
+  with it: scripts/roost-agent-state drops the pending sidecar when a NEW
+  turn starts (a stamp of `working` from done, idle, error or no badge),
+  before the badge moves, so a prompt typed by hand after a failed send reads
+  `sent_by: null` and never the coordinator's name. The one case that pays
+  for that rule: opencode's adapters stamp `error` on the third retry of a
+  turn that is still running, and `working` again when the retry goes on,
+  and from the hook that is a new turn. The label of a turn that survived a
+  retry is dropped — `null`, not a wrong name. Severity: low — one missing
+  label, only on opencode, only after a retry that then succeeded, and the
+  record never says anything false. What would close it: the opencode
+  adapters telling the hook a resume from a retry apart from a new turn,
+  which they cannot today without a turn id in the stamp.
+- **The label is a claim, not a proof.** `--from` takes any word; a sender
+  can say it is someone else. The default `pane:%N` is checked against the
+  server (the sending pane must exist here, and `$TMUX` must name this
+  server's pid), but a caller that passes `--from pane:%3` from %5 is
+  recorded as %3. Severity: low — the record is for a human's audit, and a
+  pane that lies in it is a pane the human already runs. What would close it:
+  nothing cheap; the envelope half of #56 can at least make the pasted text
+  carry the checked default beside the claimed one.
+
 ## Behaviour changes
 
 ### Replies are kept on disk, and `read` prints long ones whole (#42)
