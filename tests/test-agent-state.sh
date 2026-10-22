@@ -262,3 +262,218 @@ tmux -S "$ds" kill-server 2>/dev/null
 env TMUX="$ds,0,0" TMUX_PANE="$dpane" "$HERE/scripts/roost-agent-state" working
 assert_eq "$?" "0" "dead tmux server degrades, does not abort the hook"
 # deadsdir cleanup is handled by the top-of-file EXIT trap.
+
+# --- the subagent count (Phase 0 lane D) -------------------------------------
+# Claude's SubagentStart and SubagentStop, wired to `--subagent-hook start|stop`,
+# keep how many subagents a pane has running in @roost-subagents and their ids
+# in @roost-subagent-ids. They are a COUNT, never a badge: neither event may
+# touch @agent_state or @agent_since (the turn-over design, #97, decides what
+# background work does to the badge; this is not it). The payloads below are
+# the shape docs/airig/specs/2026-09-29-turn-over-design.md M10 measured on
+# Claude Code 2.1.307, with every id replaced by a fake of the same shape.
+if ! command -v python3 >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
+  printf '  SKIP: the subagent-count cases need python3 or jq to read a payload\n'
+else
+  subp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$subp" subp
+  sub() { # sub start|stop PAYLOAD -- the hook exactly as `roost hooks` wires it
+    env TMUX="$s,0,0" TMUX_PANE="$subp" "$HERE/scripts/roost-agent-state" --subagent-hook "$1" <<< "$2"
+  }
+  scount() { tmux -S "$s" show-options -pqv -t "$subp" @roost-subagents; }
+  sids()   { tmux -S "$s" show-options -pqv -t "$subp" @roost-subagent-ids; }
+  sstate() { tmux -S "$s" show-options -pqv -t "$subp" @agent_state; }
+  # sp EVENT AGENT_ID AGENT_TYPE -> a payload of that event's measured shape.
+  # SubagentStop carries everything Stop carries, including the subagent's own
+  # last_assistant_message and a background_tasks that still lists the agent
+  # as running (M10): the hook must take the id and the type and nothing else.
+  sp() {
+    case "$1" in
+      SubagentStart)
+        printf '{"session_id":"00000000-0000-4000-8000-000000000551","transcript_path":"/tmp/roost-fixture/00000000-0000-4000-8000-000000000551.jsonl","cwd":"/tmp/roost-fixture/proj","prompt_id":"00000000-0000-4000-8000-0000000005a1","agent_id":"%s","agent_type":"%s","hook_event_name":"SubagentStart"}' "$2" "$3" ;;
+      *)
+        printf '{"session_id":"00000000-0000-4000-8000-000000000551","transcript_path":"/tmp/roost-fixture/00000000-0000-4000-8000-000000000551.jsonl","cwd":"/tmp/roost-fixture/proj","prompt_id":"00000000-0000-4000-8000-0000000005a1","permission_mode":"default","agent_id":"%s","agent_type":"%s","effort":{"level":"medium"},"hook_event_name":"SubagentStop","stop_hook_active":false,"agent_transcript_path":"/tmp/roost-fixture/00000000-0000-4000-8000-000000000551/subagents/agent-%s.jsonl","last_assistant_message":"SUBPONG","background_tasks":[{"id":"%s","type":"subagent","status":"running","description":"rig agent","agent_type":"%s"}],"session_crons":[]}' "$2" "$3" "$2" "$2" "$3" ;;
+    esac
+  }
+  ID1=a0000000000000001; ID2=a0000000000000002; ID3=a0000000000000003
+
+  # Before anything: a hook that fell through into the state logic would label
+  # the pane "claude" and stamp a state. Neither may happen.
+  sub start "$(sp SubagentStart "$ID1" general-purpose)"; rc=$?
+  assert_eq "$rc" "0" "subagent start exits 0"
+  assert_eq "$(scount)" "1" "one SubagentStart -> @roost-subagents is 1"
+  assert_eq "$(sids)" "$ID1" "...and @roost-subagent-ids holds its id"
+  assert_eq "$(sstate)" "" "a subagent start on an unstamped pane stamps no state"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$subp" @roost-name)" "" \
+    "...and labels nothing: the hook exits before the state logic"
+
+  # Now with a badge on the pane that the subagent hooks must not touch.
+  # `blocked`, not `working`: a mutant that stamps working or done moves it, and
+  # the stamp's time is pinned too so a rewrite of the same value shows.
+  env TMUX="$s,0,0" TMUX_PANE="$subp" "$HERE/scripts/roost-agent-state" working
+  env TMUX="$s,0,0" TMUX_PANE="$subp" "$HERE/scripts/roost-agent-state" blocked
+  since0="$(tmux -S "$s" show-options -pqv -t "$subp" @agent_since)"
+  sleep 1
+  sub start "$(sp SubagentStart "$ID2" general-purpose)"
+  assert_eq "$(scount)" "2" "a second start -> 2"
+  assert_eq "$(sids)" "$ID1 $ID2" "...and both ids, in start order"
+  sub start "$(sp SubagentStart "$ID2" general-purpose)"
+  assert_eq "$(scount)" "2" "a repeated start for an id already running changes nothing"
+  assert_eq "$(sids)" "$ID1 $ID2" "...and does not list the id twice"
+  sub stop "$(sp SubagentStop "$ID1" general-purpose)"; rc=$?
+  assert_eq "$rc" "0" "subagent stop exits 0"
+  assert_eq "$(scount)" "1" "a stop -> 1"
+  assert_eq "$(sids)" "$ID2" "...and its id is gone from the list"
+  sub stop "$(sp SubagentStop a0000000000000099 general-purpose)"
+  assert_eq "$(scount)" "1" "a stop for an id never started changes nothing"
+  assert_eq "$(sids)" "$ID2" "...and the list is untouched"
+  # M4 / M10: the prompt-suggestion helper fork has agent_type "" and is not
+  # the user's work. Both events must ignore it.
+  sub start "$(sp SubagentStart a0000000000000077 "")"
+  assert_eq "$(scount)" "1" "a SubagentStart with an empty agent_type changes nothing"
+  assert_eq "$(sids)" "$ID2" "...and adds no id"
+  sub stop "$(sp SubagentStop "$ID2" "")"
+  assert_eq "$(scount)" "1" "a SubagentStop with an empty agent_type changes nothing, even for a running id"
+  assert_eq "$(sstate)" "blocked" "@agent_state is never written by a subagent start or stop"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$subp" @agent_since)" "$since0" \
+    "...and @agent_since is not rewritten either"
+  sub stop "$(sp SubagentStop "$ID2" general-purpose)"
+  assert_eq "$(scount)" "0" "the last stop -> 0, not unset: the pane has seen a subagent"
+  assert_eq "$(sids)" "" "...and the list is empty"
+  sub stop "$(sp SubagentStop "$ID2" general-purpose)"
+  assert_eq "$(scount)" "0" "a stop at 0 stays 0"
+
+  # Nothing from a payload reaches a tmux option unchecked: the id is 1-64 of
+  # [a-z0-9] or the event is ignored. A space or a `;` in the list would split
+  # the next format or command that reads it; an upper-case letter is refused
+  # too, because the ids Claude sends are lower-case hex and anything else is
+  # not an id this hook has seen.
+  for bad in 'a000 0000' 'a0;set-option' 'A0000000000000001' "$(printf 'a%.0s' $(seq 65))" '' 'a0000000000000001 '; do
+    sub start "$(sp SubagentStart "$bad" general-purpose)"
+    assert_eq "$(scount)" "0" "a SubagentStart whose agent_id is not an id changes nothing [${bad:0:20}]"
+  done
+  sub start 'not json at all'
+  assert_eq "$(scount)" "0" "a payload that is not JSON changes nothing"
+  sub start "$(sp SubagentStart "$ID3" 'general purpose; x')"
+  assert_eq "$(scount)" "1" "agent_type is only tested for emptiness: an odd one still counts"
+  assert_eq "$(sids)" "$ID3" "...and only the id is recorded"
+  sub bogus "$(sp SubagentStart "$ID1" general-purpose)"; rc=$?
+  assert_eq "$rc" "0" "--subagent-hook with an unknown word exits 0"
+  assert_eq "$(scount)" "1" "...and changes nothing"
+  sub stop "$(sp SubagentStop "$ID3" general-purpose)"
+
+  # The list is capped at 32 ids; the count keeps counting. A stop for an id
+  # that is not listed takes one off the count only while the count is above
+  # the list's length (so it must be one of the unlisted ones), and is ignored
+  # when the two agree (so a stop for an id never started stays a no-op).
+  capp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$capp" capp
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$capp" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+      <<< "$(sp SubagentStart "$(printf 'a0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  ccount() { tmux -S "$s" show-options -pqv -t "$capp" @roost-subagents; }
+  cids()   { tmux -S "$s" show-options -pqv -t "$capp" @roost-subagent-ids; }
+  assert_eq "$(ccount)" "33" "33 starts -> the count is 33"
+  assert_eq "$(cids | wc -w | tr -d ' ')" "32" "...and the id list holds 32"
+  case " $(cids) " in *" a000000000000033 "*) s33=listed ;; *) s33=unlisted ;; esac
+  assert_eq "$s33" "unlisted" "...the 33rd id is the one left out"
+  env TMUX="$s,0,0" TMUX_PANE="$capp" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+    <<< "$(sp SubagentStop a000000000000033 general-purpose)"
+  assert_eq "$(ccount)" "32" "a stop for the unlisted 33rd takes the count to 32"
+  assert_eq "$(cids | wc -w | tr -d ' ')" "32" "...and leaves the list alone"
+  env TMUX="$s,0,0" TMUX_PANE="$capp" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+    <<< "$(sp SubagentStop a000000000000099 general-purpose)"
+  assert_eq "$(ccount)" "32" "with count and list agreeing, a stop for an unknown id changes nothing"
+  env TMUX="$s,0,0" TMUX_PANE="$capp" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+    <<< "$(sp SubagentStop a000000000000001 general-purpose)"
+  assert_eq "$(ccount)" "31" "a stop for a listed id -> 31"
+  assert_eq "$(cids | wc -w | tr -d ' ')" "31" "...and 31 listed"
+
+  # Three Agent calls in one message fire three SubagentStart 0.2 ms apart
+  # (M10), so the update has to happen inside tmux, in one command, or the
+  # three read the same value and two increments are lost. 12 starts at once
+  # from a clean pane must land on 12, every time.
+  parp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$parp" parp
+  i=1
+  while [ "$i" -le 12 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$parp" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+      <<< "$(sp SubagentStart "$(printf 'b0000000000000%02d' "$i")" general-purpose)" &
+    i=$((i+1))
+  done
+  wait
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$parp" @roost-subagents)" "12" \
+    "12 concurrent starts count 12: the increment happens inside tmux, not in the hook"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$parp" @roost-subagent-ids | wc -w | tr -d ' ')" "12" \
+    "...and all 12 ids are listed"
+  i=1
+  while [ "$i" -le 12 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$parp" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+      <<< "$(sp SubagentStop "$(printf 'b0000000000000%02d' "$i")" general-purpose)" &
+    i=$((i+1))
+  done
+  wait
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$parp" @roost-subagents)" "0" \
+    "12 concurrent stops bring it back to 0"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$parp" @roost-subagent-ids)" "" \
+    "...with an empty list"
+
+  # Past the cap the count is a limit, not a promise, and this pins the limit
+  # exactly as docs/known-gaps.md ("Past 32 subagents at once...") states it,
+  # so a future fix has to change these lines on purpose. From the 33rd agent
+  # running at once the hook cannot tell an unlisted running agent from an id
+  # it never saw: a stop for an unknown id counts one down, and stopping the
+  # 32 listed ids reads 0 while the 33rd is still running. The third documented
+  # case, a few more than 32 listed under concurrent starts, is a race and is
+  # not pinned. The algorithm is unchanged by this test; only the edge is.
+  edgep="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$edgep" edgep
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$edgep" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+      <<< "$(sp SubagentStart "$(printf 'c0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  ecount() { tmux -S "$s" show-options -pqv -t "$edgep" @roost-subagents; }
+  eids()   { tmux -S "$s" show-options -pqv -t "$edgep" @roost-subagent-ids; }
+  assert_eq "$(ecount)" "33" "past the cap: 33 starts -> 33 counted"
+  assert_eq "$(eids | wc -w | tr -d ' ')" "32" "past the cap: ...32 listed, the 33rd is not"
+  env TMUX="$s,0,0" TMUX_PANE="$edgep" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+    <<< "$(sp SubagentStop c000000000000099 general-purpose)"
+  assert_eq "$(ecount)" "32" \
+    "past the cap: a stop for an id never started counts one down (documented limit, not a promise)"
+  assert_eq "$(eids | wc -w | tr -d ' ')" "32" "past the cap: ...and the list is untouched"
+  i=1
+  while [ "$i" -le 32 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$edgep" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+      <<< "$(sp SubagentStop "$(printf 'c0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  assert_eq "$(ecount)" "0" \
+    "past the cap: stopping the 32 listed reads 0 while the 33rd still runs (documented limit)"
+  assert_eq "$(eids)" "" "past the cap: ...with an empty list, the 33rd never in it"
+  # The second documented case: a repeated start of the unlisted 33rd counts
+  # again, so 33 agents read 34, and stopping all 33 leaves a ghost 1.
+  repp="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' 'sh -c "while :; do sleep 5; done"')"
+  require_pane "$repp" repp
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$repp" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+      <<< "$(sp SubagentStart "$(printf 'd0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  env TMUX="$s,0,0" TMUX_PANE="$repp" "$HERE/scripts/roost-agent-state" --subagent-hook start \
+    <<< "$(sp SubagentStart d000000000000033 general-purpose)"
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$repp" @roost-subagents)" "34" \
+    "past the cap: a repeated start of the unlisted 33rd counts again (documented limit)"
+  i=1
+  while [ "$i" -le 33 ]; do
+    env TMUX="$s,0,0" TMUX_PANE="$repp" "$HERE/scripts/roost-agent-state" --subagent-hook stop \
+      <<< "$(sp SubagentStop "$(printf 'd0000000000000%02d' "$i")" general-purpose)"
+    i=$((i+1))
+  done
+  assert_eq "$(tmux -S "$s" show-options -pqv -t "$repp" @roost-subagents)" "1" \
+    "past the cap: ...and stopping all 33 leaves a ghost 1 (documented limit)"
+fi

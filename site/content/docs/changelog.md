@@ -35,6 +35,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
   The first prompt into a fresh Claude pane keeps no label: it has no badge
   yet, so `send` does not number that turn. Nothing to do to get it.
 
+- **`roost status --json` says how many subagents a Claude pane is running.**
+  Each pane carries `subagents`: the number of subagents its agent has out
+  right now, `0` once they have all finished, and `null` for a pane that has
+  never run one — which is every pane of every other harness, since only
+  Claude Code reports it. Two Claude hooks keep the count on the pane,
+  `SubagentStart` and `SubagentStop`; `roost install` wires them, and `roost
+  hooks` prints them. Neither changes a badge: a pane with helpers out reads
+  whatever its own turn reads, as before. Three subagents started in one
+  message are counted as three — the count is changed inside tmux, not read
+  and written back by each hook. Run `roost install` again on a machine wired
+  before this, or the field stays `null` there.
+
 - **`roost close`: end one agent and close its pane** (#143). roost could open
   an agent and could not close one: `roost kill` takes a session or the whole
   server, so ending a single agent meant `tmux kill-pane` by hand, which kills

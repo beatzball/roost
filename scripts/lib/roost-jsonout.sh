@@ -415,7 +415,7 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
-  local -a p_sid p_cwd p_harness p_tr
+  local -a p_sid p_cwd p_harness p_tr p_sub
   local ns=0 np=0 j
   case "$_SOCKET_FLAG" in -L) kind=name ;; esac
   strs=(status "$SOCKET" "$kind")
@@ -457,8 +457,13 @@ roost_jsonout_status() {
   # the second is "<stamp> <path>", owned by the dialog hooks and removed after
   # every declined dialog (scripts/lib/roost-identity.sh's header says why the
   # two cannot be one option).
+  #
+  # Then @roost-subagents, the count Claude's SubagentStart and SubagentStop
+  # keep (scripts/roost-agent-state, --subagent-hook). It rides in the same
+  # list-panes call as the rest: a fifteenth field costs nothing, and a second
+  # call would read the pane at a different instant from its state.
   trusted=0
-  roost_jsonout_list 14 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 15 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -480,6 +485,7 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[11]="$(t display-message -p -t "$id" '#{@roost-cwd}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[12]="$(t display-message -p -t "$id" '#{@roost-harness}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[13]="$(t display-message -p -t "$id" '#{@roost-transcript-path}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[14]="$(t display-message -p -t "$id" '#{@roost-subagents}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
@@ -487,6 +493,7 @@ roost_jsonout_status() {
     p_name[np]="${ROOST_JSONOUT_F[9]}"
     p_sid[np]="${ROOST_JSONOUT_F[10]}"; p_cwd[np]="${ROOST_JSONOUT_F[11]}"
     p_harness[np]="${ROOST_JSONOUT_F[12]}"; p_tr[np]="${ROOST_JSONOUT_F[13]}"
+    p_sub[np]="${ROOST_JSONOUT_F[14]}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -529,7 +536,17 @@ roost_jsonout_status() {
     if [ -n "${p_sid[k]}" ]; then doc="$doc,\"session_id\":${ROOST_JSONOUT_STR[j + 7]}"; else doc="$doc,\"session_id\":null"; fi
     if [ -n "${p_cwd[k]}" ]; then doc="$doc,\"cwd\":${ROOST_JSONOUT_STR[j + 8]}"; else doc="$doc,\"cwd\":null"; fi
     if [ -n "${p_harness[k]}" ]; then doc="$doc,\"harness\":${ROOST_JSONOUT_STR[j + 9]}"; else doc="$doc,\"harness\":null"; fi
-    if [ -n "${p_tr[k]}" ]; then doc="$doc,\"transcript\":${ROOST_JSONOUT_STR[j + 10]}}"; else doc="$doc,\"transcript\":null}"; fi
+    if [ -n "${p_tr[k]}" ]; then doc="$doc,\"transcript\":${ROOST_JSONOUT_STR[j + 10]}"; else doc="$doc,\"transcript\":null"; fi
+    # How many subagents a Claude pane is running (Phase 0 lane D): an integer,
+    # 0 once every subagent has stopped, and null for a pane that has never
+    # seen a subagent event -- which is every pane of every other harness,
+    # since only Claude's hooks keep the count. Through roost_jsonout_int like
+    # `since`, so a value that is not a plain integer is null rather than
+    # invalid JSON. Additive under the schema-1 rule. It is a count, not a
+    # badge: `state` says whether the agent is busy, this says how many
+    # helpers it has out, and the turn-over design (#97) owns the relation
+    # between the two.
+    roost_jsonout_int "${p_sub[k]}"; doc="$doc,\"subagents\":$ROOST_JSONOUT_INT}"
     j=$((j + 11)); sep=","; k=$((k + 1))
   done
   printf '%s]}\n' "$doc"
