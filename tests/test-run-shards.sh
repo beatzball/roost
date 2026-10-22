@@ -163,8 +163,11 @@ assert_eq "$clean" "1" "the shard holding only the healthy file still exits 0"
 # nothing, would look like a green job.
 # `1/2/3` and `1/4/4` are the two that once got through: a combined pattern
 # took "2/3" for n, the `-gt` errored instead of refusing, and the run was a
-# green nothing. Each half is checked on its own now.
-for bad in 4 0/4 5/4 a/b 1/ /4 1//4 1/2/3 1/4/4 2/2/3; do
+# green nothing. Each half is checked on its own now. The three wide numbers
+# are the same escape by another door: all digits, but wider than the
+# integer `[` reads, so every comparison errored and the run was green again.
+for bad in 4 0/4 5/4 a/b 1/ /4 1//4 1/2/3 1/4/4 2/2/3 \
+           1/9223372036854775808 99999999999999999999/4 1/99999999999999999999; do
   out="$(cd "$fixdir" && SHARD="$bad" bash run.sh 2>&1)"; rc=$?
   assert_eq "$rc" "2" "SHARD=$bad is refused with exit 2"
   printf '%s' "$out" | grep -q '== test-'; [ $? -ne 0 ]

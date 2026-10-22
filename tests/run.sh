@@ -109,6 +109,13 @@ if [ -n "${SHARD:-}" ]; then
   case "$SHARD" in */*) ;; *) shard_k="" ;; esac
   case "$shard_k" in ""|*[!0-9]*) shard_k="" ;; esac
   case "$shard_n" in ""|*[!0-9]*) shard_k="" ;; esac
+  # Width too, not just digits: a value wider than the integer `[` can read
+  # (SHARD=1/9223372036854775808) passes the all-digits check and then makes
+  # every -lt/-gt/-ge below error out — false, not a refusal — the empty-shard
+  # guard included, so zero files ran and the exit was 0. Seven or more
+  # digits is refused; nobody has a million shards.
+  case "$shard_k" in ???????*) shard_k="" ;; esac
+  case "$shard_n" in ???????*) shard_k="" ;; esac
   if [ -z "$shard_k" ] || [ "$shard_k" -lt 1 ] || [ "$shard_k" -gt "$shard_n" ]; then
     printf 'RUNNER: SHARD must be k/n with 1 <= k <= n, got [%s]\n' "$SHARD" >&2
     exit 2
