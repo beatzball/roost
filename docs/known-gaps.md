@@ -2277,12 +2277,16 @@ has already produced a real bug here.
   rewrite is the one install already makes for a gone copy. What closes it:
   strip a leading interpreter word before the existence test.
 
-- **A gone copy's hook and a live third copy's hook in one settings file can
-  give the claude consent line the codex wording.** The two copies report
-  different states for the same file, and the wording follows one of them.
-  Severity: cosmetic; the plan and the writes are right, only the words
-  on the consent line are. What closes it: choose the wording from every
-  state the file reported.
+- **A gone copy's hook and a live third copy's hook in one settings file give
+  the refusal the codex reason.** When the first roost command found is the
+  gone copy's, install reports the "Will NOT edit" reason that explains why a
+  codex handler is never rewritten (it would re-hash it and silently
+  un-badge the machine), whichever harness the file belongs to. From a plain
+  checkout the whole file is then refused and left untouched, so no takeover
+  happens. Severity: low; a conservative refusal that writes nothing, with
+  the wrong reason text. What closes it: pick the reason from every command
+  the file holds, not the first, and let a claude file with a live third copy
+  go through the relink path.
 
 - **The hook probes derive the script names from the patch; the merge engines
   take them from the given script list.** Today both name the same two
@@ -2295,8 +2299,9 @@ has already produced a real bug here.
   root.** `chmod 555` does not stop root from writing, and the Ubuntu
   container runs the suite as root, so the failed-relink branch is proven only
   on a developer machine. Severity: low; a Mac run covers it before a pull
-  request. What closes it: a way to make the write fail that root cannot
-  ignore, such as a path whose parent is a file.
+  request. What closes it: still open. Running that one case as a non-root
+  user in the container might work; it has not been tried, and making the
+  parent immutable needs capabilities the container may not grant.
 - The executable bit on `tests/test-*.sh` is split with nothing distinguishing
   the two groups: 11 files at mode 644 and 16 at 755, re-measured with
   `git ls-files -s tests/test-*.sh | grep -c '^100644'` (and `100755`) at
