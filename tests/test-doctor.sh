@@ -385,13 +385,57 @@ assert_contains "$l" "dangling" "opencode 2, dangling adapter link: doctor says 
 assert_contains "$l" "rm \"$ocdir/opencode/plugins/roost\" && ln -s \"$HERE/adapters/opencode/v2\"" "opencode 2, dangling adapter link: the fix removes it, then links"
 rm "$ocdir/opencode/plugins/roost"
 
+# A link to ANOTHER copy of roost (a second checkout) is named as one, and
+# every relink line carries the command. The control is a link to a stranger's
+# directory, which gets "look at it first" instead of an offer of roost install.
+co2="$(mktemp -d /tmp/amx.XXXX)"
+cp -R "$HERE/adapters" "$co2/"
+stranger="$(mktemp -d /tmp/amx.XXXX)"
+P="$ocdir/opencode/plugins/roost"
+ln -s "$co2/adapters/opencode/v2" "$P"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
+assert_contains "$l" "points at another copy of roost" "opencode 2, other checkout: doctor names it"
+assert_contains "$l" "$co2/adapters/opencode/v2" "opencode 2, other checkout: the line shows where the link points"
+assert_contains "$l" "rm \"$P\" && ln -s \"$HERE/adapters/opencode/v2\" \"$P\"" "opencode 2, other checkout: the exact relink command is printed"
+rm "$P"
+ln -s "$stranger" "$P"
+out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
+assert_contains "$l" "is not this install" "opencode 2, stranger's link: doctor says it is not this install"
+assert_eq "$(oc_has "$l" "another copy of roost")" "no" "opencode 2, stranger's link: it is not called another copy of roost"
+assert_contains "$l" "rm \"$P\" && ln -s \"$HERE/adapters/opencode/v2\" \"$P\"" "opencode 2, stranger's link: the same relink command is printed"
+rm "$P"
+
+# The same pair for a file-shaped adapter, pi.
+pihome2="$(mktemp -d /tmp/amx.XXXX)"
+pishim="$(mktemp -d /tmp/amx.XXXX)"
+printf '#!/bin/sh\nexit 0\n' > "$pishim/pi"; chmod +x "$pishim/pi"
+P="$pihome2/.pi/agent/extensions/roost.ts"
+mkdir -p "$(dirname "$P")"
+ln -s "$co2/adapters/pi/roost.ts" "$P"
+out="$(run_doctor "$pihome2" COLORTERM=truecolor PATH="$pishim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'pi extension at')"
+assert_contains "$l" "points at another copy of roost" "pi, other checkout: doctor names it"
+assert_contains "$l" "$co2/adapters/pi/roost.ts" "pi, other checkout: the line shows where the link points"
+assert_contains "$l" "rm \"$P\" && ln -s \"$HERE/adapters/pi/roost.ts\" \"$P\"" "pi, other checkout: the exact relink command is printed"
+rm "$P"
+printf 'x\n' > "$stranger/roost.ts"
+ln -s "$stranger/roost.ts" "$P"
+out="$(run_doctor "$pihome2" COLORTERM=truecolor PATH="$pishim:$PATH" 2>&1)"
+l="$(printf '%s\n' "$out" | grep 'pi extension at')"
+assert_contains "$l" "is not this install" "pi, stranger's link: doctor says it is not this install"
+assert_eq "$(oc_has "$l" "another copy of roost")" "no" "pi, stranger's link: it is not called another copy of roost"
+assert_contains "$l" "rm \"$P\" && ln -s \"$HERE/adapters/pi/roost.ts\" \"$P\"" "pi, stranger's link: the same relink command is printed"
+rm -rf "$pihome2" "$pishim" "$co2" "$stranger"
+
 # A real directory at the path -- the user's own plugin, or a copy -- is not
 # this install, and doctor names where it should point rather than deleting.
 mkdir "$ocdir/opencode/plugins/roost"
 out="$(run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" 2>&1)"
 l="$(printf '%s\n' "$out" | grep 'opencode 2 plugin')"
 assert_contains "$l" "not this install" "opencode 2, a real directory at the adapter path: not this install"
-assert_contains "$l" "relink it to $HERE/adapters/opencode/v2" "opencode 2, a real directory at the adapter path: doctor names the target"
+assert_contains "$l" "ln -s \"$HERE/adapters/opencode/v2\" \"$ocdir/opencode/plugins/roost\"" "opencode 2, a real directory at the adapter path: doctor names the target"
 run_doctor "$EMPTY" COLORTERM=truecolor XDG_CONFIG_HOME="$ocdir" PATH="$oc2shim:$PATH" >/dev/null 2>&1
 assert_eq "$?" "0" "opencode 2, not this install: a warning, doctor's exit code is unchanged"
 rmdir "$ocdir/opencode/plugins/roost" "$ocdir/opencode/plugins"

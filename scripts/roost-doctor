@@ -490,8 +490,10 @@ if [ "$oc_v2" = 1 ]; then
       # plugins/ (plural) is new in 2.x and usually does not exist yet, hence
       # the mkdir -p.
       warn "opencode $ocver found, roost's opencode 2 plugin not installed — run: mkdir -p \"$(dirname "$oc2plug")\" && ln -s \"$oc2want\" \"$oc2plug\", or run: roost install" ;;
+    other-checkout)
+      warn "opencode 2 plugin at $oc2plug points at another copy of roost, $(readlink "$oc2plug") — run: roost install, or: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\"" ;;
     *)
-      warn "opencode 2 plugin at $oc2plug is not this install — relink it to $oc2want" ;;
+      warn "opencode 2 plugin at $oc2plug is not this install — look at it first, then relink it: rm \"$oc2plug\" && ln -s \"$oc2want\" \"$oc2plug\"" ;;
   esac
   # The one that matters (#154). roost's wiring exports OPENCODE_CONFIG_DIR to
   # every pane, and opencode 2 reads that directory INSTEAD of the user's own —
@@ -547,7 +549,15 @@ elif command -v opencode >/dev/null 2>&1; then
   elif [ "$ocplug" -ef "$ocwant" ]; then
     ok "opencode plugin linked"
   else
-    warn "opencode plugin at $ocplug is not this install — relink it to $ocwant"
+    # The state says whether this is a stranger's file or another copy of
+    # roost; the advice differs, and only the second is safe to hand to
+    # `roost install`.
+    case "$(roost_adapter_state opencode)" in
+      other-checkout)
+        warn "opencode plugin at $ocplug points at another copy of roost, $(readlink "$ocplug") — run: roost install, or: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\"" ;;
+      *)
+        warn "opencode plugin at $ocplug is not this install — look at it first, then relink it: rm \"$ocplug\" && ln -s \"$ocwant\" \"$ocplug\"" ;;
+    esac
   fi
 fi
 
@@ -565,7 +575,15 @@ if command -v copilot >/dev/null 2>&1; then
   elif [ "$cpext" -ef "$cpwant" ]; then
     ok "copilot extension linked"
   else
-    warn "copilot extension at $cpext is not this install — relink it to $cpwant"
+    # The state says whether this is a stranger's file or another copy of
+    # roost; the advice differs, and only the second is safe to hand to
+    # `roost install`.
+    case "$(roost_adapter_state copilot)" in
+      other-checkout)
+        warn "copilot extension at $cpext points at another copy of roost, $(readlink "$cpext") — run: roost install, or: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\"" ;;
+      *)
+        warn "copilot extension at $cpext is not this install — look at it first, then relink it: rm \"$cpext\" && ln -s \"$cpwant\" \"$cpext\"" ;;
+    esac
   fi
 
   # "The extension is installed" and "the extension will run" are different
@@ -613,7 +631,15 @@ if command -v pi >/dev/null 2>&1; then
   elif [ "$piext" -ef "$piwant" ]; then
     ok "pi extension linked"
   else
-    warn "pi extension at $piext is not this install — relink it to $piwant"
+    # The state says whether this is a stranger's file or another copy of
+    # roost; the advice differs, and only the second is safe to hand to
+    # `roost install`.
+    case "$(roost_adapter_state pi)" in
+      other-checkout)
+        warn "pi extension at $piext points at another copy of roost, $(readlink "$piext") — run: roost install, or: rm \"$piext\" && ln -s \"$piwant\" \"$piext\"" ;;
+      *)
+        warn "pi extension at $piext is not this install — look at it first, then relink it: rm \"$piext\" && ln -s \"$piwant\" \"$piext\"" ;;
+    esac
   fi
 
   # "The extension is installed" and "the badges will be complete" are different
