@@ -79,7 +79,7 @@ run_upgrade() {
 # seed_commit VERSION [FILE] -> pushes one commit to origin from the seed and
 # prints its sha. The fake installer becomes installer-VERSION.
 seed_commit() {
-  fake_installer "$1" > "$seed/scripts/roost-install"
+  fake_installer "$1" > "$seed/scripts/roost-install"; chmod +x "$seed/scripts/roost-install"
   [ -n "${2:-}" ] && printf 'new\n' > "$seed/$2"
   G -C "$seed" add -A; G -C "$seed" commit -qm "$1"
   G -C "$seed" push -q origin main
@@ -123,6 +123,7 @@ run_upgrade --yes
 assert_eq "$RC" "0" "current: rc 0"
 assert_contains "$OUT" "— already current with origin/main" "current: the line says already current"
 assert_eq "$(( $(wc -l < "$LOG") - lines_before ))" "1" "current: the installer still ran once"
+assert_eq "$(tail -n 1 "$LOG")" "installer-v2 --yes" "current: the line it added is the current installer's, with --yes"
 
 # --- the refusals ---------------------------------------------------------------
 # No-fetch proof, three ways, because one alone can be silenced. Before each
@@ -259,6 +260,34 @@ assert_contains "$ERR" "roost upgrade: git pull --ff-only failed — nothing was
 assert_contains "$OUT" "1 commit(s) behind origin/main" "pull fails: the upgrading line was printed first"
 assert_eq "$(cat "$LOG")" "$log_before" "pull fails: no installer ran"
 assert_eq "$(G -C "$clone" rev-parse HEAD)" "$sha" "pull fails: HEAD did not move"
+
+# --- a GIT_INDEX_FILE inherited from elsewhere is ignored ----------------------
+# Pointed at another repository's index, it would make the clean clone look
+# dirty to `git status` (a refusal for the wrong reason) or, worse, steer the
+# pull's checkout. The script unsets every variable git calls repo-local.
+reset_clone
+new="$(seed_commit v7)"; G -C "$clone" fetch -q origin
+OUT="$(GIT_INDEX_FILE="$outer/.git/index" bash "$clone/scripts/roost-upgrade" --yes 2>"$TMP/err")"; RC=$?
+ERR="$(cat "$TMP/err")"
+assert_eq "$RC" "0" "inherited GIT_INDEX_FILE: rc 0 (no refusal for the wrong reason)"
+assert_eq "$ERR" "" "inherited GIT_INDEX_FILE: nothing on stderr"
+assert_eq "$(G -C "$clone" rev-parse HEAD)" "$new" "inherited GIT_INDEX_FILE: the pull happened"
+assert_eq "$(G -C "$clone" status --porcelain)" "" "inherited GIT_INDEX_FILE: the clone's own index is clean after"
+assert_eq "$(tail -n 1 "$LOG")" "installer-v7 --yes" "inherited GIT_INDEX_FILE: the installer ran"
+
+# --- the pull removed the installer: say so, wire nothing ---------------------
+reset_clone
+G -C "$seed" rm -q scripts/roost-install; G -C "$seed" commit -qm "no installer"
+G -C "$seed" push -q origin main
+gone="$(G -C "$seed" rev-parse HEAD)"; G -C "$clone" fetch -q origin
+log_before="$(cat "$LOG")"
+run_upgrade --yes
+assert_eq "$RC" "1" "installer gone after the pull: rc 1"
+assert_contains "$ERR" "roost upgrade: the pull succeeded but $clone/scripts/roost-install is missing — nothing was wired" \
+  "installer gone after the pull: the line names the missing file"
+assert_eq "$(G -C "$clone" rev-parse HEAD)" "$gone" "installer gone after the pull: HEAD moved (it did pull)"
+assert_eq "$(cat "$LOG")" "$log_before" "installer gone after the pull: no installer ran"
+seed_commit v8 >/dev/null   # puts the fake installer back for the cases below
 
 # --- --dry-run passes through, and the pull is NOT dry -------------------------
 reset_clone

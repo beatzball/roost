@@ -36,10 +36,16 @@ main() {
   # roost_checkout_is_worktree — the same answer the installer uses.
   . "$HERE/scripts/lib/roost-adapters.sh"
 
-  # A GIT_DIR or GIT_WORK_TREE inherited from the caller's shell would point
-  # every `git -C "$HERE"` below at a different repository, and the pull with
-  # it. This command is about $HERE and nothing else.
+  # A GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE or any other repo-local variable
+  # inherited from the caller's shell would point every `git -C "$HERE"`
+  # below at a different repository or index, and the pull with it. This
+  # command is about $HERE and nothing else. git names the full set itself;
+  # the explicit two cover a machine with no git, where the gate refuses.
   unset GIT_DIR GIT_WORK_TREE
+  if command -v git >/dev/null 2>&1; then
+    # shellcheck disable=SC2046 # one variable name per line, none with spaces
+    unset $(git rev-parse --local-env-vars)
+  fi
 
   local a
   for a in "$@"; do
@@ -82,6 +88,15 @@ main() {
   # upgrade over a machine that was not upgraded.
   if ! git -C "$HERE" pull --ff-only --quiet; then
     printf 'roost upgrade: git pull --ff-only failed — nothing was wired\n' >&2
+    return 1
+  fi
+
+  # A release that moved or dropped the installer must not end in a bare
+  # "No such file" from exec: the pull did happen, and the user needs to know
+  # that nothing after it did.
+  if [ ! -x "$HERE/scripts/roost-install" ]; then
+    printf 'roost upgrade: the pull succeeded but %s is missing — nothing was wired\n' \
+      "$HERE/scripts/roost-install" >&2
     return 1
   fi
 
