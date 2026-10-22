@@ -41,10 +41,16 @@ main() {
   # below at a different repository or index, and the pull with it. This
   # command is about $HERE and nothing else. git names the full set itself;
   # the explicit two cover a machine with no git, where the gate refuses.
+  #
+  # Two on git's list are kept: GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT
+  # carry `git -c` settings through the environment — a proxy, say, set by a
+  # wrapper — and they name no repository, so the pull should still see them.
   unset GIT_DIR GIT_WORK_TREE
   if command -v git >/dev/null 2>&1; then
-    # shellcheck disable=SC2046 # one variable name per line, none with spaces
-    unset $(git rev-parse --local-env-vars)
+    local v
+    for v in $(git rev-parse --local-env-vars); do
+      case "$v" in GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT) ;; *) unset "$v" ;; esac
+    done
   fi
 
   local a
@@ -100,7 +106,7 @@ main() {
     return 1
   fi
 
-  reapply_wiring "$HERE"
+  reapply_wiring "$HERE" "$@"
 
   # An exec of the PATH, not a function sourced from it: the file on disk is
   # now the installer the pull fetched, so a release that adds an adapter
@@ -181,27 +187,68 @@ refuse() {
   printf '  curl -fsSL https://raw.githubusercontent.com/beatzball/roost/main/install.sh | sh\n' >&2
 }
 
-# reapply_wiring HERE — run the NEW checkout's `roost wiring apply` on a
-# roost server that is already running, the step a starting server takes in
+# reapply_wiring HERE ARGS... — run the NEW checkout's `roost wiring apply` on
+# a roost server that is already running, the step a starting server takes in
 # bin/roost's ensure_session. A server started before the upgrade keeps the
 # environment it was wired with; for opencode 2 that is an OPENCODE_CONFIG_DIR
 # that replaces the user's own configuration in every new pane (#154), and
 # apply is what takes it away. Without this, the upgrade needs a second step.
 #
 # The socket is the one roost-wiring itself reads: $ROOST_SOCKET, default
-# `roost`, a path when it holds a `/`. No server there means nothing to do,
-# silently: it applies wiring when it starts. A failed apply is reported and
-# never fatal — the code is pulled, and the installer still has to run.
+# `roost`, a path when it holds a `/`. Each line it prints says what really
+# happened, because `apply` exits 0 in every case where it does nothing:
+#   - no server, or one whose socket path does not end in /roost (not roost's,
+#     and roost-wiring will not touch it): nothing to say. A server that is
+#     not running applies wiring when it starts.
+#   - --dry-run: skipped and said so. The installer's dry run ends with
+#     "nothing above was written", which apply would make false.
+#   - a server started from ANOTHER checkout: skipped and said so. apply would
+#     re-point default-command and ROOST_WIRING_DIR at this checkout while the
+#     server's ROOST_HOME and PATH stay the other's — a mixed server, the very
+#     thing roost-wiring's one-directory-per-checkout rule exists to prevent.
+#     A server that recorded no home was not started by bin/roost, which
+#     always records one; it is wired as roost-wiring would wire it.
+#   - wiring off on that server (`wiring.off`, or @roost-wiring-enabled off):
+#     apply does nothing, and the line says wiring is off, not "re-applied".
+# A failed apply is reported and never fatal: the code is pulled, and the
+# installer still has to run.
 reapply_wiring() {
-  local here="$1" sock flag
+  local here="$1" sock flag a home
+  shift
   sock="${ROOST_SOCKET:-roost}"
   case "$sock" in */*) flag="-S" ;; *) flag="-L" ;; esac
   command -v tmux >/dev/null 2>&1 || return 0
   tmux "$flag" "$sock" list-sessions >/dev/null 2>&1 || return 0
-  if ROOST_SOCKET="$sock" "$here/scripts/roost-wiring" apply; then
+  case "$(tmux "$flag" "$sock" display-message -p '#{socket_path}' 2>/dev/null)" in
+    */roost) : ;;
+    *) return 0 ;;
+  esac
+
+  for a in "$@"; do
+    if [ "$a" = --dry-run ]; then
+      printf '(--dry-run: wiring not re-applied)\n'
+      return 0
+    fi
+  done
+
+  # bin/roost records the home both ways; the option is read first because
+  # the global environment also carries whatever the first client exported.
+  home="$(tmux "$flag" "$sock" show-options -gqv @roost-home 2>/dev/null || true)"
+  if [ -z "$home" ]; then
+    home="$(tmux "$flag" "$sock" show-environment -g ROOST_HOME 2>/dev/null || true)"
+    case "$home" in ROOST_HOME=*) home="${home#ROOST_HOME=}" ;; *) home="" ;; esac
+  fi
+  if [ -n "$home" ] && [ "$(cd -P "$home" 2>/dev/null && pwd)" != "$here" ]; then
+    printf 'roost: the running server was started from %s, not this checkout; wiring not re-applied\n' "$home"
+    return 0
+  fi
+
+  if ! ROOST_SOCKET="$sock" "$here/scripts/roost-wiring" apply; then
+    printf 'roost: wiring could not be re-applied (roost doctor says more)\n' >&2
+  elif [ "$(tmux "$flag" "$sock" show-options -gqv @roost-wiring-active 2>/dev/null)" = on ]; then
     printf 'roost: wiring re-applied on the running server\n'
   else
-    printf 'roost: wiring could not be re-applied (roost doctor says more)\n' >&2
+    printf 'roost: wiring is off on the running server; not re-applied (roost wiring on turns it on)\n'
   fi
 }
 

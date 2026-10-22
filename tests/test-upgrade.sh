@@ -27,7 +27,7 @@ export TMUX_TMPDIR="$SOCKDIR/tmpdir"; mkdir -p "$TMUX_TMPDIR"
 roost_test_tmux_named_guard
 unset TMUX TMUX_PANE ROOST_SOCKET ROOST_SELF_SOCK OPENCODE_CONFIG_DIR
 UPG_SOCK="$SOCKDIR/roost"
-trap 'tmux -S "$UPG_SOCK" kill-server 2>/dev/null; rm -rf "$TMP" "$SOCKDIR"' EXIT
+trap 'tmux -S "$UPG_SOCK" kill-server 2>/dev/null; tmux -S "$SOCKDIR/notroost" kill-server 2>/dev/null; rm -rf "$TMP" "$SOCKDIR"' EXIT
 
 # --- the sandbox canary -----------------------------------------------------
 # Every variable an installer can be steered by, exported at one directory
@@ -278,6 +278,15 @@ assert_contains "$OUT" "1 commit(s) behind origin/main" "pull fails: the upgradi
 assert_eq "$(cat "$LOG")" "$log_before" "pull fails: no installer ran"
 assert_eq "$(G -C "$clone" rev-parse HEAD)" "$sha" "pull fails: HEAD did not move"
 
+# --- configuration passed through the environment still reaches git --------------
+# GIT_CONFIG_PARAMETERS is how `git -c` (and a proxy set by a wrapper) travels
+# in the environment; it is kept on purpose. core.abbrev=12 is the observable:
+# the upgrading line's short sha is 12 characters only if it got through.
+reset_clone
+ALL="$(GIT_CONFIG_PARAMETERS="'core.abbrev=12'" bash "$clone/scripts/roost-upgrade" --yes 2>&1)"
+sha12="$(G -C "$clone" rev-parse HEAD | cut -c1-12)"
+assert_contains "$ALL" "from $sha12 (" "GIT_CONFIG_PARAMETERS survives: the short sha is 12 characters"
+
 # --- a GIT_INDEX_FILE inherited from elsewhere is ignored ----------------------
 # Pointed at another repository's index, it would make the clean clone look
 # dirty to `git status` (a refusal for the wrong reason) or, worse, steer the
@@ -332,12 +341,75 @@ WDIR_OC="$WXDG/roost/wiring/$(printf '%s' "$clone" | cksum | cut -d' ' -f1)/open
 ts() { tmux -S "$UPG_SOCK" "$@"; }
 
 reset_clone
-new="$(seed_commit v9)"; G -C "$clone" fetch -q origin
 ts -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
+# What bin/roost's ensure_session records on a server it starts.
+ts set-environment -g ROOST_HOME "$clone"; ts set-option -g @roost-home "$clone"
 PATH="$OC1:$PATH" XDG_CONFIG_HOME="$WXDG" ROOST_SOCKET="$UPG_SOCK" \
   "$clone/scripts/roost-wiring" apply
-assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "OPENCODE_CONFIG_DIR=$WDIR_OC" \
+OCDIR_SET="OPENCODE_CONFIG_DIR=$WDIR_OC"
+assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "$OCDIR_SET" \
   "wiring: with opencode 1.x the server carries roost's OPENCODE_CONFIG_DIR (setup)"
+
+# up_w ARGS... -> an (already current) upgrade with opencode 2.x on PATH,
+# against the test server; ALL is stdout and stderr together.
+up_w() {
+  ALL="$(PATH="$OC2:$PATH" XDG_CONFIG_HOME="$WXDG" ROOST_SOCKET="${UP_SOCK:-$UPG_SOCK}" \
+    bash "$clone/scripts/roost-upgrade" "$@" 2>&1)"; RC=$?
+}
+no_wiring_line() { # NAME
+  case "$ALL" in *wiring*) false ;; *) true ;; esac
+  assert_true $? "$1: no wiring line at all"
+}
+
+# --dry-run: the installer will end with "nothing above was written", so the
+# wiring step must not write either.
+up_w --dry-run
+assert_eq "$RC" "0" "wiring --dry-run: rc 0"
+assert_contains "$ALL" "(--dry-run: wiring not re-applied)" "wiring --dry-run: says it skipped the wiring"
+assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "$OCDIR_SET" \
+  "wiring --dry-run: the server's OPENCODE_CONFIG_DIR is unchanged"
+
+# wiring turned off with the marker `roost wiring remove` leaves: apply
+# succeeds and does nothing, so "re-applied" would be a lie.
+mkdir -p "$WXDG/roost"; : > "$WXDG/roost/wiring.off"
+ts set-option -gu @roost-wiring-active
+up_w --yes
+assert_eq "$RC" "0" "wiring.off: rc 0"
+case "$ALL" in *"wiring re-applied"*) false ;; *) true ;; esac
+assert_true $? "wiring.off: no re-applied line"
+assert_contains "$ALL" "roost: wiring is off on the running server; not re-applied (roost wiring on turns it on)" \
+  "wiring.off: says wiring is off"
+assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "$OCDIR_SET" "wiring.off: the server is unchanged"
+rm -f "$WXDG/roost/wiring.off"
+
+# the same through the server option a roost.conf can set. Both are states
+# `roost wiring off|remove` leave with @roost-wiring-active unset, as above.
+ts set-option -g @roost-wiring-enabled off
+up_w --yes
+assert_contains "$ALL" "roost: wiring is off on the running server; not re-applied (roost wiring on turns it on)" \
+  "@roost-wiring-enabled off: says wiring is off"
+assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "$OCDIR_SET" "@roost-wiring-enabled off: the server is unchanged"
+ts set-option -gu @roost-wiring-enabled; ts set-option -g @roost-wiring-active on
+
+# a server started from ANOTHER checkout is left alone
+mkdir -p "$TMP/elsewhere"
+ts set-environment -g ROOST_HOME "$TMP/elsewhere"; ts set-option -g @roost-home "$TMP/elsewhere"
+up_w --yes
+assert_eq "$RC" "0" "other checkout's server: rc 0"
+assert_contains "$ALL" "roost: the running server was started from $TMP/elsewhere, not this checkout; wiring not re-applied" \
+  "other checkout's server: says whose server it is"
+assert_eq "$(ts show-environment -g OPENCODE_CONFIG_DIR)" "$OCDIR_SET" "other checkout's server: unchanged"
+ts set-environment -g ROOST_HOME "$clone"; ts set-option -g @roost-home "$clone"
+
+# a running server whose socket does not end in /roost is not roost's
+OTHER_SOCK="$SOCKDIR/notroost"
+tmux -S "$OTHER_SOCK" -f /dev/null new-session -d 'ENV= exec /bin/sh'
+UP_SOCK="$OTHER_SOCK" up_w --yes
+assert_eq "$RC" "0" "non-roost server: rc 0"
+no_wiring_line "non-roost server"
+tmux -S "$OTHER_SOCK" kill-server
+
+new="$(seed_commit v9)"; G -C "$clone" fetch -q origin
 
 OUT="$(PATH="$OC2:$PATH" XDG_CONFIG_HOME="$WXDG" ROOST_SOCKET="$UPG_SOCK" \
   bash "$clone/scripts/roost-upgrade" --yes 2>"$TMP/err")"; RC=$?
