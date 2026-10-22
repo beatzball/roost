@@ -40,8 +40,9 @@
 #   roost ext SUBCOMMAND     add subcommands from a git repository: install, list, info, verify, update, remove
 #   roost wiring on|off [-t SESSION] | remove
 #                            roost's own route to claude and opencode in its panes, with no edit to your config: turn it on or off for the server or one session, or remove it (one claude run without it: ROOST_NO_SHIM=1 claude)
-#   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout
-#   roost update             re-wire every installed agent to this checkout: an alias for `install`, it does not pull new code
+#   roost install            wire every installed agent (opencode, pi, copilot, claude, codex) to this checkout; never fetches code
+#   roost upgrade            pull new roost code into this checkout (fast-forward only), then wire every agent to it; refused on a dev tree
+#   roost update             the same as `upgrade`
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
@@ -614,7 +615,7 @@ case "${1:-up}" in
   ext)
     # `roost ext <verb>` -- the extension seam's own subcommand, kept in its
     # own file (scripts/roost-ext) rather than folded into this case, the
-    # same shape `install`/`update` (scripts/roost-install) and `validate`
+    # same shape `install` (scripts/roost-install), `upgrade` and `validate`
     # (scripts/roost-validate) already use. All six verbs live there --
     # `install`, `list`, `info`, `verify`, `update` and `remove`. See
     # docs/airig/specs/2026-09-08-extension-seam.md.
@@ -629,19 +630,25 @@ case "${1:-up}" in
     shift
     ROOST_SOCKET="$SOCKET" exec "$ROOST_HOME/scripts/roost-wiring" "$@"
     ;;
-  install|update)
-    # `update` is an ALIAS, not a second arm: one shift, one exec, so the two
-    # spellings cannot drift. They are the same command because re-running the
-    # installer IS the update -- it is idempotent, it relinks whatever now
-    # points somewhere else, and it names what it left alone. What it does NOT
-    # do is fetch new roost code, which is why the help line for `update` says
-    # so out loud; the installer prints its own note when this checkout is
-    # behind its upstream.
-    #
-    # tests/test-adapter-install.sh compares the two --dry-run outputs byte for
-    # byte, which is what pins the alias rather than merely the arm.
+  install)
+    # Wires harnesses to THIS checkout and never fetches code: a dev tree can
+    # run it freely. See scripts/roost-install.
     shift
     exec "$ROOST_HOME/scripts/roost-install" "$@"
+    ;;
+  upgrade|update)
+    # `update` is an ALIAS of `upgrade`, not a second arm: one shift, one
+    # exec, so the two spellings cannot drift. It used to alias `install`,
+    # but it always sounded like it pulled, and a command people reach for
+    # after hearing of a release should do that. The socket is passed
+    # explicitly, as the `wiring` arm does, so an upgrade typed in a pane
+    # re-wires the server that pane is on rather than falling through to the
+    # production `-L roost`.
+    #
+    # tests/test-adapter-install.sh compares the two --dry-run outputs byte
+    # for byte, which is what pins the alias rather than merely the arm.
+    shift
+    ROOST_SOCKET="$SOCKET" exec "$ROOST_HOME/scripts/roost-upgrade" "$@"
     ;;
   init)
     exec "$ROOST_HOME/scripts/roost-init"
@@ -3609,6 +3616,6 @@ JSON
         fi
       fi
     fi
-    echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|ext|install|update|init|settings|status|kill [SESSION]|--version|help]" >&2; exit 2
+    echo "usage: roost [up|session NAME|new NAME [SESSION]|spawn NAME [CMD]|split [-h|-v] [-t P] [-n NAME] [CMD]|view [-n NAME] CMD...|whoami|ssh HOST|send [--force] TGT TEXT|read [-r|--render] TGT [N]|screen TGT [N]|reply TEXT|wait-done TGT [T]|state STATE|hooks|doctor|validate|ext|install|upgrade|update|init|settings|status|kill [SESSION]|--version|help]" >&2; exit 2
     ;;
 esac

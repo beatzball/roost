@@ -2153,19 +2153,19 @@ else
 fi
 
 # ===========================================================================
-# 17. bin/roost exposes it as `install` and `update`
+# 17. bin/roost exposes `install`, `upgrade`, and `update` as upgrade's alias
 # ===========================================================================
-# `update` has to be a real alias -- the SAME script, reached with the SAME
-# arguments -- rather than a second dispatch arm that happens to do the same
-# thing today. A second arm would satisfy "both are mentioned in the help"
-# and still diverge the first time either side gained a flag, silently, on
-# the command a user reaches for after every `git pull`.
+# `update` has to be a real alias of `upgrade` -- the SAME script, reached with
+# the SAME arguments -- rather than a second dispatch arm that happens to do
+# the same thing today. A second arm would satisfy "both are mentioned in the
+# help" and still diverge the first time either side gained a flag, silently.
 #
-# The proof is byte-identical --dry-run output. Both runs deliberately share
-# ONE sandbox: the plan quotes the harness home paths, so two boxes would
-# differ for a reason that says nothing about the dispatch, and case 5 has
-# already established that --dry-run writes nothing for a shared box to carry
-# from the first run into the second.
+# The proof is byte-identical --dry-run output, from a copy of roost that is
+# NOT a git checkout: `upgrade` pulls, so a run from a repository would reach
+# the network. From a plain copy its gate refuses before any git or tmux call,
+# identically for both spellings (rc 1, same stderr). Both runs share ONE
+# sandbox so the refusal text, which names the checkout, cannot differ for a
+# reason that says nothing about the dispatch.
 ROOST_BIN="$HERE/bin/roost"
 
 run_roost() { # run_roost BOX SHIMDIR [args...]
@@ -2179,29 +2179,37 @@ run_roost() { # run_roost BOX SHIMDIR [args...]
   CODEX_HOME="$box/home/.codex" \
   CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
-    bash "$ROOST_BIN" "$@" </dev/null 2>&1
+    env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ROOST_SELF_SOCK \
+    bash "${RUN_BIN:-$ROOST_BIN}" "$@" </dev/null 2>&1
 }
 
 dispatch_box="$TMP/dispatchbox"
 inst_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" install --dry-run)"; inst_rc=$?
-upd_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" update --dry-run)";  upd_rc=$?
-
 assert_eq "$inst_rc" "0" "roost install --dry-run exits 0"
-assert_eq "$upd_rc"  "0" "roost update --dry-run exits 0"
 # Pin the installer's own closing line, not a word that also appears in the
 # plan above it. "dry-run" alone matches the `--dry-run` flag echoed in the
 # usage text as well, so a dispatch that fell through to the usage error
-# would still match it -- and the identity assertion below would then be
-# comparing two identical usage errors and passing.
+# would still match it.
 assert_contains "$inst_out" "--dry-run: nothing above was written." \
   "roost install --dry-run reaches the installer's own plan"
-assert_contains "$upd_out" "--dry-run: nothing above was written." \
-  "roost update --dry-run reaches the installer's own plan"
-assert_eq "$upd_out" "$inst_out" \
-  "roost update --dry-run is byte-identical to roost install --dry-run"
+
+nogit="$TMP/dispatch-nogit"
+copy_checkout "$nogit"
+RUN_BIN="$nogit/bin/roost"
+up_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" upgrade --dry-run)"; up_rc=$?
+upd_out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" update --dry-run)"; upd_rc=$?
+unset RUN_BIN
+assert_eq "$up_rc"  "1" "roost upgrade --dry-run from a non-checkout is refused (exit 1)"
+assert_eq "$upd_rc" "1" "roost update --dry-run from a non-checkout is refused (exit 1)"
+# The refusal is what proves `upgrade` reached scripts/roost-upgrade at all:
+# a dispatch that fell through to the usage error would print something else.
+assert_contains "$up_out" "roost upgrade: refused" \
+  "roost upgrade --dry-run reaches the upgrade script's own gate"
+assert_eq "$upd_out" "$up_out" \
+  "roost update --dry-run is byte-identical to roost upgrade --dry-run"
 
 # Arguments really are forwarded, not swallowed. Without a `shift` in
-# bin/roost's install|update arm the installer is handed `install --help`:
+# bin/roost's install arm the installer is handed `install --help`:
 # the SUBCOMMAND arrives as its first argument, hits the installer's `*)` arm
 # and exits 2 with `roost install: unknown argument 'install'`, so --help is
 # never looked at. Measured by deleting that one line -- 7 assertions in this
@@ -2209,7 +2217,7 @@ assert_eq "$upd_out" "$inst_out" \
 # catch it, because the refusal names the subcommand and the two spellings
 # therefore differ; what it cannot tell you is that the failure was a usage
 # error rather than a dropped flag, which is what this loop is here to pin.
-for sub in install update; do
+for sub in install; do
   out="$(run_roost "$dispatch_box" "$ALL_JSON_SHIM" "$sub" --help)"; rc=$?
   assert_eq "$rc" "0" "roost $sub --help exits 0"
   assert_contains "$out" "usage: roost install [-y|--yes] [--dry-run]" \
@@ -2226,23 +2234,27 @@ done
 # bin/roost's help is read back out of its own header comment, so this is
 # also the check that the header carries both lines.
 help_out="$(ROOST_BANNER=blocks bash "$ROOST_BIN" help)"
-for sub in install update; do
+for sub in install upgrade update; do
   n="$(printf '%s\n' "$help_out" | grep -c "roost $sub" || true)"
   assert_eq "$n" "1" "roost help lists \`roost $sub\` on exactly one line"
 done
 
-# `roost update` does NOT fetch new roost code, and the one line it gets has
-# to say so. Someone who types it expecting an upgrade and gets a silent
-# re-link has been misled by this file, not by their own guess.
+# `roost install` must say it never fetches, and `roost upgrade` that it pulls:
+# someone who types either expecting the other has been misled by this file,
+# not by their own guess. `update` must say it is the same as `upgrade`.
 #
-# Asserted against the extracted `roost update` LINE, never the whole help
-# text: "install" appears on several lines of that block, and a phrase-level
-# match against all of it would stay green with the update line deleted.
-upd_line="$(printf '%s\n' "$help_out" | grep 'roost update')"
-assert_contains "$upd_line" "alias for" \
-  "the roost update help line says it is an alias"
-assert_contains "$upd_line" "does not pull new code" \
-  "the roost update help line says it does not fetch new roost code"
+# Asserted against each extracted LINE, never the whole help text: "install"
+# appears on several lines of that block, and a phrase-level match against all
+# of it would stay green with one of these lines deleted.
+inst_line="$(printf '%s\n' "$help_out" | grep 'roost install ')"
+assert_contains "$inst_line" "never fetches" \
+  "the roost install help line says it never fetches code"
+up_line="$(printf '%s\n' "$help_out" | grep 'roost upgrade ')"
+assert_contains "$up_line" "fast-forward only" \
+  "the roost upgrade help line says it pulls, fast-forward only"
+upd_line="$(printf '%s\n' "$help_out" | grep 'roost update ')"
+assert_contains "$upd_line" "the same as" \
+  "the roost update help line says it is the same as upgrade"
 
 # ===========================================================================
 # 18. --records: the machine-readable record of what this run actually wrote

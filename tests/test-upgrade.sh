@@ -438,6 +438,17 @@ assert_eq "$(G -C "$clone" rev-parse HEAD)" "$new" "no server: the pull happened
 assert_eq "$(tail -n 1 "$LOG")" "installer-v10 --yes" "no server: the installer ran"
 ts list-sessions >/dev/null 2>&1; assert_eq "$?" "1" "no server: the throwaway server is gone"
 
+# --- `update` is the same command as `upgrade` --------------------------------
+# Through bin/roost itself, from THIS checkout: --help prints and exits before
+# the gate, so nothing is pulled. Identical stdout and rc 0 is what pins one
+# dispatch arm; the usage text proves the upgrade script is what answered.
+UP_HELP="$(bash "$HERE/bin/roost" upgrade --help </dev/null 2>&1)"; UP_RC=$?
+UPD_HELP="$(bash "$HERE/bin/roost" update --help </dev/null 2>&1)"; UPD_RC=$?
+assert_eq "$UP_RC" "0" "bin/roost upgrade --help: rc 0"
+assert_eq "$UPD_RC" "0" "bin/roost update --help: rc 0"
+assert_contains "$UP_HELP" "usage: roost upgrade" "bin/roost upgrade --help: the upgrade script answered"
+assert_eq "$UPD_HELP" "$UP_HELP" "bin/roost update --help is identical to upgrade --help"
+
 # --- the canary must be empty ------------------------------------------------
 assert_eq "$(canary_leaks)" "" "nothing wrote outside the scratch homes"
 unset GIT_CONFIG_GLOBAL
