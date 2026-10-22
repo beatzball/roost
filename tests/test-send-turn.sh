@@ -603,6 +603,80 @@ assert_contains "$doc" '"started":true' "...and still proves the turn began"
 assert_contains "$doc" '"sent_by":null' "...but sent_by is null: there is no turn number to keep it by"
 assert_file_absent "$ROOST_RECORD_DIR/$boot/${poff#%}" "...and no record was made for it"
 
+# 13h. an errored turn takes its label with it (flock review, fix loop 1). The
+# sequence exactly as the reviewer ran it: a turn that `send --from` started
+# and that then ERRORS records no reply, so the number `send` predicted goes
+# to the NEXT recorded turn — here a prompt the human typed by hand. Before
+# the fix that turn read `sent_by: coord`: a label about a prompt the
+# coordinator never sent, and nothing in the document to tell it from a true
+# one. The sidecar is dropped where every harness passes on its way into a
+# NEW turn — scripts/roost-agent-state, on the stamp of `working` from a
+# finished state — and before the badge moves, so a `send` watching that
+# badge writes its own label only afterwards.
+#
+# A slow agent, so the turn `send` starts is still running when the hook is
+# told, by hand, that it errored. The fixture's own sleeping turn is killed
+# with the pane at the end, before it could record anything.
+p5="$(newagent 0 60)"
+printf '{"last_assistant_message":"seeded"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+assert_eq "$(state "$p5")" done "detector proof: turn 1 is seeded and the agent reads done"
+rec5="$ROOST_RECORD_DIR/$boot/${p5#%}"
+out="$(outside "$ROOST" send --from coord "$p5" "from the coordinator" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "0|$p5 2" "detector proof: send --from names turn 2, the prediction"
+assert_eq "$(state "$p5")" working "detector proof: that turn is running"
+assert_eq "$(cat "$(side "$p5" 2)")" coord "detector proof: its sidecar says coord"
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" error --stop-hook </dev/null
+assert_eq "$(state "$p5")" error "detector proof: the turn ended as an error"
+assert_file_absent "$rec5/replies/000002" "detector proof: and recorded no turn 2"
+# The human types a prompt: the harness stamps working, works, and ends done
+# with an answer — which becomes turn 2.
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null
+assert_file_absent "$(side "$p5" 2)" "a new turn starting takes the errored turn's label away"
+printf '{"last_assistant_message":"typed by the human"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+assert_eq "$("$ROOST" read --turn 2 "$p5" 2>/dev/null)" "typed by the human" \
+  "detector proof: the hand-typed turn is turn 2"
+assert_contains "$("$ROOST" read --json --turn 2 "$p5" 2>/dev/null)" '"sent_by":null' \
+  "read --json --turn 2 says nobody known sent it: null, not coord"
+assert_contains "$("$ROOST" read --json "$p5" 2>/dev/null)" '"sent_by":null' "...and plain read --json agrees"
+assert_eq "$(ls "$rec5/replies" | grep -c 'sent_by$')" 0 "...and no sidecar is left in the record"
+# A label that belongs to the turn now starting is kept: the drop runs BEFORE
+# the badge moves, and `send` writes only after it has seen it move. The
+# fixture is asleep in its own turn, so the working stamp comes by hand, from
+# the background, as a harness's prompt-submit hook would. A dialog answered
+# in the middle of the turn (blocked, then working again) is not a new turn,
+# and keeps the label too.
+( sleep 0.5; env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null ) &
+out="$(outside "$ROOST" send --from coord "$p5" "again from the coordinator" 2>/dev/null)"; rc=$?
+wait
+assert_eq "$rc|$out" "0|$p5 3" "detector proof: the next send names turn 3"
+assert_eq "$(cat "$(side "$p5" 3)")" coord "...and its label survives the stamp that started it"
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" blocked </dev/null
+env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null
+assert_eq "$(cat "$(side "$p5" 3)")" coord "a dialog answered mid-turn is not a new turn: the label stays"
+printf '{"last_assistant_message":"answered the coordinator"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+assert_contains "$("$ROOST" read --json --turn 3 "$p5" 2>/dev/null)" '"sent_by":"coord"' \
+  "...and turn 3 reads coord"
+# The other two arms that end a turn unrecorded, through the same drop: an
+# interrupt (codex, `idle --stop-hook`) and Claude's StopFailure.
+for arm in "idle --stop-hook" "error --stop-failure-hook"; do
+  last5="$(ls "$rec5/replies" | grep '^[0-9][0-9]*$' | sort | tail -n 1)"
+  next5=$((10#$last5 + 1))
+  ( sleep 0.5; env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null ) &
+  outside "$ROOST" send --from coord "$p5" "once more" >/dev/null 2>&1
+  wait
+  [ -f "$(side "$p5" "$next5")" ]; assert_true $? "detector proof ($arm): the send filed a label for turn $next5"
+  printf '{"error":"rate_limit"}' | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" $arm
+  env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" working </dev/null
+  assert_file_absent "$(side "$p5" "$next5")" "a turn ended by \`$arm\` takes its label with it"
+  printf '{"last_assistant_message":"typed by the human again"}' \
+    | env TMUX="$s,$spid,0" TMUX_PANE="$p5" "$HOOK" done --stop-hook
+  assert_contains "$("$ROOST" read --json "$p5" 2>/dev/null)" '"sent_by":null' "...and the hand-typed turn after it reads null"
+done
+T kill-pane -t "$p5" 2>/dev/null || true
+
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
 assert_eq "$found" "" "nothing was written into HOME/XDG during this file"

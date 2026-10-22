@@ -617,12 +617,15 @@ roost_record_put_pane() {
 # this is the pane's first turn, the way the hook would create it, and the
 # sweep that creation triggers runs here for the same reason it runs there.
 #
-# What that leaves open, on purpose: a turn that begins and then errors
-# records no reply, so its predicted number is taken by the NEXT turn, which
-# inherits this sidecar unless another `send` rewrites it. `send` cannot know
-# that at the time it writes, and the Stop hook's error path must not pay to
-# clear a file for every failed turn. Rare, visible in `read --json`, and
-# recorded in docs/known-gaps.md rather than guessed at here.
+# What that opens, and what closes it: a turn that begins and then ends
+# WITHOUT a reply — an API error, an interrupt, an answer that was all tool
+# calls — records nothing, so its predicted number is taken by the NEXT turn,
+# which would inherit this sidecar: a prompt the human typed by hand, read
+# back as the coordinator's. `send` cannot know that when it writes, so the
+# sidecar is dropped later instead, by roost_record_drop_pending below, which
+# scripts/roost-agent-state calls when a NEW turn begins — the one point every
+# harness passes through — and before it moves the badge that `send` waits
+# for, so the label of the turn now starting is never there to be dropped.
 roost_record_put_turn_field() {
   local LC_ALL=C dir="$1" n="$2" field="$3" value="$4" sock="${5:-}"
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
@@ -653,6 +656,31 @@ roost_record_get_turn_field() {
   [ -f "$ROOST_RECORD_FILE.$3" ] || return 1
   IFS= read -r v < "$ROOST_RECORD_FILE.$3" || [ -n "$v" ] || return 1
   ROOST_RECORD_FIELD="$v"
+}
+
+# roost_record_drop_pending DIR — remove every sidecar filed beside the turn
+# that has not been recorded yet: `replies/<MAX+1>.<field>`, where MAX is the
+# newest recorded turn (0 when there is none) and MAX + 1 is the number `send`
+# predicts and files its `sent_by` under. Nothing of a recorded turn is
+# touched, and a record with no replies directory, or no record at all, is
+# nothing to do. Always 0: this runs inside a hook under `set -e`, and a
+# sidecar that could not be removed must not stop the badge from moving.
+#
+# WHY IT EXISTS: a turn that ends without a reply is never recorded, so the
+# number `send` predicted for it goes to the next turn — and so would the
+# label, unless something takes it away in between. The caller is
+# scripts/roost-agent-state, on the stamp of `working` from a finished state,
+# which is the start of that next turn whatever harness is running; its
+# comment says why there and not on the error paths. `.pane` is written with
+# the turn file, never before it, so the only sidecars this can find are the
+# ones filed ahead of a turn: today `.sent_by`, and whatever #142 files next.
+roost_record_drop_pending() {
+  local dir="$1"
+  [ -d "$dir/replies" ] || return 0
+  roost_record_scan "$dir/replies"
+  roost_record_turn_file "$dir" $((ROOST_RECORD_MAX + 1))
+  rm -f "$ROOST_RECORD_FILE".* 2>/dev/null || true
+  return 0
 }
 
 # roost_record_match REPLY DIR N -> 0, with ROOST_RECORD_TEXT set, when turn N's

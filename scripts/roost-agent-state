@@ -664,6 +664,51 @@ if [ "$state" = "$prev" ]; then
   exit 0
 fi
 
+# A NEW turn takes away the label an unrecorded one left behind (#56, flock
+# review). `roost send --from` files who sent a prompt beside the turn it
+# predicts — base + 1 — the moment the badge leaves done/idle, and the reply
+# that makes that turn real arrives only when the turn ends. A turn that ends
+# WITHOUT a reply (an API error, an interrupt, an answer that was all tool
+# calls) is never recorded, so its number goes to the next turn — often a
+# prompt the human typed by hand — and `read --json` of that turn would then
+# say the coordinator sent it. A wrong label is the one thing the record must
+# never hold: null is a question, "coord" is a lie.
+#
+# Dropped HERE, at the start of the next turn, and not on the error arms
+# above, because this is the one point every harness passes through: Claude's
+# UserPromptSubmit, codex's, and every adapter's `roost state working`. The
+# error arms are three branches only Claude and codex reach, and the opencode,
+# copilot and pi adapters report a failed turn with a plain `error` that this
+# script cannot tell from opencode's mid-turn retry. A new turn is a stamp of
+# working from a FINISHED state — done, idle, error, or no badge yet. From
+# blocked it is the same turn resuming after a dialog, and the label stays;
+# from working it never gets here (the bail above).
+#
+# BEFORE the stamp below, and that order is the guarantee: `send` writes its
+# sidecar only once it has SEEN the badge move, so the label of the turn
+# starting now cannot exist yet and cannot be dropped. One tmux read, one
+# directory listing and one rm, once per turn start, only when records are on
+# and this pane has one; the PostToolUse hot path is above the bail and pays
+# nothing.
+#
+# The cost in the other direction, recorded in docs/known-gaps.md: opencode
+# reports `error` on its third retry and `working` again when the retry goes
+# on, which looks like a new turn from here, so a label for a turn that lived
+# through a retry is dropped — null, which is honest.
+if [ "$state" = "working" ]; then
+  case "$prev" in
+    ''|done|idle|error)
+      . "$SELF_DIR/lib/roost-record.sh"
+      roost_record_root
+      if [ -n "$ROOST_RECORD_ROOT" ]; then
+        boot="$(tmux -S "$sock" display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+        if roost_record_pane_dir "$boot" "$TMUX_PANE"; then
+          roost_record_drop_pending "$ROOST_RECORD_PANE_DIR" || true
+        fi
+      fi ;;
+  esac
+fi
+
 # The pane terminal's foreground job, for `roost wait-done` (#64). An agent
 # typed at a shell prompt and then killed leaves its pane alive at the prompt
 # with pane_dead 0 and the badge still busy, and no hook runs to say so. What

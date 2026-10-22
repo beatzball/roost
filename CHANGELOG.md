@@ -18,8 +18,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   anything else is refused with exit 2 before anything is pasted. The text
   pasted into the agent is unchanged, and a send without the flag is
   byte-identical to before, so keep the `[from %N]` prefix until the envelope
-  ships. The first prompt into a fresh Claude pane keeps no label: it has no
-  badge yet, so `send` does not number that turn. Nothing to do to get it.
+  ships. A turn that ends with no reply (an API error, an interrupt) takes
+  its label with it: the next turn to start drops it, so a prompt typed by
+  hand after a failed send reads `sent_by: null`, never the sender's name.
+  The first prompt into a fresh Claude pane keeps no label: it has no badge
+  yet, so `send` does not number that turn. Nothing to do to get it.
 
 - **`roost close`: end one agent and close its pane** (#143). roost could open
   an agent and could not close one: `roost kill` takes a session or the whole

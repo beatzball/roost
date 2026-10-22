@@ -797,3 +797,29 @@ roost_record_put_turn_field "$nd" 2 sent_by coord; rc=$?
 assert_eq "$rc" 1 "a record with a newer schema is refused"
 assert_eq "$(ls -R "$nd")" "$before" "...and nothing is written into it"
 printf '1\n' > "$nd/schema"
+
+# roost_record_drop_pending: the sidecars filed beside the turn that has NOT
+# been recorded yet — MAX + 1, the number `send` predicts — go; every recorded
+# turn and its sidecars stay. scripts/roost-agent-state calls it when a NEW
+# turn begins, so a label an errored turn left behind can never land on the
+# turn that takes its number (flock review, fix loop 1).
+dp="$work/drop"; mkdir -p "$dp/replies"; printf '1\n' > "$dp/schema"
+printf 'one' > "$dp/replies/000001"
+printf 'coord' > "$dp/replies/000001.sent_by"; printf 'one' > "$dp/replies/000001.pane"
+printf 'coord' > "$dp/replies/000002.sent_by"; printf 'x' > "$dp/replies/000002.pane"
+roost_record_drop_pending "$dp"; rc=$?
+assert_eq "$rc" 0 "drop_pending returns 0"
+assert_eq "$(ls "$dp/replies" | tr '\n' ' ')" "000001 000001.pane 000001.sent_by " \
+  "it removes every sidecar of turn MAX+1 and nothing of a recorded turn"
+roost_record_drop_pending "$dp"; rc=$?
+assert_eq "$rc|$(ls "$dp/replies" | tr '\n' ' ')" "0|000001 000001.pane 000001.sent_by " \
+  "with nothing pending it changes nothing, and is still 0"
+rm -rf "$dp/replies"; mkdir "$dp/replies"
+printf 'coord' > "$dp/replies/000001.sent_by"
+roost_record_drop_pending "$dp"
+assert_eq "$(ls "$dp/replies")" "" "with no turn recorded, turn 1's sidecar is the pending one"
+rm -rf "$dp/replies"
+roost_record_drop_pending "$dp"; rc=$?
+assert_eq "$rc" 0 "no replies directory: nothing to do, still 0"
+roost_record_drop_pending "$work/nowhere"; rc=$?
+assert_eq "$rc" 0 "no record at all: still 0"

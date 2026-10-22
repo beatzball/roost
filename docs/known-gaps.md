@@ -1843,15 +1843,21 @@ succeeds.
   known turn per Claude pane, always the first. What would close it: a
   SessionStart stamp of `idle` from the Claude adapter (#141's session-start
   signal is the natural place), after which `send` watches from the start.
-- **A turn that errors leaves its label for the next turn to inherit.** An
-  errored turn records no reply (every adapter drops it), so the number
-  `send` predicted is taken by the NEXT turn, which then sits beside the
-  earlier send's sidecar. A later `roost send` into that pane rewrites it; a
-  prompt typed by hand does not. `send` cannot know this when it writes, and
-  the Stop hook's error path must not pay for a file delete per failed turn.
-  Severity: low — one wrong attribution, only after an errored turn, only
-  when the next prompt was not a `send`. What would close it: the error path
-  in scripts/roost-agent-state and the adapters removing `replies/<next>.*`.
+- **A turn that lives through an opencode retry loses its label.** A turn
+  that ends with no reply — an API error, an interrupt — is never recorded,
+  so the number `send` predicted goes to the next turn. Its label does not go
+  with it: scripts/roost-agent-state drops the pending sidecar when a NEW
+  turn starts (a stamp of `working` from done, idle, error or no badge),
+  before the badge moves, so a prompt typed by hand after a failed send reads
+  `sent_by: null` and never the coordinator's name. The one case that pays
+  for that rule: opencode's adapters stamp `error` on the third retry of a
+  turn that is still running, and `working` again when the retry goes on,
+  and from the hook that is a new turn. The label of a turn that survived a
+  retry is dropped — `null`, not a wrong name. Severity: low — one missing
+  label, only on opencode, only after a retry that then succeeded, and the
+  record never says anything false. What would close it: the opencode
+  adapters telling the hook a resume from a retry apart from a new turn,
+  which they cannot today without a turn id in the stamp.
 - **The label is a claim, not a proof.** `--from` takes any word; a sender
   can say it is someone else. The default `pane:%N` is checked against the
   server (the sending pane must exist here, and `$TMUX` must name this

@@ -1780,8 +1780,10 @@ JSON
     # here, and a target with no number (not an agent, mid-turn, recording off,
     # an errored turn) has nowhere to file a label, so none is filed and --json
     # says null. The sidecar is written NOW, before the Stop hook writes the
-    # turn file, because now is when the number is known — the comment on
-    # roost_record_put_turn_field says what that leaves open.
+    # turn file, because now is when the number is known. If this turn then
+    # ends with no reply, nothing takes its number but the NEXT turn, and the
+    # hook drops this file as that turn starts (roost_record_drop_pending):
+    # the label never lands on a prompt this send did not send.
     #
     # The default label, when --from was not given, is decided from the two
     # variables tmux gives every pane. `pane:%N` only when $TMUX names THIS
