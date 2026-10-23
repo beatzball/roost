@@ -1993,11 +1993,25 @@ not promise.
   which the documented retry covers. What would close it: a compare-and-swap
   on a directory, which the file system does not offer.
 - **Between a check and its key there is one tmux call.** The check reads
-  the pid file; the key is sent next. A sender whose lock is taken in that
-  gap, and whose box another sender then pastes into before the key lands,
-  would press Enter on both texts. The gap is one `send-keys` with no sleep,
-  and the other sender has to mkdir, write a pid, load a buffer and paste
-  inside it. Severity: low, and the only path left to two texts in one box.
+  the pid file; the key is sent next — before the paste, before each C-u,
+  between a C-u and its re-paste, and before Enter. A sender whose lock is
+  taken in that gap, and whose box another sender then pastes into before
+  the key lands, would press Enter on both texts. The gap is one tmux call
+  with no sleep, and the other sender has to mkdir, write a pid, load a
+  buffer and paste inside it. Severity: low, and the only path left to two
+  texts in one box.
+- **A holder SIGKILLed between its load-buffer and its paste-buffer leaves
+  its message in tmux's buffer list.** Nothing runs on SIGKILL, the next
+  send names a different buffer, and a takeover clears only the lock on the
+  file system. The text sits in `prefix + =` until the server is restarted
+  or someone deletes it. Severity: low — a SIGKILL inside a two-call window,
+  and the message was the sender's own prompt.
+- **`roost answer` does not take the lock yet.** Its key goes in through
+  scripts/lib/roost-answer.sh with no lock, so a `send --force` and an
+  `answer` aimed at one blocked dialog can both land. Severity: low — both
+  are a person's verbs, on a pane `send` refuses without `--force`. What
+  closes it: `answer` calling roost_panelock_take, _check and _drop around
+  its key, which the library was written for.
 - **A holder stopped for a minute between its mkdir and its pid write writes
   its pid into the taker's lock.** A lock with no pid file is "gone" once it
   is a minute old; a SIGSTOP in that microsecond window, held for a minute,

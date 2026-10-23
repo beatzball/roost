@@ -1144,8 +1144,11 @@ JSON
     #
     # The lock itself — a directory beside the server's socket, with a dead
     # holder's lock taken over — lives in scripts/lib/roost-panelock.sh, so
-    # that `answer` (#142), the next command to type into a pane, takes the
-    # same one rather than a copy.
+    # that `answer` (#142), the other command that types into a pane, can
+    # take the same one rather than a copy. It does not yet (its key goes in
+    # through scripts/lib/roost-answer.sh with no lock), so a `send --force`
+    # and an `answer` aimed at one dialog can still both land; that is
+    # listed in docs/known-gaps.md under #175.
     #
     # HELD FROM HERE TO EXIT, not just around the paste. The turn watch at the
     # end of this command is part of what the lock protects: two senders that
@@ -1191,7 +1194,20 @@ JSON
     # shell — from inside the trap, turning a delivered send into exit 1
     # with the lock left behind (measured, first run of
     # tests/test-send-lock.sh).
+    # A DRAFT IS NOT LEFT BEHIND (flock review, 2 of 6). A send that pasted and
+    # then stopped before its Enter — a signal, a re-paste that failed, a head
+    # that never showed — used to leave its text in the input box. The next
+    # sender's head was then on screen at once (an echoing pane), so it never
+    # sent C-u, and its Enter submitted both texts as one, exit 0. So on every
+    # way out between the paste and the Enter, and only while the lock is
+    # still this send's (a box that is another sender's by now is theirs to
+    # clear), the draft is cleared with C-u. At an empty line C-u is a no-op
+    # everywhere it is understood.
+    send_pasted=0 send_entered=0
     send_cleanup() {
+      if [ "$send_pasted" = 1 ] && [ "$send_entered" = 0 ] && roost_panelock_check; then
+        t send-keys -t "$tgt" C-u 2>/dev/null || true
+      fi
       [ -n "${ROOST_SEND_BUF:-}" ] && t delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true
       roost_panelock_drop
       return 0
@@ -1237,13 +1253,27 @@ JSON
          tgt="$lock_pane" ;;
       1) echo "roost send: another send to '$raw' is still in progress after ${lock_timeout}s — nothing was submitted; retry the same target" >&2
          exit 1 ;;
-      3) # The lock could not keep its pid file, so it was given back rather
-         # than left to be taken from under this send a minute later. Said,
-         # and then the send goes on without it: a socket directory that
-         # cannot hold a one-line file is a machine in trouble, and refusing
-         # every send until it is fixed helps nobody.
-         echo "roost send: could not keep a pid in the send lock beside '$lock_sock' — sending without it" >&2
-         tgt="$lock_pane" ;;
+      2) # Nothing to lock. With no pane that is the "no such target" exit 2
+         # just below. With a pane it is a socket path that is not absolute —
+         # tmux reports `#{socket_path}` exactly as the server was started
+         # with, and `ROOST_SOCKET=./s` is such a server — and that is a
+         # REFUSAL, not a send without a lock (flock review, 2 of 6: two
+         # sends raced into one shell pane that way, the whole of #175 back
+         # for one odd input). roost's own socket is always absolute.
+         if [ -n "$lock_pane" ]; then
+           echo "roost send: the server's socket path '$lock_sock' is not absolute, so no send lock can be named for '$raw' — nothing was submitted; start the server, or set ROOST_SOCKET, with an absolute path" >&2
+           exit 1
+         fi ;;
+      3) # The lock directory could not be made, or could not keep its pid
+         # file, and was given back rather than left to be taken from under
+         # this send a minute later. A REFUSAL (flock review): the first cut
+         # went on without a lock, and with `umask 0222` two sends then both
+         # did, which is #175 again. A socket directory that cannot hold a
+         # one-line file is a machine in trouble, and a send that says so and
+         # types nothing is the honest answer there. Exit 1: nothing was
+         # submitted, and a retry is right once the directory is fixed.
+         echo "roost send: could not make or write the send lock beside '$lock_sock' for '$raw' — nothing was submitted; the socket directory must be writable" >&2
+         exit 1 ;;
     esac
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
     # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
@@ -1669,6 +1699,10 @@ JSON
       echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
       exit 1
     fi
+    # Set BEFORE the paste, not after: a paste that tmux accepted and then
+    # failed to report is still text in the box, and the cleanup must clear
+    # it. A paste that never happened is cleared by a C-u that does nothing.
+    send_pasted=1
     if ! type_message; then
       case "$senderr" in
         *"too long"*|*"failed to send command"*)
@@ -1716,10 +1750,18 @@ JSON
         # taken from under this send, that box may hold another sender's
         # text now. One loud exit 1 (nothing submitted) beats two writers.
         if ! roost_panelock_check; then
-          echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+          echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; the box may still hold this send's draft; retry the same target" >&2
           exit 1
         fi
         t send-keys -t "$tgt" C-u 2>/dev/null || true
+        # And again between the C-u and the re-paste: without it the gap
+        # between a check and a key is three tmux calls here, not one, and a
+        # lock lost after the C-u would paste this text into a box another
+        # sender has just pasted into (flock review).
+        if ! roost_panelock_check; then
+          echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+          exit 1
+        fi
         # A re-paste that tmux refuses is exit 1 on the spot, never swallowed
         # (#175: `|| true` here hid the "no buffer" that a concurrent send
         # caused, and the loop went on as if the text were in the box). Exit,
@@ -1793,9 +1835,11 @@ JSON
     # same reason: an Enter on a box another sender is typing into submits
     # THEIR half-typed text. Nothing has been submitted when this fires.
     if ! roost_panelock_check; then
-      echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+      echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; the box may still hold this send's draft; retry the same target" >&2
       exit 1
     fi
+    # From here the text is in: cleanup must not clear it.
+    send_entered=1
     t send-keys -t "$tgt" Enter 2>/dev/null || true
 
     n="$retries"

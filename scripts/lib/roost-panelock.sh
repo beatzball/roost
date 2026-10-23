@@ -4,10 +4,11 @@
 # it at once destroy each other's work: one's C-u clears the other's paste, one
 # presses Enter on what the other typed, and the one whose text never landed
 # still sees "the screen changed" and reports success. `send` is the first
-# writer and this file is its lock; `answer` (#142), which will type a key
-# into a blocked pane and then watch the badge, is the second and should take
-# the same one, so that a `send --force` and an `answer` aimed at one dialog
-# cannot both land.
+# writer and this file is its lock; `answer` (#142), which types a key into a
+# blocked pane and then watches the badge, is the second and should take the
+# same one, so that a `send --force` and an `answer` aimed at one dialog
+# cannot both land. It does not yet: roost-answer.sh sends its key with no
+# lock, and docs/known-gaps.md lists that under #175.
 #
 # THE LOCK IS A DIRECTORY BESIDE THE SERVER'S SOCKET, named for the socket and
 # the pane: `<socket dir>/roost-send-lock.<socket name>.<N>`. That scopes it to
@@ -63,9 +64,14 @@
 # syscalls, no sleep — in which the fresh one's owner can read its pid file
 # and find nothing (roost_panelock_check says 1, and that sender stops with
 # nothing submitted: one spurious exit 1, which is the safe side), or in
-# which a third process can mkdir the name and make the mv back fail (the
-# moved copy is then removed, its owner's next check says 1, and the third
-# process is the one holder). Two writers never follow from either. The
+# which a third process can mkdir the name first. mv(1) onto a name that
+# exists and is a directory does not fail, it moves the copy INSIDE it
+# (flock review, reproduced: `mv lock.gone lock` with `lock` present gives
+# `lock/lock.gone/pid`), so the mv back is tried only while the name is
+# free, and a copy that was nested anyway is removed from inside the new
+# holder's directory. The fresh one's owner then reads the third process's
+# pid at its next check and stops, and the third process is the one
+# holder. Two writers never follow from either. The
 # `.take` guard carries its taker's pid too, and is an orphan by the same
 # three clauses, never by age alone; an orphan is a taker killed between
 # its mkdir and its rmdir, and it has to go or no lock on that pane could
@@ -98,10 +104,11 @@
 #          one the caller already has.
 #       1: another process held it for the whole TIMEOUT. Nothing was taken.
 #       2: nothing to lock — the arguments were not a socket path and a pane.
-#       3: the directory was made but the pid file could not be written, so
-#          the lock was removed again, pid file and all: a lock with no pid
-#          would read as stale a minute later and be taken from under a live
-#          holder. The caller decides what to do without a lock.
+#       3: the directory could not be made (and does not exist), or was made
+#          but could not keep its pid file and was removed again, pid file
+#          and all: a lock with no pid would read as stale a minute later and
+#          be taken from under a live holder. The caller must not type: a
+#          send with no lock is the bug this file exists for.
 #   roost_panelock_check
 #       0 when this process holds no lock, or still holds the one it took:
 #       the pid file reads this process's pid. 1 when the lock was taken
@@ -169,13 +176,27 @@ roost_panelock__retire() {
     rm -rf "$moved" 2>/dev/null || true
     return 0
   fi
-  mv "$moved" "$dir" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+  if [ ! -e "$dir" ] && mv "$moved" "$dir" 2>/dev/null; then
+    # A name that appeared between the test and the mv makes mv nest the
+    # copy inside it; that copy is removed from in there, and the moved
+    # directory, if it is still outside, with it.
+    rm -rf "$dir/${moved##*/}" 2>/dev/null || true
+  else
+    rm -rf "$moved" 2>/dev/null || true
+  fi
   return 1
 }
 
-# 0 held, 1 someone else has it, 3 made but the pid could not be kept.
+# 0 held, 1 someone else has it, 3 could not be made or could not keep its
+# pid. "Someone else has it" is ONLY a name that exists: a mkdir that fails
+# with nothing there (a socket directory that cannot be written) used to
+# read as held, wait the whole bound, and then name a send that did not
+# exist (flock review).
 roost_panelock__mkdir() {
-  mkdir "$1" 2>/dev/null || return 1
+  if ! mkdir "$1" 2>/dev/null; then
+    [ -e "$1" ] && return 1
+    return 3
+  fi
   if ! printf '%s\n' "$$" > "$1/pid" 2>/dev/null; then
     # A directory that is GONE was retired from under this process between
     # its mkdir and its write (the age read-back makes that rare, not

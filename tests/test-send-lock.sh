@@ -201,26 +201,67 @@ kill "$stranger" 2>/dev/null; wait "$stranger" 2>/dev/null
 # prove nothing; waiting for the lock DIRECTORY alone was not enough either,
 # since it exists before the pid is written and before the traps are set
 # (both found by review).
-last_paste() { T capture-pane -p -t "$p1" 2>/dev/null | grep -o 'Pasted text #[0-9]*' | sort -t'#' -k2 -n | tail -n 1; }
+# paste_no PANE — the highest `[Pasted text #N]` on the screen, 0 when none.
+# wait_paste PANE N — until the highest number is strictly ABOVE N. Strictly:
+# a C-u erases the newest placeholder, so "changed" would also fire on a
+# decrease and release the next case before its victim has pasted (flock
+# review). input_line PANE — the last non-blank screen line, which the
+# fixture redraws as a bare `ready>` after a C-u.
+paste_no() { T capture-pane -p -t "$1" 2>/dev/null | grep -o 'Pasted text #[0-9]*' | sed 's/.*#//' | sort -n | tail -n 1 | grep . || echo 0; }
 wait_paste() {
-  local before="$1" n=100
+  local pane="$1" before="$2" n=100
   while [ "$n" -gt 0 ]; do
-    [ "$(last_paste)" != "$before" ] && return 0
+    [ "$(paste_no "$pane")" -gt "$before" ] && return 0
     sleep 0.1; n=$((n - 1))
   done
   return 1
 }
+input_line() { T capture-pane -p -t "$1" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/[[:space:]]*$//'; }
 : >"$f1"
-before_paste="$(last_paste)"
+before_paste="$(paste_no "$p1")"
 "$ROOST" send "$p1" "killed midway" >/dev/null 2>&1 & victim=$!
-wait_paste "$before_paste"; assert_true $? "the victim pasted, so it holds the lock and its traps are set"
+wait_paste "$p1" "$before_paste"; assert_true $? "the victim pasted, so it holds the lock and its traps are set"
 kill -TERM "$victim" 2>/dev/null
 wait "$victim" 2>/dev/null; rc=$?
 assert_eq "$rc" 143 "a send that takes SIGTERM exits 143"
 assert_eq "$(lines "$f1")" 0 "...and submits nothing"
 [ ! -d "$lock" ]; assert_true $? "...and its lock is gone"
-assert_eq "$(T list-buffers -F '#{buffer_name}' 2>/dev/null)" "" "...and its buffer is gone"
-T send-keys -t "$p1" C-u 2>/dev/null   # clear what the killed send left in the input box
+# The draft it pasted is cleared on the way out (flock review, 2 of 6): a
+# draft left in the box is submitted by the NEXT sender together with its
+# own text. The fixture draws a bare prompt once its line is cleared.
+assert_eq "$(input_line "$p1")" "ready>" "...and the box holds no draft of the killed send"
+
+# --- 5c'. an echoing pane: the next sender does not inherit the draft -------
+# The case the flock reproduced: on a pane that ECHOES, the next sender's head
+# is on screen at once, it never sends C-u, and an abandoned draft rides into
+# its submission. `cat` echoes and prints each submitted line again.
+pe="$(T new-window -d -P -F '#{pane_id}' 'exec cat')"
+require_pane "$pe" "cat pane"
+sleep 0.3
+"$ROOST" send "$pe" "FIRST draft" >/dev/null 2>&1 & victim=$!
+n=50; while [ "$n" -gt 0 ]; do T capture-pane -p -t "$pe" 2>/dev/null | grep -q 'FIRST draft' && break; sleep 0.1; n=$((n - 1)); done
+[ "$n" -gt 0 ]; assert_true $? "the first sender's paste is echoed on the cat pane"
+kill -TERM "$victim" 2>/dev/null; wait "$victim" 2>/dev/null
+"$ROOST" send "$pe" "SECOND message" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 "a second send after the killed one: exit 0"
+assert_eq "$(T capture-pane -p -t "$pe" | grep -c 'FIRST draftSECOND')" 0 "...and it did not submit the first sender's draft with its own text"
+assert_eq "$(T capture-pane -p -t "$pe" | grep -c '^SECOND message$')" 2 "...and its own text was submitted alone (typed once, echoed back once by cat)"
+T kill-pane -t "$pe" 2>/dev/null || true
+
+# --- 5c''. a re-paste that tmux refuses is exit 1, not "submitting anyway" ---
+# The third of the three causes (`type_message || true`) had no test: with it
+# put back, a send into a pane that died mid-send exited 0 "accepted the keys
+# ... submitting anyway" (flock review, mutant run). Killing the target after
+# its paste makes the retry's re-paste the first tmux call to fail.
+f3="$work/p3.lines"; : >"$f3"; p3="$(newtui "$f3")"
+"$ROOST" send "$p3" "into a pane that dies" >/dev/null 2>"$work/d.err" & victim=$!
+wait_paste "$p3" 0; assert_true $? "the paste landed in the doomed pane"
+T kill-pane -t "$p3" 2>/dev/null || true
+wait "$victim" 2>/dev/null; rc=$?
+assert_eq "$rc" 1 "the target died after the paste: exit 1"
+assert_contains "$(cat "$work/d.err")" "failed to re-paste" "...and the re-paste failure is named"
+assert_contains "$(cat "$work/d.err")" "nothing was submitted" "...and nothing was submitted"
+[ ! -d "$(lockdir "$p3")" ]; assert_true $? "...and the dead pane's lock is gone"
 
 # --- 5d. a holder whose lock was taken from under it stops, loudly ----------
 # The safety net under every takeover rule: before each C-u and before Enter
@@ -229,18 +270,72 @@ T send-keys -t "$p1" C-u 2>/dev/null   # clear what the killed send left in the 
 # misjudged would. The send must exit 1 having submitted nothing, and must not
 # remove a lock that is no longer its own.
 : >"$f1"
-before_paste="$(last_paste)"
+before_paste="$(paste_no "$p1")"
 "$ROOST" send "$p1" "under a stolen lock" >"$work/s.out" 2>"$work/s.err" & victim=$!
-wait_paste "$before_paste"; assert_true $? "the victim pasted, so it holds the lock with its pid written"
+wait_paste "$p1" "$before_paste"; assert_true $? "the victim pasted, so it holds the lock with its pid written"
 printf '%s\n' 999999 >"$lock/pid"
+# The new owner's draft, typed into the box the victim no longer owns. The
+# victim must not touch it: without the check BEFORE C-u the victim would
+# clear it and re-paste, and only the check before Enter would stop it — same
+# exit, same stderr, a box wiped (flock review).
+T send-keys -t "$p1" -l 'DRAFT-OF-THE-NEW-OWNER'
+after_steal="$(paste_no "$p1")"
 wait "$victim" 2>/dev/null; rc=$?
 assert_eq "$rc" 1 "a send whose lock was taken from it: exit 1"
 assert_contains "$(cat "$work/s.err")" "was taken from this send" "...and says so"
 assert_contains "$(cat "$work/s.err")" "nothing was submitted" "...and that nothing was submitted"
 assert_eq "$(lines "$f1")" 0 "...and nothing reached the pane"
+assert_contains "$(input_line "$p1")" "DRAFT-OF-THE-NEW-OWNER" "...and the new owner's draft is untouched: no C-u was sent"
+assert_eq "$(paste_no "$p1")" "$after_steal" "...and nothing was re-pasted"
 assert_eq "$(cat "$lock/pid" 2>/dev/null)" 999999 "...and the lock that is now someone else's was left alone"
 rm -rf "$lock"
 T send-keys -t "$p1" C-u 2>/dev/null
+
+# --- 5e. the age clause and an orphaned guard ------------------------------
+# A lock with no pid file is gone once it is a minute old; a `.take` guard
+# whose taker died is an orphan and has to go, or no lock on that pane could
+# ever be taken over again. Both had no test (flock review, mutant runs).
+mkdir "$lock"; touch -t 202001010000 "$lock"
+: >"$f1"
+"$ROOST" send "$p1" "after an old pid-less lock" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 "a pid-less lock a minute old is taken over: exit 0"
+assert_eq "$(grep -c 'after an old pid-less lock' "$f1")" 1 "...and the message is delivered"
+[ ! -d "$lock" ]; assert_true $? "...and the old lock is gone"
+mkdir "$lock" "$lock.take"
+sh -c 'echo $$' >"$lock/pid"; sh -c 'echo $$' >"$lock.take/pid"
+: >"$f1"
+"$ROOST" send "$p1" "after an orphaned guard" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 "a dead holder behind a dead taker's guard is taken over: exit 0"
+assert_eq "$(grep -c 'after an orphaned guard' "$f1")" 1 "...and the message is delivered"
+[ ! -d "$lock" ] && [ ! -d "$lock.take" ]; assert_true $? "...and both the lock and the guard are gone"
+
+# --- 5f. a WINDOW target locks, and types into, one pane -------------------
+# A window target used to re-resolve on every tmux call. Held on %A's lock
+# while the window's active pane moved to %B, a send typed into %B beside
+# whoever held %B's lock (flock review, mutant run: both `tgt="$lock_pane"`
+# lines removed, 56/56 still green). Two collapse panes in one named window;
+# a live roost holds the active pane's lock for 1.5 s; the active pane moves
+# while the send waits; the text must land in the pane that was locked.
+f4="$work/p4.lines"; : >"$f4"; f5="$work/p5.lines"; : >"$f5"
+pa="$(T new-window -d -n twopane -P -F '#{pane_id}' "exec python3 $TUI 0 $f4 0 collapse")"
+require_pane "$pa" "twopane first"
+pb="$(T split-window -d -t twopane -P -F '#{pane_id}' "exec python3 $TUI 0 $f5 0 collapse")"
+require_pane "$pb" "twopane second"
+sleep 0.5
+bash -c 'sleep 1.5; true' roost-fake-holder & holder=$!
+mkdir "$(lockdir "$pa")"; printf '%s\n' "$holder" >"$(lockdir "$pa")/pid"
+# session:window, the way the site docs spell a window target; a bare name
+# would get roost's default session prefixed and miss this test server.
+win="$(T display-message -p -t "$pa" '#{session_name}:#{window_index}')"
+"$ROOST" send "$win" "to the window" >/dev/null 2>"$work/w.err" & victim=$!
+sleep 0.5
+T select-pane -t "$pb"
+wait "$victim" 2>/dev/null; rc=$?
+assert_eq "$rc" 0 "a send to a window whose active pane moved mid-wait: exit 0"
+assert_eq "$(grep -c 'to the window' "$f4")" 1 "...and the text went into the pane that was locked"
+assert_eq "$(lines "$f5")" 0 "...and not into the pane that became active"
+wait "$holder" 2>/dev/null
+T kill-window -t twopane 2>/dev/null || true
 
 # --- 6. two sends racing an IDLE agent do not share a turn number -----------
 # Seen live: two senders both watched the badge leave `idle`, both printed
@@ -304,6 +399,28 @@ if [ "$other" = "$p 3" ]; then
 else
   assert_eq "$(turnfile 000003.sent_by)" "" "the numberless sender filed no sidecar"
 fi
+
+# The same race against an agent whose submit hook is SLOW (1 s): the first
+# sender now holds the lock through a turn watch that has to wait, and a lock
+# released before the watch would let the second sender in while the badge
+# still reads `done` — both would predict turn 2 (flock review: with an
+# instant hook that regression stays green).
+q="$(newagent 1 2)"
+"$ROOST" send "$q" "warm up" >/dev/null 2>&1
+wait_state "$q" done
+snd v --from gamma "$q" "second prompt"
+snd w --from delta "$q" "third prompt"
+wait
+ov="$(cat "$work/v.out")"; ow="$(cat "$work/w.out")"
+assert_eq "$(cat "$work/v.rc") $(cat "$work/w.rc")" "0 0" "slow hook: both racing sends exit 0"
+case "$ov|$ow" in
+  "$q 2|"|"|$q 2"|"$q 2|$q 3"|"$q 3|$q 2")
+    assert_true 0 "slow hook: one sender was handed turn 2 and the other no number or turn 3, never the same number (got [$ov] and [$ow])" ;;
+  *)
+    assert_true 1 "slow hook: one sender was handed turn 2 and the other no number or turn 3, never the same number (got [$ov] and [$ow])" ;;
+esac
+n=300; while [ "$n" -gt 0 ]; do [ "$(find "$ROOST_RECORD_DIR" -path '*/replies/000003' 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ] && break; sleep 0.1; n=$((n - 1)); done
+[ "$n" -gt 0 ]; assert_true $? "slow hook: both prompts ran: its turn 3 is recorded"
 
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
