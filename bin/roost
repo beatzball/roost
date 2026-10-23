@@ -1165,10 +1165,15 @@ JSON
     #
     # The pane is resolved HERE, once, and the socket read with it: the id is
     # what the lock is named for, and a WINDOW target has to lock the pane the
-    # keys will go to. A target that resolves to nothing takes no lock and
-    # fails as "no such target" just below, exactly as before. The pane id
-    # comes first in the format because it can never hold a space and the
-    # socket path can, so the first-space split is the one that is safe.
+    # keys will go to. AND THEN THE PANE BECOMES THE TARGET for everything
+    # below: a window target left as a window re-resolves on every tmux call,
+    # so a window whose active pane moved during the lock wait would have
+    # this send holding pane P's lock while typing into pane Q — beside
+    # whoever holds Q's (found by review). A %N resolves to itself. A target
+    # that resolves to nothing takes no lock and fails as "no such target"
+    # just below, exactly as before. The pane id comes first in the format
+    # because it can never hold a space and the socket path can, so the
+    # first-space split is the one that is safe.
     . "$ROOST_HOME/scripts/lib/roost-panelock.sh"
     lock_info="$(t display-message -p -t "$tgt" '#{pane_id} #{socket_path}' 2>/dev/null || true)"
     lock_pane="${lock_info%% *}"
@@ -1191,16 +1196,43 @@ JSON
       roost_panelock_drop
       return 0
     }
+    # INT and TERM EXIT, they do not merely clean up. A handler that cleans
+    # and returns lets the script carry on from the interrupted command
+    # (found by review, reproduced): a send that took SIGTERM during its
+    # retry sleep dropped the lock and then went on to C-u, paste and Enter,
+    # beside whichever sender had just taken the lock it dropped. `exit`
+    # runs the EXIT trap, which is the one that cleans. 130 and 143 are the
+    # statuses a shell killed by those signals reports anyway.
+    send_traps() {
+      trap 'send_cleanup' EXIT
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+    }
     lock_timeout="$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null)"
     case "$lock_timeout" in ''|*[!0-9]*) lock_timeout=60 ;; esac
     [ "${#lock_timeout}" -gt 6 ] && lock_timeout=600
+    # Leading zeros are stripped, the same loop and the same reason as
+    # @roost-send-turn-timeout above: `08` is octal to `$(( ))` and aborts
+    # it, and the library strips its copy too — this one is so the message
+    # below says "8s", not "08s" (measured, tests/test-send-lock.sh).
+    while [ "${#lock_timeout}" -gt 1 ] && [ "${lock_timeout%${lock_timeout#?}}" = 0 ]; do
+      lock_timeout="${lock_timeout#0}"
+    done
     [ "$lock_timeout" -gt 600 ] 2>/dev/null && lock_timeout=600 || true
     lock_rc=0
     roost_panelock_take "$lock_sock" "$lock_pane" "$lock_timeout" || lock_rc=$?
     case "$lock_rc" in
-      0) trap 'send_cleanup' EXIT INT TERM ;;
+      0) send_traps
+         tgt="$lock_pane" ;;
       1) echo "roost send: another send to '$raw' is still in progress after ${lock_timeout}s — nothing was submitted; retry the same target" >&2
          exit 1 ;;
+      3) # The lock could not keep its pid file, so it was given back rather
+         # than left to be taken from under this send a minute later. Said,
+         # and then the send goes on without it: a socket directory that
+         # cannot hold a one-line file is a machine in trouble, and refusing
+         # every send until it is fixed helps nobody.
+         echo "roost send: could not keep a pid in the send lock beside '$lock_sock' — sending without it" >&2
+         tgt="$lock_pane" ;;
     esac
     # Validate: a typo'd target must fail loudly, not silently deliver nothing.
     # Also reject a DEAD pane: with `remain-on-exit on`, a pane whose command
@@ -1471,9 +1503,9 @@ JSON
     # byte-identical across a send.
     ROOST_SEND_BUF="roost-send-$$"
     # A target that took no lock (one that resolved to no pane — it fails as
-    # "no such target" above, so this is belt and braces) still gets the
-    # buffer deleted on every way out.
-    trap 'send_cleanup' EXIT INT TERM
+    # "no such target" above, so this is belt and braces — or one whose lock
+    # could not keep a pid) still gets the buffer deleted on every way out.
+    send_traps
 
     # stderr is captured rather than dropped so that tmux's failures here can be
     # told apart: a pane that has gone away says one thing, and an over-long
@@ -1655,16 +1687,18 @@ JSON
         waited=$((waited + 2))
         screen_has_head && break
         t send-keys -t "$tgt" C-u 2>/dev/null || true
-        # A re-paste that tmux refuses is said out loud and ends the retrying,
-        # never swallowed (#175: `|| true` here hid the "no buffer" that a
-        # concurrent send caused, and the loop went on as if the text were in
-        # the box). Under the lock the only way to get here is a pane that
-        # went away or a tmux that is failing, and the checks after the loop
-        # decide what that means — a screen that never changed is the exit 1
-        # "nothing was submitted" path, which is the honest answer.
+        # A re-paste that tmux refuses is exit 1 on the spot, never swallowed
+        # (#175: `|| true` here hid the "no buffer" that a concurrent send
+        # caused, and the loop went on as if the text were in the box). Exit,
+        # not break (found by review): the C-u just sent may have cleared a
+        # draft the pane was showing, so the screen now differs from $pre,
+        # and the "does not echo" fallback below would read that change as
+        # delivery and press Enter on an empty box. Nothing has been
+        # submitted here — no Enter yet — so 1, the retry-the-same-target
+        # code, is exactly right, the same as the first paste failing above.
         if ! type_message; then
-          echo "roost send: re-paste into '$raw' failed: $senderr" >&2
-          break
+          echo "roost send: failed to re-paste text into '$raw' (pane may have died) — nothing was submitted: $senderr" >&2
+          exit 1
         fi
         sleep "$delay" 2>/dev/null || true
       done

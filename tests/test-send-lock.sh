@@ -131,30 +131,79 @@ assert_eq "$rc" 0 "a lock whose holder is gone is taken over: exit 0"
 assert_eq "$(grep -c 'after a dead holder' "$f1")" 1 "...and the message is delivered"
 [ ! -d "$lock" ]; assert_true $? "...and the lock is gone afterwards"
 
-# --- 5. a lock held by a LIVE process is waited on, then refused ------------
+# --- 5. a lock held by a LIVE roost is waited on, then refused --------------
 # Exit 1 is the documented "nothing was submitted, retry the same target" code,
-# and it is exactly true here: not one byte was typed.
-sleep 60 & holder=$!
+# and it is exactly true here: not one byte was typed. The holder is a bash
+# whose $0 is "roost-fake-holder", so `ps -o args=` mentions roost the way a
+# real `bash .../bin/roost send` does — the staleness check asks that. Two
+# commands, not one: bash execs a lone `-c` command in place, and the holder
+# would then BE `sleep 60`, with no roost in its args (measured: the first
+# version of this case saw its holder taken over).
+bash -c 'sleep 60; true' roost-fake-holder & holder=$!
 mkdir "$lock"
 printf '%s\n' "$holder" >"$lock/pid"
 T set-option -g @roost-send-lock-timeout 1
 : >"$f1"
 err="$("$ROOST" send "$p1" "while another send holds the pane" 2>&1 >/dev/null)"; rc=$?
-assert_eq "$rc" 1 "a lock held by a live process: exit 1 after the bound"
+assert_eq "$rc" 1 "a lock held by a live roost: exit 1 after the bound"
 assert_contains "$err" "still in progress" "...and the message says another send is in progress"
 assert_contains "$err" "nothing was submitted" "...and that nothing was submitted"
 assert_eq "$(lines "$f1")" 0 "...and nothing reached the pane"
 [ -d "$lock" ]; assert_true $? "...and the live holder's lock was not stolen"
+
+# A timeout with a leading zero is read as a human reads it, not as octal:
+# `$((08 * 10))` aborts bash 3.2 and 5 alike ("value too great for base"),
+# which under `set -e` would end the send with no message at all.
+T set-option -g @roost-send-lock-timeout 08
+err="$("$ROOST" send "$p1" "while another send holds the pane" 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" 1 "@roost-send-lock-timeout 08 waits eight seconds and exits 1"
+assert_contains "$err" "after 8s" "...and reports the bound it waited"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 rm -rf "$lock"
 T set-option -gu @roost-send-lock-timeout 2>/dev/null || true
+
+# --- 5b. a pid that was handed to a stranger does not hold the lock ----------
+# A killed sender's pid can be reused by a long-lived process that is not
+# roost; without the `ps` clause every later send to the pane would wait the
+# whole bound and fail for as long as that process lived.
+sleep 60 & stranger=$!
+mkdir "$lock"
+printf '%s\n' "$stranger" >"$lock/pid"
+: >"$f1"
+"$ROOST" send "$p1" "after a stranger took the pid" >/dev/null 2>"$work/e.err"; rc=$?
+assert_eq "$rc" 0 "a lock whose pid now belongs to a non-roost process is taken over: exit 0"
+assert_eq "$(grep -c 'after a stranger took the pid' "$f1")" 1 "...and the message is delivered"
+[ ! -d "$lock" ]; assert_true $? "...and the lock is gone afterwards"
+kill "$stranger" 2>/dev/null; wait "$stranger" 2>/dev/null
+
+# --- 5c. a send killed midway drops its lock and types nothing more ----------
+# SIGTERM lands during the head-check sleep, after the paste and before any
+# Enter. The handler must EXIT, not clean up and carry on: a send that went on
+# to C-u, paste and Enter after dropping its lock would be typing beside
+# whoever took the lock next. Bash runs the trap once the foreground sleep
+# returns, so the kill is sent early and the exit is collected with wait.
+: >"$f1"
+"$ROOST" send "$p1" "killed midway" >/dev/null 2>&1 & victim=$!
+sleep 0.7
+kill -TERM "$victim" 2>/dev/null
+wait "$victim" 2>/dev/null; rc=$?
+assert_eq "$rc" 143 "a send that takes SIGTERM exits 143"
+assert_eq "$(lines "$f1")" 0 "...and submits nothing"
+[ ! -d "$lock" ]; assert_true $? "...and its lock is gone"
+assert_eq "$(T list-buffers -F '#{buffer_name}' 2>/dev/null)" "" "...and its buffer is gone"
+T send-keys -t "$p1" C-u 2>/dev/null   # clear what the killed send left in the input box
 
 # --- 6. two sends racing an IDLE agent do not share a turn number -----------
 # Seen live: two senders both watched the badge leave `idle`, both printed
 # `%N 1`, and the second overwrote the first's sent_by sidecar. With the lock
 # held through the turn watch, the second sender gets in once the first turn
-# is under way, finds `working`, and hands back no number — the honest answer
-# for a prompt that is queued inside the harness.
+# is under way. Usually that is while the agent is still `working` (it works
+# for 2 s), so the second hands back no number — the honest answer for a
+# prompt that is queued inside the harness. On a loaded runner the second
+# sender can get in after the first turn has finished, see `done`, and be
+# handed turn 3 — also correct. What must never happen is the SAME number
+# twice, or a sidecar that names the wrong sender, so that is what is
+# asserted, not the schedule (found by review).
 echo "6. turn numbers under a race"
 newagent() {
   local p n=50
@@ -193,13 +242,19 @@ wait
 ox="$(cat "$work/x.out")"; oy="$(cat "$work/y.out")"
 assert_eq "$(cat "$work/x.rc") $(cat "$work/y.rc")" "0 0" "both racing sends exit 0"
 case "$ox|$oy" in
-  "$p 2|"|"|$p 2") assert_true 0 "exactly one sender was handed turn 2; the other, no number (got [$ox] and [$oy])" ;;
-  *)               assert_true 1 "exactly one sender was handed turn 2; the other, no number (got [$ox] and [$oy])" ;;
+  "$p 2|"|"|$p 2"|"$p 2|$p 3"|"$p 3|$p 2")
+    assert_true 0 "one sender was handed turn 2 and the other no number or turn 3, never the same number (got [$ox] and [$oy])" ;;
+  *)
+    assert_true 1 "one sender was handed turn 2 and the other no number or turn 3, never the same number (got [$ox] and [$oy])" ;;
 esac
 wait_turn 000003; assert_true $? "both prompts ran: turn 3 is recorded"
-if [ "$ox" = "$p 2" ]; then winner=alpha; else winner=beta; fi
+if [ "$ox" = "$p 2" ]; then winner=alpha; loser=beta; other="$oy"; else winner=beta; loser=alpha; other="$ox"; fi
 assert_eq "$(cat "$(turnfile 000002.sent_by)" 2>/dev/null)" "$winner" "turn 2's sent_by names the sender that was handed the number, not the last writer"
-assert_eq "$(turnfile 000003.sent_by)" "" "the numberless sender filed no sidecar"
+if [ "$other" = "$p 3" ]; then
+  assert_eq "$(cat "$(turnfile 000003.sent_by)" 2>/dev/null)" "$loser" "turn 3's sent_by names the sender that was handed 3"
+else
+  assert_eq "$(turnfile 000003.sent_by)" "" "the numberless sender filed no sidecar"
+fi
 
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
