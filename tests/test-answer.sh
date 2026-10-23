@@ -134,13 +134,14 @@ open_dialog() {
   mkpayloads "$tag"
   [ "$kind" = ask ] && draw=question
   if [ -n "${4:-}" ]; then
-    p="$(T split-window -d -P -F '#{pane_id}' -t "$4" "$work/dialog $mode $tag $work/$kind.$tag $draw")"
+    # ${5:-} is extra split-window flags, unquoted on purpose: "-h -l 10".
+    p="$(T split-window -d ${5:-} -P -F '#{pane_id}' -t "$4" "$work/dialog $mode $tag $work/$kind.$tag $draw")"
   else
     p="$(T new-window -d -P -F '#{pane_id}' -t main -n "dlg-$tag" "$work/dialog $mode $tag $work/$kind.$tag $draw")"
   fi
   while [ "$i" -lt 100 ]; do
     if [ "$(opt "$p" @agent_state)" = blocked ] && [ -n "$(opt "$p" @roost-dialog)" ] \
-       && T capture-pane -p -t "$p" | grep -q 'Esc to cancel'; then
+       && T capture-pane -p -J -t "$p" | grep -q 'Esc to cancel'; then
       printf '%s' "$p"; return 0
     fi
     sleep 0.05; i=$((i + 1))
@@ -339,6 +340,18 @@ assert_eq "$(keys none)" "31" "...and exactly one key went in: there is no retry
 ans --expect "$fp" "$none" --approve; assert_eq "$rc" 6 "and a second try is refused as already answered"
 assert_eq "$(keys none)" "31" "...so a second key cannot go in"
 
+# A pane so narrow that the marker lines wrap (the design's §12.6). The
+# control proves they really are split on screen; the answer still lands,
+# because the screen is read with wrapped lines joined.
+nw="$(T new-window -d -P -F '#{pane_id}' -t main -n narrow 'exec sleep 600')"
+nar="$(open_dialog state nar bash "$nw" "-h -l 10")"
+T capture-pane -p -t "$nar" | grep -q 'Esc to cancel'; [ $? -ne 0 ]
+assert_true $? "(control) in a 10-column pane the marker line is split across rows"
+fp="$(fpof "$nar")"
+ans --expect "$fp" "$nar" --approve
+assert_eq "$rc,$out" "0,$nar approve $fp" "a dialog whose marker lines wrap is still found and answered"
+T kill-window -t "$nw"
+
 # --- 6b. a question (--option N, step 3) --------------------------------------
 q="$(open_dialog state q ask)"; fp="$(fpof "$q")"
 assert_contains "$(opt "$q" @roost-dialog)" " claude question 3 " "(a three-option question is kind question, 3)"
@@ -363,6 +376,33 @@ T kill-window -t "$qs"
 rec="$(find "$ROOST_RECORD_DIR" -name answers -path "*/${q#%}/answers" 2>/dev/null | head -1)"
 assert_contains "$(cat "$rec" 2>/dev/null)" " claude question option2 program forced=0 confirmed=" "an option answer is recorded as optionN"
 assert_contains "$(cat "$rec" 2>/dev/null)" "AskUserQuestion: Which color do you want?" "...with the question as its description"
+
+# --- 6c. --json ---------------------------------------------------------------
+# One document on success, nothing on stdout for any failure, exit codes and
+# stderr as without the flag (the json-output design).
+j="$(open_dialog state j)"; fp="$(fpof "$j")"
+ans --json --expect "$fp" "$j" --approve
+assert_eq "$rc" 0 "--json: exit 0"
+assert_eq "$out" '{"schema":1,"command":"answer","target":"'"$j"'","pane":"'"$j"'","action":"approve","option":null,"fingerprint":"'"$fp"'","harness":"claude","kind":"permission","confirmed":"state","state":"working","forced":false}' \
+  "--json: the document of §3.3"
+python3 -c 'import json,sys; json.loads(sys.argv[1])' "$out"; assert_true $? "--json: it parses"
+jq_="$(open_dialog state jq ask)"; fp="$(fpof "$jq_")"
+ans --force --json --expect "$fp" main:dlg-jq --option 3
+assert_eq "$out" '{"schema":1,"command":"answer","target":"main:dlg-jq","pane":"'"$jq_"'","action":"option","option":3,"fingerprint":"'"$fp"'","harness":"claude","kind":"question","confirmed":"state","state":"working","forced":true}' \
+  "--json: an option, a window target and --force, in either flag order"
+jd="$(open_dialog decline jd)"; fp="$(fpof "$jd")"
+ans --json "$jd" --deny
+assert_eq "$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["action"], d["confirmed"], d["state"])')" "deny transcript None" \
+  "--json: a deny confirmed from the transcript, with the badge it cleared as null"
+jn="$(open_dialog none jn)"; fp="$(fpof "$jn")"
+ans --expect "$fp" "$jn" --deny >/dev/null; h_rc="$rc"; h_err="$err"
+jn2="$(open_dialog none jn2)"; fp2="$(fpof "$jn2")"
+ans --json --expect "$fp2" "$jn2" --deny
+assert_eq "$rc|$out" "10|" "--json: exit 10 prints nothing on stdout"
+assert_eq "$h_rc" 10 "(the same case without --json is exit 10 too)"
+ans --json --expect 0123456789ab "$jn2" --approve
+assert_eq "$rc|$out" "7|" "--json: a refusal prints nothing on stdout, with its own exit code"
+ans --json --json --expect "$fp2" "$jn2" --approve; assert_eq "$rc" 1 "--json twice: not consumed, so a usage error"
 
 # --- 7. the one-command send refuses a dialog that moved (§3.1 step 9) --------
 # The window is too small to hit through the verb on demand, so the PROPERTY

@@ -30,6 +30,8 @@
 #                            record this pane's reply, for another agent's `roost read`. TEXT... is read from the command line; `-` (or `--stdin`, or no argument at all) reads the reply from STDIN instead. Use stdin for a reply of more than a few KB, and for any reply built from a file: Linux refuses a single argument of 131072 bytes or more, so the command-line form loses a long reply outright
 #   roost wait-done [--turn N] TGT [T]
 #                            block until TGT (a %N pane, or every agent pane in a window) is done/idle. --turn N waits until TGT has recorded turn N — the number `roost send` printed — so the wait cannot be satisfied by the PREVIOUS turn's ✅; it needs a %N
+#   roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N
+#                            a PERSON'S verb: answer the dialog TGT is blocked on, with one key, once. FP is the dialog's fingerprint from `status --json`; it is required to approve or pick an option, so the key cannot land on a newer dialog. Refuses a caller in an agent's pane unless --force (a guard against an accident, not a lock); a dialog roost has no measured keys for; a pane that shows no dialog. Exit 0 answered and seen to land, 6 nothing to answer, 7 a different dialog, 8 no measured keys, 9 called from an agent's pane, 10 the key was sent and not seen to land: do NOT answer again. roost never answers on its own
 #   roost close [--force] [--json] TGT [T]
 #                            end ONE agent its harness's own way (/exit, /quit), wait up to T seconds (default 10) for it to leave, then close that pane and no other. Refuses a ⏳ working or 🛑 blocked pane unless --force, which skips the exit command; a window of more than one pane; and a session's last pane. If the harness opens a dialog on the way out, it stops and answers nothing. Kept replies stay, so `roost read %N` still works. Exit 0 closed, 1 refused or timed out, 2 already gone
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
@@ -1911,7 +1913,7 @@ JSON
     exit 0
     ;;
   answer)
-    # roost answer [--force] [--expect FP] TGT --approve|--deny|--option N
+    # roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N
     #
     # A PERSON'S verb for the dialog a pane is blocked on (#142). It sends one
     # key, once, into a harness's own dialog, and only after every check below
@@ -1941,16 +1943,22 @@ JSON
     # Only exit 0 and 10 have sent anything. 10 is to `answer` what 4 is to
     # `send`: the input went in, so a second try would be a second input.
     . "$ROOST_HOME/scripts/lib/roost-answer.sh"
-    ans_usage="usage: roost answer [--force] [--expect FP] TGT --approve|--deny|--option N"
+    ans_usage="usage: roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N"
     ans_bad() { printf '%s\n' "$ans_usage" >&2; exit 1; }
     shift
     # Flags go BEFORE the target, as with `send`, and exactly one action goes
     # after it. A repeated flag is not consumed: it falls into the target slot
     # and fails there, which is the shape `send` keeps for the same reason.
-    force=0 expect="" expect_given=0
+    #
+    # --json prints one document instead of the line, under the rules in
+    # docs/airig/specs/2026-09-15-json-output-design.md: the same exit codes,
+    # the same stderr, and NOTHING on stdout for any failure -- exit 10
+    # included, as `send --json` prints nothing for its 4.
+    force=0 json=0 expect="" expect_given=0
     while :; do
       case "${1:-}" in
         --force) [ "$force" -eq 0 ] || break; force=1; shift ;;
+        --json) [ "$json" -eq 0 ] || break; json=1; shift ;;
         --expect)
           [ "$expect_given" -eq 0 ] || break
           [ "$#" -ge 2 ] || ans_bad
@@ -2294,6 +2302,18 @@ EOF
       fi
       echo "roost answer: do NOT answer again. Look: roost screen $pane" >&2
       exit 10
+    fi
+    if [ "$json" -eq 1 ]; then
+      # `state` is the badge the confirming poll saw: null after a deny that
+      # roost_unblock_pane cleared, which unsets the badge rather than set
+      # one. `option` is the number for --option, null otherwise.
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      roost_jsonout_emit answer target s "$raw" pane s "$pane" action s "$action" \
+        option i "$opt_n" fingerprint s "$fp" harness s "$ROOST_DIALOG_HARNESS" \
+        kind s "$ROOST_DIALOG_KIND" confirmed s "$confirmed" state z "$now_state" \
+        forced b "$force" \
+        || roost_jsonout_fail answer
+      exit 0
     fi
     said="$action"; [ "$action" != option ] || said="option $opt_n"
     printf '%s %s %s\n' "$pane" "$said" "$fp"
