@@ -21,8 +21,9 @@
 #            person declined at the pane a moment before (§12.3)
 #   none     nothing changes, ever: no proof can come
 #   vanish   any key: the dialog goes, and 0.15 s later the pane exits
-#   slow     any key: the dialog goes 1.4 s later, too late for the half-second
-#            hold to finish inside a 1 s bound
+#   slow     any key: the dialog goes 2.6 s later, after a 1 s bound has ended
+#   m6       any key: the dialog goes 0.6 s later and the pane stays blocked,
+#            so the screen hold starts inside a 1 s bound and ends past it
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -126,7 +127,8 @@ while :; do
     late)    decline; gone ;;
     none)    : ;;
     vanish)  gone; sleep 0.15; exit 0 ;;
-    slow)    sleep 1.4; gone ;;
+    slow)    sleep 2.6; gone ;;
+    m6)      sleep 0.6; gone ;;
   esac
 done
 EOF
@@ -379,18 +381,31 @@ assert_eq "$(keys vd)" "31" "...with exactly one key in its log"
 rec="$(find "$ROOST_RECORD_DIR" -name answers -path "*/${vd#%}/answers" 2>/dev/null | head -1)"
 assert_contains "$(cat "$rec" 2>/dev/null)" " confirmed=none " "...and the record says confirmed=none, not screen"
 T kill-pane -t "$vd" 2>/dev/null
-# A hold the bound cuts short is no proof either. The call is started just
-# after a second ticks over, so the 1 s bound ends about 1.7 to 2 s after the
-# key and the marker, gone 1.4 s after it, cannot hold for half a second
-# first. (On a machine slow enough to end the bound before 1.4 s the marker
-# is never seen gone at all; that is exit 10 too.)
+# A marker that has not left by the end of the bound is no proof: the bound
+# says when a proof may START. With a 1 s bound the loop ends between 1 and
+# 2 s after the key, and this marker leaves 2.6 s after it.
 w="$(open_dialog slow w)"; fp="$(fpof "$w")"
-s0="$(date +%s)"; while [ "$(date +%s)" = "$s0" ]; do sleep 0.02; done
 ans --expect "$fp" "$w" --approve
-assert_eq "$rc,$out" "10," "a screen proof the bound cut short: exit 10, not a screen proof"
+assert_eq "$rc,$out" "10," "a marker that leaves after the bound has ended: exit 10, not a screen proof"
 assert_contains "$err" "nothing confirmed it inside 1 s" "...saying nothing confirmed it inside the bound"
 assert_eq "$(keys w)" "31" "...with exactly one key in its log"
 T kill-window -t "$w"
+# A hold that STARTS inside the bound runs to its end past it (the M6 shape:
+# the dialog goes, the pane stays blocked). A slow runner needs this: there,
+# ten polls outlast the whole 3 s bound (CI on #178). The call is started
+# about 0.4 s after a second ticks over, so the bound ends about 1.2 s after
+# the key; the marker leaves at 0.6 s and ten polls take longer than the
+# 0.6 s left, so under the old rule (stop at the bound) the hold was cut and
+# this was exit 10. On a machine where the timing falls otherwise it passes
+# under both rules; it fails only if the hold is cut.
+m6="$(open_dialog m6 m6)"; fp="$(fpof "$m6")"
+s0="$(date +%s)"; while [ "$(date +%s)" = "$s0" ]; do sleep 0.02; done; sleep 0.4
+ans --expect "$fp" "$m6" --approve
+assert_eq "$rc,$out" "0,$m6 approve $fp" "a screen hold that starts inside the bound and ends past it: exit 0"
+rec="$(find "$ROOST_RECORD_DIR" -name answers -path "*/${m6#%}/answers" 2>/dev/null | head -1)"
+assert_contains "$(cat "$rec" 2>/dev/null)" " confirmed=screen " "...confirmed by the screen"
+assert_eq "$(keys m6)" "31" "...with one key"
+T kill-window -t "$m6"
 
 # --- 6b. a question (--option N, step 3) --------------------------------------
 q="$(open_dialog state q ask)"; fp="$(fpof "$q")"

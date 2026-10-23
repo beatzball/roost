@@ -2244,6 +2244,18 @@ EOF
     # first tick can come in under a second. The loop runs while it is at
     # most the bound, so it ends between the bound and the bound plus one
     # second -- never before the bound, which is what the stderr line names.
+    #
+    # THE BOUND SAYS WHEN A PROOF MAY START, not when it must be finished. A
+    # screen hold that STARTED inside the bound runs on past it to its full
+    # ten polls, or until a stronger proof, a decline, a gone or dead pane, or
+    # the marker coming back ends it. Ten polls took 0.92 s on a fast Mac and
+    # more than the whole 3 s bound on a GitHub macOS runner, where each tmux
+    # call is far slower: cutting the hold at the bound reported exit 10 there
+    # for an answer that had landed (CI on #178). A marker that has not left
+    # by the end of the bound is still exit 10, as before. The ceiling, the
+    # bound plus 10 s, is there so that a tmux that has stopped answering
+    # cannot hold this command for ever while a hold is open; ten polls need
+    # nowhere near that on any machine measured.
     ans_timeout="$(t show-options -gqv @roost-answer-timeout 2>/dev/null || true)"
     case "$ans_timeout" in ''|*[!0123456789]*) ans_timeout=3 ;; esac
     [ "${#ans_timeout}" -gt 2 ] && ans_timeout=30
@@ -2255,7 +2267,8 @@ EOF
     confirmed="" wrong="" now_state="" screen_at="" gone=0
     i=0
     SECONDS=0
-    while [ "$SECONDS" -le "$ans_timeout" ]; do
+    while { [ "$SECONDS" -le "$ans_timeout" ] || [ -n "$screen_at" ]; } \
+          && [ "$SECONDS" -le $((ans_timeout + 10)) ]; do
       cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
       # The pane is gone: nothing on it can confirm anything any more, and a
       # screen that had lost its marker before it went proves nothing.
