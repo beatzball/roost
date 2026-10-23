@@ -76,6 +76,7 @@ try:
     out.flush()
     line = []
     in_paste = False
+    carry = ""
     submitted = open(submitted_path, "a", buffering=1)
     while True:
         chunk = os.read(fd, 4096)
@@ -105,7 +106,21 @@ try:
             # line then carried the message twice with a literal C-u between,
             # and a test blamed the sender (found by review, reproduced with
             # the chunks `roost send` really sends). A block split across two
-            # reads stays one block: in_paste survives the loop.
+            # reads stays one block: in_paste survives the loop. A MARKER
+            # split across two reads — a 4096-byte read that ends inside
+            # \e[201~ — is held back: a tail that is a proper prefix of a
+            # marker is carried into the next chunk rather than parsed as
+            # text (found by review; without this the close marker and the
+            # Enter after it were buffered as message text and nothing was
+            # ever submitted).
+            text = carry + text
+            carry = ""
+            for k in range(min(5, len(text)), 0, -1):
+                tail = text[-k:]
+                if "\x1b[200~".startswith(tail) or "\x1b[201~".startswith(tail):
+                    carry = tail
+                    text = text[:-k]
+                    break
             i = 0
             while i < len(text):
                 if in_paste:

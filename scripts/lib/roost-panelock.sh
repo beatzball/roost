@@ -43,22 +43,38 @@
 #     lose its lock and then write its pid into the taker's — known, and not
 #     worth a rule that could never take over a lock with no pid at all.
 #
-# THE `.take` GUARD CARRIES ITS TAKER'S PID TOO, and is an orphan by the same
-# three clauses, never by age alone. An orphan is a taker that was killed
-# between its mkdir and its rmdir, and it has to go or no lock on that pane
-# could ever be taken over again. Removing it is where two waiters can
-# collide, so it is done with mv (rename(2): one of two waiters wins, the
-# other's mv fails because the source is gone), to a name that carries the
-# orphan's pid as this waiter read it, and the moved directory's pid is READ
-# BACK: the same pid means the orphan, and it is removed; a different pid
-# means the mv caught another waiter's FRESH guard, and it is moved straight
-# back. What that leaves is the gap between the mv away and the mv back —
-# two syscalls, no sleep — in which a third waiter could mkdir a guard of its
-# own and make the mv back fail. Two takers can then both clear the stale
-# lock and both reach mkdir, where only one wins; the loser's second `rm -rf`
-# can still take the winner's fresh lock. That window is not closed here;
-# it is caught by roost_panelock_check, below, which every holder calls
-# before each keystroke that cannot be taken back.
+# NOTHING LIVE IS EVER DELETED. Neither the lock nor the `.take` guard is
+# removed in place: a stale one is RETIRED (roost_panelock__retire) — its
+# pid is read ONCE, the gone-ness decided on that read, the directory moved
+# with mv (rename(2): of two waiters that decided the same thing, one wins
+# and the other's mv fails because the source is gone) to a private name
+# that carries the pid it was seen with, and the moved directory's pid READ
+# BACK. The same pid means the thing that was judged, and it is removed. A
+# different pid means the mv caught a FRESH one that took its place between
+# the read and the mv, and it is moved straight back. A directory with no
+# pid file is judged by age, and read back by age too: a fresh holder
+# between its mkdir and its pid write has an empty pid and is seconds old,
+# so it is moved back, not removed. Reading the pid once matters: the first
+# version read it for the decision and again for the name, and a guard
+# replaced between the two reads was deleted with a matching read-back
+# (found by review, reproduced).
+#
+# What that leaves is the gap between the mv away and the mv back — two
+# syscalls, no sleep — in which the fresh one's owner can read its pid file
+# and find nothing (roost_panelock_check says 1, and that sender stops with
+# nothing submitted: one spurious exit 1, which is the safe side), or in
+# which a third process can mkdir the name and make the mv back fail (the
+# moved copy is then removed, its owner's next check says 1, and the third
+# process is the one holder). Two writers never follow from either. The
+# `.take` guard carries its taker's pid too, and is an orphan by the same
+# three clauses, never by age alone; an orphan is a taker killed between
+# its mkdir and its rmdir, and it has to go or no lock on that pane could
+# ever be taken over again.
+#
+# roost_panelock_check is the net under all of it: every holder re-reads its
+# pid file before each key it could not take back. A stolen lock is one loud
+# exit 1 with nothing submitted, never two senders typing into one box. The
+# gap it cannot cover is the one tmux call between the check and the key.
 #
 # A stale lock that cannot be removed (a permission, a file system in
 # trouble) does not spin: every pass of the loop pays one tick toward the
@@ -115,12 +131,13 @@ roost_panelock__pid() {
   cat "$1/pid" 2>/dev/null || true
 }
 
-# 0 when the holder of the lock (or guard) at $1 is gone.
-roost_panelock__stale() {
-  local pid args
-  pid="$(roost_panelock__pid "$1")"
+# roost_panelock__gone PID DIR -> 0 when the holder of DIR, whose pid file
+# read PID (once, by the caller), is gone. DIR is only looked at when PID is
+# empty, for its age.
+roost_panelock__gone() {
+  local pid="$1" dir="$2" args
   case "$pid" in
-    ''|*[!0-9]*) [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+    ''|*[!0-9]*) [ -n "$(find "$dir" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
     *)
       kill -0 "$pid" 2>/dev/null || return 0
       args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
@@ -130,10 +147,42 @@ roost_panelock__stale() {
   esac
 }
 
+# 0 when the holder of the lock (or guard) at $1 is gone. A gate only: the
+# decision that leads to a removal is made inside roost_panelock__retire, on
+# a pid read once.
+roost_panelock__stale() {
+  roost_panelock__gone "$(roost_panelock__pid "$1")" "$1"
+}
+
+# roost_panelock__retire DIR SEEN — remove DIR, but only if it is still the
+# directory whose pid file read SEEN: mv it aside, read the pid back, and
+# remove on a match; on a mismatch mv it straight back (or, if its name was
+# taken meanwhile, remove the moved copy — its owner's next check says 1).
+# An empty SEEN is matched by age as well as by emptiness, so that a fresh
+# holder between its mkdir and its pid write is never the match. 0 when the
+# directory was removed.
+roost_panelock__retire() {
+  local dir="$1" seen="$2" moved
+  moved="$dir.gone.${seen:-none}.$$"
+  mv "$dir" "$moved" 2>/dev/null || return 1
+  if [ "$(roost_panelock__pid "$moved")" = "$seen" ] && { [ -n "$seen" ] || [ -n "$(find "$moved" -maxdepth 0 -mmin +1 2>/dev/null)" ]; }; then
+    rm -rf "$moved" 2>/dev/null || true
+    return 0
+  fi
+  mv "$moved" "$dir" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+  return 1
+}
+
 # 0 held, 1 someone else has it, 3 made but the pid could not be kept.
 roost_panelock__mkdir() {
   mkdir "$1" 2>/dev/null || return 1
   if ! printf '%s\n' "$$" > "$1/pid" 2>/dev/null; then
+    # A directory that is GONE was retired from under this process between
+    # its mkdir and its write (the age read-back makes that rare, not
+    # impossible): that is losing the race, not a broken file system, and
+    # the caller tries again. Only a directory that is still there and will
+    # not take a file is 3.
+    [ -d "$1" ] || return 1
     rm -rf "$1" 2>/dev/null || true
     return 3
   fi
@@ -141,26 +190,26 @@ roost_panelock__mkdir() {
 }
 
 # One takeover attempt on the stale lock at $1, under the `.take` guard.
+# Each pid is read ONCE and that read is what the retirement is judged and
+# verified against.
 roost_panelock__takeover() {
-  local lock="$1" guard="$1.take" seen moved
-  if roost_panelock__stale "$guard"; then
+  local lock="$1" guard="$1.take" seen
+  if [ -d "$guard" ]; then
     seen="$(roost_panelock__pid "$guard")"
-    moved="$guard.orphan.${seen:-none}.$$"
-    if mv "$guard" "$moved" 2>/dev/null; then
-      if [ "$(roost_panelock__pid "$moved")" = "$seen" ]; then
-        rm -rf "$moved" 2>/dev/null || true
-      else
-        mv "$moved" "$guard" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
-      fi
+    if roost_panelock__gone "$seen" "$guard"; then
+      roost_panelock__retire "$guard" "$seen" || true
     fi
   fi
-  if mkdir "$guard" 2>/dev/null; then
-    printf '%s\n' "$$" > "$guard/pid" 2>/dev/null || true
-    roost_panelock__stale "$lock" && rm -rf "$lock" 2>/dev/null || true
-    rm -rf "$guard" 2>/dev/null || true
-    return 0
+  mkdir "$guard" 2>/dev/null || return 1
+  printf '%s\n' "$$" > "$guard/pid" 2>/dev/null || true
+  if [ -d "$lock" ]; then
+    seen="$(roost_panelock__pid "$lock")"
+    if roost_panelock__gone "$seen" "$lock"; then
+      roost_panelock__retire "$lock" "$seen" || true
+    fi
   fi
-  return 1
+  rm -rf "$guard" 2>/dev/null || true
+  return 0
 }
 
 roost_panelock_take() {

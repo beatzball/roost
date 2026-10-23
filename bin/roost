@@ -1337,6 +1337,12 @@ JSON
     # "still pending" and fire every retry into a pane that had nothing to
     # submit in the first place.
     if [ -z "$*" ]; then
+      # Even a bare Enter is a key that cannot be taken back: on a box
+      # another sender is typing into, it submits THEIR half-typed text.
+      if ! roost_panelock_check; then
+        echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+        exit 1
+      fi
       t send-keys -t "$tgt" Enter 2>/dev/null || true
       # No turn is claimed here, and none is waited for (#92). A bare Enter is
       # not a prompt: it is the "unstick this pane" gesture the paragraph above
@@ -1655,6 +1661,14 @@ JSON
     # never reached the pane at all — there is nothing to retry or verify, so
     # let it surface as a loud failure instead of falling through to report
     # exit 0 for a message that was never typed.
+    #
+    # And first: still this send's pane? The lock was taken a few tmux calls
+    # ago; a paste into a box that is another sender's by now is the start
+    # of the merged-message case this lock exists to prevent.
+    if ! roost_panelock_check; then
+      echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+      exit 1
+    fi
     if ! type_message; then
       case "$senderr" in
         *"too long"*|*"failed to send command"*)
@@ -1788,6 +1802,14 @@ JSON
     while [ "$n" -gt 0 ]; do
       sleep "$delay" 2>/dev/null || true
       pending "$*" || break
+      # An extra Enter into a box that is another sender's by now would
+      # submit their half-typed text. Not exit 1 here — the first Enter is
+      # already in, and "nothing was submitted" would be a lie — just no more
+      # Enters: the turn watch below says what became of the one that went.
+      if ! roost_panelock_check; then
+        echo "roost send: the send lock for '$raw' was taken from this send after its Enter — no more Enters will be sent" >&2
+        break
+      fi
       # A cold TUI can swallow the first Enter entirely; try again. Guarded:
       # a pane that dies mid-loop must not abort the script with tmux's raw
       # error — it should fall through to the same conservative handling as

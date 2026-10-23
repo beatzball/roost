@@ -193,22 +193,27 @@ kill "$stranger" 2>/dev/null; wait "$stranger" 2>/dev/null
 # Enter. The handler must EXIT, not clean up and carry on: a send that went on
 # to C-u, paste and Enter after dropping its lock would be typing beside
 # whoever took the lock next. Bash runs the trap once the foreground sleep
-# returns, so the exit is collected with wait. The kill waits for the LOCK
-# to appear first: a victim killed before it took the lock and installed its
-# traps would pass every assertion here through the default handling, and
-# prove nothing (found by review).
-wait_lock() {
-  local n=100
+# returns, so the exit is collected with wait. The kill waits for the
+# victim's PASTE to be on the screen first — a new `[Pasted text #N]`, N one
+# past the last one there — which proves it holds the lock, has its traps
+# installed, and is in its head-check sleep. A victim killed before that
+# would pass every assertion here through the default signal handling and
+# prove nothing; waiting for the lock DIRECTORY alone was not enough either,
+# since it exists before the pid is written and before the traps are set
+# (both found by review).
+last_paste() { T capture-pane -p -t "$p1" 2>/dev/null | grep -o 'Pasted text #[0-9]*' | sort -t'#' -k2 -n | tail -n 1; }
+wait_paste() {
+  local before="$1" n=100
   while [ "$n" -gt 0 ]; do
-    [ -d "$lock" ] && return 0
+    [ "$(last_paste)" != "$before" ] && return 0
     sleep 0.1; n=$((n - 1))
   done
   return 1
 }
 : >"$f1"
+before_paste="$(last_paste)"
 "$ROOST" send "$p1" "killed midway" >/dev/null 2>&1 & victim=$!
-wait_lock; assert_true $? "the victim took the lock"
-sleep 0.3
+wait_paste "$before_paste"; assert_true $? "the victim pasted, so it holds the lock and its traps are set"
 kill -TERM "$victim" 2>/dev/null
 wait "$victim" 2>/dev/null; rc=$?
 assert_eq "$rc" 143 "a send that takes SIGTERM exits 143"
@@ -224,8 +229,9 @@ T send-keys -t "$p1" C-u 2>/dev/null   # clear what the killed send left in the 
 # misjudged would. The send must exit 1 having submitted nothing, and must not
 # remove a lock that is no longer its own.
 : >"$f1"
+before_paste="$(last_paste)"
 "$ROOST" send "$p1" "under a stolen lock" >"$work/s.out" 2>"$work/s.err" & victim=$!
-wait_lock; assert_true $? "the victim took the lock"
+wait_paste "$before_paste"; assert_true $? "the victim pasted, so it holds the lock with its pid written"
 printf '%s\n' 999999 >"$lock/pid"
 wait "$victim" 2>/dev/null; rc=$?
 assert_eq "$rc" 1 "a send whose lock was taken from it: exit 1"

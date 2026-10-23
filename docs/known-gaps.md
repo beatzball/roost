@@ -1979,27 +1979,32 @@ pane waits — `@roost-send-lock-timeout`, default 60 s — and then exits 1 wit
 nothing typed. A holder that was killed is taken over. Three things it does
 not promise.
 
-- **Two takers can, in principle, both clear a stale lock.** The takeover
-  guard `.take` is orphaned by a taker killed between its mkdir and its
-  rmdir, a window of microseconds. Removing an orphan is a mv to a private
-  name and a read-back of its pid, with a mv straight back when the pid is
-  not the one that was seen; a second waiter that read the same orphan can,
-  in the gap between the first one's mv away and its mv back, mkdir a guard
-  of its own. Two takers then both clear the stale lock and both reach mkdir
-  on it, one wins, and the loser's `rm -rf`, decided before the winner's
-  mkdir, can remove the winner's fresh lock. Severity: low, and bounded. It
-  needs a SIGKILL inside a microsecond window, then a minute, then two
-  waiters inside a two-syscall gap; and every holder re-reads its pid file
-  before each C-u and before Enter (roost_panelock_check), so a holder whose
-  lock was taken exits 1 with nothing submitted rather than typing beside
-  the other. What would close it: a compare-and-swap on a directory, which
-  the file system does not offer.
-- **A holder stopped for a minute between its mkdir and its pid write loses
-  the lock.** A lock with no pid file is "gone" once it is a minute old; a
-  SIGSTOP in that microsecond window, held for a minute, is the one way a
-  live holder's lock is taken, and it then writes its pid into the taker's.
-  Severity: low — and the check above still stops the stopped one before
-  its next keystroke, because the pid it reads back is the taker's.
+- **A live holder can be made to exit 1 for nothing.** No live lock is ever
+  deleted: a stale lock or guard is moved aside by mv, its pid read back,
+  and removed only on a match, else moved straight back. In the two
+  syscalls between the move away and the move back, the live holder's
+  `roost_panelock_check` (run before each paste, C-u and Enter) reads no
+  pid file and the holder exits 1 with "the send lock was taken from this
+  send", having submitted nothing. A third process can also mkdir the name
+  in that gap, in which case the moved copy is removed and the holder stops
+  at its next check the same way. Severity: low — it needs a taker killed
+  between its mkdir and its rmdir (microseconds), and then a waiter whose
+  read and mv straddle another's mkdir; the result is one spurious exit 1,
+  which the documented retry covers. What would close it: a compare-and-swap
+  on a directory, which the file system does not offer.
+- **Between a check and its key there is one tmux call.** The check reads
+  the pid file; the key is sent next. A sender whose lock is taken in that
+  gap, and whose box another sender then pastes into before the key lands,
+  would press Enter on both texts. The gap is one `send-keys` with no sleep,
+  and the other sender has to mkdir, write a pid, load a buffer and paste
+  inside it. Severity: low, and the only path left to two texts in one box.
+- **A holder stopped for a minute between its mkdir and its pid write writes
+  its pid into the taker's lock.** A lock with no pid file is "gone" once it
+  is a minute old; a SIGSTOP in that microsecond window, held for a minute,
+  lets a waiter take the lock, and the stopped holder then writes its own
+  pid into the taker's directory. It is the TAKER whose next check then
+  reads a foreign pid and stops; the stopped one carries on as the sole
+  holder. Severity: low — still one writer, and the one that stops says so.
 - **"Is it a roost" is `ps -o args=`.** A killed sender's pid reused by a
   process whose args happen to carry "roost" (a `roost status`, a shell in a
   directory named roost) holds the lock until that process exits; sends to
