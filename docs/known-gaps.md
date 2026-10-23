@@ -275,10 +275,12 @@ server with a local stand-in for each API: Claude Code 2.1.283, codex-cli
   the next entry.
 
 **Why it is left.** Neither harness has an event for "the human said yes".
-The first event after an approval is the tool's result. `roost answer` is
-designed to work around it, not to fix it: it checks the visible screen for
-the dialog before it sends a key, and it records that the dialog was answered.
-A human who presses the key at the pane still gets this badge.
+The first event after an approval is the tool's result. `roost answer` (#142)
+works around it, and does not fix it: it checks the visible screen for the
+dialog before it sends a key, refuses a second answer to the same dialog, and
+records the answer in `@roost-answered`, which `status --json` shows as
+`dialog.answered`. A human who presses the key at the pane still gets this
+badge, with no `answered`.
 
 **What would close it:** an approval event from the harness, or for codex a
 `PostToolUse` when `exec_command` yields.
@@ -310,8 +312,106 @@ codex panes on one `CODEX_HOME`: all six hook calls of the second pane ran
 with the first pane's `TMUX_PANE`, so the first pane read `blocked` for a
 dialog on the second pane's screen, and the second pane had no badge. #145 has
 the measurement and owns the fix. It is listed here because a wrong pane's
-badge is the kind that makes `send`, `wait-done` and the planned `answer` act
-on the wrong pane.
+badge is the kind that makes `send` and `wait-done` act on the wrong pane. It
+is also why `roost answer` has no codex keys yet: every codex dialog is
+refused with exit 8 until #145 is understood.
+
+### `roost answer` (#142): what it refuses, and what it cannot prove
+
+**A live risk, by design narrow.** `roost answer` sends one key into the
+dialog a pane is blocked on. The design and its measurements are
+`docs/airig/specs/2026-09-30-roost-answer-design.md`; the build is steps 1, 2,
+3 and 5 of its §10. Every case below sends nothing unless it says so.
+
+**The caller check cannot prove a person. Medium.** It refuses (exit 9) a call
+whose `$TMUX` names this server and whose `$TMUX_PANE` is a pane an agent has
+reported from: it has `@agent_state` or an identity (`@roost-session`). That
+stops an agent that reads the skill, sees a blocked peer and tries the obvious
+command. It does not stop:
+
+- one `env -u TMUX -u TMUX_PANE roost answer …`. The environment is the only
+  signal used today; the parent-chain test of the design's §7.2 waits for
+  #105's walk (step 6 of §10). Scrubbing the environment AND detaching
+  (`nohup … &`) gets past both, and nothing can close that
+- an agent in a harness with no adapter: its pane has no badge and no
+  identity, so it looks like a person's shell pane (the human's decision Q1)
+- an agent passing `--force`. The skill says never to, unless its human told
+  it to answer that dialog
+
+And it surprises one person (the design's §12.9): someone who ran an agent in
+a pane, quit it, and now types in that pane gets exit 9, because the pane
+still has its badge. `--force` is the honest answer there.
+
+**What is refused in this cut, each with the exit code a caller sees:**
+
+| case | exit |
+|---|---|
+| a bad call: no action, two actions, `--option` with no number, `--expect` that is not 12 lowercase hex | 1 |
+| `--approve` or `--option` with no `--expect` | 1 |
+| no such target, a dead pane, a window with more than one blocked pane | 2 |
+| a pane that is not blocked, one in copy mode, one whose screen does not show the dialog, a dialog already answered | 6 |
+| `--expect` that is not the pane's dialog, or a dialog that changed before the send; a blocked pane with no dialog record and `--expect` given | 7 |
+| `--text`; a dialog of kind `other` (a Claude `WebFetch`, an MCP tool, `NotebookEdit`, plan approval, a multi-select, two or more questions, an option with a preview, a subagent's dialog, a payload no reader could parse); every codex dialog (#145); every opencode, copilot and pi dialog; `--approve` on a question; `--option` on a permission prompt; an option number the agent did not give; a deny with no `--expect` on a pane with no dialog record | 8 |
+| a caller in an agent's pane, without `--force` | 9 |
+
+Claude's `Edit` dialog was measured for this cut (2.1.309, once each: `1`
+approves with no Enter, Escape declines) and is answered. `WebFetch` and an
+MCP tool were not measured — one needs the network, the other a server — and
+stay refused.
+
+**What can still go wrong after a key is sent.** Each was predicted by the
+design (§12) and none was seen; the first two cannot be reproduced on demand.
+
+- **The approve that lands on the next dialog. Low.** A new dialog is drawn a
+  little before its hook writes the new fingerprint (11 to 16 ms, plus the
+  hook's own run). If a person answers the old dialog at the pane in that
+  instant, `answer`'s key goes to the new one under the old fingerprint, and
+  the marker cannot tell the two apart. It needs two answers inside about
+  60 ms.
+- **A stray digit in the prompt box. Low.** A person declines at the pane a
+  few milliseconds before `answer` sends `1`. Claude fires no hook for a
+  decline, so every check passes, and the `1` is typed into the prompt. The
+  transcript then shows the decline, so `answer` exits 10 and says so; the
+  stand-in test covers that. The digit stays in the prompt box, and the next
+  `send` pastes after it. roost does not send a key to clean it up.
+- **The `screen` proof is the builder's reading, not a measurement.** After a
+  key, the dialog leaves the screen before anything else changes, so a screen
+  with no dialog on it counts as proof only once it has held for half a
+  second, and a stronger proof or a decline seen in that time wins. No run
+  measured how long the stronger proofs can lag. An approved slow tool is
+  reported `confirmed: screen` half a second late; that is the cost.
+- **"Same hook twice" keeps the fingerprint, by reasoning.** Two hook calls
+  for one dialog keep one token when the pane already reads blocked with the
+  same tool and input. A subagent's dialog with the same tool and input,
+  opened while the main dialog is up, was not measured; it is kind `other`, so
+  its record differs and it gets a new token, and it is refused anyway.
+- **The marker text is Claude's, not a contract.** The day a dialog is
+  reworded, every `answer` on it is exit 6, "no dialog is on its screen".
+  That is safe, and it will look like a roost bug. `tests/live/answer-smoke.sh`
+  says which it is; run it after every Claude Code upgrade.
+- **A wrapped dialog line.** The screen is read with wrapped lines joined
+  (`capture-pane -J`), and the stand-in test checks a pane 10 columns wide,
+  where both marker lines wrap. A real Claude dialog in a narrow pane was not
+  driven.
+
+### On tmux 3.4 a C-locale client reads a tab as `_`
+
+**A live risk, unmeasured outside one case. Medium on a C-locale machine.**
+Measured on Ubuntu 24.04, tmux 3.4-1ubuntu0.2: a tmux client whose locale is
+`C` prints a tab in a `display-message` or `list-*` format as `_`, so
+`#{session_name}<TAB>#{pane_id}` came back as `0_%0`. Under `C.UTF-8` it
+printed the tab, and tmux 3.6 on macOS prints it in both, so CI (`C.UTF-8`)
+and the Mac never see it. Several readers split a tmux reply on tabs and were
+not changed: the event log (`scripts/lib/roost-events.sh`), `status --json`
+and the other `--json` readers (`scripts/lib/roost-jsonout.sh`, which already
+refuses a row whose tab count is wrong and falls back to one field per call),
+the hook (`scripts/roost-agent-state`) and `scripts/roost-ext`. On such a
+machine each of them reads one field where it expected several, and what that
+costs was not measured per reader. `roost answer` (#142) splits on `|`
+instead, which tmux 3.4 printed unchanged in both locales, and
+`tests/test-answer.sh` runs it against a server and a client in the C locale.
+**What would close it:** the same separator in the other readers, each with
+a C-locale case on tmux 3.4.
 
 ### Claude's "No" is not always option 3
 
@@ -1705,10 +1805,13 @@ places a reader of the log can still be wrong. Severity is stated on each.
   the agent's lines in one log and the close check's search in another, and
   no `closed` line is written. Closing it: record the log's directory in a
   server option the first time a line is written, and have the check read it.
-- **A second codex dialog in a row writes no `blocked_on` line. Low.** codex's
-  adapter sends a flagless `blocked`, which carries no description, so nothing
-  says the dialog changed. Closing it: the codex adapter passes the
-  description, the way Claude's PermissionRequest hook does.
+- **A second codex dialog in a row writes no `blocked_on` line when codex's
+  hook runs in its shared app-server. Low.** Since #142 the codex adapter
+  passes its PermissionRequest payload, so a codex dialog has a description
+  like Claude's. But when the hook's parent is codex's shared app-server
+  (#145), the adapter sends a flagless `blocked` instead, because there the
+  pane it names may not be the pane showing the dialog. That stamp carries no
+  description, so nothing says the dialog changed. Closing it: #145.
 - **A line can land in a segment a reader has already left. Low.** A writer
   lists the segments, then appends to the newest. If another writer rotates in
   between — microseconds — the line goes into the segment just closed. It is

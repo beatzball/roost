@@ -329,6 +329,7 @@ roost_ext_core_commands() {
     hooks \
     ssh \
     send \
+    answer \
     read \
     screen \
     reply \

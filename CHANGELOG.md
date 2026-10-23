@@ -7,6 +7,30 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`roost answer`: answer a blocked pane's dialog from any shell (#142).**
+  `roost answer --expect FP %3 --approve`, `--option N` or `--deny` sends one
+  measured key into the dialog a pane is blocked on, once, and waits up to 3 s
+  to see it land. It answers a Claude Code permission prompt for `Bash`,
+  `Write` or `Edit` (`1` to approve, Escape to deny) and a Claude question
+  with one choice and two to four options (the option's digit). Every other
+  dialog, and every codex, opencode, copilot and pi dialog, is refused with
+  exit 8 and nothing sent. `--expect` names the dialog you saw and is required
+  to approve or pick an option, so the key cannot land on a newer dialog
+  asking the same thing. It refuses a caller in an agent's pane (exit 9)
+  unless `--force`; that is a guard against an accident, not a lock. Exit 10
+  means the key was sent and not seen to land: do not answer again. roost
+  still never answers a dialog on its own. `--json` prints one document.
+- **`status --json` says which dialog a blocked pane shows.** Each pane gains
+  `dialog`: a fingerprint that is new for each dialog, the harness, the kind
+  (`permission`, `question` or `other`), how many options a question has, and
+  `answered`, which says when `roost answer` answered it. A pane keeps its 🛑
+  badge for as long as an approved tool runs, so `answered` is how a board
+  tells "needs you" from "already answered". A codex dialog now records what
+  it is about, as a Claude dialog does, except under codex 0.157.1's shared
+  background process (#145).
+
 ## [0.8.0]
 
 roost now updates itself. `roost upgrade` pulls the next release into the

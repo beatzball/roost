@@ -301,6 +301,10 @@ roost send --force api "run the tests"  # send anyway
 `--force` must come **before** the target. Anywhere later it would be
 indistinguishable from a message that happens to start with that word.
 
+To answer the dialog itself, from wherever you are, use
+[`roost answer`](#answer-a-dialog-from-anywhere-roost-answer). `send --force`
+never does: it types your text into the dialog.
+
 In a loop, exit 3 is the one code worth retrying on — and **4 must never be
 retried**, because the text is already in the agent:
 
@@ -392,9 +396,74 @@ What it refuses, and does not change:
 | `1` | refused, or the agent did not leave in time, or it opened a dialog. The pane is still open. stderr says which |
 | `2` | the target was already gone. One line on stderr |
 
+## Answer a dialog from anywhere: `roost answer`
+
+**roost never answers a dialog on its own.** No hook, no adapter and no other roost command sends a key into a dialog. `roost answer` does, once, when a person runs it.
+
+A 🛑 blocked pane is waiting for you: a permission prompt, or a question. `roost answer` answers it from any shell — another pane, another terminal, another machine over `roost ssh` — without switching to the pane:
+
+```sh
+roost status --json        # find the pane, and its dialog's fingerprint
+roost answer --expect 3f9c1a2b7d4e %3 --approve     # Yes
+roost answer --expect 3f9c1a2b7d4e %3 --option 2    # pick option 2 of a question
+roost answer %3 --deny                              # No (Escape)
+```
+
+`TGT` is a `%N` pane, or a window: then it means the one pane in that window that reads blocked.
+
+**The fingerprint names the dialog you saw.** Every dialog gets a new one, in `dialog.fingerprint` of [`status --json`](#roost-status---json). A second dialog can open a fraction of a second after the first closes, asking the same thing in the same words. So `--approve` and `--option` **require** `--expect`: if the pane is now showing a different dialog, nothing is sent, and you see the new one. `--deny` may leave it out; roost then denies the dialog it reads at that moment, and says on stderr what it denied. A wrong deny costs a re-prompt. A wrong approve cannot be undone.
+
+So the loop for a program, or for you, is:
+
+1. Read `roost status --json`. Find a pane whose `dialog` is not `null` and whose `dialog.answered` is `null`.
+2. Show a person `dialog.kind`, `dialog.options` and what `roost read` or `roost screen` says the agent asked.
+3. Run `roost answer --expect FINGERPRINT` with what the person chose.
+
+Flags go **before** the target, as with `send`. Exactly one action goes after it.
+
+### What it answers, and what it refuses
+
+It sends one key, measured for that dialog, and never retries:
+
+| harness | dialog | `--approve` | `--option N` | `--deny` |
+|---|---|---|---|---|
+| Claude Code | permission prompt for `Bash`, `Write` or `Edit` | `1` | refused | Escape |
+| Claude Code | one question, one choice, two to four options | refused | the digit `N` | Escape |
+
+Everything else is refused, and nothing is sent: any other Claude dialog (a `WebFetch`, an MCP tool, a plan, a multi-select, two questions, a subagent's dialog), every codex, opencode, copilot and pi dialog, and `--text`. `--option N` takes only the options the agent gave. Claude's own "Type something." and "Chat about this" rows are refused.
+
+Before it sends, it checks that the pane reads blocked, that the dialog is the one you named and not already answered, that the dialog is on the pane's screen, and that the pane is not in copy mode. Then it checks all of that again, inside the same tmux command that sends the key. Afterwards it waits up to 3 seconds to see the answer land: the agent goes back to work, a new dialog opens, Claude's transcript records the decline, or the dialog leaves the screen. `@roost-answer-timeout` changes the wait (1 to 30 seconds).
+
+### It is a person's command
+
+`roost answer` refuses with exit `9` when it is called from a pane an agent has reported from. A person's own shell pane inside roost is fine. `--force` tells roost "a person decided this, and I am only where it was typed". It skips that one check and nothing else.
+
+roost cannot tell a person from a program. `answer` refuses a caller that sits in an agent's pane, so that an agent does not answer another agent's dialog by accident. A program that means to get past this check can. Do not treat it as a permission system.
+
+### A pane can read blocked after it was answered
+
+After an approval, the pane keeps its 🛑 badge for as long as the approved tool runs, because no hook fires until the tool ends. A board that shows "needs you" from `state` alone will show it for a pane that needs nothing. Read `dialog.answered`: it says when the dialog was answered, how, and from where. A second `roost answer` to the same dialog is refused with exit `6`.
+
+### Exit codes for `roost answer`
+
+| exit | meaning | was a key sent | what to do |
+|---|---|---|---|
+| `0` | answered, and roost saw it land | yes | carry on |
+| `1` | a bad or missing argument (`usage:`), or tmux failed before the send | no | fix the call; a retry is safe |
+| `2` | no such target, a dead pane, or a window with more than one blocked pane | no | re-resolve the target |
+| `6` | nothing to answer: not blocked, no dialog on its screen, in copy mode, or already answered | no | read `status` again |
+| `7` | a different dialog: `--expect` does not match, or it changed just before the send | no | show the person the new dialog |
+| `8` | no measured keys for this harness, dialog or action | no | answer at the pane |
+| `9` | called from an agent's pane, without `--force` | no | a person runs it, or passes `--force` |
+| `10` | **the key was sent**, and nothing confirmed it in time | **yes** | **do not answer again.** `roost screen` the pane |
+
+Exit `10` is to `answer` what `4` is to `send`: the input went in, so a second try would be a second input.
+
+Each answer is kept, one line per answer, in the pane's record beside its replies: when, which dialog, the action, where it was typed (`pane:%N`, `terminal` or `program`), `forced`, and what confirmed it. `roost forget` deletes it with the replies.
+
 ## Machine-readable output: `--json`
 
-The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So seven commands also print a JSON document when you pass `--json`:
+The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So eight commands also print a JSON document when you pass `--json`:
 
 ```sh
 roost status --json
@@ -403,6 +472,7 @@ roost read --json api            # flags go before the target, as with --render
 roost screen --json api 20
 roost send --json api "run the tests"   # flags go before the target, as with --force
 roost close --json %12             # flags go before the target, as with --force
+roost answer --json --expect 3f9c1a2b7d4e %3 --approve
 roost state done --json          # the flag goes AFTER the state
 ```
 
@@ -430,7 +500,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 ### `roost status --json`
 
 ```json
-{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1}]}
+{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1,"dialog":null}]}
 ```
 
 | field | type | meaning |
@@ -455,6 +525,12 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `panes[].harness` | string or `null` | which agent it is: `claude`, `codex`, `opencode`, `copilot`, `pi`, or the name an adapter passed to `roost identify` |
 | `panes[].transcript` | string or `null` | the path of the agent's transcript, when its harness keeps one file per session (Claude Code, codex, pi) |
 | `panes[].subagents` | integer or `null` | how many subagents the agent has running right now. `0` once they have all finished; `null` for a pane that has never run one, and for every harness but Claude Code, which is the only one that reports it. A count, not a state: `state` still says whether the agent itself is busy |
+| `panes[].dialog` | object or `null` | the dialog a 🛑 blocked pane is showing, for [`roost answer`](#answer-a-dialog-from-anywhere-roost-answer). `null` unless `state` is `blocked` and the agent's hook described the dialog (Claude Code, and codex) |
+| `panes[].dialog.fingerprint` | string | twelve hex characters, new for each dialog: what `roost answer --expect` takes |
+| `panes[].dialog.harness` | string | `claude` or `codex` |
+| `panes[].dialog.kind` | string | `permission`, `question`, or `other` for a dialog roost has no measured keys for |
+| `panes[].dialog.options` | integer | for a question, how many options the agent gave; `0` otherwise |
+| `panes[].dialog.answered` | object or `null` | `null` until `roost answer` answers this dialog, then `{"at":1790748772,"action":"approve","option":null,"by":"terminal"}`: epoch seconds, `approve`, `deny` or `option` (with the number in `option`), and where it was typed — `pane:%N`, `terminal` or `program`. A pane reads blocked for as long as an approved tool runs, so this is how you tell "needs you" from "already answered" |
 
 The four identity fields (`session_id`, `cwd`, `harness`, `transcript`) are always present, and `null` until the agent's first event says who it is — a pane that has never run an agent has four `null`s. Nothing clears them when the agent exits, so they stay until another agent in the pane says who it is: a pane back at its shell prompt still names the last agent that ran there. They follow the agent, not the pane: clearing a conversation gives it a new `session_id`, and resuming one brings its old `session_id` back in a new pane. roost records what the harness says now and never links the two.
 
@@ -543,6 +619,26 @@ It exits 0 even when `recorded` is `false`, as the plain command always has. Put
 | `forced` | bool | `--force` was given |
 
 A close that fails prints **nothing** on stdout, as every `--json` command does. Read the exit status first.
+
+### `roost answer --json`
+
+```json
+{"schema":1,"command":"answer","target":"api","pane":"%3","action":"approve","option":null,"fingerprint":"3f9c1a2b7d4e","harness":"claude","kind":"permission","confirmed":"state","state":"working","forced":false}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `target` | string | the target as you typed it |
+| `pane` | string | the `%N` that was answered |
+| `action` | string | `approve`, `deny` or `option` |
+| `option` | integer or `null` | the option picked; `null` unless `action` is `option` |
+| `fingerprint` | string | the dialog that was answered |
+| `harness`, `kind` | string | the dialog's, as in `status --json` |
+| `confirmed` | string | what showed the answer landed: `state` (the agent went back to work), `dialog` (a new dialog opened), `transcript` (Claude recorded the decline) or `screen` (the dialog left the screen and nothing else changed yet — what an approved slow tool looks like; the weakest of the four) |
+| `state` | string or `null` | the badge when it landed; `null` after a deny, whose badge roost clears |
+| `forced` | bool | `--force` was given |
+
+An answer that fails prints **nothing** on stdout, as every `--json` command does — including exit `10`, where the key was sent. Read the exit status first.
 
 `wait-done` does not take `--json` yet. `send --json` is new; `schema` did not change for it, because adding a command that takes `--json` is not a breaking change (see above).
 

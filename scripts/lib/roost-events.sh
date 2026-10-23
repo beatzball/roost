@@ -300,9 +300,11 @@ roost_events_arm() {
   if [ "$4" = "$3" ]; then
     # A repeat can only be a blocked one (the call line checks), and only the
     # PermissionRequest hook says WHAT a dialog is about. The Notification for
-    # the same dialog arrives six seconds later carrying nothing, and codex's
-    # flagless `blocked` carries nothing either, so neither can say the dialog
-    # changed. docs/known-gaps.md has the codex half.
+    # the same dialog arrives six seconds later carrying nothing. codex's
+    # adapter passes its PermissionRequest payload the same way since #142,
+    # except when its hook runs inside codex's shared app-server, where it
+    # still sends a flagless `blocked` that carries nothing and so cannot say
+    # the dialog changed. docs/known-gaps.md has that codex half.
     [ "$4" = blocked ] && [ "$5" = 1 ] || return 0
     # What the pane is blocked on BEFORE this hook stamps the new dialog. One
     # tmux read, on a pane that is already waiting on a human.

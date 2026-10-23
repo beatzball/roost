@@ -555,20 +555,64 @@ fi
 # Read, NotebookEdit), url (WebFetch). Measured payloads for all five dialog
 # kinds are in tests/test-claude-permission-request.sh. An MCP tool has none of
 # them -- its input is whatever that server declares -- so it records the tool
-# name alone, which is still the thing a human needs to see.
+# name alone, which is still the thing a human needs to see. A question
+# (AskUserQuestion) records its FIRST question's text, which the same payload
+# carries (#142, F3 of the answer design): the tool name alone told a reader
+# nothing about what was being asked.
+#
+# THE SAME READER ALSO DESCRIBES THE DIALOG FOR `roost answer` (#142), in a
+# third line: "<kind> <options> <digest> <token>". The design, and the
+# measurements every rule here rests on, is
+# docs/airig/specs/2026-09-30-roost-answer-design.md §4; the words are checked
+# again in the shell below and written, with the stamp, as @roost-dialog.
+#
+#   kind     `question` only for ONE question, multiSelect false, two to four
+#            options and no option with a preview (M2); `permission` only for a
+#            tool whose dialog was measured -- Bash and Write on Claude (M1),
+#            Edit on Claude (2.1.309, once each: the same marker lines, `1`
+#            approved with no Enter and Escape declined, as for Write), the
+#            command approval on codex (M3). Everything else is `other`,
+#            and `roost answer` sends nothing to an `other`: a multi-select,
+#            two questions, a tool not yet measured, a SUBAGENT's dialog (it
+#            names an agent_id; not measured), a payload no reader could parse
+#   options  how many options the MODEL gave, for a question; 0 otherwise.
+#            Claude adds "Type something." and "Chat about this" by itself, and
+#            those rows are not the model's, so they are not counted
+#   digest   eight hex characters of (tool name, tool input). Not an identity:
+#            M4 measured two dialogs equal in every field but the transcript's
+#            tool-use id, 0.2 s apart. It only tells "the same hook ran twice
+#            for one dialog" (Claude runs a hook once per settings source that
+#            names it) from "a different dialog" -- see roost_stamp_blocked
+#   token    twelve hex characters, new for each dialog. THIS is the
+#            fingerprint `roost answer --expect` names. It is a token and not a
+#            hash because no field in either harness's PermissionRequest tells
+#            two such dialogs apart (M4); it comes from the reader that already
+#            runs here, so it costs no new process. It does not have to be
+#            secret, only new
+#
+# Which harness this is comes from ROOST_DIALOG_HARNESS, which only
+# adapters/codex/roost-codex-hook sets (to `codex`). Unset means Claude, because
+# this script IS Claude Code's hook. Any other value records no dialog at all.
+#
+# Nothing from the payload reaches @roost-dialog as text: every word is a fixed
+# word, a digit or hex the reader computed.
 transcript=""
 blocked_on=""
+dialog=""
+dialog_harness="${ROOST_DIALOG_HARNESS:-claude}"
+case "$dialog_harness" in claude|codex) ;; *) dialog_harness="" ;; esac
 if { [ "$notification_hook" = 1 ] || [ "$permission_request_hook" = 1 ]; } \
    && [ "$state" = "blocked" ] && [ ! -t 0 ]; then
   payload="$(cat 2>/dev/null || true)"
   fields=""
   if command -v python3 >/dev/null 2>&1; then
     fields="$(printf '%s' "$payload" | python3 -c '
-import sys, json
+import sys, json, os, zlib
 # Spelled out rather than written as a regex range: bash 3.2 matches a range by
 # the locale collation and python str.isalnum() is unicode-aware, so both of
 # the short forms accept characters this must not.
 NAME = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"
+harness = sys.argv[1] if len(sys.argv) > 1 else ""
 try:
     d = json.load(sys.stdin)
 except Exception:
@@ -579,9 +623,10 @@ p = d.get("transcript_path")
 sys.stdout.write((p if isinstance(p, str) and "\n" not in p else "") + "\n")
 out = ""
 name = d.get("tool_name")
-if isinstance(name, str) and 0 < len(name) <= 64 and all(c in NAME for c in name):
+inp = d.get("tool_input")
+name_ok = isinstance(name, str) and 0 < len(name) <= 64 and all(c in NAME for c in name)
+if name_ok:
     out = name
-    inp = d.get("tool_input")
     detail = ""
     if isinstance(inp, dict):
         for k in ("command", "file_path", "url"):
@@ -589,38 +634,139 @@ if isinstance(name, str) and 0 < len(name) <= 64 and all(c in NAME for c in name
             if isinstance(v, str) and v:
                 detail = v
                 break
+        qs = inp.get("questions")
+        if not detail and name == "AskUserQuestion" and isinstance(qs, list) and qs and isinstance(qs[0], dict):
+            v = qs[0].get("question")
+            if isinstance(v, str):
+                detail = v
     # Control characters out FIRST, then the cut: cutting first would spend
     # part of the 120 on bytes that are about to be removed.
     detail = "".join(c for c in detail if 31 < ord(c) != 127)[:120]
     if detail:
         out = name + ": " + detail
-sys.stdout.write(out + "\n")' 2>/dev/null || true)"
+sys.stdout.write(out + "\n")
+# The dialog line, for `roost answer`. See the comment above this reader.
+kind, opts = "other", 0
+sub = d.get("agent_id")
+if name_ok and isinstance(inp, dict) and not (isinstance(sub, str) and sub):
+    if harness == "claude" and name == "AskUserQuestion":
+        qs = inp.get("questions")
+        if isinstance(qs, list) and len(qs) == 1 and isinstance(qs[0], dict):
+            q = qs[0]
+            o = q.get("options")
+            if (q.get("multiSelect") is False and isinstance(o, list) and 2 <= len(o) <= 4
+                    and all(isinstance(x, dict) and not x.get("preview") for x in o)):
+                kind, opts = "question", len(o)
+    elif harness == "claude" and name == "Bash" and isinstance(inp.get("command"), str):
+        kind = "permission"
+    elif harness == "claude" and name in ("Write", "Edit") and isinstance(inp.get("file_path"), str):
+        kind = "permission"
+    elif harness == "codex" and name == "Bash" and isinstance(inp.get("command"), str):
+        kind = "permission"
+canon = json.dumps([name, inp], sort_keys=True, separators=(",", ":"))
+digest = "%08x" % (zlib.crc32(canon.encode("utf-8", "replace")) & 0xffffffff)
+sys.stdout.write("%s %d %s %s\n" % (kind, opts, digest, os.urandom(6).hex()))' "$dialog_harness" 2>/dev/null || true)"
   elif command -v jq >/dev/null 2>&1; then
     # \A and \z, not ^ and $: in jq's regex engine $ also matches before a
     # trailing newline, the same trap the StopFailure reader above documents.
-    fields="$(printf '%s' "$payload" | jq -r 'if type == "object" then
+    #
+    # jq can neither hash nor make a random number, so it prints the dialog
+    # line as "<kind> <options>" and then a FOURTH line, the canonical
+    # (tool name, tool input) the shell digests below with cksum. `falsy` is
+    # python's truthiness, so the two readers refuse the same previews.
+    fields="$(printf '%s' "$payload" | jq -r --arg h "$dialog_harness" '
+      def falsy: . == null or . == false or . == "" or . == 0 or . == [] or . == {};
+      if type == "object" then
         (if (.transcript_path | type) == "string" and ((.transcript_path | test("\n")) | not)
          then .transcript_path else "" end),
         (if (.tool_name | type) == "string" and (.tool_name | test("\\A[a-zA-Z0-9_.-]{1,64}\\z"))
          then (.tool_name) as $n
               | ([(.tool_input.command? // empty), (.tool_input.file_path? // empty),
-                  (.tool_input.url? // empty)]
+                  (.tool_input.url? // empty),
+                  (if $n == "AskUserQuestion" then (.tool_input.questions?[0]?.question? // empty) else empty end)]
                  | map(select(type == "string" and . != "")) | .[0] // "")
               | gsub("[[:cntrl:]]"; "") | .[0:120]
               | if . == "" then $n else $n + ": " + . end
-         else "" end)
-      else "", "" end' 2>/dev/null || true)"
+         else "" end),
+        (if (.tool_name | type) == "string" and (.tool_name | test("\\A[a-zA-Z0-9_.-]{1,64}\\z"))
+            and (.tool_input | type) == "object"
+            and (((.agent_id | type) == "string" and .agent_id != "") | not)
+         then
+           (if $h == "claude" and .tool_name == "AskUserQuestion" then
+              (.tool_input.questions) as $q
+              | if ($q | type) == "array" and ($q | length) == 1 and ($q[0] | type) == "object"
+                   and $q[0].multiSelect == false and ($q[0].options | type) == "array"
+                   and ($q[0].options | length) >= 2 and ($q[0].options | length) <= 4
+                   and ($q[0].options | all(.[]; type == "object" and (.preview | falsy)))
+                then "question \($q[0].options | length)" else "other 0" end
+            elif $h == "claude" and .tool_name == "Bash" and (.tool_input.command | type) == "string" then "permission 0"
+            elif $h == "claude" and (.tool_name == "Write" or .tool_name == "Edit") and (.tool_input.file_path | type) == "string" then "permission 0"
+            elif $h == "codex" and .tool_name == "Bash" and (.tool_input.command | type) == "string" then "permission 0"
+            else "other 0" end)
+         else "other 0" end),
+        ([.tool_name, .tool_input] | tojson)
+      else "", "", "other 0", "null" end' 2>/dev/null || true)"
   fi
   transcript="${fields%%$'\n'*}"
-  case "$fields" in *$'\n'*) blocked_on="${fields#*$'\n'}" ;; esac
-  # The second line is the last; $( ) already dropped its trailing newline, but
-  # a reader that printed a third would otherwise smuggle one through.
-  blocked_on="${blocked_on%%$'\n'*}"
+  rest=""
+  case "$fields" in *$'\n'*) rest="${fields#*$'\n'}" ;; esac
+  # The second line is the description. $( ) already dropped the trailing
+  # newline of the LAST line, and the lines after this one are the dialog's, so
+  # the cut at the first newline is what keeps either of them, or a reader that
+  # printed one line too many, from being smuggled into the description.
+  blocked_on="${rest%%$'\n'*}"
+  case "$rest" in *$'\n'*) rest="${rest#*$'\n'}" ;; *) rest="" ;; esac
+  dialog_line="${rest%%$'\n'*}"
+  case "$rest" in *$'\n'*) canon="${rest#*$'\n'}" ;; *) canon="" ;; esac
+  canon="${canon%%$'\n'*}"
   case "$transcript" in
     /*) : ;;
     *) transcript="" ;;
   esac
   case "$transcript" in *$'\t'*|*$'\n'*|*';') transcript="" ;; esac
+  # A codex dialog records no transcript. Its transcript_path names codex's own
+  # rollout file, and the one reader of @roost-transcript is
+  # scripts/lib/roost-unblock.sh, which reads it as a CLAUDE transcript: it
+  # would refuse it (fail closed) after a parse of up to 4 MiB on every send to
+  # a blocked codex pane. A codex decline fires Interrupt, which needs no
+  # transcript (#38).
+  [ "$dialog_harness" = codex ] && transcript=""
+  # The dialog record, from the PermissionRequest path only (§4.1 of the
+  # answer design): the permission_prompt Notification six seconds later
+  # belongs to the same dialog and must not change it, which is the rule
+  # @roost-blocked-on already keeps. Each word is checked here as well as in
+  # the reader, for the reason the StopFailure branch gives for its own second
+  # check; hex and digits are spelled out because bash 3.2 matches a range by
+  # the locale's collation.
+  if [ "$permission_request_hook" = 1 ] && [ -n "$dialog_harness" ]; then
+    d_kind="" d_opts="" d_digest="" d_token=""
+    read -r d_kind d_opts d_digest d_token _ <<EOF || true
+$dialog_line
+EOF
+    # The jq reader printed no digest and no token: the digest is cksum's CRC
+    # of the canonical line it printed instead, and the token is the shell's.
+    # Three $RANDOMs are 45 bits; a token only has to differ from the one
+    # before it on this pane, and two equal draws are not a case worth a
+    # process. With no reader at all, the same, over an empty line.
+    if [ -z "$d_token" ]; then
+      d_digest="$(printf '%s' "$canon" | cksum 2>/dev/null || true)"
+      d_digest="${d_digest%% *}"
+      case "$d_digest" in ''|*[!0123456789]*) d_digest=0 ;; esac
+      d_digest="$(printf '%08x' "$d_digest" 2>/dev/null || true)"
+      d_token="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" 2>/dev/null || true)"
+    fi
+    case "$d_kind" in permission|question|other) ;; *) d_kind=other ;; esac
+    case "$d_opts" in [0123456789]) ;; *) d_opts=0 ;; esac
+    [ "$d_kind" = question ] || d_opts=0
+    case "$d_digest" in ''|*[!0123456789abcdef]*) d_digest=00000000 ;; esac
+    [ "${#d_digest}" -eq 8 ] || d_digest=00000000
+    case "$d_token" in ''|*[!0123456789abcdef]*) d_token="" ;; esac
+    [ "${#d_token}" -eq 12 ] || d_token=""
+    if [ -n "$d_token" ]; then
+      dialog_tail="$dialog_harness $d_kind $d_opts $d_digest"
+      dialog="$d_token $dialog_tail"
+    fi
+  fi
   # The shell's own second check, for the same reason the StopFailure branch
   # keeps one: $( ) strips trailing newlines and bash drops NUL bytes, so a
   # value can arrive here already cleaned, and a reader that was edited badly
@@ -662,8 +808,9 @@ fi
 #
 # @roost-stop-swallowed is unset on EVERY entry, whatever set the badge —
 # round 2 again. It belongs to the DIALOG, not to the flag that stamped it, so
-# a codex dialog (adapters/codex/roost-codex-hook maps its own
-# PermissionRequest to a flagless `blocked`) or an old Claude's
+# a codex dialog stamped flagless (adapters/codex/roost-codex-hook still maps
+# its PermissionRequest to a flagless `blocked` when its hook runs inside
+# codex's shared app-server, #142) or an old Claude's
 # permission_prompt Notification landing on a pane that had already spent its
 # Stop would otherwise inherit the spent mark, and the next Stop would paint ✅
 # done under a dialog that is open.
@@ -686,9 +833,52 @@ fi
 # the command already being on the pane's own screen; PUTTING IT ON A STATUS
 # BAR, in a switcher or in a notification is a different exposure, and #93 has
 # to decide that deliberately rather than inherit it from here.
+#
+# @roost-dialog (#142) is "<token> <harness> <kind> <options> <digest>", the
+# dialog `roost answer` names with --expect, and it is written only by the
+# PermissionRequest hook, like @roost-blocked-on and for the same reason. It is
+# the FIRST command of the group, before @agent_state is written, because its
+# test has to see the pane as it was before this stamp:
+#
+#   the pane already reads blocked AND the stored record ends in the same
+#   harness, kind, options and digest  -> keep it, token and all
+#   anything else                       -> write the new record, and remove
+#                                          @roost-answered and
+#                                          @roost-answer-nonce, which belonged
+#                                          to the dialog before it
+#
+# The first line is Claude running this hook once per settings source that
+# names it: two calls for ONE dialog, which must not hand a caller who read the
+# first token a refusal for the second. The test is tmux's, inside this one
+# command, so two copies that start together cannot both see "not blocked":
+# tmux runs one client's command list at a time, and whichever comes second
+# sees the first one's stamp. A real second dialog has, in every flow measured
+# (M1, M2 of the design), come after the pane LEFT blocked, and leaving blocked
+# removes the record -- so it always gets a new token. What was not measured is
+# a subagent's dialog with the same tool and input opened while the main one
+# is up (the design's §12.4); a subagent's dialog is kind `other`, so its tail
+# differs and it gets a new token too.
+#
+# `#{?TEST,,1}` is "not TEST", the shape the subagent count above uses. The
+# record holds only hex, fixed words and a digit (checked where it is built),
+# so it can sit inside the command string unquoted by anything but '…'.
 roost_stamp_blocked() {
   local wr
-  wr=(set-option -p -t "$TMUX_PANE" @agent_state blocked
+  wr=()
+  if [ "$permission_request_hook" = 1 ]; then
+    if [ -n "$dialog" ]; then
+      wr=(if-shell -F -t "$TMUX_PANE" \
+            "#{?#{&&:#{==:#{@agent_state},blocked},#{m:* $dialog_tail,#{@roost-dialog}}},,1}" \
+            "set-option -p -t $TMUX_PANE @roost-dialog '$dialog' ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce"
+          ';')
+    else
+      wr=(set-option -pu -t "$TMUX_PANE" @roost-dialog
+          ';' set-option -pu -t "$TMUX_PANE" @roost-answered
+          ';' set-option -pu -t "$TMUX_PANE" @roost-answer-nonce
+          ';')
+    fi
+  fi
+  wr+=(set-option -p -t "$TMUX_PANE" @agent_state blocked
       ';' set-option -p -t "$TMUX_PANE" @agent_since "$1"
       ';' set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed)
   if [ -n "$transcript" ]; then
@@ -810,7 +1000,8 @@ if [ "$state" = "$prev" ]; then
   # The SAME group the transition path writes, from the one function that
   # builds it — see roost_stamp_blocked above for what is in it and why. Any
   # caller reaches here, not just the two dialog hooks: a flagless `blocked`
-  # from codex's adapter is a new dialog too, and it needs the spent-Stop mark
+  # (codex's adapter under the shared app-server, a human's `roost state
+  # blocked`) is a new dialog too, and it needs the spent-Stop mark
   # reset exactly as much (flock round 2). No label and no notification here —
   # the state did not change, and this path must stay as cheap as the bail it
   # replaces for every other repeat.
@@ -991,17 +1182,29 @@ else
   # than run on every transition, for the reason @roost-error-reason's clear is:
   # a pane that was not blocked has nothing to clear, and this script runs on
   # every PostToolUse of every live agent, so an unconditional unset would be
-  # two more tmux calls per transition spent clearing nothing.
+  # one more tmux call per transition spent clearing nothing (two, before the
+  # unsets were chained into one call).
   #
   # THIS IS THE ONE WRITER LEFT THAT IS NOT ATOMIC, and it is a known gap
-  # rather than an oversight (flock round 2): $prev was read above, these are
-  # separate calls, and a dialog stamped in between would have its record
-  # cleared. Round 2 bounded the window at single-digit milliseconds and could
-  # not reproduce it at any gap, because the hook that would have to win the
-  # race is systematically the slower of the two. docs/known-gaps.md carries it.
+  # rather than an oversight (flock round 2): $prev was read above, the unsets
+  # are a separate call from that read (one call now, two before #142), and a
+  # dialog stamped in between would have its record cleared. Round 2 bounded the
+  # window at single-digit milliseconds and could not reproduce it at any gap,
+  # because the hook that would have to win the race is systematically the
+  # slower of the two. docs/known-gaps.md carries it.
   if [ "$prev" = "blocked" ] && [ "$stop_while_blocked" = 0 ]; then
-    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on 2>/dev/null || true
-    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed 2>/dev/null || true
+    # The dialog record and who answered it (#142) describe the same dialog,
+    # so they go here too, and all five unsets are ONE call: a tmux process
+    # per option on every transition out of blocked would be spent clearing
+    # what is usually there, and this way the transition costs no more
+    # processes than the two separate unsets it replaced (review). tmux stops
+    # a command list at its first error, and an unset of an option that is
+    # not set is not an error, so each unset still runs.
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on \; \
+      set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed \; \
+      set-option -pu -t "$TMUX_PANE" @roost-dialog \; \
+      set-option -pu -t "$TMUX_PANE" @roost-answered \; \
+      set-option -pu -t "$TMUX_PANE" @roost-answer-nonce 2>/dev/null || true
   fi
   if [ "$stop_while_blocked" = 1 ]; then
     # A Stop while a dialog is OPEN (#91). ONE tmux command, and the condition is
@@ -1045,10 +1248,12 @@ else
     # The else branch carries the @roost-blocked-on and @roost-stop-swallowed
     # unsets that the $prev-keyed clear above skips for this call: they describe
     # the dialog, and whether there is still a dialog is decided here, not there.
+    # @roost-dialog, @roost-answered and @roost-answer-nonce (#142) describe it
+    # too, and go with them.
     tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
       "#{&&:#{==:#{@agent_state},blocked},#{==:#{@roost-stop-swallowed},}}" \
       "set-option -p -t $TMUX_PANE @roost-stop-swallowed 1" \
-      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed" \
+      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed ; set-option -pu -t $TMUX_PANE @roost-dialog ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce" \
       2>/dev/null || true
   else
     tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true

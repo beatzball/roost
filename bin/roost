@@ -30,6 +30,8 @@
 #                            record this pane's reply, for another agent's `roost read`. TEXT... is read from the command line; `-` (or `--stdin`, or no argument at all) reads the reply from STDIN instead. Use stdin for a reply of more than a few KB, and for any reply built from a file: Linux refuses a single argument of 131072 bytes or more, so the command-line form loses a long reply outright
 #   roost wait-done [--turn N] TGT [T]
 #                            block until TGT (a %N pane, or every agent pane in a window) is done/idle. --turn N waits until TGT has recorded turn N — the number `roost send` printed — so the wait cannot be satisfied by the PREVIOUS turn's ✅; it needs a %N
+#   roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N
+#                            a PERSON'S verb: answer the dialog TGT is blocked on, with one key, once. FP is the dialog's fingerprint from `status --json`; it is required to approve or pick an option, so the key cannot land on a newer dialog. Refuses a caller in an agent's pane unless --force (a guard against an accident, not a lock); a dialog roost has no measured keys for; a pane that shows no dialog. Exit 0 answered and seen to land, 6 nothing to answer, 7 a different dialog, 8 no measured keys, 9 called from an agent's pane, 10 the key was sent and not seen to land: do NOT answer again. roost never answers on its own
 #   roost close [--force] [--json] TGT [T]
 #                            end ONE agent its harness's own way (/exit, /quit), wait up to T seconds (default 10) for it to leave, then close that pane and no other. Refuses a ⏳ working or 🛑 blocked pane unless --force, which skips the exit command; a window of more than one pane; and a session's last pane. If the harness opens a dialog on the way out, it stops and answers nothing. Kept replies stay, so `roost read %N` still works. Exit 0 closed, 1 refused or timed out, 2 already gone
 #   roost hooks [claude|codex]  print the hook config that powers the badges (default: claude)
@@ -1908,6 +1910,468 @@ JSON
       exit 0
     fi
     if [ -n "$turn_num" ]; then printf '%s %s\n' "$turn_pane" "$turn_num"; fi
+    exit 0
+    ;;
+  answer)
+    # roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N
+    #
+    # A PERSON'S verb for the dialog a pane is blocked on (#142). It sends one
+    # key, once, into a harness's own dialog, and only after every check below
+    # has passed; it never retries. The design, with the measurement behind
+    # each rule, is docs/airig/specs/2026-09-30-roost-answer-design.md, and
+    # the step numbers below are its §3.1. scripts/lib/roost-answer.sh holds
+    # the record's parser, the key map and the one-command send.
+    #
+    # roost NEVER answers a dialog on its own. No hook, no adapter and no other
+    # roost command runs this; tests/test-answer.sh fails if one does. It runs
+    # when a person runs it, or when a person told an agent to run it.
+    #
+    # Exit codes: `send` owns 1 to 4 and `wait-done` 5, so this keeps 1 and 2
+    # with their `send` meanings and takes 6 to 10. It never exits 3, 4 or 5.
+    #
+    #   0   answered, and roost saw it land
+    #   1   a bad or missing argument, or tmux failed before the send
+    #   2   no such target, a dead pane, or a window with two blocked panes
+    #   6   nothing to answer: not blocked, no dialog on screen, already answered
+    #   7   a different dialog: --expect does not match, or it changed before
+    #       the send
+    #   8   no measured keys for this harness, dialog kind or action
+    #   9   the caller is an agent in a roost pane, and --force was not given
+    #   10  the key WAS sent, and nothing confirmed it inside the bound: do not
+    #       answer again
+    #
+    # Only exit 0 and 10 have sent anything. 10 is to `answer` what 4 is to
+    # `send`: the input went in, so a second try would be a second input.
+    . "$ROOST_HOME/scripts/lib/roost-answer.sh"
+    ans_usage="usage: roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N"
+    ans_bad() { printf '%s\n' "$ans_usage" >&2; exit 1; }
+    shift
+    # Flags go BEFORE the target, as with `send`, and exactly one action goes
+    # after it. A repeated flag is not consumed: it falls into the target slot
+    # and fails there, which is the shape `send` keeps for the same reason.
+    #
+    # --json prints one document instead of the line, under the rules in
+    # docs/airig/specs/2026-09-15-json-output-design.md: the same exit codes,
+    # the same stderr, and NOTHING on stdout for any failure -- exit 10
+    # included, as `send --json` prints nothing for its 4.
+    force=0 json=0 expect="" expect_given=0
+    while :; do
+      case "${1:-}" in
+        --force) [ "$force" -eq 0 ] || break; force=1; shift ;;
+        --json) [ "$json" -eq 0 ] || break; json=1; shift ;;
+        --expect)
+          [ "$expect_given" -eq 0 ] || break
+          [ "$#" -ge 2 ] || ans_bad
+          expect_given=1; expect="$2"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    raw="${1:-}"
+    case "$raw" in ''|-*) ans_bad ;; esac
+    shift
+    action="" opt_n=""
+    case "${1:-}" in
+      --approve) action=approve; shift ;;
+      --deny) action=deny; shift ;;
+      --option)
+        [ "$#" -ge 2 ] || ans_bad
+        opt_n="$2"; action=option; shift 2
+        # A number, or it is a usage error. Whether it is one of the dialog's
+        # options is only known once the record is read (exit 8 there).
+        # Leading zeros are dropped by base-10 arithmetic, so `02` is option 2
+        # and never octal; nine digits at most, so the arithmetic cannot
+        # overflow.
+        case "$opt_n" in ''|*[!0123456789]*) ans_bad ;; esac
+        [ "${#opt_n}" -le 9 ] || ans_bad
+        opt_n=$((10#$opt_n)) ;;
+      --text)
+        # Reserved, and refused: no dialog that takes free text was measured
+        # (the design's §9), and typing into a prompt box is the hazard this
+        # whole verb exists to avoid.
+        echo "roost answer: --text is not supported yet. Answer at the pane" >&2
+        exit 8 ;;
+      *) ans_bad ;;
+    esac
+    # No action, two actions, or anything after the one action.
+    [ "$#" -eq 0 ] || ans_bad
+    # Step 1, before anything is read. An approval always names the dialog it
+    # approves (the human's decision Q3, §11): a second dialog can open 0.2 s
+    # after the first closes with the same tool, input and summary (M4), a
+    # wrong deny costs a re-prompt, and a wrong approve cannot be undone.
+    if [ "$expect_given" -eq 0 ] && [ "$action" != deny ]; then
+      echo "roost answer: --approve and --option need --expect FINGERPRINT. Read it from roost status --json" >&2
+      ans_bad
+    fi
+    # The fingerprint is spliced into a tmux format in the send, so it is
+    # checked as the record's own reader checks it: 12 lowercase hex. Anything
+    # else cannot be any dialog's, and is a mistyped call rather than exit 7.
+    if [ "$expect_given" -eq 1 ] && ! roost_answer_hex "$expect" 12; then
+      echo "roost answer: --expect takes the 12-character fingerprint from roost status --json" >&2
+      ans_bad
+    fi
+
+    # Step 1, the target: a %N pane, or a window, which means the ONE pane in
+    # it that reads blocked. tmux 3.6 answers display-message for a pane that
+    # is gone with exit 0 and an empty #{pane_id} (see record_for), so "found"
+    # is a pane id that came back, not a zero exit.
+    tgt="$(target "$raw")"
+    pane="" dead=""
+    case "$tgt" in
+      %*)
+        info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
+        pane="${info%% *}"; dead="${info#* }"
+        case "$pane" in %[0-9]*) ;; *) pane="" ;; esac ;;
+      *)
+        rows="$(t list-panes -t "$tgt" -F '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+        nb=0 blocked_ids=""
+        while IFS=' ' read -r rid rdead rstate; do
+          [ "$rstate" = blocked ] || continue
+          nb=$((nb + 1)); blocked_ids="${blocked_ids:+$blocked_ids }$rid"
+          pane="$rid"; dead="$rdead"
+        done <<EOF
+$rows
+EOF
+        if [ "$nb" -gt 1 ]; then
+          echo "roost answer: '$raw' has more than one blocked pane ($blocked_ids). Name one" >&2
+          exit 2
+        fi
+        # No blocked pane: the window's active one, so the refusal below can
+        # say what it reads.
+        if [ "$nb" -eq 0 ] && [ -n "$rows" ]; then
+          info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
+          pane="${info%% *}"; dead="${info#* }"
+          case "$pane" in %[0-9]*) ;; *) pane="" ;; esac
+        fi ;;
+    esac
+    if [ -z "$pane" ]; then
+      echo "roost answer: no such target '$raw'" >&2; exit 2
+    fi
+    if [ "$dead" = 1 ]; then
+      echo "roost answer: target '$raw' is a dead pane" >&2; exit 2
+    fi
+
+    # Step 2, WHO IS CALLING (§7), before the pane is read, so an agent that
+    # is refused learns nothing about the dialog from the refusal.
+    #
+    # roost cannot tell a person from a program. What it can see is where the
+    # call came from: $TMUX names THIS server (by pid, the check `send` and
+    # `reply` make, and for the reason `reply` gives: $TMUX_PANE alone is a
+    # valid id on every server, `%0` on all of them), and $TMUX_PANE is a pane
+    # an agent has REPORTED from -- it has a badge, or an identity (#141). That
+    # last rule is the human's decision Q1 (§11): a person's own shell pane
+    # inside roost passes with no flag, because a --force that has to be typed
+    # every time stops meaning anything. The cost, stated plainly: an agent in
+    # a harness with no adapter has no badge and is not caught, and one
+    # `env -u TMUX -u TMUX_PANE` gets past all of it. It is a guard against an
+    # accident -- an agent that reads the skill, sees a blocked peer and tries
+    # the obvious command -- and NOT a permission system. docs/known-gaps.md
+    # and the Driving a Fleet page say so in the same words.
+    #
+    # `by` is where the call ran, for the record (§8): `pane:%N` for any pane
+    # on this server, `terminal` for a tty, `program` for neither. It does not
+    # say who the person was.
+    #
+    # EVERY tmux read this verb splits uses `|` between fields, never a tab.
+    # Measured on Ubuntu 24.04's tmux 3.4-1ubuntu0.2: a client whose locale
+    # is C prints a tab in a format as `_`, so `#{a}<TAB>#{b}` came back as
+    # one field and every check after it refused (fail closed, but a server on
+    # a C-locale machine could answer nothing). Under C.UTF-8 it printed the
+    # tab, and tmux 3.6 on macOS prints it in both, which is why only a
+    # C-locale run on 3.4 shows it. `|` came back as `|` in both locales on
+    # 3.4, as did `^`, `~`, `;` and `,`: tmux rewrites only bytes it cannot
+    # print, and `|` is printable ASCII. It cannot appear in the fields that
+    # come before the last one in any read below: a pid, a %N, a digit, a
+    # state word, and the dialog and answer records, whose parsers refuse
+    # anything but hex, fixed words and digits. A `|` set there by hand only
+    # shifts what follows into a field its parser then refuses, so it fails
+    # closed too. The free-text description is always the LAST field, so a
+    # `|` inside it stays in it.
+    by="" caller=""
+    case "${TMUX_PANE:-}" in
+      %[0-9]*)
+        if [ -n "${TMUX:-}" ]; then
+          caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
+          cinfo="$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}|#{@agent_state}|#{@roost-session}' 2>/dev/null || true)"
+          if [ "${cinfo%%|*}" = "$caller_pid $TMUX_PANE" ]; then
+            caller="$TMUX_PANE"; by="pane:$TMUX_PANE"
+            crest="${cinfo#*|}"
+            if [ "$force" -eq 0 ] && { [ -n "${crest%%|*}" ] || [ -n "${crest#*|}" ]; }; then
+              echo "roost answer: this is a person's command, and it was called from an agent's pane ($caller)" >&2
+              echo "roost answer: pass --force only if a person told you to answer this dialog" >&2
+              exit 9
+            fi
+          fi
+        fi ;;
+    esac
+    if [ -z "$by" ]; then
+      if [ -t 0 ]; then by=terminal; else by=program; fi
+    fi
+
+    # Step 3, the pane, in ONE read. The description is last because it is the
+    # one free-text field: a `|` in it (a shell pipe is the common case) stays
+    # in it, and never reaches the words the checks below use. The separator
+    # is `|` for the locale reason given at the caller check above.
+    pinfo="$(t display-message -p -t "$pane" '#{pane_in_mode}|#{@agent_state}|#{@roost-dialog}|#{@roost-answered}|#{@roost-blocked-on}' 2>/dev/null || true)"
+    in_mode="${pinfo%%|*}"; prest="${pinfo#*|}"
+    state="${prest%%|*}"; prest="${prest#*|}"
+    drec="${prest%%|*}"; prest="${prest#*|}"
+    arec="${prest%%|*}"; blocked_on="${prest#*|}"
+    # Printed back to a terminal below, so no control byte survives it.
+    blocked_on="$(printf '%s' "$blocked_on" | tr -d '[:cntrl:]')"
+
+    # Step 4. A Claude dialog that was declined or dismissed at the pane fires
+    # no hook, so its badge outlives it (#38). roost_unblock_pane clears such a
+    # badge only when Claude's own transcript proves the decline, exactly as
+    # `send` asks it, so a declined dialog is "not blocked" here and never a
+    # target. It is fail-closed for every other pane.
+    if [ "$state" = blocked ] && roost_unblock_pane "$pane"; then
+      state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+    fi
+    if [ "$state" != blocked ]; then
+      echo "roost answer: '$raw' is not blocked (it reads ${state:-no badge}). There is nothing to answer" >&2
+      exit 6
+    fi
+
+    # Step 5, which dialog. With --deny and no --expect, the fingerprint just
+    # read is used, in the same two places, so the dialog cannot change
+    # between this read and this key. It can have changed since the PERSON
+    # looked; that is the cost Q3 accepted for a deny.
+    if ! roost_answer_dialog_parse "$drec"; then
+      echo "roost answer: '$raw' has no dialog record, so roost cannot tell which dialog this is" >&2
+      if [ "$expect_given" -eq 1 ]; then exit 7; fi
+      exit 8
+    fi
+    fp="$ROOST_DIALOG_FP"
+    if [ "$expect_given" -eq 1 ] && [ "$expect" != "$fp" ]; then
+      echo "roost answer: '$raw' is now blocked on a different dialog (expected $expect, found $fp). Nothing was sent" >&2
+      exit 7
+    fi
+
+    # Step 6. Answered already: the approved tool may still be running, and
+    # the pane reads blocked for all of it (M6), so a second key would land in
+    # the prompt box (M7).
+    if roost_answer_answered_parse "$arec" "$fp"; then
+      ago=$(( $(date +%s) - ROOST_ANSWERED_AT ))
+      [ "$ago" -ge 0 ] || ago=0
+      said="$ROOST_ANSWERED_ACTION"; [ -z "$ROOST_ANSWERED_OPTION" ] || said="option $ROOST_ANSWERED_OPTION"
+      echo "roost answer: this dialog was already answered ($said, $ago s ago). Nothing was sent" >&2
+      exit 6
+    fi
+
+    # Step 7, the key map. A dialog kind or harness with no measured row is
+    # refused here, before the screen is even looked at.
+    if ! roost_answer_keys "$ROOST_DIALOG_HARNESS" "$ROOST_DIALOG_KIND" "$action" "$opt_n" "$ROOST_DIALOG_OPTIONS"; then
+      echo "roost answer: $ROOST_ANSWER_REFUSAL" >&2
+      exit 8
+    fi
+
+    # Step 8, the screen, which may REFUSE a send and never permits one by
+    # itself (the human's decision Q2, §11). A pane in copy mode would take
+    # the key itself. A pane whose visible screen does not show the dialog's
+    # marker is the M6 case -- an approved tool still running under a badge
+    # that says blocked -- or a dialog reworded by an upgrade (§12.5); either
+    # way a key would land somewhere else.
+    if [ "$in_mode" != 0 ]; then
+      echo "roost answer: '$raw' is in copy mode, so keys would not reach the agent. Nothing was sent" >&2
+      exit 6
+    fi
+    if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+      echo "roost answer: '$raw' reads blocked, but no dialog is on its screen. Nothing was sent" >&2
+      exit 6
+    fi
+
+    # Step 9, the send: ONE key group, ONCE, in one tmux command that tests
+    # everything above again at the instant it sends (roost_answer_send says
+    # how). There is no retry anywhere.
+    act_word="$action"; [ "$action" != option ] || act_word="option$opt_n"
+    if [ "$expect_given" -eq 0 ]; then
+      echo "roost answer: denying '$pane': ${blocked_on:-the dialog}" >&2
+    fi
+    sent_at="$(date +%s)"
+    nonce="$$.$RANDOM"
+    src=0
+    roost_answer_send "$pane" "$fp" "$ROOST_ANSWER_KEY" "$fp $sent_at $act_word $by" "$nonce" || src=$?
+    if [ "$src" -eq 1 ]; then
+      echo "roost answer: '$raw' changed before the key was sent (a new dialog, an answer at the pane, or copy mode). Nothing was sent" >&2
+      exit 7
+    elif [ "$src" -ne 0 ]; then
+      echo "roost answer: tmux failed before the key was sent to '$raw'. Nothing was sent" >&2
+      exit 1
+    fi
+
+    # Step 10, CONFIRM (§6), inside the bound. The proof must fit the action:
+    #
+    #   approve, option  @agent_state is working or done         -> state
+    #                    @roost-dialog holds a new fingerprint   -> dialog
+    #                    the marker is off the visible screen, the pane
+    #                    still reads blocked, and the transcript shows no
+    #                    decline                                 -> screen
+    #   deny (Claude)    roost_unblock_pane clears the pane from the
+    #                    transcript                              -> transcript
+    #
+    # `screen` is the only proof for an approved slow tool (M6), and it is the
+    # weakest, which is why the record and the JSON say which proof was used.
+    # It is also the FIRST to appear on every approval: the dialog leaves the
+    # screen 12 to 76 ms after the key, the badge moves at +70 to +170 ms, and
+    # a decline writes its transcript records 5 to 55 ms after the key (M1,
+    # M5). Taken at the first poll that saw it, it would win nearly every
+    # time, and it could be read in the gap before a decline is written. So it
+    # counts only once it has HELD for ten polls -- about half a second to a
+    # second depending on tmux's speed, since a poll is a 50 ms sleep plus up
+    # to four tmux calls (0.92 s for ten on a reviewer's Mac); at least three
+    # times the slowest badge change measured and twice the slowest next
+    # dialog -- and any stronger proof, or a decline, seen in that time wins
+    # over it. The run of a slow tool lasts far longer, so the case `screen`
+    # exists for still ends here, that much later. (This hold is the builder's
+    # reading of §6, not a measured number: no run measured how long the
+    # stronger proofs can lag.)
+    # An approve that ends in a decline, or a deny that ends in `working`, was
+    # not done by this call: somebody at the pane got there first. That is
+    # exit 10 too, saying what the pane shows. Nothing here writes state: the
+    # only writes this verb makes are @roost-answered, the record below, and
+    # the unsets roost_unblock_pane already makes after a decline.
+    #
+    # The bound is @roost-answer-timeout, in seconds, default 3, clamped to 1
+    # to 30 the way @roost-send-turn-timeout is: by length first, then leading
+    # zeros, then value, so no value can make the arithmetic slow or octal.
+    # The slowest proof measured was 0.24 s.
+    #
+    # It is WALL CLOCK, not a count of polls. A poll is a 50 ms sleep plus two
+    # to four tmux calls, and a transcript read while the marker is gone, so a
+    # count of 20 per second made the default "3 s" take about 4 (review). The
+    # clock is bash's $SECONDS, which costs no process: set to 0 here, it
+    # reads N from N whole seconds after the second it was set in, so the
+    # first tick can come in under a second. The loop runs while it is at
+    # most the bound, so it ends between the bound and the bound plus one
+    # second -- never before the bound, which is what the stderr line names.
+    #
+    # THE BOUND SAYS WHEN A PROOF MAY START, not when it must be finished. A
+    # screen hold that STARTED inside the bound runs on past it to its full
+    # ten polls, or until a stronger proof, a decline, a gone or dead pane, or
+    # the marker coming back ends it. Ten polls took 0.92 s on a fast Mac and
+    # more than the whole 3 s bound on a GitHub macOS runner, where each tmux
+    # call is far slower: cutting the hold at the bound reported exit 10 there
+    # for an answer that had landed (CI on #178). A marker that has not left
+    # by the end of the bound is still exit 10, as before. The ceiling, the
+    # bound plus 10 s, is there so that a tmux that has stopped answering
+    # cannot hold this command for ever while a hold is open; ten polls need
+    # nowhere near that on any machine measured.
+    ans_timeout="$(t show-options -gqv @roost-answer-timeout 2>/dev/null || true)"
+    case "$ans_timeout" in ''|*[!0123456789]*) ans_timeout=3 ;; esac
+    [ "${#ans_timeout}" -gt 2 ] && ans_timeout=30
+    while [ "${#ans_timeout}" -gt 1 ] && [ "${ans_timeout%${ans_timeout#?}}" = 0 ]; do
+      ans_timeout="${ans_timeout#0}"
+    done
+    [ "$ans_timeout" -ge 1 ] || ans_timeout=1
+    [ "$ans_timeout" -le 30 ] || ans_timeout=30
+    confirmed="" wrong="" now_state="" screen_at="" gone=0
+    i=0
+    SECONDS=0
+    while { [ "$SECONDS" -le "$ans_timeout" ] || [ -n "$screen_at" ]; } \
+          && [ "$SECONDS" -le $((ans_timeout + 10)) ]; do
+      cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
+      # The pane is gone: nothing on it can confirm anything any more, and a
+      # screen that had lost its marker before it went proves nothing.
+      if [ "${cinfo%%|*}" != "$pane" ]; then gone=1; break; fi
+      crest="${cinfo#*|}"
+      # A DEAD pane is gone too, though tmux still answers for it: with
+      # remain-on-exit on (a user's roost.conf can set it) a pane whose process
+      # exited keeps its id, its blocked badge and a screen with no marker, so
+      # without this its ten polls would confirm `screen` (review round 2).
+      # Step 1 refuses the same pane as dead before the send; this is that
+      # rule after it.
+      if [ "${crest%%|*}" = 1 ]; then gone=1; break; fi
+      crest="${crest#*|}"
+      now_state="${crest%%|*}"; cdrec="${crest#*|}"
+      if [ "$action" = deny ]; then
+        case "$now_state" in
+          working|done) wrong="it went on working: the dialog was approved, not by this call"; break ;;
+        esac
+        if [ "$now_state" = blocked ] && roost_unblock_pane "$pane"; then
+          confirmed=transcript
+          now_state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+          break
+        fi
+      else
+        case "$now_state" in
+          working|done) confirmed=state; break ;;
+          blocked) ;;
+          *) wrong="it no longer reads blocked (${now_state:-no badge}): the dialog was declined, not by this call"; break ;;
+        esac
+        case "$cdrec" in "$fp "*) ;; ?*) confirmed=dialog; break ;; esac
+        if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+          # The marker is gone and the badge still says blocked. For Claude,
+          # a decline would write its three records into the transcript 5 to
+          # 55 ms after the key (M1), so the screen proves an approval only
+          # when they are not there.
+          rec="$(t show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
+          since="$(t show-options -pqv -t "$pane" @agent_since 2>/dev/null || true)"
+          rpath="${rec#* }"
+          if [ "$ROOST_DIALOG_HARNESS" = claude ] && [ -n "$rec" ] && [ "${rec%% *}" = "$since" ] \
+             && roost_claude_declined "$rpath" "$since"; then
+            wrong="its transcript shows the dialog was declined, not by this call"; break
+          fi
+          # Ten polls, about half a second to a second depending on tmux's
+          # speed: the hold the comment above explains.
+          [ -n "$screen_at" ] || screen_at="$i"
+          if [ $((i - screen_at)) -ge 10 ]; then confirmed=screen; break; fi
+        else
+          # The marker is back: a dialog is on screen again, so whatever was
+          # seen before is not a proof any more.
+          screen_at=""
+        fi
+      fi
+      sleep 0.05
+      i=$((i + 1))
+    done
+    # NO PROOF IS TAKEN AFTER THE LOOP. `screen` counts only once it has held
+    # for the full ten polls, inside the loop, with the pane still there and
+    # still reading blocked (§6). A hold the bound cut short, or a pane that
+    # went away while its marker was gone, proves nothing, and is exit 10
+    # below like any other answer nothing confirmed (review: an earlier
+    # fallback here took both as `screen`, and a killed pane exited 0).
+    [ "$gone" -eq 0 ] || wrong="the pane is gone or dead, so nothing can confirm it"
+
+    # Step 11, the record (§8): one line per answer, appended after the
+    # confirmation, whatever it found -- exit 10 included, because the key went
+    # in either way. Off with ROOST_RECORD_DIR="", as replies are. The
+    # description is the last field because it is free text.
+    . "$ROOST_HOME/scripts/lib/roost-record.sh"
+    roost_record_root
+    if [ -n "$ROOST_RECORD_ROOT" ]; then
+      rboot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      if roost_record_pane_dir "$rboot" "$pane"; then
+        rsock=""
+        [ -d "$ROOST_RECORD_PANE_DIR" ] || rsock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+        roost_record_put_answer "$ROOST_RECORD_PANE_DIR" \
+          "$sent_at $fp $ROOST_DIALOG_HARNESS $ROOST_DIALOG_KIND $act_word $by forced=$force confirmed=${confirmed:-none} $blocked_on" \
+          "$rsock" || true
+      fi
+    fi
+
+    if [ -z "$confirmed" ]; then
+      if [ -n "$wrong" ]; then
+        echo "roost answer: the key was sent to '$pane', but $wrong" >&2
+      else
+        echo "roost answer: the key was sent to '$pane', and nothing confirmed it inside $ans_timeout s" >&2
+      fi
+      echo "roost answer: it was sent once and will not be resent. Do NOT answer again. Look: roost screen $pane" >&2
+      exit 10
+    fi
+    if [ "$json" -eq 1 ]; then
+      # `state` is the badge the confirming poll saw: null after a deny that
+      # roost_unblock_pane cleared, which unsets the badge rather than set
+      # one. `option` is the number for --option, null otherwise.
+      . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+      roost_jsonout_emit answer target s "$raw" pane s "$pane" action s "$action" \
+        option i "$opt_n" fingerprint s "$fp" harness s "$ROOST_DIALOG_HARNESS" \
+        kind s "$ROOST_DIALOG_KIND" confirmed s "$confirmed" state z "$now_state" \
+        forced b "$force" \
+        || roost_jsonout_fail answer
+      exit 0
+    fi
+    said="$action"; [ "$action" != option ] || said="option $opt_n"
+    printf '%s %s %s\n' "$pane" "$said" "$fp"
     exit 0
     ;;
   read)

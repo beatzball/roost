@@ -158,6 +158,13 @@ Exit codes tell you WHAT to do next, so branch on `$?`:
   to wait out an exit 3 on a stale badge: it counts `blocked` as busy, so it
   just burns its timeout. `roost doctor` lists panes that have read blocked
   for a long time with no dialog on screen.
+
+  **Never answer the dialog yourself.** `roost answer` is a person's command:
+  it sends a key into another agent's dialog. You never run `roost answer`,
+  and never pass `--force` to it, unless your human told you, in this
+  conversation, to answer THAT dialog. Run from your own pane it is refused
+  with exit 9 by design. Tell the human which pane is blocked and on what
+  (`roost status --json` has its `dialog`), and let them answer it.
 - **exit 2** — the target itself is bad (doesn't exist, or its pane is dead).
   Re-resolve it: check `roost status` or the id you captured.
 - **exit 1** — delivery to a valid target failed: either the text never
