@@ -2,8 +2,9 @@
 # (#142) needs to read it.
 #
 # Sourced by bin/roost (`answer`) and by scripts/lib/roost-jsonout.sh (`status
-# --json`). Defines functions and runs nothing at source time; nothing here
-# runs tmux, so tests/test-answer-keymap.sh checks every rule with no server.
+# --json`). Defines functions and runs nothing at source time. Only
+# roost_answer_send runs tmux, through bin/roost's `t`; the parsers and the key
+# map run none, so tests/test-answer-keymap.sh checks every rule with no server.
 #
 # The design, and the measurement behind every rule, is
 # docs/airig/specs/2026-09-30-roost-answer-design.md. Its §4 is the record, §5
@@ -29,8 +30,8 @@
 # bash 3.2 matches a range by the locale's collation, where a-f can include
 # capitals.
 
-# roost_answer__hex VALUE LEN -> 0 when VALUE is exactly LEN lowercase hex.
-roost_answer__hex() {
+# roost_answer_hex VALUE LEN -> 0 when VALUE is exactly LEN lowercase hex.
+roost_answer_hex() {
   local LC_ALL=C
   case "$1" in ''|*[!0123456789abcdef]*) return 1 ;; esac
   [ "${#1}" -eq "$2" ]
@@ -52,12 +53,12 @@ roost_answer_dialog_parse() {
 $1
 EOF
   [ -z "${extra:-}" ] || return 1
-  roost_answer__hex "${fp:-}" 12 || return 1
+  roost_answer_hex "${fp:-}" 12 || return 1
   case "${h:-}" in claude|codex) ;; *) return 1 ;; esac
   case "${k:-}" in permission|question|other) ;; *) return 1 ;; esac
   case "${o:-}" in [0123456789]) ;; *) return 1 ;; esac
   [ "$k" = question ] || [ "$o" = 0 ] || return 1
-  roost_answer__hex "${dg:-}" 8 || return 1
+  roost_answer_hex "${dg:-}" 8 || return 1
   ROOST_DIALOG_FP="$fp" ROOST_DIALOG_HARNESS="$h" ROOST_DIALOG_KIND="$k"
   ROOST_DIALOG_OPTIONS="$o" ROOST_DIALOG_DIGEST="$dg"
 }
@@ -80,7 +81,7 @@ roost_answer_answered_parse() {
 $1
 EOF
   [ -z "${extra:-}" ] || return 1
-  roost_answer__hex "${fp:-}" 12 || return 1
+  roost_answer_hex "${fp:-}" 12 || return 1
   [ "$fp" = "$2" ] || return 1
   case "${at:-}" in ''|*[!0123456789]*|0?*) return 1 ;; esac
   [ "${#at}" -le 12 ] || return 1
@@ -118,4 +119,121 @@ roost_answer_dialog_json() {
     ans="{\"at\":$ROOST_ANSWERED_AT,\"action\":\"$ROOST_ANSWERED_ACTION\",\"option\":$opt,\"by\":\"$ROOST_ANSWERED_BY\"}"
   fi
   ROOST_ANSWER_JSON="{\"fingerprint\":\"$ROOST_DIALOG_FP\",\"harness\":\"$ROOST_DIALOG_HARNESS\",\"kind\":\"$ROOST_DIALOG_KIND\",\"options\":$ROOST_DIALOG_OPTIONS,\"answered\":$ans}"
+}
+
+# --- the key map (§5) ---------------------------------------------------------
+#
+# roost_answer_keys HARNESS KIND ACTION [N [OPTIONS]] -> 0, setting
+# ROOST_ANSWER_KEY (one tmux key name), ROOST_ANSWER_MARK1 and
+# ROOST_ANSWER_MARK2 (the two lines that must both be on the pane's visible
+# screen); or 1, setting ROOST_ANSWER_REFUSAL to the sentence `roost answer`
+# prints before it exits 8.
+#
+# A ROW IS A MEASUREMENT. Each one names the harness version and the section
+# of the design that measured it. A new row needs a new measurement first: no
+# row, no key. The map is NOT keyed by version number, because roost does not
+# know which version is running for certain. What guards a changed dialog is
+# the marker check (a reworded dialog is refused with exit 6, which is safe)
+# and tests/live/answer-smoke.sh, which drives a real Claude through these rows
+# and is run after every harness upgrade.
+#
+# roost never sends `2`, `p`, Tab or Enter to a dialog. `2` and `p` grant a
+# standing permission on the dialogs measured; Enter follows the cursor, which
+# a human may have moved; Tab amends. None of them has a row, and none ever may.
+#
+# NOT IN THIS CUT, by ruling: codex. Its command approval was measured on
+# 0.157.1 (M3: `y` approves with no Enter, Escape declines and fires
+# Interrupt), but on that version a second codex pane's hooks can stamp the
+# FIRST pane (F1, #145), so the pane that reads blocked may not be the pane
+# showing the dialog. The marker check would refuse that case, and refusing is
+# not a fix. So codex has no row until #145 is understood, and every codex
+# dialog is exit 8. The same for opencode, copilot and pi, whose dialogs were
+# never measured.
+roost_answer_keys() {
+  local h="$1" k="$2" a="$3"
+  ROOST_ANSWER_KEY="" ROOST_ANSWER_MARK1="" ROOST_ANSWER_MARK2="" ROOST_ANSWER_REFUSAL=""
+  case "$h/$k/$a" in
+    # Claude Code 2.1.283, M1: `1` approves with NO Enter (3 runs), and wins
+    # over a cursor moved to "No" (once). The first option is "Yes" on every
+    # shape measured: Bash with three options, Bash with `&` with two, Write.
+    # Edit, on 2.1.309 (once, for #142's step 2): "Do you want to make this
+    # edit to <file>?", the same three rows as Write, and `1` made the edit
+    # with no Enter, the badge at `done` by +0.3 s.
+    claude/permission/approve)
+      ROOST_ANSWER_KEY=1 ;;
+    # Claude Code 2.1.283, M1: Escape declines (once, with timing), and writes
+    # the same three transcript records as "No". Edit on 2.1.309 (once): the
+    # file was left as it was, and `send` then cleared the badge from the
+    # transcript, as for Bash. A digit is never used to
+    # deny: "No" is option 3 on one dialog and option 2 on another, and on the
+    # first one option 2 is "Yes, and always allow".
+    claude/permission/deny)
+      ROOST_ANSWER_KEY=Escape ;;
+    claude/permission/option)
+      ROOST_ANSWER_REFUSAL="this is a permission prompt. Use --approve or --deny"
+      return 1 ;;
+    *)
+      ROOST_ANSWER_REFUSAL="no measured keys for this $h dialog. Answer at the pane"
+      return 1 ;;
+  esac
+  # The marker, Claude Code 2.1.283 (M1), and the same on 2.1.309 for Bash and
+  # Edit: both lines of the permission dialog's frame. "Esc to cancel" alone
+  # is on the question dialog too.
+  ROOST_ANSWER_MARK1="Esc to cancel"
+  ROOST_ANSWER_MARK2="Do you want to"
+  return 0
+}
+
+# roost_answer_marked SCREEN -> 0 when both marker lines are in SCREEN. SCREEN
+# is the pane's VISIBLE screen, captured with its wrapped lines joined
+# (`capture-pane -p -J`), because a narrow pane that wraps a marker line would
+# otherwise split it and miss (the design's §12.6).
+roost_answer_marked() {
+  case "$1" in *"$ROOST_ANSWER_MARK1"*) ;; *) return 1 ;; esac
+  case "$1" in *"$ROOST_ANSWER_MARK2"*) ;; *) return 1 ;; esac
+}
+
+# --- the send (§3.1 step 9, M9) ----------------------------------------------
+#
+# roost_answer_send PANE FINGERPRINT KEY VALUE NONCE -> 0 when the key was sent,
+# 1 when tmux refused the test and sent nothing, 2 when tmux itself failed.
+#
+# ONE tmux command tests and sends. tmux evaluates the test against the pane at
+# the moment it runs, in the same command list as the send, so nothing can
+# land between "this is still the dialog the caller named" and the key:
+#
+#   the pane reads blocked
+#   AND @roost-dialog still begins with FINGERPRINT
+#   AND @roost-answered does not (this dialog is not answered yet)
+#   AND the pane is not in a mode (copy mode would take the key)
+#
+# When it holds, the same branch sends KEY, writes @roost-answered = VALUE
+# ("<fingerprint> <epoch> <action> <by>", §8) and writes @roost-answer-nonce =
+# NONCE. `if-shell` exits 0 whichever branch ran, so the caller learns which
+# from the read that follows it in the same command: the nonce. Not
+# @roost-answered itself: two `roost answer` calls on one dialog in one second
+# from one place would write the same VALUE, and the one whose test failed
+# would read the other's VALUE back and believe it had sent. A nonce is the
+# caller's own, so only the caller that sent can read it back. Measured on tmux
+# 3.6: a read chained after `if-shell` sees the branch's write. (A
+# `display-message -p` INSIDE the branch printed twice and on the wrong branch
+# in the same probe, so nothing here reads from inside it.)
+#
+# Every word spliced into the command was checked by the caller: PANE is %N,
+# FINGERPRINT 12 hex, KEY a key name from the map above, VALUE hex, digits, a
+# fixed word and `pane:%N`/terminal/program, NONCE digits and a dot.
+roost_answer_send() {
+  local pane="$1" fp="$2" key="$3" value="$4" nonce="$5" cond got
+  cond="#{&&:#{==:#{@agent_state},blocked},#{&&:#{m:$fp *,#{@roost-dialog}},#{&&:#{?#{m:$fp *,#{@roost-answered}},,1},#{==:#{pane_in_mode},0}}}}"
+  got="$(t if-shell -F -t "$pane" "$cond" \
+    "send-keys -t $pane $key ; set-option -p -t $pane @roost-answered '$value' ; set-option -p -t $pane @roost-answer-nonce '$nonce'" \
+    ';' display-message -p -t "$pane" '#{@roost-answer-nonce}' 2>/dev/null)" || {
+    # The whole command failed. Ask once more whether the branch ran: tmux
+    # stops a command list at its first error, so a nonce that is ours means
+    # the key went in before whatever failed.
+    got="$(t display-message -p -t "$pane" '#{@roost-answer-nonce}' 2>/dev/null || true)"
+    [ "$got" = "$nonce" ] && return 0
+    return 2
+  }
+  [ "$got" = "$nonce" ]
 }

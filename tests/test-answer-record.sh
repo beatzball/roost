@@ -10,7 +10,7 @@
 # does for 2.1.278. The raw captures were kept with the design work and never
 # committed. What the record says for each shape is the design's §4.2:
 #
-#   Bash, Write (Claude)                          permission
+#   Bash, Write, Edit (Claude)                    permission
 #   AskUserQuestion, one question, single select,
 #     two to four options, no preview             question N
 #   codex's command approval (`Bash`)             permission
@@ -120,7 +120,7 @@ shape() {
 # --- 1. what each dialog shape records ----------------------------------------
 shape "Claude Bash"              "$BASH_PR"  "claude permission 0"
 shape "Claude Write"             "$WRITE_PR" "claude permission 0"
-shape "Claude Edit (not measured)" "$EDIT_PR" "claude other 0"
+shape "Claude Edit (2.1.309)"    "$EDIT_PR"  "claude permission 0"
 shape "Claude WebFetch (not measured)" "$FETCH_PR" "claude other 0"
 shape "an MCP tool (not measured)" "$MCP_PR"  "claude other 0"
 shape "a question with 3 options" "$Q3_PR"   "claude question 3"
@@ -261,7 +261,7 @@ if command -v jq >/dev/null 2>&1; then
   }
   jshape "Claude Bash" "$BASH_PR" "claude permission 0"
   jshape "Claude Write" "$WRITE_PR" "claude permission 0"
-  jshape "Claude Edit" "$EDIT_PR" "claude other 0"
+  jshape "Claude Edit" "$EDIT_PR" "claude permission 0"
   jshape "a question with 3 options" "$Q3_PR" "claude question 3"
   jshape "a question with 5 options" "$Q5_PR" "claude other 0"
   jshape "a multi-select question" "$QM_PR" "claude other 0"

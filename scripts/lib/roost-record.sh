@@ -27,6 +27,8 @@
 #                       Written by `send` through roost_record_put_turn_field,
 #                       and BEFORE the turn file: the label is known when the
 #                       turn begins, the reply only when it ends
+#     answers           one line per dialog answered with `roost answer`
+#                       (#142), appended by roost_record_put_answer
 #
 # The server's boot key is in the path because tmux restarts pane ids at %0 on
 # every server start (measured on tmux 3.3a, 3.4 and 3.6): keyed by socket and
@@ -636,6 +638,35 @@ roost_record_put_turn_field() {
   roost_record_ensure "$dir" "$sock" || return 1
   roost_record_turn_file "$dir" "$n"
   roost_record__put "$ROOST_RECORD_FILE.$field" "$value" || return 1
+  if [ "$ROOST_RECORD_CREATED" = 1 ]; then
+    roost_record_sweep
+  fi
+  return 0
+}
+
+# roost_record_put_answer DIR LINE [SOCKET] — append one line to `answers`
+# in the pane's record (#142): who answered a dialog with `roost answer`, how,
+# and what roost saw confirm it. 0 when it was written, 1 when nothing was.
+#
+# NOT a per-turn sidecar, and that is the point of a file of its own (the
+# answer design, §8): the turn that holds a dialog has no turn file yet, since
+# a turn file is written at Stop, and one turn can hold several dialogs. So
+# it is one line per answer, appended, never rewritten. LINE is one line, at
+# most 1024 bytes: well under PIPE_BUF, so one append(2) cannot interleave
+# with another writer's. Its last field is the dialog's description, which can
+# hold a secret (scripts/roost-agent-state warns about @roost-blocked-on), so
+# the file is 0600 like the replies beside it. `roost forget` removes it with
+# the rest of the pane's record, and with ROOST_RECORD_DIR="" nothing is
+# written, as for replies.
+roost_record_put_answer() {
+  local LC_ALL=C dir="$1" line="$2" sock="${3:-}"
+  case "$line" in ''|*$'\n'*) return 1 ;; esac
+  [ "${#line}" -le 1024 ] || return 1
+  roost_record_ensure "$dir" "$sock" || return 1
+  if [ ! -f "$dir/answers" ]; then
+    ( umask 077; : >> "$dir/answers" ) 2>/dev/null || return 1
+  fi
+  { printf '%s\n' "$line" >> "$dir/answers"; } 2>/dev/null || return 1
   if [ "$ROOST_RECORD_CREATED" = 1 ]; then
     roost_record_sweep
   fi

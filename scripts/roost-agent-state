@@ -565,8 +565,10 @@ fi
 #
 #   kind     `question` only for ONE question, multiSelect false, two to four
 #            options and no option with a preview (M2); `permission` only for a
-#            tool whose dialog was measured -- Bash and Write on Claude, the
-#            command approval on codex (M1, M3). Everything else is `other`,
+#            tool whose dialog was measured -- Bash and Write on Claude (M1),
+#            Edit on Claude (2.1.309, once each: the same marker lines, `1`
+#            approved with no Enter and Escape declined, as for Write), the
+#            command approval on codex (M3). Everything else is `other`,
 #            and `roost answer` sends nothing to an `other`: a multi-select,
 #            two questions, a tool not yet measured, a SUBAGENT's dialog (it
 #            names an agent_id; not measured), a payload no reader could parse
@@ -649,7 +651,7 @@ if name_ok and isinstance(inp, dict) and not (isinstance(sub, str) and sub):
                 kind, opts = "question", len(o)
     elif harness == "claude" and name == "Bash" and isinstance(inp.get("command"), str):
         kind = "permission"
-    elif harness == "claude" and name == "Write" and isinstance(inp.get("file_path"), str):
+    elif harness == "claude" and name in ("Write", "Edit") and isinstance(inp.get("file_path"), str):
         kind = "permission"
     elif harness == "codex" and name == "Bash" and isinstance(inp.get("command"), str):
         kind = "permission"
@@ -689,7 +691,7 @@ sys.stdout.write("%s %d %s %s\n" % (kind, opts, digest, os.urandom(6).hex()))' "
                    and ($q[0].options | all(.[]; type == "object" and (.preview | falsy)))
                 then "question \($q[0].options | length)" else "other 0" end
             elif $h == "claude" and .tool_name == "Bash" and (.tool_input.command | type) == "string" then "permission 0"
-            elif $h == "claude" and .tool_name == "Write" and (.tool_input.file_path | type) == "string" then "permission 0"
+            elif $h == "claude" and (.tool_name == "Write" or .tool_name == "Edit") and (.tool_input.file_path | type) == "string" then "permission 0"
             elif $h == "codex" and .tool_name == "Bash" and (.tool_input.command | type) == "string" then "permission 0"
             else "other 0" end)
          else "other 0" end),
