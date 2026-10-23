@@ -363,9 +363,22 @@ T kill-window -t "$nw"
 v="$(open_dialog vanish v)"; fp="$(fpof "$v")"
 ans --expect "$fp" "$v" --approve
 assert_eq "$rc,$out" "10," "a pane that exits after its dialog went: exit 10, not a screen proof"
-assert_contains "$err" "the pane is gone, so nothing can confirm it" "...saying the pane is gone"
+assert_contains "$err" "the pane is gone or dead, so nothing can confirm it" "...saying the pane is gone"
 assert_contains "$err" "it was sent once and will not be resent" "...and that the key will not be resent"
 assert_eq "$(keys v)" "31" "...with exactly one key in its log"
+# The same, with remain-on-exit on (a user's roost.conf can set it): the dead
+# pane stays, with its id, its blocked badge and a screen with no marker, so
+# the loop must treat dead as gone (review round 2). On for this case only.
+T set -g remain-on-exit on
+vd="$(open_dialog vanish vd)"; fp="$(fpof "$vd")"
+ans --expect "$fp" "$vd" --approve
+T set -g remain-on-exit off
+assert_eq "$rc,$out" "10," "a dead pane that tmux keeps, after its dialog went: exit 10, not a screen proof"
+assert_contains "$err" "the pane is gone or dead, so nothing can confirm it" "...saying the pane is dead"
+assert_eq "$(keys vd)" "31" "...with exactly one key in its log"
+rec="$(find "$ROOST_RECORD_DIR" -name answers -path "*/${vd#%}/answers" 2>/dev/null | head -1)"
+assert_contains "$(cat "$rec" 2>/dev/null)" " confirmed=none " "...and the record says confirmed=none, not screen"
+T kill-pane -t "$vd" 2>/dev/null
 # A hold the bound cuts short is no proof either. The call is started just
 # after a second ticks over, so the 1 s bound ends about 1.7 to 2 s after the
 # key and the marker, gone 1.4 s after it, cannot hold for half a second

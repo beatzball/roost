@@ -1188,9 +1188,10 @@ else
   # THIS IS THE ONE WRITER LEFT THAT IS NOT ATOMIC, and it is a known gap
   # rather than an oversight (flock round 2): $prev was read above, the unsets
   # are a separate call from that read (one call now, two before #142), and a
-  # dialog stamped in between would have its record cleared. Round 2 bounded the window at single-digit milliseconds and could
-  # not reproduce it at any gap, because the hook that would have to win the
-  # race is systematically the slower of the two. docs/known-gaps.md carries it.
+  # dialog stamped in between would have its record cleared. Round 2 bounded the
+  # window at single-digit milliseconds and could not reproduce it at any gap,
+  # because the hook that would have to win the race is systematically the
+  # slower of the two. docs/known-gaps.md carries it.
   if [ "$prev" = "blocked" ] && [ "$stop_while_blocked" = 0 ]; then
     # The dialog record and who answered it (#142) describe the same dialog,
     # so they go here too, and all five unsets are ONE call: a tmux process

@@ -2216,11 +2216,13 @@ EOF
     # a decline writes its transcript records 5 to 55 ms after the key (M1,
     # M5). Taken at the first poll that saw it, it would win nearly every
     # time, and it could be read in the gap before a decline is written. So it
-    # counts only once it has HELD for half a second -- three times the
-    # slowest badge change measured and twice the slowest next dialog -- and
-    # any stronger proof, or a decline, seen in that time wins over it. The
-    # run of a slow tool lasts far longer, so the case `screen` exists for
-    # still ends here, half a second later. (This hold is the builder's
+    # counts only once it has HELD for ten polls -- about half a second to a
+    # second depending on tmux's speed, since a poll is a 50 ms sleep plus up
+    # to four tmux calls (0.92 s for ten on a reviewer's Mac); at least three
+    # times the slowest badge change measured and twice the slowest next
+    # dialog -- and any stronger proof, or a decline, seen in that time wins
+    # over it. The run of a slow tool lasts far longer, so the case `screen`
+    # exists for still ends here, that much later. (This hold is the builder's
     # reading of §6, not a measured number: no run measured how long the
     # stronger proofs can lag.)
     # An approve that ends in a decline, or a deny that ends in `working`, was
@@ -2254,11 +2256,19 @@ EOF
     i=0
     SECONDS=0
     while [ "$SECONDS" -le "$ans_timeout" ]; do
-      cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
+      cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
       # The pane is gone: nothing on it can confirm anything any more, and a
       # screen that had lost its marker before it went proves nothing.
       if [ "${cinfo%%|*}" != "$pane" ]; then gone=1; break; fi
       crest="${cinfo#*|}"
+      # A DEAD pane is gone too, though tmux still answers for it: with
+      # remain-on-exit on (a user's roost.conf can set it) a pane whose process
+      # exited keeps its id, its blocked badge and a screen with no marker, so
+      # without this its ten polls would confirm `screen` (review round 2).
+      # Step 1 refuses the same pane as dead before the send; this is that
+      # rule after it.
+      if [ "${crest%%|*}" = 1 ]; then gone=1; break; fi
+      crest="${crest#*|}"
       now_state="${crest%%|*}"; cdrec="${crest#*|}"
       if [ "$action" = deny ]; then
         case "$now_state" in
@@ -2288,8 +2298,8 @@ EOF
              && roost_claude_declined "$rpath" "$since"; then
             wrong="its transcript shows the dialog was declined, not by this call"; break
           fi
-          # Ten polls of at least 50 ms each: the half second (or more) the
-          # comment above explains.
+          # Ten polls, about half a second to a second depending on tmux's
+          # speed: the hold the comment above explains.
           [ -n "$screen_at" ] || screen_at="$i"
           if [ $((i - screen_at)) -ge 10 ]; then confirmed=screen; break; fi
         else
@@ -2307,7 +2317,7 @@ EOF
     # went away while its marker was gone, proves nothing, and is exit 10
     # below like any other answer nothing confirmed (review: an earlier
     # fallback here took both as `screen`, and a killed pane exited 0).
-    [ "$gone" -eq 0 ] || wrong="the pane is gone, so nothing can confirm it"
+    [ "$gone" -eq 0 ] || wrong="the pane is gone or dead, so nothing can confirm it"
 
     # Step 11, the record (§8): one line per answer, appended after the
     # confirmation, whatever it found -- exit 10 included, because the key went
