@@ -10,6 +10,17 @@
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# Nothing here runs a harness, a hook or tmux. Every home is still pointed at a
+# canary, as tests/test-install.sh does, so a later edit that adds one cannot
+# reach a real home, and the check at the bottom says if anything landed.
+work="$(mktemp -d /tmp/amx.XXXX)"
+trap 'rm -rf "$work"' EXIT
+CANARY="$work/canary"
+export HOME="$CANARY/home" XDG_CONFIG_HOME="$CANARY/xdg-config" \
+       XDG_STATE_HOME="$CANARY/xdg-state" XDG_DATA_HOME="$CANARY/xdg-data" \
+       ROOST_RECORD_DIR="" CLAUDE_SETTINGS="$CANARY/claude/settings.json" \
+       CODEX_HOME="$CANARY/codex" COPILOT_HOME="$CANARY/copilot" \
+       PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 . "$HERE/scripts/lib/roost-answer.sh"
 
 # row HARNESS KIND ACTION N OPTIONS -> "KEY|MARK1|MARK2", or "refused: WHY".
@@ -112,6 +123,8 @@ for bad in "3f9c1a2b7d4e 1790748772 approve terminal extra" "3f9c1a2b7d4e 017907
            "000000000000 1790748772 deny terminal"; do
   roost_answer_answered_parse "$bad" 3f9c1a2b7d4e; [ $? -ne 0 ]; assert_true $? "answered: '$bad' is no answer to this dialog"
 done
+
+assert_eq "$(find "$CANARY" -mindepth 1 2>/dev/null | sort)" "" "nothing was written under the canary homes"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
