@@ -229,7 +229,7 @@ Three things to know:
 | `4` | **submitted, but no turn began** inside the bound — or the pane went away first. The text **was** delivered | do **not** send it again: the prompt may be running. `roost screen` it, and `roost doctor` if the badge never moves |
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
-| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, or was delivered but never left the input line even after retrying extra Enters | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
+| `1` (`roost send:` message) | delivery to a valid target failed — the text never reached the pane, could not be confirmed to have reached it, was delivered but never left the input line even after retrying extra Enters, or another `send` to the same pane held it for the whole wait (one send types into a pane at a time) | retry the same target, or `roost screen` it to see what is stuck; do **not** re-resolve |
 | `1` (`usage:` message) | a missing argument | caller bug, not a delivery failure |
 
 **`4` is not `1`, and the difference is the one that costs you.** `1` means nothing was submitted, so re-sending is safe. `4` means the text is already in the agent. A caller that treats them alike runs the prompt twice.

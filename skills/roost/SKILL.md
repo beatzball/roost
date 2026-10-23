@@ -170,8 +170,10 @@ Exit codes tell you WHAT to do next, so branch on `$?`:
 - **exit 1** — delivery to a valid target failed: either the text never
   reached the pane (the paste itself failed, e.g. the pane died mid-send) or it
   was pasted but never left the input line even after retrying extra Enters
-  (a cold TUI swallowed the submit). Do NOT re-resolve the target — `roost
-  send` the same target again, or `roost screen` it to see what's stuck
+  (a cold TUI swallowed the submit), or another `roost send` to the same pane
+  held it for the whole wait (one send types into a pane at a time; a second
+  one waits up to a minute, then gives up with nothing typed). Do NOT
+  re-resolve the target — `roost send` the same target again, or `roost screen` it to see what's stuck
   (`screen`, not `read`: a stuck pane's problem is on its screen, and its
   last recorded reply is from whatever turn finished before it got stuck). A
   missing TARGET/TEXT argument also exits 1, but with a `usage:` message
