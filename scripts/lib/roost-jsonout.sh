@@ -415,8 +415,11 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
-  local -a p_sid p_cwd p_harness p_tr p_sub
+  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered
   local ns=0 np=0 j
+  # The dialog record's reader (#142). Sourced here, where it is used, so no
+  # other roost command pays for it; it runs nothing at source time.
+  . "${BASH_SOURCE[0]%/*}/roost-answer.sh"
   case "$_SOCKET_FLAG" in -L) kind=name ;; esac
   strs=(status "$SOCKET" "$kind")
 
@@ -462,8 +465,13 @@ roost_jsonout_status() {
   # keep (scripts/roost-agent-state, --subagent-hook). It rides in the same
   # list-panes call as the rest: a fifteenth field costs nothing, and a second
   # call would read the pane at a different instant from its state.
+  #
+  # Then @roost-dialog and @roost-answered (#142): which dialog a blocked pane
+  # is showing, and whether `roost answer` has answered it. In the same call
+  # for the same reason: `dialog` is null unless `state` says blocked, and the
+  # two must be read at one instant for that to mean anything.
   trusted=0
-  roost_jsonout_list 15 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 17 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -486,6 +494,8 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[12]="$(t display-message -p -t "$id" '#{@roost-harness}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[13]="$(t display-message -p -t "$id" '#{@roost-transcript-path}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[14]="$(t display-message -p -t "$id" '#{@roost-subagents}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[15]="$(t display-message -p -t "$id" '#{@roost-dialog}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[16]="$(t display-message -p -t "$id" '#{@roost-answered}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
@@ -494,6 +504,7 @@ roost_jsonout_status() {
     p_sid[np]="${ROOST_JSONOUT_F[10]}"; p_cwd[np]="${ROOST_JSONOUT_F[11]}"
     p_harness[np]="${ROOST_JSONOUT_F[12]}"; p_tr[np]="${ROOST_JSONOUT_F[13]}"
     p_sub[np]="${ROOST_JSONOUT_F[14]}"
+    p_dialog[np]="${ROOST_JSONOUT_F[15]}"; p_answered[np]="${ROOST_JSONOUT_F[16]}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -546,7 +557,19 @@ roost_jsonout_status() {
     # badge: `state` says whether the agent is busy, this says how many
     # helpers it has out, and the turn-over design (#97) owns the relation
     # between the two.
-    roost_jsonout_int "${p_sub[k]}"; doc="$doc,\"subagents\":$ROOST_JSONOUT_INT}"
+    roost_jsonout_int "${p_sub[k]}"; doc="$doc,\"subagents\":$ROOST_JSONOUT_INT"
+    # Which dialog a blocked pane shows, and whether it was answered (#142,
+    # docs/airig/specs/2026-09-30-roost-answer-design.md §4.3): always present,
+    # null unless the pane reads blocked AND carries a record whose every word
+    # checks out. `fingerprint` is what `roost answer --expect` takes.
+    # `answered` is how a reader tells "a dialog is open" from "blocked, and
+    # the approved tool is still running" -- a pane reads blocked for the whole
+    # run of an approved tool (M6 there), so a board that shows "needs you"
+    # from `state` alone will show it for a pane that needs nothing. Every word
+    # is hex, a fixed word or a digit, checked by the parser, so it needs no
+    # trip through the encoder. Additive under the schema-1 rule.
+    roost_answer_dialog_json "${p_state[k]}" "${p_dialog[k]}" "${p_answered[k]}"
+    doc="$doc,\"dialog\":$ROOST_ANSWER_JSON}"
     j=$((j + 11)); sep=","; k=$((k + 1))
   done
   printf '%s]}\n' "$doc"

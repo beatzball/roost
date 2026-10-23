@@ -1705,10 +1705,13 @@ places a reader of the log can still be wrong. Severity is stated on each.
   the agent's lines in one log and the close check's search in another, and
   no `closed` line is written. Closing it: record the log's directory in a
   server option the first time a line is written, and have the check read it.
-- **A second codex dialog in a row writes no `blocked_on` line. Low.** codex's
-  adapter sends a flagless `blocked`, which carries no description, so nothing
-  says the dialog changed. Closing it: the codex adapter passes the
-  description, the way Claude's PermissionRequest hook does.
+- **A second codex dialog in a row writes no `blocked_on` line when codex's
+  hook runs in its shared app-server. Low.** Since #142 the codex adapter
+  passes its PermissionRequest payload, so a codex dialog has a description
+  like Claude's. But when the hook's parent is codex's shared app-server
+  (#145), the adapter sends a flagless `blocked` instead, because there the
+  pane it names may not be the pane showing the dialog. That stamp carries no
+  description, so nothing says the dialog changed. Closing it: #145.
 - **A line can land in a segment a reader has already left. Low.** A writer
   lists the segments, then appends to the newest. If another writer rotates in
   between — microseconds — the line goes into the segment just closed. It is

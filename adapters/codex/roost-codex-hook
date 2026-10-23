@@ -132,7 +132,7 @@ event="${1:-}"
 #
 #   UserPromptSubmit  a turn starts                       -> working
 #   PostToolUse       a tool returned, so the turn is live -> working
-#   PermissionRequest a human is being waited on          -> blocked
+#   PermissionRequest a human is being waited on          -> blocked + the dialog (#142)
 #   Stop              the turn ended                      -> done + the reply
 #   Stop, no reply    the turn ended with nothing to say  -> error + why (#39)
 #
@@ -305,10 +305,41 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # one; ROOST_ERROR_REASON is the sentence `roost wait-done` prints.
 sink="$SELF_DIR/../../scripts/roost-agent-state"
 
+# --- PermissionRequest: what the dialog is (#142) -----------------------------
+#
+# A dialog's payload goes to the sink with --permission-request-hook, as
+# Claude's does, so a codex dialog gets the same @roost-blocked-on description
+# and the @roost-dialog record `roost answer` reads
+# (docs/airig/specs/2026-09-30-roost-answer-design.md §4, step 1 of §10).
+# ROOST_DIALOG_HARNESS=codex is what tells the sink the payload is codex's: its
+# `Bash` is the command approval measured in M3 there, and its transcript_path
+# names a rollout file the sink must not record as a Claude transcript.
+#
+# NOT when this script's parent is the shared app-server, for the reason the
+# identity block at the bottom of this file gives: there, $TMUX_PANE names
+# whichever codex pane started first, and a dialog record on a pane whose
+# screen does not show that dialog is worse than none. The badge is still sent
+# that same wrong way, flagless, exactly as it was before this change
+# (docs/known-gaps.md, #145). One `ps` per dialog, which is rare next to a tool
+# call.
+#
+# The payload is read only under the guards the Stop read uses: not a tty, and
+# inside tmux. Otherwise the sink is called flagless, as before.
+dialog_payload=0
+if [ "$event" = "PermissionRequest" ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+  case "$(ps -o command= -p "$PPID" 2>/dev/null || true)" in
+    *app-server*) ;;
+    *) payload="$(cat 2>/dev/null || true)"; dialog_payload=1 ;;
+  esac
+fi
+
 # Interrupt: `idle --stop-hook` with stdin from /dev/null, which is not a tty,
 # so the sink's reply-clearing arm runs and nothing waits on codex's pipe.
 if [ "$interrupt" = 1 ]; then
   ROOST_AGENT_NAME=codex "$sink" idle --stop-hook < /dev/null || true
+elif [ "$dialog_payload" = 1 ]; then
+  printf '%s' "$payload" \
+    | ROOST_AGENT_NAME=codex ROOST_DIALOG_HARNESS=codex "$sink" blocked --permission-request-hook || true
 elif [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
   printf '%s' "$payload" \
     | ROOST_AGENT_NAME=codex ROOST_ERROR_REASON="$reason" "$sink" "$state" --stop-hook || true

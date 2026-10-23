@@ -179,11 +179,11 @@ status_doc() {
   printf '{"schema":1,"command":"status","running":true,"socket":"%s","socket_kind":"path",' "$s"
   printf '"sessions":[{"name":"main","windows":2,"attached_clients":0},{"name":"side","windows":2,"attached_clients":0}],'
   printf '"panes":['
-  printf '{"id":"%%0","session":"main","window_id":"@0","window_index":0,"window_name":"api","pane_index":0,"name":null,"command":"sleep","state":"done","since":1789000000,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":0},'
-  printf '{"id":"%%1","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":0,"name":null,"command":"sleep","state":"working","since":1789000100,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":2},'
-  printf '{"id":"%%2","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":1,"name":%s,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null},' "$1"
-  printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null},'
-  printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null}'
+  printf '{"id":"%%0","session":"main","window_id":"@0","window_index":0,"window_name":"api","pane_index":0,"name":null,"command":"sleep","state":"done","since":1789000000,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":0,"dialog":null},'
+  printf '{"id":"%%1","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":0,"name":null,"command":"sleep","state":"working","since":1789000100,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":2,"dialog":null},'
+  printf '{"id":"%%2","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":1,"name":%s,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null},' "$1"
+  printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null},'
+  printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null}'
   printf ']}'
 }
 cap st "$ROOST" status --json
