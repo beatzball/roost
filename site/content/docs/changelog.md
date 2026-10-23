@@ -16,6 +16,25 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0]
+
+A human can now answer a blocked pane from anywhere. `roost answer --expect FP
+%3 --approve`, `--option N` or `--deny` sends one measured key into the dialog
+a pane is blocked on and waits to see it land, and `status --json` says which
+dialog that is, so a board or a phone can tell "needs you" from "already
+answered". And two `roost send`s at once no longer lose, merge or cross each
+other's messages: every send has a buffer of its own and holds a per-pane lock
+from before its first key to after the turn watch, so two workers reporting to
+one coordinator in the same second both arrive, and two senders racing an idle
+agent are never handed the same turn number.
+
+Two things to know. **A second `send` to a pane that is being sent to waits**
+— up to `@roost-send-lock-timeout` seconds, 60 by default — and then exits 1
+with nothing typed, which is the "retry the same target" code. And **`roost
+answer` does not take that lock yet**, so a `send --force` and an `answer`
+aimed at one dialog can still both land; both are a person's verbs, and
+docs/known-gaps.md lists it.
+
 ### Added
 
 - **`roost answer`: answer a blocked pane's dialog from any shell (#142).**
