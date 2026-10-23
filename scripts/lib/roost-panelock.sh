@@ -33,20 +33,36 @@
 #     roost. A killed sender's pid can be handed to a long-lived stranger,
 #     and without this clause every later send to that pane would wait the
 #     whole bound and fail, for as long as the stranger lived. A real sender
-#     is `bash .../bin/roost send …`, so its args always carry the name;
+#     is `bash .../bin/roost send …`, so its args always carry the name. A
+#     `ps` that answers NOTHING is "cannot tell", and cannot-tell is never
+#     gone: a machine with no ps, or one where ps fails, keeps every lock
+#     whose pid is alive;
 #   - there is NO PID FILE and the directory is a minute old. A holder between
 #     its mkdir and its pid write takes microseconds, so a minute is a holder
 #     that died in that gap. A holder STOPPED in that gap for a minute would
 #     lose its lock and then write its pid into the taker's — known, and not
 #     worth a rule that could never take over a lock with no pid at all.
 #
-# Taking over is itself done safely twice. A `.take` a minute old is a taker
-# that was killed mid-takeover; it is moved aside with mv (rename(2), so one
-# of two waiters that both found it old wins and the other's mv fails) and
-# then removed, never rmdir'd in place, where the second waiter's rmdir
-# would remove the first's FRESH guard. And a stale lock that cannot be
-# removed (a permission, a file system in trouble) does not spin: every pass
-# of the loop pays one tick toward the bound, takeover or not.
+# THE `.take` GUARD CARRIES ITS TAKER'S PID TOO, and is an orphan by the same
+# three clauses, never by age alone. An orphan is a taker that was killed
+# between its mkdir and its rmdir, and it has to go or no lock on that pane
+# could ever be taken over again. Removing it is where two waiters can
+# collide, so it is done with mv (rename(2): one of two waiters wins, the
+# other's mv fails because the source is gone), to a name that carries the
+# orphan's pid as this waiter read it, and the moved directory's pid is READ
+# BACK: the same pid means the orphan, and it is removed; a different pid
+# means the mv caught another waiter's FRESH guard, and it is moved straight
+# back. What that leaves is the gap between the mv away and the mv back —
+# two syscalls, no sleep — in which a third waiter could mkdir a guard of its
+# own and make the mv back fail. Two takers can then both clear the stale
+# lock and both reach mkdir, where only one wins; the loser's second `rm -rf`
+# can still take the winner's fresh lock. That window is not closed here;
+# it is caught by roost_panelock_check, below, which every holder calls
+# before each keystroke that cannot be taken back.
+#
+# A stale lock that cannot be removed (a permission, a file system in
+# trouble) does not spin: every pass of the loop pays one tick toward the
+# bound, takeover or not.
 #
 # Sourced, not executed, `roost_panelock_*` prefix. NO TMUX CALL: the caller
 # passes the socket path and pane id it has already read, so this file needs
@@ -67,9 +83,16 @@
 #       1: another process held it for the whole TIMEOUT. Nothing was taken.
 #       2: nothing to lock — the arguments were not a socket path and a pane.
 #       3: the directory was made but the pid file could not be written, so
-#          the lock was given back: a lock with no pid would read as stale a
-#          minute later and be taken from under a live holder. The caller
-#          decides what to do without a lock.
+#          the lock was removed again, pid file and all: a lock with no pid
+#          would read as stale a minute later and be taken from under a live
+#          holder. The caller decides what to do without a lock.
+#   roost_panelock_check
+#       0 when this process holds no lock, or still holds the one it took:
+#       the pid file reads this process's pid. 1 when the lock was taken
+#       from under it — by a takeover that misjudged, or a human's rm. A
+#       holder calls this before every keystroke it could not take back, and
+#       stops when it says 1: a lost lock means another writer, and one loud
+#       failure beats two writers typing over each other.
 #   roost_panelock_drop
 #       Removes the lock this process holds, if any. Always 0.
 #
@@ -87,16 +110,22 @@ roost_panelock_path() {
   printf '%s/roost-send-lock.%s.%s\n' "${1%/*}" "${1##*/}" "${2#%}"
 }
 
-# 0 when the holder of the lock at $1 is gone.
+# roost_panelock__pid DIR -> the pid file's content, or nothing.
+roost_panelock__pid() {
+  cat "$1/pid" 2>/dev/null || true
+}
+
+# 0 when the holder of the lock (or guard) at $1 is gone.
 roost_panelock__stale() {
-  local pid
-  pid="$(cat "$1/pid" 2>/dev/null || true)"
+  local pid args
+  pid="$(roost_panelock__pid "$1")"
   case "$pid" in
     ''|*[!0-9]*) [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
     *)
-      if kill -0 "$pid" 2>/dev/null; then
-        case "$(ps -o args= -p "$pid" 2>/dev/null || true)" in *roost*) return 1 ;; esac
-      fi
+      kill -0 "$pid" 2>/dev/null || return 0
+      args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+      [ -n "$args" ] || return 1
+      case "$args" in *roost*) return 1 ;; esac
       return 0 ;;
   esac
 }
@@ -105,12 +134,33 @@ roost_panelock__stale() {
 roost_panelock__mkdir() {
   mkdir "$1" 2>/dev/null || return 1
   if ! printf '%s\n' "$$" > "$1/pid" 2>/dev/null; then
-    rmdir "$1" 2>/dev/null || true
+    rm -rf "$1" 2>/dev/null || true
     return 3
   fi
-  ROOST_PANELOCK="$1"
-  ROOST_PANELOCK_HELD=1
   return 0
+}
+
+# One takeover attempt on the stale lock at $1, under the `.take` guard.
+roost_panelock__takeover() {
+  local lock="$1" guard="$1.take" seen moved
+  if roost_panelock__stale "$guard"; then
+    seen="$(roost_panelock__pid "$guard")"
+    moved="$guard.orphan.${seen:-none}.$$"
+    if mv "$guard" "$moved" 2>/dev/null; then
+      if [ "$(roost_panelock__pid "$moved")" = "$seen" ]; then
+        rm -rf "$moved" 2>/dev/null || true
+      else
+        mv "$moved" "$guard" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+      fi
+    fi
+  fi
+  if mkdir "$guard" 2>/dev/null; then
+    printf '%s\n' "$$" > "$guard/pid" 2>/dev/null || true
+    roost_panelock__stale "$lock" && rm -rf "$lock" 2>/dev/null || true
+    rm -rf "$guard" 2>/dev/null || true
+    return 0
+  fi
+  return 1
 }
 
 roost_panelock_take() {
@@ -123,19 +173,18 @@ roost_panelock_take() {
   done
   while :; do
     rc=0; roost_panelock__mkdir "$lock" || rc=$?
-    case "$rc" in 0) return 0 ;; 3) return 3 ;; esac
-    if roost_panelock__stale "$lock"; then
-      if [ -n "$(find "$lock.take" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        mv "$lock.take" "$lock.take.old.$$.$RANDOM" 2>/dev/null && rm -rf "$lock".take.old.* 2>/dev/null || true
-      fi
-      if mkdir "$lock.take" 2>/dev/null; then
-        roost_panelock__stale "$lock" && rm -rf "$lock" 2>/dev/null || true
-        rmdir "$lock.take" 2>/dev/null || true
-        # The attempt a takeover earns, so that TIMEOUT 0 can still take over
-        # a dead holder's lock. Every pass still pays its tick below.
-        rc=0; roost_panelock__mkdir "$lock" || rc=$?
-        case "$rc" in 0) return 0 ;; 3) return 3 ;; esac
-      fi
+    case "$rc" in
+      0) ROOST_PANELOCK="$lock"; ROOST_PANELOCK_HELD=1; return 0 ;;
+      3) return 3 ;;
+    esac
+    if roost_panelock__stale "$lock" && roost_panelock__takeover "$lock"; then
+      # The attempt a takeover earns, so that TIMEOUT 0 can still take over
+      # a dead holder's lock. Every pass still pays its tick below.
+      rc=0; roost_panelock__mkdir "$lock" || rc=$?
+      case "$rc" in
+        0) ROOST_PANELOCK="$lock"; ROOST_PANELOCK_HELD=1; return 0 ;;
+        3) return 3 ;;
+      esac
     fi
     [ "$ticks" -lt $((timeout * 10)) ] || return 1
     sleep 0.1 2>/dev/null || sleep 1
@@ -143,9 +192,18 @@ roost_panelock_take() {
   done
 }
 
+roost_panelock_check() {
+  [ "$ROOST_PANELOCK_HELD" = 1 ] || return 0
+  [ "$(roost_panelock__pid "$ROOST_PANELOCK")" = "$$" ]
+}
+
 roost_panelock_drop() {
   if [ "$ROOST_PANELOCK_HELD" = 1 ] && [ -n "$ROOST_PANELOCK" ]; then
-    rm -rf "$ROOST_PANELOCK" 2>/dev/null || true
+    # Only a lock that is still THIS process's: a lock that was taken over
+    # and is now another sender's is theirs to drop.
+    if [ "$(roost_panelock__pid "$ROOST_PANELOCK")" = "$$" ]; then
+      rm -rf "$ROOST_PANELOCK" 2>/dev/null || true
+    fi
     ROOST_PANELOCK_HELD=0
   fi
   return 0

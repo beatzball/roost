@@ -1208,16 +1208,27 @@ JSON
       trap 'exit 130' INT
       trap 'exit 143' TERM
     }
-    lock_timeout="$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null)"
+    # `|| true` inside the substitution, and it is not optional: this is the
+    # first tmux call of `send` that is not guarded, and under `set -e` a
+    # failed assignment exits. With no server at all it turned the documented
+    # exit 2 "no such target" into an exit 1 with nothing on stderr (found by
+    # review, with a tmux stub). The other knobs are read after the target
+    # check and never saw this.
+    lock_timeout="$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)"
     case "$lock_timeout" in ''|*[!0-9]*) lock_timeout=60 ;; esac
-    [ "${#lock_timeout}" -gt 6 ] && lock_timeout=600
+    # Clamped by LENGTH first — an O(1) test, so this bound can never itself be
+    # slow, and it caps the work the strip loop below could ever be asked to do.
+    [ "${#lock_timeout}" -gt 40 ] && lock_timeout=600
     # Leading zeros are stripped, the same loop and the same reason as
-    # @roost-send-turn-timeout above: `08` is octal to `$(( ))` and aborts
+    # @roost-send-turn-timeout below: `08` is octal to `$(( ))` and aborts
     # it, and the library strips its copy too — this one is so the message
-    # below says "8s", not "08s" (measured, tests/test-send-lock.sh).
+    # says "8s", not "08s" (measured, tests/test-send-lock.sh). Stripped
+    # BEFORE the value clamp, or `0000000` would read as "over the cap" and
+    # a configured no-wait would wait ten minutes (found by review).
     while [ "${#lock_timeout}" -gt 1 ] && [ "${lock_timeout%${lock_timeout#?}}" = 0 ]; do
       lock_timeout="${lock_timeout#0}"
     done
+    case "$lock_timeout" in ????*) lock_timeout=600 ;; esac
     [ "$lock_timeout" -gt 600 ] 2>/dev/null && lock_timeout=600 || true
     lock_rc=0
     roost_panelock_take "$lock_sock" "$lock_pane" "$lock_timeout" || lock_rc=$?
@@ -1686,6 +1697,14 @@ JSON
         sleep 2 2>/dev/null || true
         waited=$((waited + 2))
         screen_has_head && break
+        # Still this send's pane? A C-u is the one key here that cannot be
+        # taken back — it clears whatever is in the box — so if the lock was
+        # taken from under this send, that box may hold another sender's
+        # text now. One loud exit 1 (nothing submitted) beats two writers.
+        if ! roost_panelock_check; then
+          echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+          exit 1
+        fi
         t send-keys -t "$tgt" C-u 2>/dev/null || true
         # A re-paste that tmux refuses is exit 1 on the spot, never swallowed
         # (#175: `|| true` here hid the "no buffer" that a concurrent send
@@ -1756,6 +1775,13 @@ JSON
     # for a wrong separator to silently break; the space is kept anyway for
     # consistency and so the raw string is readable if ever logged.
     cursor_before="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+    # The point of no return. Same check as before each C-u above, for the
+    # same reason: an Enter on a box another sender is typing into submits
+    # THEIR half-typed text. Nothing has been submitted when this fires.
+    if ! roost_panelock_check; then
+      echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
+      exit 1
+    fi
     t send-keys -t "$tgt" Enter 2>/dev/null || true
 
     n="$retries"

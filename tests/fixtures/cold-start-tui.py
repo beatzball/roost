@@ -75,6 +75,7 @@ try:
     out.write(PROMPT)
     out.flush()
     line = []
+    in_paste = False
     submitted = open(submitted_path, "a", buffering=1)
     while True:
         chunk = os.read(fd, 4096)
@@ -94,15 +95,49 @@ try:
         # not shown. Without this they would be echoed into the input box and
         # written into the submitted line, and every assertion about what
         # arrived would be off by the length of two escape sequences.
-        pasted = "\x1b[200~" in text
-        text = text.replace("\x1b[200~", "").replace("\x1b[201~", "")
-        if collapse and pasted:
-            # Buffer the whole block, draw a placeholder, echo nothing of it.
-            pastes += 1
-            line.append(text)
-            out.write("[Pasted text #%d]" % pastes)
+        if collapse:
+            # Walk the chunk. A paste block is buffered whole behind a
+            # placeholder and nothing of it is echoed; the bytes AROUND it are
+            # keys and are handled one at a time. One os.read can hold a C-u,
+            # a whole paste and an Enter when the sender is fast and this
+            # process is slow (a loaded CI runner), and the first version of
+            # this branch took the whole chunk as the paste — the submitted
+            # line then carried the message twice with a literal C-u between,
+            # and a test blamed the sender (found by review, reproduced with
+            # the chunks `roost send` really sends). A block split across two
+            # reads stays one block: in_paste survives the loop.
+            i = 0
+            while i < len(text):
+                if in_paste:
+                    end = text.find("\x1b[201~", i)
+                    if end < 0:
+                        line.append(text[i:])
+                        break
+                    line.append(text[i:end])
+                    in_paste = False
+                    i = end + 6
+                    continue
+                if text.startswith("\x1b[200~", i):
+                    in_paste = True
+                    pastes += 1
+                    out.write("[Pasted text #%d]" % pastes)
+                    i += 6
+                    continue
+                ch = text[i]
+                i += 1
+                if ch in ("\r", "\n"):
+                    submitted.write("".join(line) + "\n")
+                    line = []
+                    out.write("\r\n" + PROMPT)
+                elif ch == "\x15":           # C-u — clear the input line
+                    line = []
+                    out.write("\r\x1b[K" + PROMPT)
+                else:
+                    line.append(ch)
+                    out.write(ch)
             out.flush()
             continue
+        text = text.replace("\x1b[200~", "").replace("\x1b[201~", "")
         for ch in text:
             if ch in ("\r", "\n"):
                 submitted.write("".join(line) + "\n")

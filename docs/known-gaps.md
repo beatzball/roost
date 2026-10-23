@@ -1970,6 +1970,43 @@ succeeds.
   nothing cheap; the envelope half of #56 can at least make the pasted text
   carry the checked default beside the claimed one.
 
+### One send per pane (#175): what the send lock does not cover
+
+`roost send` holds a lock on its target pane from before the first key to
+after the turn watch: a directory beside the server's socket, with the
+holder's pid in it (scripts/lib/roost-panelock.sh). A second send to the same
+pane waits — `@roost-send-lock-timeout`, default 60 s — and then exits 1 with
+nothing typed. A holder that was killed is taken over. Three things it does
+not promise.
+
+- **Two takers can, in principle, both clear a stale lock.** The takeover
+  guard `.take` is orphaned by a taker killed between its mkdir and its
+  rmdir, a window of microseconds. Removing an orphan is a mv to a private
+  name and a read-back of its pid, with a mv straight back when the pid is
+  not the one that was seen; a second waiter that read the same orphan can,
+  in the gap between the first one's mv away and its mv back, mkdir a guard
+  of its own. Two takers then both clear the stale lock and both reach mkdir
+  on it, one wins, and the loser's `rm -rf`, decided before the winner's
+  mkdir, can remove the winner's fresh lock. Severity: low, and bounded. It
+  needs a SIGKILL inside a microsecond window, then a minute, then two
+  waiters inside a two-syscall gap; and every holder re-reads its pid file
+  before each C-u and before Enter (roost_panelock_check), so a holder whose
+  lock was taken exits 1 with nothing submitted rather than typing beside
+  the other. What would close it: a compare-and-swap on a directory, which
+  the file system does not offer.
+- **A holder stopped for a minute between its mkdir and its pid write loses
+  the lock.** A lock with no pid file is "gone" once it is a minute old; a
+  SIGSTOP in that microsecond window, held for a minute, is the one way a
+  live holder's lock is taken, and it then writes its pid into the taker's.
+  Severity: low — and the check above still stops the stopped one before
+  its next keystroke, because the pid it reads back is the taker's.
+- **"Is it a roost" is `ps -o args=`.** A killed sender's pid reused by a
+  process whose args happen to carry "roost" (a `roost status`, a shell in a
+  directory named roost) holds the lock until that process exits; sends to
+  that pane wait the bound and exit 1 until then. A `ps` that answers
+  nothing is "cannot tell" and keeps the lock. Severity: low — bounded, and
+  loud either way.
+
 ### The subagent count is never reset (Phase 0 lane D)
 
 `@roost-subagents` and `@roost-subagent-ids` go up on `SubagentStart`, down

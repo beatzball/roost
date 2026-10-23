@@ -158,9 +158,21 @@ T set-option -g @roost-send-lock-timeout 08
 err="$("$ROOST" send "$p1" "while another send holds the pane" 2>&1 >/dev/null)"; rc=$?
 assert_eq "$rc" 1 "@roost-send-lock-timeout 08 waits eight seconds and exits 1"
 assert_contains "$err" "after 8s" "...and reports the bound it waited"
+# And a string of zeros is zero — no wait — not "too long, clamp to the cap".
+T set-option -g @roost-send-lock-timeout 0000000
+err="$("$ROOST" send "$p1" "while another send holds the pane" 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" 1 "@roost-send-lock-timeout 0000000 is zero: exit 1 at once"
+assert_contains "$err" "after 0s" "...and reports a bound of 0s, not the cap"
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 rm -rf "$lock"
 T set-option -gu @roost-send-lock-timeout 2>/dev/null || true
+
+# No server at all is still the documented exit 2, "no such target": the lock
+# timeout is the first knob read before the target check, and an unguarded
+# read of it under `set -e` turned this into a bare exit 1 (found by review).
+err="$(ROOST_SOCKET="$work/no-such-server" "$ROOST" send %1 "to nobody" 2>&1 >/dev/null)"; rc=$?
+assert_eq "$rc" 2 "no server: exit 2"
+assert_contains "$err" "no such target" "...with the no-such-target message"
 
 # --- 5b. a pid that was handed to a stranger does not hold the lock ----------
 # A killed sender's pid can be reused by a long-lived process that is not
@@ -181,10 +193,22 @@ kill "$stranger" 2>/dev/null; wait "$stranger" 2>/dev/null
 # Enter. The handler must EXIT, not clean up and carry on: a send that went on
 # to C-u, paste and Enter after dropping its lock would be typing beside
 # whoever took the lock next. Bash runs the trap once the foreground sleep
-# returns, so the kill is sent early and the exit is collected with wait.
+# returns, so the exit is collected with wait. The kill waits for the LOCK
+# to appear first: a victim killed before it took the lock and installed its
+# traps would pass every assertion here through the default handling, and
+# prove nothing (found by review).
+wait_lock() {
+  local n=100
+  while [ "$n" -gt 0 ]; do
+    [ -d "$lock" ] && return 0
+    sleep 0.1; n=$((n - 1))
+  done
+  return 1
+}
 : >"$f1"
 "$ROOST" send "$p1" "killed midway" >/dev/null 2>&1 & victim=$!
-sleep 0.7
+wait_lock; assert_true $? "the victim took the lock"
+sleep 0.3
 kill -TERM "$victim" 2>/dev/null
 wait "$victim" 2>/dev/null; rc=$?
 assert_eq "$rc" 143 "a send that takes SIGTERM exits 143"
@@ -192,6 +216,25 @@ assert_eq "$(lines "$f1")" 0 "...and submits nothing"
 [ ! -d "$lock" ]; assert_true $? "...and its lock is gone"
 assert_eq "$(T list-buffers -F '#{buffer_name}' 2>/dev/null)" "" "...and its buffer is gone"
 T send-keys -t "$p1" C-u 2>/dev/null   # clear what the killed send left in the input box
+
+# --- 5d. a holder whose lock was taken from under it stops, loudly ----------
+# The safety net under every takeover rule: before each C-u and before Enter
+# the holder re-reads its own pid file. Here the lock is rewritten to another
+# pid while the send is in its head-check sleep, the way a takeover that
+# misjudged would. The send must exit 1 having submitted nothing, and must not
+# remove a lock that is no longer its own.
+: >"$f1"
+"$ROOST" send "$p1" "under a stolen lock" >"$work/s.out" 2>"$work/s.err" & victim=$!
+wait_lock; assert_true $? "the victim took the lock"
+printf '%s\n' 999999 >"$lock/pid"
+wait "$victim" 2>/dev/null; rc=$?
+assert_eq "$rc" 1 "a send whose lock was taken from it: exit 1"
+assert_contains "$(cat "$work/s.err")" "was taken from this send" "...and says so"
+assert_contains "$(cat "$work/s.err")" "nothing was submitted" "...and that nothing was submitted"
+assert_eq "$(lines "$f1")" 0 "...and nothing reached the pane"
+assert_eq "$(cat "$lock/pid" 2>/dev/null)" 999999 "...and the lock that is now someone else's was left alone"
+rm -rf "$lock"
+T send-keys -t "$p1" C-u 2>/dev/null
 
 # --- 6. two sends racing an IDLE agent do not share a turn number -----------
 # Seen live: two senders both watched the badge leave `idle`, both printed
