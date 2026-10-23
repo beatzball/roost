@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drive REAL Claude Code to real dialogs and answer them with `roost answer`
-# (#142): approve and deny a permission prompt, and refuse a stale fingerprint
-# with nothing sent.
+# (#142): approve and deny a permission prompt, refuse a stale fingerprint
+# with nothing sent, approve an Edit, and pick option 2 of a question.
 #
 # NOT part of the suite: this directory is outside tests/'s test-*.sh glob, so
 # tests/run.sh never runs it. Run it by hand AFTER EVERY CLAUDE CODE UPGRADE:
@@ -355,6 +355,25 @@ wait_state "$p" done 30 || { dump "$p"; no "edit: the turn did not finish"; }
 [ "$(cat "$PROJ/answer-smoke-edit.txt" 2>/dev/null)" = beta ] && ok "edit: the approved edit was made" \
   || no "edit: the file reads '$(cat "$PROJ/answer-smoke-edit.txt" 2>/dev/null)', not beta"
 rm -f "$PROJ/answer-smoke-edit.txt"
+
+# --- a question, --option 2 -----------------------------------------------------
+printf '\n== a question ==\n'
+ask "$p" "ROOST-SMOKE-ASK-q1 please"
+wait_state "$p" blocked 60 || { dump "$p"; die "question: the pane never badged blocked"; }
+wait_screen "$p" 'Enter to select' 10 || { dump "$p"; die "question: no question on screen"; }
+[ "$(dialog "$p" kind)" = question ] && [ "$(dialog "$p" options)" = 3 ] \
+  && ok "question: status --json says a question with 3 options is open" \
+  || no "question: dialog.kind/options are '$(dialog "$p" kind)'/'$(dialog "$p" options)'"
+fp="$(dialog "$p" fingerprint)"
+A --expect "$fp" "$p" --option 4 >/dev/null 2>"$D/err"; rc=$?
+[ "$rc" = 8 ] && ok "question: --option 4, Claude's own 'Type something.' row, is refused with exit 8" \
+  || no "question: --option 4 exited $rc: $(cat "$D/err")"
+out="$(A --expect "$fp" "$p" --option 2 2>"$D/err")"; rc=$?
+[ "$rc" = 0 ] && [ "$out" = "$p option 2 $fp" ] && ok "question: roost answer --option 2 exits 0" \
+  || { dump "$p"; no "question: exit $rc, '$out': $(cat "$D/err")"; }
+wait_state "$p" done 30 || { dump "$p"; no "question: the turn did not finish"; }
+grep '^RESULT ' "$D/api.log" | grep -q 'Green' && ok "question: Claude sent the model the answer Green" \
+  || no "question: no tool result named Green: $(grep '^RESULT ' "$D/api.log" | tail -1)"
 
 # --- what Claude received -------------------------------------------------------
 grep -q '^REQ .* bash a1' "$D/api.log" && ok "the fake API scripted the dialogs (so this tested Claude, not nothing)" \

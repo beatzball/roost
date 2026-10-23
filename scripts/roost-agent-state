@@ -555,7 +555,10 @@ fi
 # Read, NotebookEdit), url (WebFetch). Measured payloads for all five dialog
 # kinds are in tests/test-claude-permission-request.sh. An MCP tool has none of
 # them -- its input is whatever that server declares -- so it records the tool
-# name alone, which is still the thing a human needs to see.
+# name alone, which is still the thing a human needs to see. A question
+# (AskUserQuestion) records its FIRST question's text, which the same payload
+# carries (#142, F3 of the answer design): the tool name alone told a reader
+# nothing about what was being asked.
 #
 # THE SAME READER ALSO DESCRIBES THE DIALOG FOR `roost answer` (#142), in a
 # third line: "<kind> <options> <digest> <token>". The design, and the
@@ -631,6 +634,11 @@ if name_ok:
             if isinstance(v, str) and v:
                 detail = v
                 break
+        qs = inp.get("questions")
+        if not detail and name == "AskUserQuestion" and isinstance(qs, list) and qs and isinstance(qs[0], dict):
+            v = qs[0].get("question")
+            if isinstance(v, str):
+                detail = v
     # Control characters out FIRST, then the cut: cutting first would spend
     # part of the 120 on bytes that are about to be removed.
     detail = "".join(c for c in detail if 31 < ord(c) != 127)[:120]
@@ -674,7 +682,8 @@ sys.stdout.write("%s %d %s %s\n" % (kind, opts, digest, os.urandom(6).hex()))' "
         (if (.tool_name | type) == "string" and (.tool_name | test("\\A[a-zA-Z0-9_.-]{1,64}\\z"))
          then (.tool_name) as $n
               | ([(.tool_input.command? // empty), (.tool_input.file_path? // empty),
-                  (.tool_input.url? // empty)]
+                  (.tool_input.url? // empty),
+                  (if $n == "AskUserQuestion" then (.tool_input.questions?[0]?.question? // empty) else empty end)]
                  | map(select(type == "string" and . != "")) | .[0] // "")
               | gsub("[[:cntrl:]]"; "") | .[0:120]
               | if . == "" then $n else $n + ": " + . end

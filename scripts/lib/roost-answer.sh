@@ -150,7 +150,7 @@ roost_answer_dialog_json() {
 # dialog is exit 8. The same for opencode, copilot and pi, whose dialogs were
 # never measured.
 roost_answer_keys() {
-  local h="$1" k="$2" a="$3"
+  local h="$1" k="$2" a="$3" n="${4:-}" opts="${5:-0}"
   ROOST_ANSWER_KEY="" ROOST_ANSWER_MARK1="" ROOST_ANSWER_MARK2="" ROOST_ANSWER_REFUSAL=""
   case "$h/$k/$a" in
     # Claude Code 2.1.283, M1: `1` approves with NO Enter (3 runs), and wins
@@ -172,15 +172,44 @@ roost_answer_keys() {
     claude/permission/option)
       ROOST_ANSWER_REFUSAL="this is a permission prompt. Use --approve or --deny"
       return 1 ;;
+    # Claude Code 2.1.283, M2: on ONE single-select question the digit N picks
+    # option N and submits it, with NO Enter (once; PostToolUse's answers
+    # named the option). Only the options the MODEL gave can be picked: Claude
+    # adds "Type something." and "Chat about this" below them by itself, and
+    # those open a text box or a chat, which this cut does not answer. On two
+    # questions or a multi-select a digit does NOT submit -- it moves on or
+    # ticks a box (M2, once each) -- which is why both are kind `other`.
+    claude/question/option)
+      case "$n" in ''|*[!0123456789]*) n=0 ;; esac
+      case "$opts" in [0123456789]) ;; *) opts=0 ;; esac
+      if [ "$n" -lt 1 ] || [ "$n" -gt "$opts" ] || [ "$n" -gt 9 ]; then
+        ROOST_ANSWER_REFUSAL="option $n is not one of the $opts options the agent gave"
+        return 1
+      fi
+      ROOST_ANSWER_KEY="$n" ;;
+    # Claude Code 2.1.283, M2: Escape declines the question (once), with the
+    # same three transcript records as a declined permission prompt.
+    claude/question/deny)
+      ROOST_ANSWER_KEY=Escape ;;
+    claude/question/approve)
+      ROOST_ANSWER_REFUSAL="this is a question with $opts options. Use --option N, or --deny"
+      return 1 ;;
     *)
       ROOST_ANSWER_REFUSAL="no measured keys for this $h dialog. Answer at the pane"
       return 1 ;;
   esac
-  # The marker, Claude Code 2.1.283 (M1), and the same on 2.1.309 for Bash and
-  # Edit: both lines of the permission dialog's frame. "Esc to cancel" alone
-  # is on the question dialog too.
+  # The marker: both lines must be on the visible screen. "Esc to cancel" is
+  # on both Claude dialogs; the second line says which one it is.
+  #   permission  "Do you want to"   Claude Code 2.1.283 (M1), and the same on
+  #                                  2.1.309 for Bash and Edit
+  #   question    "Enter to select"  Claude Code 2.1.283 (M2), the footer
+  #                                  "Enter to select · ↑/↓ to navigate · Esc
+  #                                  to cancel"
   ROOST_ANSWER_MARK1="Esc to cancel"
-  ROOST_ANSWER_MARK2="Do you want to"
+  case "$k" in
+    question) ROOST_ANSWER_MARK2="Enter to select" ;;
+    *) ROOST_ANSWER_MARK2="Do you want to" ;;
+  esac
   return 0
 }
 

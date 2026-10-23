@@ -55,7 +55,7 @@ opt() { T show-options -pqv -t "$1" "$2"; }
 fpof() { local d; d="$(opt "$1" @roost-dialog)"; printf '%s' "${d%% *}"; }
 keys() { cat "$work/keys.$1" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
 
-# mkpayloads TAG -> $work/bash.TAG, write.TAG and fetch.TAG: PermissionRequest
+# mkpayloads TAG -> $work/bash.TAG, write.TAG, fetch.TAG and ask.TAG: PermissionRequest
 # payloads in the shape tests/test-answer-record.sh pins, each naming the
 # transcript its dialog pane writes to.
 mkpayloads() {
@@ -71,19 +71,27 @@ def pr(tool, inp):
 open(w + "/bash." + name, "w").write(pr("Bash", {"command": "mkdir build-" + name, "description": "x"}))
 open(w + "/write." + name, "w").write(pr("Write", {"file_path": "/tmp/roost-fixture/" + name, "content": "x"}))
 open(w + "/fetch." + name, "w").write(pr("WebFetch", {"url": "https://example.com/" + name, "prompt": "x"}))
+opts = [{"label": l, "description": l} for l in ("Red", "Green", "Blue")]
+open(w + "/ask." + name, "w").write(pr("AskUserQuestion", {"questions": [{
+    "question": "Which color do you want?", "header": "Color", "options": opts, "multiSelect": False}]}))
 PY
 }
 
 # The dialog stand-in. sh, not bash: CI's /bin/sh is dash.
 cat > "$work/dialog" <<EOF
 #!/bin/sh
-# dialog MODE TAG PAYLOAD — see the header of tests/test-answer.sh.
-MODE="\$1"; TAG="\$2"; PAYLOAD="\$3"
+# dialog MODE TAG PAYLOAD [question] — see the header of tests/test-answer.sh.
+MODE="\$1"; TAG="\$2"; PAYLOAD="\$3"; DRAW="\${4:-permission}"
 LOG="$work/keys.\$TAG"; TR="$work/tr.\$TAG.jsonl"
 : > "\$LOG"; : > "\$TR"
 draw() {
   printf '\033[2J\033[H'
-  printf ' Bash command\n\n   mkdir build-%s\n\n Do you want to proceed?\n > 1. Yes\n   2. Yes, and always allow access\n   3. No\n\n Esc to cancel - Tab to amend\n' "\$TAG"
+  if [ "\$DRAW" = question ]; then
+    # The shape of M2: the model's three options, then Claude's own two.
+    printf ' [ ] Color\nWhich color do you want?\n> 1. Red\n  2. Green\n  3. Blue\n  4. Type something.\n  5. Chat about this\nEnter to select - up/down to navigate - Esc to cancel\n'
+  else
+    printf ' Bash command\n\n   mkdir build-%s\n\n Do you want to proceed?\n > 1. Yes\n   2. Yes, and always allow access\n   3. No\n\n Esc to cancel - Tab to amend\n' "\$TAG"
+  fi
 }
 gone() { printf '\033[2J\033[H'; printf ' (the dialog has closed)\n'; }
 decline() {
@@ -122,12 +130,13 @@ chmod +x "$work/dialog"
 # open MODE TAG [PAYLOAD-KIND [WINDOW]] -> prints the pane id, once the pane
 # reads blocked and its dialog is on screen. A new window by default.
 open_dialog() {
-  local mode="$1" tag="$2" kind="${3:-bash}" p i=0
+  local mode="$1" tag="$2" kind="${3:-bash}" p i=0 draw=permission
   mkpayloads "$tag"
+  [ "$kind" = ask ] && draw=question
   if [ -n "${4:-}" ]; then
-    p="$(T split-window -d -P -F '#{pane_id}' -t "$4" "$work/dialog $mode $tag $work/$kind.$tag")"
+    p="$(T split-window -d -P -F '#{pane_id}' -t "$4" "$work/dialog $mode $tag $work/$kind.$tag $draw")"
   else
-    p="$(T new-window -d -P -F '#{pane_id}' -t main -n "dlg-$tag" "$work/dialog $mode $tag $work/$kind.$tag")"
+    p="$(T new-window -d -P -F '#{pane_id}' -t main -n "dlg-$tag" "$work/dialog $mode $tag $work/$kind.$tag $draw")"
   fi
   while [ "$i" -lt 100 ]; do
     if [ "$(opt "$p" @agent_state)" = blocked ] && [ -n "$(opt "$p" @roost-dialog)" ] \
@@ -329,6 +338,31 @@ assert_eq "$(keys none)" "31" "...and exactly one key went in: there is no retry
 [ $((t1 - t0)) -le 3 ]; assert_true $? "...inside the bound (took $((t1 - t0)) s with a 1 s bound)"
 ans --expect "$fp" "$none" --approve; assert_eq "$rc" 6 "and a second try is refused as already answered"
 assert_eq "$(keys none)" "31" "...so a second key cannot go in"
+
+# --- 6b. a question (--option N, step 3) --------------------------------------
+q="$(open_dialog state q ask)"; fp="$(fpof "$q")"
+assert_contains "$(opt "$q" @roost-dialog)" " claude question 3 " "(a three-option question is kind question, 3)"
+ans --expect "$fp" "$q" --approve; assert_eq "$rc" 8 "--approve on a question: exit 8"
+assert_eq "$err" "roost answer: this is a question with 3 options. Use --option N, or --deny" "...saying what to use"
+ans --expect "$fp" "$q" --option 4; assert_eq "$rc" 8 "--option 4 on three options: exit 8 (Claude's own 'Type something.')"
+assert_eq "$err" "roost answer: option 4 is not one of the 3 options the agent gave" "...in the words of §9"
+ans --expect "$fp" "$q" --option 0; assert_eq "$rc" 8 "--option 0: exit 8"
+assert_eq "$(keys q)" "" "no key reached the question in any refusal"
+ans --expect "$fp" "$q" --option 02
+assert_eq "$rc,$out" "0,$q option 2 $fp" "--option 2 (written 02): confirmed, and printed as 'option 2'"
+assert_eq "$(keys q)" "32" "...by one key, the digit 2"
+qd="$(open_dialog decline qd ask)"; fp="$(fpof "$qd")"
+ans "$qd" --deny
+assert_eq "$rc,$out" "0,$qd deny $fp" "deny on a question: confirmed from the transcript"
+assert_eq "$(keys qd)" "1b" "...by one Escape"
+qs="$(open_dialog none qs ask)"; fp="$(fpof "$qs")"
+T set -p -t "$qs" @roost-dialog "$fp claude permission 0 00000000"
+ans --expect "$fp" "$qs" --approve; assert_eq "$rc" 6 "a permission record over a question's screen: the marker refuses it (exit 6)"
+assert_eq "$(keys qs)" "" "...and nothing was sent"
+T kill-window -t "$qs"
+rec="$(find "$ROOST_RECORD_DIR" -name answers -path "*/${q#%}/answers" 2>/dev/null | head -1)"
+assert_contains "$(cat "$rec" 2>/dev/null)" " claude question option2 program forced=0 confirmed=" "an option answer is recorded as optionN"
+assert_contains "$(cat "$rec" 2>/dev/null)" "AskUserQuestion: Which color do you want?" "...with the question as its description"
 
 # --- 7. the one-command send refuses a dialog that moved (§3.1 step 9) --------
 # The window is too small to hit through the verb on demand, so the PROPERTY

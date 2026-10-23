@@ -134,6 +134,11 @@ shape "a subagent's dialog"      "$SUB_PR"  "claude other 0"
 shape "a payload that is not JSON" 'not json' "claude other 0"
 reset
 assert_eq "$(pdialog)" "" "leaving blocked removes the record"
+# F3 of the design: a question's description names what it asks, not just
+# the tool.
+reset; pr "$Q3_PR"
+assert_eq "$(opt @roost-blocked-on)" "AskUserQuestion: Which color do you want?" \
+  "a question records its question's text as the description"
 
 # --- 2. a token is new for each dialog, and kept for one dialog ---------------
 reset; pr "$BASH_PR"; a="$(fp)"
@@ -263,6 +268,8 @@ if command -v jq >/dev/null 2>&1; then
   jshape "Claude Write" "$WRITE_PR" "claude permission 0"
   jshape "Claude Edit" "$EDIT_PR" "claude permission 0"
   jshape "a question with 3 options" "$Q3_PR" "claude question 3"
+  assert_eq "$(opt @roost-blocked-on)" "AskUserQuestion: Which color do you want?" \
+    "jq reader: a question records its question's text as the description"
   jshape "a question with 5 options" "$Q5_PR" "claude other 0"
   jshape "a multi-select question" "$QM_PR" "claude other 0"
   jshape "an option with a preview" "$QP_PR" "claude other 0"

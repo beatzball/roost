@@ -5,7 +5,7 @@
 # row and every refusal is checked here directly.
 #
 # The rows are docs/airig/specs/2026-09-30-roost-answer-design.md §5, measured
-# on Claude Code 2.1.283. codex's rows (M3) are measured but held back until
+# on Claude Code 2.1.283, and Edit on 2.1.309. codex's rows (M3) are measured but held back until
 # #145 is understood, so codex is refused here like a harness with no map.
 set -u
 . "$(dirname "$0")/lib.sh"
@@ -27,7 +27,24 @@ assert_eq "$(row claude permission approve "" 0)" "1|Esc to cancel|Do you want t
 assert_eq "$(row claude permission deny "" 0)" "Escape|Esc to cancel|Do you want to" \
   "Claude permission, deny: Escape, never a digit (M1)"
 
+for n in 1 2 3; do
+  assert_eq "$(row claude question option "$n" 3)" "$n|Esc to cancel|Enter to select" \
+    "Claude question with 3 options, --option $n: the digit $n, which picks and submits (M2)"
+done
+assert_eq "$(row claude question option 4 4)" "4|Esc to cancel|Enter to select" \
+  "Claude question with 4 options, --option 4: the digit 4"
+assert_eq "$(row claude question deny "" 3)" "Escape|Esc to cancel|Enter to select" \
+  "Claude question, deny: Escape (M2)"
+
 # --- every refusal -------------------------------------------------------------
+assert_eq "$(row claude question approve "" 3)" "refused: this is a question with 3 options. Use --option N, or --deny" \
+  "Claude question, --approve: refused, and says what to use"
+for n in 0 4 5 10; do
+  assert_eq "$(row claude question option "$n" 3)" "refused: option $n is not one of the 3 options the agent gave" \
+    "Claude question with 3 options, --option $n: refused (Claude's own rows are not the agent's)"
+done
+assert_eq "$(row claude question option 2 x)" "refused: option 2 is not one of the 0 options the agent gave" \
+  "Claude question, an option count that is not a digit is no options at all"
 assert_eq "$(row claude permission option 2 0)" "refused: this is a permission prompt. Use --approve or --deny" \
   "Claude permission, --option: refused, and says what to use"
 for a in approve deny option; do
@@ -68,6 +85,13 @@ roost_answer_marked " Do you want to proceed?
 roost_answer_marked " Do you want to proceed?"; [ $? -ne 0 ]; assert_true $? "the marker: one line alone is not the dialog"
 roost_answer_marked " Esc to cancel"; [ $? -ne 0 ]; assert_true $? "the marker: the other line alone is not the dialog"
 roost_answer_marked ""; [ $? -ne 0 ]; assert_true $? "the marker: an empty screen is not the dialog"
+roost_answer_keys claude question option 2 3
+roost_answer_marked " Which color do you want?
+ > 1. Red
+   2. Green
+ Enter to select · ↑/↓ to navigate · Esc to cancel"; assert_true $? "the marker: a Claude question on screen"
+roost_answer_marked " Do you want to proceed?
+ Esc to cancel · Tab to amend"; [ $? -ne 0 ]; assert_true $? "the marker: a permission prompt is not a question"
 
 # --- the hex check every fingerprint passes through --------------------------
 roost_answer_hex 3f9c1a2b7d4e 12; assert_true $? "hex: 12 lowercase hex is a fingerprint"
