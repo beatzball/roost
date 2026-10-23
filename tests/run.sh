@@ -36,6 +36,7 @@ shard_weight() {
     test-opencode2-plugin.sh) echo 65 ;;
     test-send-paste.sh) echo 58 ;;
     test-ext.sh) echo 56 ;;
+    test-send-lock.sh) echo 85 ;;
     test-wait-done-shell.sh) echo 40 ;;
     test-coordination.sh) echo 39 ;;
     test-events.sh) echo 35 ;;

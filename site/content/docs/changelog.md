@@ -40,6 +40,21 @@ and this project uses [Semantic Versioning](https://semver.org/).
   it is about, as a Claude dialog does, except under codex 0.157.1's shared
   background process (#145).
 
+### Fixed
+
+- **Two `roost send`s at once no longer lose, merge or cross each other's
+  messages.** Every send loaded its text into one shared tmux buffer and
+  nothing kept two senders out of one input box, so two workers reporting to
+  one coordinator in the same second could both exit 0 with one report never
+  delivered, or one of them was told a healthy pane "may have died" (#175).
+  Each send now has its own buffer and takes a per-pane lock, held from before
+  the first key to after the turn watch, so two senders racing an idle agent
+  can no longer both be handed the same turn number either. The lock is a
+  directory beside the server's socket; a holder that was killed is taken
+  over. A send that waits more than `@roost-send-lock-timeout` seconds
+  (default 60) for another send to the same pane exits 1 with nothing
+  submitted, so it is safe to retry.
+
 ## [0.8.0]
 
 roost now updates itself. `roost upgrade` pulls the next release into the

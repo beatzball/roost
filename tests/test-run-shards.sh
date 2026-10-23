@@ -71,7 +71,7 @@ shard_of() { # shard_of FILE N -> which shard of N lists FILE
   done
   printf 'none'
 }
-spread="$(for f in test-send-turn.sh test-opencode2-plugin.sh test-send-paste.sh test-ext.sh; do
+spread="$(for f in test-send-turn.sh test-send-lock.sh test-opencode2-plugin.sh test-send-paste.sh; do
             shard_of "$f" 4; echo
           done | LC_ALL=C sort -u | wc -l | tr -d ' ')"
 assert_eq "$spread" "4" "the four slowest files land in four different shards of 4"

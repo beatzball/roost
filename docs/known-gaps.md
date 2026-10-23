@@ -1970,6 +1970,62 @@ succeeds.
   nothing cheap; the envelope half of #56 can at least make the pasted text
   carry the checked default beside the claimed one.
 
+### One send per pane (#175): what the send lock does not cover
+
+`roost send` holds a lock on its target pane from before the first key to
+after the turn watch: a directory beside the server's socket, with the
+holder's pid in it (scripts/lib/roost-panelock.sh). A second send to the same
+pane waits — `@roost-send-lock-timeout`, default 60 s — and then exits 1 with
+nothing typed. A holder that was killed is taken over. Three things it does
+not promise.
+
+- **A live holder can be made to exit 1 for nothing.** No live lock is ever
+  deleted: a stale lock or guard is moved aside by mv, its pid read back,
+  and removed only on a match, else moved straight back. In the two
+  syscalls between the move away and the move back, the live holder's
+  `roost_panelock_check` (run before each paste, C-u and Enter) reads no
+  pid file and the holder exits 1 with "the send lock was taken from this
+  send", having submitted nothing. A third process can also mkdir the name
+  in that gap, in which case the moved copy is removed and the holder stops
+  at its next check the same way. Severity: low — it needs a taker killed
+  between its mkdir and its rmdir (microseconds), and then a waiter whose
+  read and mv straddle another's mkdir; the result is one spurious exit 1,
+  which the documented retry covers. What would close it: a compare-and-swap
+  on a directory, which the file system does not offer.
+- **Between a check and its key there is one tmux call.** The check reads
+  the pid file; the key is sent next — before the paste, before each C-u,
+  between a C-u and its re-paste, and before Enter. A sender whose lock is
+  taken in that gap, and whose box another sender then pastes into before
+  the key lands, would press Enter on both texts. The gap is one tmux call
+  with no sleep, and the other sender has to mkdir, write a pid, load a
+  buffer and paste inside it. Severity: low, and the only path left to two
+  texts in one box.
+- **A holder SIGKILLed between its load-buffer and its paste-buffer leaves
+  its message in tmux's buffer list.** Nothing runs on SIGKILL, the next
+  send names a different buffer, and a takeover clears only the lock on the
+  file system. The text sits in `prefix + =` until the server is restarted
+  or someone deletes it. Severity: low — a SIGKILL inside a two-call window,
+  and the message was the sender's own prompt.
+- **`roost answer` does not take the lock yet.** Its key goes in through
+  scripts/lib/roost-answer.sh with no lock, so a `send --force` and an
+  `answer` aimed at one blocked dialog can both land. Severity: low — both
+  are a person's verbs, on a pane `send` refuses without `--force`. What
+  closes it: `answer` calling roost_panelock_take, _check and _drop around
+  its key, which the library was written for.
+- **A holder stopped for a minute between its mkdir and its pid write writes
+  its pid into the taker's lock.** A lock with no pid file is "gone" once it
+  is a minute old; a SIGSTOP in that microsecond window, held for a minute,
+  lets a waiter take the lock, and the stopped holder then writes its own
+  pid into the taker's directory. It is the TAKER whose next check then
+  reads a foreign pid and stops; the stopped one carries on as the sole
+  holder. Severity: low — still one writer, and the one that stops says so.
+- **"Is it a roost" is `ps -o args=`.** A killed sender's pid reused by a
+  process whose args happen to carry "roost" (a `roost status`, a shell in a
+  directory named roost) holds the lock until that process exits; sends to
+  that pane wait the bound and exit 1 until then. A `ps` that answers
+  nothing is "cannot tell" and keeps the lock. Severity: low — bounded, and
+  loud either way.
+
 ### The subagent count is never reset (Phase 0 lane D)
 
 `@roost-subagents` and `@roost-subagent-ids` go up on `SubagentStart`, down
