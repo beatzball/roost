@@ -20,6 +20,9 @@
 #   late     any key: the dialog goes AND the decline records appear -- a
 #            person declined at the pane a moment before (§12.3)
 #   none     nothing changes, ever: no proof can come
+#   vanish   any key: the dialog goes, and 0.15 s later the pane exits
+#   slow     any key: the dialog goes 1.4 s later, too late for the half-second
+#            hold to finish inside a 1 s bound
 set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -40,7 +43,7 @@ export HOME="$CANARY/home" XDG_CONFIG_HOME="$CANARY/xdg-config" \
        COPILOT_HOME="$CANARY/copilot" PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export ROOST_RECORD_DIR="$work/rec"
 export ROOST_EVENTS=""
-trap 'tmux -S "$s" kill-server 2>/dev/null; rm -rf "$work"' EXIT
+trap 'tmux -S "$s" kill-server 2>/dev/null; tmux -S "$work/c/roost" kill-server 2>/dev/null; rm -rf "$work"' EXIT
 tmux -S "$s" -f /dev/null new-session -d -s main -n home -x 200 -y 50 'ENV= exec /bin/sh'
 T() { tmux -S "$s" "$@"; }
 T set -g @roost-notify-backend none
@@ -122,6 +125,8 @@ while :; do
     decline) gone; decline ;;
     late)    decline; gone ;;
     none)    : ;;
+    vanish)  gone; sleep 0.15; exit 0 ;;
+    slow)    sleep 1.4; gone ;;
   esac
 done
 EOF
@@ -327,14 +332,14 @@ late="$(open_dialog late late)"; fp="$(fpof "$late")"
 ans --expect "$fp" "$late" --approve
 assert_eq "$rc,$out" "10," "approve, but the transcript shows a decline: exit 10, nothing on stdout"
 assert_contains "$err" "its transcript shows the dialog was declined, not by this call" "...saying what the pane shows"
-assert_contains "$err" "do NOT answer again. Look: roost screen $late" "...and not to answer again"
+assert_contains "$err" "Do NOT answer again. Look: roost screen $late" "...and not to answer again"
 none="$(open_dialog none none)"; fp="$(fpof "$none")"
 t0="$(date +%s)"
 ans --expect "$fp" "$none" --approve
 t1="$(date +%s)"
 assert_eq "$rc,$out" "10," "a key that nothing confirms: exit 10"
 assert_eq "$err" "roost answer: the key was sent to '$none', and nothing confirmed it inside 1 s
-roost answer: do NOT answer again. Look: roost screen $none" "...in the words of §6"
+roost answer: it was sent once and will not be resent. Do NOT answer again. Look: roost screen $none" "...in the words of §6, and that it will not be resent"
 assert_eq "$(keys none)" "31" "...and exactly one key went in: there is no retry"
 [ $((t1 - t0)) -le 3 ]; assert_true $? "...inside the bound (took $((t1 - t0)) s with a 1 s bound)"
 ans --expect "$fp" "$none" --approve; assert_eq "$rc" 6 "and a second try is refused as already answered"
@@ -351,6 +356,28 @@ fp="$(fpof "$nar")"
 ans --expect "$fp" "$nar" --approve
 assert_eq "$rc,$out" "0,$nar approve $fp" "a dialog whose marker lines wrap is still found and answered"
 T kill-window -t "$nw"
+
+# The screen proof counts only after its full hold, on a pane still there and
+# still blocked. A pane that goes away while its marker is gone proves
+# nothing (review: this exited 0 as "confirmed screen" once).
+v="$(open_dialog vanish v)"; fp="$(fpof "$v")"
+ans --expect "$fp" "$v" --approve
+assert_eq "$rc,$out" "10," "a pane that exits after its dialog went: exit 10, not a screen proof"
+assert_contains "$err" "the pane is gone, so nothing can confirm it" "...saying the pane is gone"
+assert_contains "$err" "it was sent once and will not be resent" "...and that the key will not be resent"
+assert_eq "$(keys v)" "31" "...with exactly one key in its log"
+# A hold the bound cuts short is no proof either. The call is started just
+# after a second ticks over, so the 1 s bound ends about 1.7 to 2 s after the
+# key and the marker, gone 1.4 s after it, cannot hold for half a second
+# first. (On a machine slow enough to end the bound before 1.4 s the marker
+# is never seen gone at all; that is exit 10 too.)
+w="$(open_dialog slow w)"; fp="$(fpof "$w")"
+s0="$(date +%s)"; while [ "$(date +%s)" = "$s0" ]; do sleep 0.02; done
+ans --expect "$fp" "$w" --approve
+assert_eq "$rc,$out" "10," "a screen proof the bound cut short: exit 10, not a screen proof"
+assert_contains "$err" "nothing confirmed it inside 1 s" "...saying nothing confirmed it inside the bound"
+assert_eq "$(keys w)" "31" "...with exactly one key in its log"
+T kill-window -t "$w"
 
 # --- 6b. a question (--option N, step 3) --------------------------------------
 q="$(open_dialog state q ask)"; fp="$(fpof "$q")"
@@ -403,6 +430,25 @@ assert_eq "$h_rc" 10 "(the same case without --json is exit 10 too)"
 ans --json --expect 0123456789ab "$jn2" --approve
 assert_eq "$rc|$out" "7|" "--json: a refusal prints nothing on stdout, with its own exit code"
 ans --json --json --expect "$fp2" "$jn2" --approve; assert_eq "$rc" 1 "--json twice: not consumed, so a usage error"
+
+# --- 6d. a server and a client in the C locale --------------------------------
+# tmux 3.4 prints a tab in a format as `_` to a C-locale client (measured on
+# Ubuntu 24.04, 3.4-1ubuntu0.2), which once collapsed every read this verb
+# splits into one field. The verb splits on `|` now. This server and this
+# client both run with LC_ALL=C LANG=C; on macOS tmux 3.6 the case passes
+# either way, and CI's tmux 3.4 is where it means something.
+cs="$work/c/roost"; mkdir -p "$work/c"
+LC_ALL=C LANG=C tmux -S "$cs" -f /dev/null new-session -d -s main -x 200 -y 50 'ENV= exec /bin/sh'
+LC_ALL=C LANG=C tmux -S "$cs" set -g @roost-notify-backend none
+mkpayloads cl
+cp_="$(LC_ALL=C LANG=C tmux -S "$cs" new-window -d -P -F '#{pane_id}' -t main -n cl "$work/dialog state cl $work/bash.cl permission")"
+i=0
+while [ "$i" -lt 100 ] && ! LC_ALL=C LANG=C tmux -S "$cs" capture-pane -p -t "$cp_" | grep -q 'Esc to cancel'; do sleep 0.05; i=$((i + 1)); done
+cfp="$(LC_ALL=C LANG=C tmux -S "$cs" show-options -pqv -t "$cp_" @roost-dialog)"; cfp="${cfp%% *}"
+out="$(env -u TMUX -u TMUX_PANE LC_ALL=C LANG=C ROOST_SOCKET="$cs" "$ROOST" answer --expect "$cfp" "$cp_" --approve </dev/null 2>"$work/err")"; rc=$?
+assert_eq "$rc,$out" "0,$cp_ approve $cfp" "a C-locale server and client: a well-formed --approve answers"
+assert_eq "$(keys cl)" "31" "...with one key"
+tmux -S "$cs" kill-server 2>/dev/null
 
 # --- 7. the one-command send refuses a dialog that moved (§3.1 step 9) --------
 # The window is too small to hit through the verb on demand, so the PROPERTY

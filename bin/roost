@@ -2070,16 +2070,32 @@ EOF
     # `by` is where the call ran, for the record (§8): `pane:%N` for any pane
     # on this server, `terminal` for a tty, `program` for neither. It does not
     # say who the person was.
+    #
+    # EVERY tmux read this verb splits uses `|` between fields, never a tab.
+    # Measured on Ubuntu 24.04's tmux 3.4-1ubuntu0.2: a client whose locale
+    # is C prints a tab in a format as `_`, so `#{a}<TAB>#{b}` came back as
+    # one field and every check after it refused (fail closed, but a server on
+    # a C-locale machine could answer nothing). Under C.UTF-8 it printed the
+    # tab, and tmux 3.6 on macOS prints it in both, which is why only a
+    # C-locale run on 3.4 shows it. `|` came back as `|` in both locales on
+    # 3.4, as did `^`, `~`, `;` and `,`: tmux rewrites only bytes it cannot
+    # print, and `|` is printable ASCII. It cannot appear in the fields that
+    # come before the last one in any read below: a pid, a %N, a digit, a
+    # state word, and the dialog and answer records, whose parsers refuse
+    # anything but hex, fixed words and digits. A `|` set there by hand only
+    # shifts what follows into a field its parser then refuses, so it fails
+    # closed too. The free-text description is always the LAST field, so a
+    # `|` inside it stays in it.
     by="" caller=""
     case "${TMUX_PANE:-}" in
       %[0-9]*)
         if [ -n "${TMUX:-}" ]; then
           caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
-          cinfo="$(t display-message -p -t "$TMUX_PANE" $'#{pid} #{pane_id}\t#{@agent_state}\t#{@roost-session}' 2>/dev/null || true)"
-          if [ "${cinfo%%$'\t'*}" = "$caller_pid $TMUX_PANE" ]; then
+          cinfo="$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}|#{@agent_state}|#{@roost-session}' 2>/dev/null || true)"
+          if [ "${cinfo%%|*}" = "$caller_pid $TMUX_PANE" ]; then
             caller="$TMUX_PANE"; by="pane:$TMUX_PANE"
-            crest="${cinfo#*$'\t'}"
-            if [ "$force" -eq 0 ] && { [ -n "${crest%%$'\t'*}" ] || [ -n "${crest#*$'\t'}" ]; }; then
+            crest="${cinfo#*|}"
+            if [ "$force" -eq 0 ] && { [ -n "${crest%%|*}" ] || [ -n "${crest#*|}" ]; }; then
               echo "roost answer: this is a person's command, and it was called from an agent's pane ($caller)" >&2
               echo "roost answer: pass --force only if a person told you to answer this dialog" >&2
               exit 9
@@ -2092,14 +2108,14 @@ EOF
     fi
 
     # Step 3, the pane, in ONE read. The description is last because it is the
-    # one free-text field: it was checked for tabs at the write, and anything
-    # set by hand that holds one only spoils the description, never the words
-    # the checks below use.
-    pinfo="$(t display-message -p -t "$pane" $'#{pane_in_mode}\t#{@agent_state}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-blocked-on}' 2>/dev/null || true)"
-    in_mode="${pinfo%%$'\t'*}"; prest="${pinfo#*$'\t'}"
-    state="${prest%%$'\t'*}"; prest="${prest#*$'\t'}"
-    drec="${prest%%$'\t'*}"; prest="${prest#*$'\t'}"
-    arec="${prest%%$'\t'*}"; blocked_on="${prest#*$'\t'}"
+    # one free-text field: a `|` in it (a shell pipe is the common case) stays
+    # in it, and never reaches the words the checks below use. The separator
+    # is `|` for the locale reason given at the caller check above.
+    pinfo="$(t display-message -p -t "$pane" '#{pane_in_mode}|#{@agent_state}|#{@roost-dialog}|#{@roost-answered}|#{@roost-blocked-on}' 2>/dev/null || true)"
+    in_mode="${pinfo%%|*}"; prest="${pinfo#*|}"
+    state="${prest%%|*}"; prest="${prest#*|}"
+    drec="${prest%%|*}"; prest="${prest#*|}"
+    arec="${prest%%|*}"; blocked_on="${prest#*|}"
     # Printed back to a terminal below, so no control byte survives it.
     blocked_on="$(printf '%s' "$blocked_on" | tr -d '[:cntrl:]')"
 
@@ -2217,6 +2233,15 @@ EOF
     # to 30 the way @roost-send-turn-timeout is: by length first, then leading
     # zeros, then value, so no value can make the arithmetic slow or octal.
     # The slowest proof measured was 0.24 s.
+    #
+    # It is WALL CLOCK, not a count of polls. A poll is a 50 ms sleep plus two
+    # to four tmux calls, and a transcript read while the marker is gone, so a
+    # count of 20 per second made the default "3 s" take about 4 (review). The
+    # clock is bash's $SECONDS, which costs no process: set to 0 here, it
+    # reads N from N whole seconds after the second it was set in, so the
+    # first tick can come in under a second. The loop runs while it is at
+    # most the bound, so it ends between the bound and the bound plus one
+    # second -- never before the bound, which is what the stderr line names.
     ans_timeout="$(t show-options -gqv @roost-answer-timeout 2>/dev/null || true)"
     case "$ans_timeout" in ''|*[!0123456789]*) ans_timeout=3 ;; esac
     [ "${#ans_timeout}" -gt 2 ] && ans_timeout=30
@@ -2225,14 +2250,16 @@ EOF
     done
     [ "$ans_timeout" -ge 1 ] || ans_timeout=1
     [ "$ans_timeout" -le 30 ] || ans_timeout=30
-    confirmed="" wrong="" now_state="" screen_at=""
-    polls=$((ans_timeout * 20))
+    confirmed="" wrong="" now_state="" screen_at="" gone=0
     i=0
-    while [ "$i" -lt "$polls" ]; do
-      cinfo="$(t display-message -p -t "$pane" $'#{pane_id}\t#{@agent_state}\t#{@roost-dialog}' 2>/dev/null || true)"
-      [ "${cinfo%%$'\t'*}" = "$pane" ] || break
-      crest="${cinfo#*$'\t'}"
-      now_state="${crest%%$'\t'*}"; cdrec="${crest#*$'\t'}"
+    SECONDS=0
+    while [ "$SECONDS" -le "$ans_timeout" ]; do
+      cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
+      # The pane is gone: nothing on it can confirm anything any more, and a
+      # screen that had lost its marker before it went proves nothing.
+      if [ "${cinfo%%|*}" != "$pane" ]; then gone=1; break; fi
+      crest="${cinfo#*|}"
+      now_state="${crest%%|*}"; cdrec="${crest#*|}"
       if [ "$action" = deny ]; then
         case "$now_state" in
           working|done) wrong="it went on working: the dialog was approved, not by this call"; break ;;
@@ -2261,7 +2288,8 @@ EOF
              && roost_claude_declined "$rpath" "$since"; then
             wrong="its transcript shows the dialog was declined, not by this call"; break
           fi
-          # Ten polls of 50 ms: the half second the comment above explains.
+          # Ten polls of at least 50 ms each: the half second (or more) the
+          # comment above explains.
           [ -n "$screen_at" ] || screen_at="$i"
           if [ $((i - screen_at)) -ge 10 ]; then confirmed=screen; break; fi
         else
@@ -2273,9 +2301,13 @@ EOF
       sleep 0.05
       i=$((i + 1))
     done
-    # The bound ran out while the screen proof was still holding: nothing
-    # stronger came and no decline was seen in all that time, so it stands.
-    if [ -z "$confirmed" ] && [ -z "$wrong" ] && [ -n "$screen_at" ]; then confirmed=screen; fi
+    # NO PROOF IS TAKEN AFTER THE LOOP. `screen` counts only once it has held
+    # for the full ten polls, inside the loop, with the pane still there and
+    # still reading blocked (§6). A hold the bound cut short, or a pane that
+    # went away while its marker was gone, proves nothing, and is exit 10
+    # below like any other answer nothing confirmed (review: an earlier
+    # fallback here took both as `screen`, and a killed pane exited 0).
+    [ "$gone" -eq 0 ] || wrong="the pane is gone, so nothing can confirm it"
 
     # Step 11, the record (§8): one line per answer, appended after the
     # confirmation, whatever it found -- exit 10 included, because the key went
@@ -2300,7 +2332,7 @@ EOF
       else
         echo "roost answer: the key was sent to '$pane', and nothing confirmed it inside $ans_timeout s" >&2
       fi
-      echo "roost answer: do NOT answer again. Look: roost screen $pane" >&2
+      echo "roost answer: it was sent once and will not be resent. Do NOT answer again. Look: roost screen $pane" >&2
       exit 10
     fi
     if [ "$json" -eq 1 ]; then

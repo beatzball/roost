@@ -394,6 +394,25 @@ design (§12) and none was seen; the first two cannot be reproduced on demand.
   where both marker lines wrap. A real Claude dialog in a narrow pane was not
   driven.
 
+### On tmux 3.4 a C-locale client reads a tab as `_`
+
+**A live risk, unmeasured outside one case. Medium on a C-locale machine.**
+Measured on Ubuntu 24.04, tmux 3.4-1ubuntu0.2: a tmux client whose locale is
+`C` prints a tab in a `display-message` or `list-*` format as `_`, so
+`#{session_name}<TAB>#{pane_id}` came back as `0_%0`. Under `C.UTF-8` it
+printed the tab, and tmux 3.6 on macOS prints it in both, so CI (`C.UTF-8`)
+and the Mac never see it. Several readers split a tmux reply on tabs and were
+not changed: the event log (`scripts/lib/roost-events.sh`), `status --json`
+and the other `--json` readers (`scripts/lib/roost-jsonout.sh`, which already
+refuses a row whose tab count is wrong and falls back to one field per call),
+the hook (`scripts/roost-agent-state`) and `scripts/roost-ext`. On such a
+machine each of them reads one field where it expected several, and what that
+costs was not measured per reader. `roost answer` (#142) splits on `|`
+instead, which tmux 3.4 printed unchanged in both locales, and
+`tests/test-answer.sh` runs it against a server and a client in the C locale.
+**What would close it:** the same separator in the other readers, each with
+a C-locale case on tmux 3.4.
+
 ### Claude's "No" is not always option 3
 
 **A note, not a defect in roost.** For anyone who scripts keys to a Claude

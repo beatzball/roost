@@ -1182,21 +1182,26 @@ else
   # than run on every transition, for the reason @roost-error-reason's clear is:
   # a pane that was not blocked has nothing to clear, and this script runs on
   # every PostToolUse of every live agent, so an unconditional unset would be
-  # two more tmux calls per transition spent clearing nothing.
+  # one more tmux call per transition spent clearing nothing (two, before the
+  # unsets were chained into one call).
   #
   # THIS IS THE ONE WRITER LEFT THAT IS NOT ATOMIC, and it is a known gap
-  # rather than an oversight (flock round 2): $prev was read above, these are
-  # separate calls, and a dialog stamped in between would have its record
-  # cleared. Round 2 bounded the window at single-digit milliseconds and could
+  # rather than an oversight (flock round 2): $prev was read above, the unsets
+  # are a separate call from that read (one call now, two before #142), and a
+  # dialog stamped in between would have its record cleared. Round 2 bounded the window at single-digit milliseconds and could
   # not reproduce it at any gap, because the hook that would have to win the
   # race is systematically the slower of the two. docs/known-gaps.md carries it.
   if [ "$prev" = "blocked" ] && [ "$stop_while_blocked" = 0 ]; then
-    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on 2>/dev/null || true
-    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed 2>/dev/null || true
     # The dialog record and who answered it (#142) describe the same dialog,
-    # so they go here too, in ONE call: three more round trips on every
-    # transition out of blocked would be spent clearing what is usually there.
-    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-dialog \; \
+    # so they go here too, and all five unsets are ONE call: a tmux process
+    # per option on every transition out of blocked would be spent clearing
+    # what is usually there, and this way the transition costs no more
+    # processes than the two separate unsets it replaced (review). tmux stops
+    # a command list at its first error, and an unset of an option that is
+    # not set is not an error, so each unset still runs.
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-blocked-on \; \
+      set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed \; \
+      set-option -pu -t "$TMUX_PANE" @roost-dialog \; \
       set-option -pu -t "$TMUX_PANE" @roost-answered \; \
       set-option -pu -t "$TMUX_PANE" @roost-answer-nonce 2>/dev/null || true
   fi
