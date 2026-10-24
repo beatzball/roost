@@ -4099,16 +4099,23 @@ EOF
         wd_exit 5 interrupted "$tgt" "$(wd_state_of "$tgt")"
       fi
     fi
-    while read -r _id _dead _pp _job _st; do
-      [ -n "$_id" ] || continue
-      _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-ended}' 2>/dev/null || true)"
-      _esince="${_ended%%|*}"; _ended="${_ended#*|}"
-      case "$_esince" in ''|*[!0-9]*) continue ;; esac
-      if [ "$_ended" = "$_esince interrupted" ]; then
-        echo "roost: '$raw' was interrupted, not done" >&2
-        wd_exit 5 interrupted "$_id" "$_st"
-      fi
-    done <<< "$rows"
+    # The pane's own record describes its NEWEST turn, so it answers only a
+    # wait that asked about the newest turn. With --turn N the sidecar above
+    # is the whole answer: a later turn that was interrupted says nothing
+    # about turn N (flock round 1, reproduced: turn 1 done, turn 2
+    # interrupted, `wait-done --turn 1` exited 5).
+    if [ "$wt_turn_given" = 0 ]; then
+      while read -r _id _dead _pp _job _st; do
+        [ -n "$_id" ] || continue
+        _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-ended}' 2>/dev/null || true)"
+        _esince="${_ended%%|*}"; _ended="${_ended#*|}"
+        case "$_esince" in ''|*[!0-9]*) continue ;; esac
+        if [ "$_ended" = "$_esince interrupted" ]; then
+          echo "roost: '$raw' was interrupted, not done" >&2
+          wd_exit 5 interrupted "$_id" "$_st"
+        fi
+      done <<< "$rows"
+    fi
     case "$tgt" in
       %*) wd_exit 0 done "$tgt" "$(wd_state_of "$tgt")" ;;
       *) wd_exit 0 done "" "" ;;
