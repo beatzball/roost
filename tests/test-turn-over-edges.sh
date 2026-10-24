@@ -165,11 +165,13 @@ p="$(newpane)"; require_pane "$p" stdin
 got="$(printf 'one\ntwo\nthree\n' | while read -r l; do hook "$p" working; hook "$p" done; printf '%s,' "$l"; done)"
 assert_eq "$got" "one,two,three," "a read loop that badges itself keeps every line of its input"
 X set-option -pu -t "$p" @agent_state
-t0="$(now_ms)"
-sleep 4 | hook "$p" working
-t1="$(now_ms)"
-[ $((t1 - t0)) -lt 2000 ]; assert_true $? "a plain working with an open stdin returns at once ($((t1 - t0)) ms)"
-assert_eq "$(opt "$p" @agent_state)" "working" "...and lands the badge"
+# The pipeline as a whole waits for `sleep 4`, so the badge is read while it
+# still runs: the hook must have stamped already, not after the writer closed.
+( sleep 4 | hook "$p" working ) &
+bgpid=$!
+sleep 1.5
+assert_eq "$(opt "$p" @agent_state)" "working" "a plain working with a stdin still open lands the badge at once, not when the writer closes"
+wait "$bgpid"
 p="$(newpane)"; require_pane "$p" prompt-hook
 hook "$p" working --prompt-hook <<< "$UPS"
 assert_eq "$(opt "$p" @roost-transcript)" "$(opt "$p" @agent_since) /tmp/roost-fixture/00000000-0000-4000-8000-000000000001.jsonl" \
