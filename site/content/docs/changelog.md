@@ -45,9 +45,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   0 has several honest causes, and workers in a real run read every one of
   them as a lost message (#177). Each path that submits the text and names no
   turn now adds one stderr line that starts `roost send: no turn number:` and
-  names the cause: no badge yet, mid-turn (the prompt is queued inside the
-  harness), blocked and sent with `--force`, the watch turned off, an errored
-  turn, or recording off. Stdout, `--json` and every exit code are unchanged.
+  names the cause — the first one being a pane with no badge yet, and the
+  commonest a pane that is mid-turn, where the prompt is queued inside the
+  harness. Stdout, `--json` and every exit code are unchanged.
 
 ### Changed
 

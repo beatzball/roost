@@ -773,8 +773,19 @@ both_out="$(env ROOST_RECORD_DIR="" "$ROOST" send "$ro" "no record" 2>"$work/sen
 both_err="$(cat "$work/send-err")"
 assert_eq "$both_rc" 0 "recording off: still exit 0"
 assert_eq "$both_out" "" "recording off: stdout stays empty"
-assert_eq "$both_err" "roost send: no turn number: '$ro' started a turn, but recording is off (ROOST_RECORD_DIR is empty), so turns are not numbered" \
+assert_eq "$both_err" "roost send: no turn number: '$ro' started a turn, but recording is off (ROOST_RECORD_DIR is empty or not an absolute path, or there is no state directory), so turns are not numbered" \
   "recording off: one stderr line says turns are not numbered"
+wait_state "$ro" done
+# A RELATIVE ROOST_RECORD_DIR is refused the same way (roost_record_root
+# accepts only an absolute root), so it gets the same line, not a claim that
+# the variable is empty.
+both_out="$(env ROOST_RECORD_DIR=rec "$ROOST" send "$ro" "relative record dir" 2>"$work/send-err")"; both_rc=$?
+both_err="$(cat "$work/send-err")"
+assert_eq "$both_rc" 0 "relative ROOST_RECORD_DIR: still exit 0"
+assert_eq "$both_out" "" "relative ROOST_RECORD_DIR: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$ro' started a turn, but recording is off (ROOST_RECORD_DIR is empty or not an absolute path, or there is no state directory), so turns are not numbered" \
+  "relative ROOST_RECORD_DIR: the same recording-off line, which names that cause too"
+assert_file_absent "$PWD/rec" "relative ROOST_RECORD_DIR: nothing was written under the relative path"
 wait_state "$ro" done
 T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
 

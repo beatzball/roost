@@ -2267,7 +2267,11 @@ JSON
           elif [ "$turn_errored" = 1 ]; then
             echo "roost send: no turn number: '$raw' started a turn that ended in error, and an errored turn is not numbered" >&2
           elif [ "$turn_have_base" = 0 ] && [ -z "${ROOST_RECORD_ROOT:-}" ]; then
-            echo "roost send: no turn number: '$raw' started a turn, but recording is off (ROOST_RECORD_DIR is empty), so turns are not numbered" >&2
+            # Empty root has three causes, not one (roost_record_root in
+            # scripts/lib/roost-record.sh): ROOST_RECORD_DIR set to "", set to a
+            # RELATIVE path, or unset with neither XDG_STATE_HOME nor HOME
+            # absolute. The line names all three rather than guess which.
+            echo "roost send: no turn number: '$raw' started a turn, but recording is off (ROOST_RECORD_DIR is empty or not an absolute path, or there is no state directory), so turns are not numbered" >&2
           elif [ "$turn_have_base" = 0 ] && [ "$turn_rec_bad" = 1 ]; then
             echo "roost send: no turn number: '$raw' started a turn, but its record is one this roost cannot read (see \`roost read $raw\`)" >&2
           elif [ "$turn_have_base" = 0 ]; then
