@@ -193,3 +193,153 @@ assert_eq "$(printf '%s\n' "$got" | grep -c 'COLLAPSE-HEAD-0001')" "1" \
 # there is no turn number, and that is about the turn, not the paste.
 assert_eq "$(printf '%s\n' "$err" | grep -v "^roost send: no turn number: " || true)" "" \
   "...and roost does not cry wolf about a placeholder it can explain"
+
+# --- 6. other harnesses' placeholders (#176) ----------------------------------
+#
+# Claude is not the only TUI that collapses a paste. pi draws `[paste #N +K
+# lines]` or `[paste #N K chars]` and opencode 2 draws `[Pasted ~K lines]`, and
+# before this section existed neither was recognised: every long send to them
+# ran the whole @roost-send-ready-timeout loop (15 s), re-pasted after a C-u up
+# to seven times, then printed "accepted the keys but does not show them" and
+# exited 0 after about 19 s. Measured in a real four-agent run, all four long
+# sends — and the agents read the false warning as a failed delivery.
+#
+# pane_draw TEMPLATE [PLANT] — a collapsing pane that draws TEMPLATE (see the
+# fixture) when a paste closes. PLANT is printed before the fixture starts, so
+# it is on the screen as a left-over from "an earlier send" that nothing
+# erases. TEMPLATE `collapse` is Claude's own placeholder, drawn by the fixture.
+#
+# mktemp, not pane_for's counter: pane_for runs in a $(...), so its n=$((n+1))
+# never reaches this shell and every pane it makes shares one submitted file.
+# The paste log below has to be per pane or it counts other panes' pastes.
+pane_draw() {
+  local d f mode p
+  d="$(mktemp -d "$sdir/draw.XXXX")"; f="$d/submitted"
+  : > "$f"; printf '%s\n' "$1" > "$d/template"; printf '%s\n' "${2:-}" > "$d/plant"
+  case "$1" in collapse) mode="collapse" ;; *) mode="draw $d/template" ;; esac
+  p="$(tmux -S "$s" new-window -P -F '#{pane_id}' -d "cat $d/plant; exec python3 -u $FIXTURE 0 $f 0 $mode")"
+  printf '%s %s' "$p" "$f"
+}
+ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+twelve_lines() {  # twelve_lines HEAD — a 12-line message whose first line is HEAD
+  local i=2; printf '%s first line of a multi-line brief' "$1"
+  while [ "$i" -le 12 ]; do printf '\nline %d of the brief' "$i"; i=$((i+1)); done
+}
+long_line() {  # long_line HEAD — one line of about 4200 characters
+  printf '%s %s' "$1" "$(LC_ALL=C awk 'BEGIN{s="";while(length(s)<4190)s=s "q";printf "%s", s}')"
+}
+
+# fast_send LABEL PANE FILE HEAD MSG GREP — the send is quick, quiet, exit 0,
+# delivered whole and once, and pasted ONCE (the fixture logs every paste block
+# to FILE.pastes). GREP is a fixed string the placeholder must show.
+fast_send() {
+  local label="$1" p="$2" f="$3" head="$4" msg="$5" grep_for="$6" t0 t1 err rc scr shown
+  sleep 1.0
+  t0="$(ms)"
+  err="$("$ROOST" send "$p" "$msg" 2>&1 >/dev/null)"; rc=$?
+  t1="$(ms)"
+  sleep 0.8
+  scr="$(tmux -S "$s" capture-pane -p -t "$p" 2>/dev/null)"
+  # Detector proof: the screen shows the placeholder and NOT the message, or
+  # the assertions below would be about the ordinary echoing path.
+  assert_contains "$scr" "$grep_for" "$label: detector proof: the pane draws its placeholder"
+  case "$(printf '%s' "$scr" | tr -d '[:space:]')" in
+    *"$head"*) shown="on screen" ;;
+    *) shown="hidden" ;;
+  esac
+  assert_eq "$shown" "hidden" "$label: detector proof: the message is not on screen"
+  assert_eq "$rc" "0" "$label: send exits 0"
+  # #177's "no turn number" line is about the turn, not the paste: these
+  # fixtures carry no badge. Taken out the same way as in section 5.
+  assert_eq "$(printf '%s\n' "$err" | grep -v "^roost send: no turn number: " || true)" "" \
+    "$label: send prints no warning"
+  [ $((t1 - t0)) -lt 3000 ]; assert_true $? "$label: send returns in under 3 s (took $((t1 - t0)) ms)"
+  assert_eq "$(grep -c "$head" "$f" 2>/dev/null || echo 0)" "1" "$label: the message is submitted exactly once"
+  assert_eq "$(cat "$f.pastes" 2>/dev/null | wc -l | tr -d ' ')" "1" \
+    "$label: one paste, no re-paste"
+}
+
+read -r p f <<<"$(pane_draw '[paste #%(n)d +%(lines)d lines]')"
+fast_send "pi lines" "$p" "$f" "PI-LINES-HEAD-0001" "$(twelve_lines PI-LINES-HEAD-0001)" "[paste #"
+assert_contains "$(tmux -S "$s" capture-pane -p -t "$p")" " +12 lines]" \
+  "pi lines: detector proof: the placeholder carries the line count"
+
+read -r p f <<<"$(pane_draw '[paste #%(n)d %(chars)d chars]')"
+fast_send "pi chars" "$p" "$f" "PI-CHARS-HEAD-0001" "$(long_line PI-CHARS-HEAD-0001)" "[paste #"
+
+read -r p f <<<"$(pane_draw '[Pasted ~%(lines)d lines]')"
+fast_send "opencode 2" "$p" "$f" "OC2-HEAD-0001" "$(twelve_lines OC2-HEAD-0001)" "[Pasted ~"
+
+read -r p f <<<"$(pane_draw collapse)"
+fast_send "claude" "$p" "$f" "CLAUDE-HEAD-0001" "$(twelve_lines CLAUDE-HEAD-0001)" "[Pasted text #"
+
+# slow_send LABEL PANE FILE HEAD — nothing roost can recognise appeared, so the
+# old slow path runs to its (shortened) bound and the warning is printed. Still
+# exit 0 and still delivered once: this is the "loud and slow, not lossy" side.
+slow_send() {
+  local label="$1" p="$2" f="$3" head="$4" t0 t1 err rc
+  sleep 1.0
+  t0="$(ms)"
+  err="$("$ROOST" send "$p" "$(twelve_lines "$head")" 2>&1 >/dev/null)"; rc=$?
+  t1="$(ms)"
+  sleep 0.8
+  assert_eq "$rc" "0" "$label: send still exits 0"
+  assert_contains "$err" "does not show them" "$label: the could-not-verify warning is printed"
+  [ $((t1 - t0)) -ge 2000 ]; assert_true $? "$label: the slow path ran to its bound (took $((t1 - t0)) ms)"
+  assert_eq "$(grep -c "$head" "$f" 2>/dev/null || echo 0)" "1" "$label: the message is submitted exactly once"
+}
+tmux -S "$s" set-option -g @roost-send-ready-timeout 2
+
+# A placeholder left on screen by an EARLIER send proves nothing about this
+# one. All three shapes are planted, and the pane then draws only `*` for the
+# new paste: the screen changes, but no placeholder is new.
+read -r p f <<<"$(pane_draw '*' '[Pasted text #1 +12 lines] [paste #1 +12 lines] [paste #2 4210 chars] [Pasted ~12 lines]')"
+slow_send "old placeholders" "$p" "$f" "OLD-PLACEHOLDER-HEAD-0001"
+
+# Look-alikes outside the family: a bracket and the word, but no number.
+read -r p f <<<"$(pane_draw '[pasted]')"
+slow_send "look-alike [pasted]" "$p" "$f" "LOOKALIKE-A-HEAD-0001"
+read -r p f <<<"$(pane_draw '[paste]')"
+slow_send "look-alike [paste]" "$p" "$f" "LOOKALIKE-B-HEAD-0001"
+
+tmux -S "$s" set-option -gu @roost-send-ready-timeout
+
+# --- 7. a message that QUOTES a placeholder is not proof by itself (#176 review) -
+#
+# Once the pane echoes, the message is part of the screen. A cold start that
+# eats the front leaves the tail on screen, and if the tail carries a
+# placeholder shape — a brief about this very code does — the count goes up
+# and the cut message would be taken as delivered: no C-u, no re-paste, Enter
+# on the tail, no warning. Found by review with a control (the same message
+# without the shape retried and arrived whole). So a message that itself holds
+# a placeholder shape is checked by its head only.
+#
+# The fixture echoes (no collapse) and discards its first 40 bytes once, the
+# way a cold start does; a re-paste then arrives whole.
+pane_headcut() {
+  local d f p
+  d="$(mktemp -d "$sdir/headcut.XXXX")"; f="$d/submitted"; : > "$f"
+  p="$(tmux -S "$s" new-window -P -F '#{pane_id}' -d "exec python3 -u $FIXTURE 0 $f 40")"
+  printf '%s %s' "$p" "$f"
+}
+headlost() {  # headlost LABEL MSG
+  local label="$1" msg="$2" p f got
+  read -r p f <<<"$(pane_headcut)"
+  sleep 1.0
+  "$ROOST" send "$p" "$msg" >/dev/null 2>&1; rc=$?
+  sleep 0.8
+  got="$(cat "$f" 2>/dev/null || true)"
+  assert_eq "$rc" "0" "$label: send exits 0"
+  assert_contains "$got" "$msg" "$label: the WHOLE message is submitted, head included"
+}
+headlost "quoted Claude shape" \
+  "HEADLOST-0001 this front part is eaten by the cold start. Please review the fix for [Pasted text #1] placeholders."
+headlost "quoted pi shape" \
+  "HEADLOST-0002 this front part is eaten by the cold start. pi draws [paste #1 +12 lines] for this."
+headlost "quoted opencode 2 shape" \
+  "HEADLOST-0003 this front part is eaten by the cold start. opencode 2 draws [Pasted ~12 lines] for this."
+# Control: the same shape of send with no placeholder in the text. It must
+# pass on the code with or without this section's fix; if it failed, the
+# fixture and not the placeholder would be the cause.
+headlost "control, no shape" \
+  "HEADLOST-0004 this front part is eaten by the cold start. Nothing bracketed in this one at all."

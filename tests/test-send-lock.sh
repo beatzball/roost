@@ -21,10 +21,15 @@
 # refused was swallowed by `|| true` (now said and stopped on).
 #
 # The fixture is tests/fixtures/cold-start-tui.py with no startup delay and
-# `collapse`: a TUI that does not echo a paste and draws a placeholder for it,
+# `draw`: a TUI that does not echo a paste and draws a placeholder for it,
 # the shape pi, opencode 2 and Claude Code all have. That shape is what puts
 # `send` into its head-check retry loop — C-u, re-paste — which is where one
-# sender erased the other's text. @roost-send-ready-timeout is 2 here, not 15:
+# sender erased the other's text. The placeholder drawn is `[Pasted blob #N]`,
+# a shape roost does NOT recognise: since #176 a new Claude, pi or opencode 2
+# placeholder is proof of delivery and ends the loop at once, so a fixture
+# drawing one of those would never reach the step this file is about. A
+# harness whose wording changes still lands here, which is why it stays
+# tested. @roost-send-ready-timeout is 2 here, not 15:
 # enough for exactly one C-u + re-paste per send, which is the dangerous step,
 # and it keeps the file quick.
 set -u
@@ -54,9 +59,10 @@ state() { T display-message -p -t "$1" '#{@agent_state}' 2>/dev/null; }
 # newtui LINES_FILE -> %N, once its prompt is drawn. Submitted lines go to the
 # file, never to the screen, so a test cannot mistake text still sitting in
 # the input box for a delivery.
+printf '%s\n' '[Pasted blob #%(n)d]' >"$work/template"
 newtui() {
   local p n=50
-  p="$(T new-window -d -P -F '#{pane_id}' "exec python3 $TUI 0 $1 0 collapse")"
+  p="$(T new-window -d -P -F '#{pane_id}' "exec python3 $TUI 0 $1 0 draw $work/template")"
   require_pane "$p" "collapse tui"
   while [ "$n" -gt 0 ]; do
     T capture-pane -p -t "$p" 2>/dev/null | grep -q 'ready>' && break
@@ -194,20 +200,20 @@ kill "$stranger" 2>/dev/null; wait "$stranger" 2>/dev/null
 # to C-u, paste and Enter after dropping its lock would be typing beside
 # whoever took the lock next. Bash runs the trap once the foreground sleep
 # returns, so the exit is collected with wait. The kill waits for the
-# victim's PASTE to be on the screen first — a new `[Pasted text #N]`, N one
+# victim's PASTE to be on the screen first — a new `[Pasted blob #N]`, N one
 # past the last one there — which proves it holds the lock, has its traps
 # installed, and is in its head-check sleep. A victim killed before that
 # would pass every assertion here through the default signal handling and
 # prove nothing; waiting for the lock DIRECTORY alone was not enough either,
 # since it exists before the pid is written and before the traps are set
 # (both found by review).
-# paste_no PANE — the highest `[Pasted text #N]` on the screen, 0 when none.
+# paste_no PANE — the highest `[Pasted blob #N]` on the screen, 0 when none.
 # wait_paste PANE N — until the highest number is strictly ABOVE N. Strictly:
 # a C-u erases the newest placeholder, so "changed" would also fire on a
 # decrease and release the next case before its victim has pasted (flock
 # review). input_line PANE — the last non-blank screen line, which the
 # fixture redraws as a bare `ready>` after a C-u.
-paste_no() { T capture-pane -p -t "$1" 2>/dev/null | grep -o 'Pasted text #[0-9]*' | sed 's/.*#//' | sort -n | tail -n 1 | grep . || echo 0; }
+paste_no() { T capture-pane -p -t "$1" 2>/dev/null | grep -o 'Pasted blob #[0-9]*' | sed 's/.*#//' | sort -n | tail -n 1 | grep . || echo 0; }
 wait_paste() {
   local pane="$1" before="$2" n=100
   while [ "$n" -gt 0 ]; do

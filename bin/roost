@@ -1624,11 +1624,68 @@ JSON
     [ -z "$head" ] && verifiable=0
     case "$pre" in *"$head"*) verifiable=0 ;; esac
 
+    # A paste PLACEHOLDER that was not there before is proof too (#176). Agent
+    # TUIs collapse a long or multi-line bracketed paste into a stand-in for
+    # it, so the message is nowhere on screen and the head check above can
+    # never pass. Claude Code draws `[Pasted text #N]` (sometimes with
+    # ` +K lines`), pi draws `[paste #N +K lines]` or `[paste #N K chars]`,
+    # and opencode 2 draws `[Pasted ~K lines]`. Before this, only Claude's was
+    # known, and only in the fallback below: every long send to pi or
+    # opencode 2 ran the whole @roost-send-ready-timeout loop, re-pasted after
+    # a C-u up to seven times, printed the "does not show them" warning and
+    # exited 0 after about 19 s. Measured in a real four-agent run, all four
+    # long sends — and the agents read the warning as a failed delivery.
+    #
+    # A small, explicit family, not "any bracket": each shape is the bracket,
+    # the harness's own word, and a NUMBER (`[paste]` and `[pasted]` are not
+    # in it). Matched on the whitespace-stripped screen, the same text the
+    # head check reads, so `[paste #1 +12 lines]` is `[paste#1+12lines]` here.
+    # ASCII words and digits only: tmux 3.4 and a C-locale client rewrite
+    # bytes outside ASCII, and a Nerd Font glyph can be zero width in a
+    # capture, so nothing else in a placeholder is safe to rely on.
+    #
+    # COUNTED, and against the baseline $pre, so an old placeholder from an
+    # earlier send that is still on screen never counts: only one MORE than
+    # there were before the paste does. A count and not a set, because
+    # opencode 2's carries no paste number — a second paste of the same size
+    # draws the same text again. Wrong only in the safe direction: if an old
+    # one scrolls off as the new one appears, the count stands still and this
+    # send falls back to the slow path below, which is loud and slow, not
+    # lossy.
+    #
+    # LC_ALL=C on the grep: in a UTF-8 locale GNU grep (3.5+) reads a byte
+    # string that is not valid UTF-8 as BINARY and prints no -o lines at all,
+    # so a baseline capture that tripped it would count 0 and every old
+    # placeholder would then read as new. The pattern is ASCII, so the C
+    # locale matches exactly the same text everywhere else (found by review;
+    # not measured, since tmux captures are normally valid UTF-8).
+    placeholder_count() {
+      printf '%s' "$1" \
+        | LC_ALL=C grep -oE '\[(Pastedtext#[0-9]+|paste#[0-9]+|Pasted~[0-9]+)[A-Za-z0-9+~#]*\]' 2>/dev/null \
+        | wc -l | tr -d ' ' || true
+    }
+    pre_placeholders="$(placeholder_count "$pre")"
+    # NOT for a message that itself holds a placeholder shape (found by review,
+    # reproduced with a control). Once a pane echoes, the message is part of
+    # the screen: a cold start that eats the FRONT leaves the tail on screen,
+    # and a tail that quotes `[Pasted text #1]` — a brief about this very code
+    # does — raises the count on the first check. Enter then lands on the cut
+    # tail with no retry and no warning, the exact loss the head check exists
+    # to stop. Requiring more than the baseline PLUS the message's own count
+    # is not enough, because the tail alone can carry every one of them. So
+    # such a send is checked by its head only, the slow path as before #176:
+    # slower on a collapsing pane, never a silent cut.
+    placeholder_proof=1
+    [ "$(placeholder_count "$(printf '%s' "$msg" | tr -d '[:space:]')")" -gt 0 ] 2>/dev/null && placeholder_proof=0 || true
+
     screen_has_head() {
-      case "$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)" in
+      local now
+      now="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+      case "$now" in
         *"$head"*) return 0 ;;
-        *) return 1 ;;
       esac
+      [ "$placeholder_proof" = 1 ] || return 1
+      [ "$(placeholder_count "$now")" -gt "$pre_placeholders" ] 2>/dev/null
     }
 
     # THE TRANSPORT IS THE FIX. `send-keys -l` types the message as very fast
@@ -1917,10 +1974,13 @@ JSON
           # for the case where it means something. So the notice is kept for the
           # genuinely unexplained shape only: the screen changed, the message is
           # not on it, and there is no placeholder to account for that either.
-          case "$post" in
-            *Pastedtext*) : ;;
-            *) echo "roost send: '$raw' accepted the keys but does not show them (a pane that does not echo what it is given), so the CONTENT could not be verified — submitting anyway" >&2 ;;
-          esac
+          #
+          # A NEW placeholder is now accepted by screen_has_head itself (#176),
+          # so by here there is none: the notice is printed unconditionally.
+          # This used to be a `*Pastedtext*` case on $post, and that case was
+          # wrong in the dangerous direction — a Claude placeholder left on
+          # screen by an EARLIER send silenced the notice for this one.
+          echo "roost send: '$raw' accepted the keys but does not show them (a pane that does not echo what it is given), so the CONTENT could not be verified — submitting anyway" >&2
         else
           # Exit 1, the documented "delivery to a valid target failed — retry
           # the same target" code. NOTHING has been submitted: the Enter below
