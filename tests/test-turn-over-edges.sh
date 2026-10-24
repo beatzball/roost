@@ -250,6 +250,103 @@ for e in $engines; do
   "roost_claude_interrupted_$e" "$work/tool-no-rejection.jsonl" 1792814800; assert_eq "$?" "1" "$e: the tool marker after a tool_use is not an interrupt"
 done
 
+# === fix loop 2 ======================================================================
+
+# --- 11. a new prompt on old wiring is a new turn, not the held one (r2 item 1) ------
+# Old wiring: the UserPromptSubmit entry is a plain `working`, no --prompt-hook.
+# A held turn, a dialog, a decline (no hook), then a NEW prompt: the hold must
+# not be carried onto it. Only a tool hook comes back from a dialog in the
+# same turn.
+for how in hook state; do
+  p="$(newpane)"; require_pane "$p" "old-wiring/$how"
+  hook "$p" working <<< "$UPS"
+  hook "$p" done --stop-hook <<< "$SHELL1"
+  sleep 1
+  hook "$p" blocked --permission-request-hook <<< "$PR"
+  sleep 1
+  if [ "$how" = hook ]; then
+    hook "$p" working <<< "$UPS"
+  else
+    env TMUX="$s,$spid,0" TMUX_PANE="$p" "$ROOST" state working </dev/null
+  fi
+  "$ROOST" read --json "$p" > "$work/rj" 2>/dev/null
+  assert_eq "$(jget 'd["stale"], d["final"], d["background"]' < "$work/rj")" "(True, True, None)" \
+    "a new prompt after a dialog in a held turn [$how]: the old main reply is stale, not this turn's"
+  hook "$p" done --stop-hook <<< "$(edit "$EMPTY" 'd["last_assistant_message"]=""')"
+  assert_eq "$(turns_in "$p")" "0" "...and the new turn's no-reply Stop does not record the old reply as its own [$how]"
+done
+
+# --- 12. an empty intermediate held Stop keeps the main answer (r2 item 2) -------------
+p="$(newpane)"; require_pane "$p" intermediate
+TWO="$(cat "$FIX/claude-stop-bg-two-shells.json")"
+hook "$p" working --prompt-hook <<< "$UPS"
+hook "$p" done --stop-hook <<< "$(edit "$TWO" 'd["last_assistant_message"]="MAIN-ANSWER"')"
+hook "$p" done --stop-hook <<< "$(edit "$SHELL1" 'd["last_assistant_message"]=""')"
+assert_eq "$(opt "$p" @roost-reply)" "MAIN-ANSWER" "a held Stop with no reply of its own keeps the held main answer on the pane"
+assert_eq "$(opt "$p" @roost-background)" "$(opt "$p" @agent_since) 1" "...and updates the count"
+hook "$p" done --stop-hook <<< "$(edit "$EMPTY" 'd["last_assistant_message"]=""')"
+assert_eq "$(cat "$(recdir "$p")/replies/000001" 2>/dev/null)" "MAIN-ANSWER" "...so the release records it as the turn"
+
+# --- 13. a rolled-back interrupted turn never reuses a number (r2 item 3) --------------
+out="$(
+  . "$HERE/scripts/lib/roost-record.sh"
+  ROOST_RECORD_ROOT="$work/rec13"; d="$work/rec13/1-1/9"
+  export ROOST_RECORD_KEEP=1
+  roost_record_append "$d" "" "TURN-ONE" >/dev/null
+  roost_record_put_turn_field() { return 1; }
+  roost_record_append_interrupted "$d" ""; rc=$?
+  unset -f roost_record_put_turn_field
+  . "$HERE/scripts/lib/roost-record.sh"
+  roost_record_append "$d" "" "NEXT"; next="$ROOST_RECORD_TURN"
+  printf '%s %s' "$rc" "$next"
+)"
+assert_eq "$out" "1 2" "KEEP=1, a rolled-back interrupted turn: the next turn is 2, not a reused 1"
+
+# --- 14. recording off: a recovery leaves the held answer on the pane (r2 item 4) ------
+p="$(newpane)"; require_pane "$p" off-esc
+X set-option -p -t "$p" @agent_since "$STREAM_SINCE"
+X set-option -p -t "$p" @agent_state working
+X set-option -p -t "$p" @roost-transcript "$STREAM_SINCE $work/interrupt-stream.jsonl"
+ROOST_RECORD_DIR="" hook "$p" done --stop-hook <<< "$SHELL1"
+ROOST_RECORD_DIR="" "$ROOST" read "$p" >/dev/null 2>&1
+pane_has "$p" @agent_state; assert_eq "$?" "1" "records off, Esc in a hold: the badge is cleared"
+pane_has "$p" @roost-background; assert_eq "$?" "1" "...and the hold record"
+assert_eq "$(opt "$p" @roost-reply)" "AFTER-TOOL" "...but the held answer stays on the pane: there is no other copy"
+p="$(newpane)"; require_pane "$p" off-decline
+X set-option -p -t "$p" @agent_since "$NO_SINCE"
+X set-option -p -t "$p" @agent_state blocked
+X set-option -p -t "$p" @roost-transcript "$NO_SINCE $work/no.jsonl"
+X set-option -p -t "$p" @roost-background "$NO_SINCE 1"
+X set-option -p -t "$p" @roost-reply "HELD-MAIN"
+ROOST_RECORD_DIR="" "$ROOST" read "$p" >/dev/null 2>&1
+pane_has "$p" @agent_state; assert_eq "$?" "1" "records off, a decline in a hold: the badge is cleared"
+assert_eq "$(opt "$p" @roost-reply)" "HELD-MAIN" "...and the held answer stays on the pane"
+
+# --- 15. a decline inside a hold, records on (pinned) -------------------------------------
+p="$(newpane)"; require_pane "$p" decline-held
+X set-option -p -t "$p" @agent_since "$NO_SINCE"
+X set-option -p -t "$p" @agent_state blocked
+X set-option -p -t "$p" @roost-transcript "$NO_SINCE $work/no.jsonl"
+X set-option -p -t "$p" @roost-background "$NO_SINCE 1"
+X set-option -p -t "$p" @roost-reply "HELD-MAIN"
+"$ROOST" read "$p" >/dev/null 2>&1
+assert_eq "$(cat "$(recdir "$p")/replies/000001" 2>/dev/null)" "HELD-MAIN" "a decline inside a hold records the held main reply as the turn"
+assert_eq "$(cat "$(recdir "$p")/replies/000001.outcome" 2>/dev/null)" "interrupted" "...outcome interrupted"
+pane_has "$p" @roost-background; assert_eq "$?" "1" "...and clears the hold record"
+"$ROOST" read --turn 1 "$p" > "$work/out" 2>"$work/err"
+assert_eq "$(cat "$work/out")" "HELD-MAIN" "read --turn 1 prints the saved answer"
+case "$(cat "$work/err")" in *"recorded no reply"*) r=contradicts ;; *) r=ok ;; esac
+assert_eq "$r" "ok" "...without saying the turn recorded no reply"
+
+# --- 16. a release does not encode the held reply twice (r2 non-blocking) --------------
+p="$(newpane)"; require_pane "$p" encode-once
+long="$(printf 'line one of the main answer\nline two, long enough to cut\n')"
+ROOST_REPLY_MAX=40 hook "$p" working --prompt-hook <<< "$UPS"
+ROOST_REPLY_MAX=40 hook "$p" done --stop-hook <<< "$(edit "$SHELL1" "d['last_assistant_message']=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$long")")"
+held_val="$(opt "$p" @roost-reply)"
+ROOST_REPLY_MAX=40 hook "$p" done --stop-hook <<< "$(edit "$EMPTY" 'd["last_assistant_message"]=""')"
+assert_eq "$(opt "$p" @roost-reply)" "$held_val" "the release stores the held reply as it was, not encoded a second time"
+
 [ -z "$(find "$work/canary" -type f 2>/dev/null)" ]; assert_true $? "nothing was written under HOME or the XDG dirs"
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
