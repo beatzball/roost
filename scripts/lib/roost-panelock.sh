@@ -118,11 +118,14 @@
 #       failure beats two writers typing over each other.
 #   roost_panelock_drop
 #       Removes the lock this process holds, if any. Always 0.
-#   roost_panelock_timeout RAW
+#   roost_panelock_timeout RAW [DEFAULT CAP]
 #       Prints the seconds a writer waits for the lock, from the raw value of
 #       `@roost-send-lock-timeout`: 60 when unset or not digits, leading zeros
 #       stripped, clamped to 600. One place for both verbs, so `send` and
-#       `answer` cannot read the same knob two ways.
+#       `answer` cannot read the same knob two ways. DEFAULT and CAP (digits,
+#       no leading zero) read another bound of seconds by the same rules:
+#       `send --when-idle` reads `@roost-send-idle-timeout` with 300 and 3600,
+#       so the two waits of one command cannot parse a value two ways either.
 #
 # The polls are a tenth of a second (`sleep 1` where sleep cannot do fractions),
 # so TIMEOUT 0 means one attempt and no wait — plus the one more attempt a
@@ -274,15 +277,20 @@ roost_panelock_take() {
 # message should say "8s", not "08s". Stripped BEFORE the value clamp, or
 # `0000000` would read as "over the cap" and a configured no-wait would wait
 # ten minutes (found by review, tests/test-send-lock.sh pins both).
+#
+# The second clamp is by length against the CAP's own length: zeros are gone,
+# so a value with more digits than the cap is over it, and is clamped before
+# it can reach `[ -gt ]` (for 600 that is the `????*` pattern this used to
+# spell out). tests/test-send-when-idle.sh pins the 300/3600 reading.
 roost_panelock_timeout() {
-  local v="$1"
-  case "$v" in ''|*[!0-9]*) v=60 ;; esac
-  [ "${#v}" -gt 40 ] && v=600
+  local v="$1" def="${2:-60}" cap="${3:-600}"
+  case "$v" in ''|*[!0-9]*) v="$def" ;; esac
+  [ "${#v}" -gt 40 ] && v="$cap"
   while [ "${#v}" -gt 1 ] && [ "${v%${v#?}}" = 0 ]; do
     v="${v#0}"
   done
-  case "$v" in ????*) v=600 ;; esac
-  [ "$v" -gt 600 ] 2>/dev/null && v=600 || true
+  [ "${#v}" -gt "${#cap}" ] && v="$cap"
+  [ "$v" -gt "$cap" ] 2>/dev/null && v="$cap" || true
   printf '%s\n' "$v"
 }
 

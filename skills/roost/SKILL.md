@@ -137,6 +137,15 @@ both fields or neither. There is no turn number when:
 
 Fall back to plain `wait-done` and `read` in all of those.
 
+**If the target may be busy, pass `--when-idle`.** A plain send into a
+`working` agent lands in the middle of its turn, gets folded into that turn,
+and gives you no turn number. `roost send --when-idle --from "$me" TARGET
+"text"` waits until it is not `working` (up to 300 s; exit 6 if it never
+frees up, with nothing typed), then sends as usual and prints the pane and
+turn. A `blocked` target is still exit 3. Use this when a coordinator must
+push into a worker that may still be running. It is not how a worker reports
+back: a worker's result is its final reply, which you `read`, not a `send`.
+
 Exit codes tell you WHAT to do next, so branch on `$?`:
 
 - **exit 3** — the target's badge says BLOCKED: a permission dialog is open on
@@ -179,6 +188,9 @@ Exit codes tell you WHAT to do next, so branch on `$?`:
   missing TARGET/TEXT argument also exits 1, but with a `usage:` message
   instead of a `roost send:` one — that's a caller bug, not a delivery
   failure; fix the call instead of retrying.
+- **exit 6** — only with `--when-idle`: the target was still `working` when
+  the bound ran out (`@roost-send-idle-timeout`, 300 s by default). Nothing
+  was typed. Retry later; do not re-resolve.
 - **exit 4** — submitted, but the target never started a turn. **Your text WAS
   delivered, so do NOT send it again** — that is the whole reason this is not
   exit 1. The agent took the prompt and its badge never moved. `roost screen

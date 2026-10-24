@@ -16,6 +16,21 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`roost send --when-idle`: hold a prompt until the agent is free (#56).**
+  A plain `send` pastes at once, and into an agent that is ⏳ working the text
+  lands in the middle of the turn that is running: the agent folds it into
+  that turn and `send` has no new turn to name. A cross-harness run lost a
+  report exactly that way. With `--when-idle`, `send` waits until the target
+  stops reading `working`, then sends as usual and prints the `%N TURN` line.
+  The wait is bounded by `@roost-send-idle-timeout`, 300 s by default and at
+  most 3600; past it the exit is 6 with nothing typed. A 🛑 blocked target is
+  still refused with exit 3, and a pane with no badge is sent to at once. Two
+  held senders at one busy pane wait for the pane, not for each other's lock,
+  and each gets its own turn. `--json` gains `waited`, in seconds, with the
+  flag only. Without the flag `send` is unchanged.
+
 ### Fixed
 
 - **`roost answer` takes the per-pane send lock.** A `send --force` and an

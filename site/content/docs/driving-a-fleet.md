@@ -220,12 +220,33 @@ Three things to know:
 - **No turn, no label.** The label is kept only when `send` names a turn (the `%N TURN` line), so every case above that prints nothing keeps nothing: a pane that is not an agent, a target already mid-turn, replies not recorded, a turn that errored. A pane straight from `roost spawn claude` has no badge until its first prompt, so that first prompt is not numbered and keeps no label either; every later one does.
 - **It is a claim.** `--from` takes whatever word you give it. The default `pane:%N` is checked against the server; a label you pass is not.
 
+### Wait for a busy agent: `roost send --when-idle`
+
+A plain `send` pastes at once. Into an agent that is ⏳ working, the text waits in the harness's input line and lands in the middle of the turn that is running: the agent folds it into that turn, and `send` has no new turn to name. `--when-idle` holds the send until the target stops reading `working`, then sends it the ordinary way:
+
+```sh
+roost send --when-idle --from "$me" api "run the tests"
+```
+
+- **It waits only for `working`.** A pane with no badge is sent to at once. A 🛑 **blocked** pane is still refused with exit `3`, exactly as without the flag: a dialog is for a human to answer, not something to wait out.
+- **It is bounded.** `@roost-send-idle-timeout`, in seconds, default `300`, at most `3600`; leading zeros are stripped and `0` means look once and do not wait. Past the bound `send` exits `6` with nothing typed and one line on stderr naming the target, the state it still reads, and the bound.
+- **Then it is an ordinary send.** The pane was finished when the text went in, so you get the `%N TURN` line as usual. With `--json`, the document gains `waited`.
+- **Two held senders do not collide.** They wait for the pane, not for each other. When it frees up, one goes first and starts a turn, and the other waits for that turn to finish too.
+- **An agent that stays `working` holds it.** That includes one that keeps its badge at `working` while background work runs. That is correct: a prompt then would land mid-turn.
+
+```sh
+tmux -L roost set-option -g @roost-send-idle-timeout 600
+```
+
+The sender blocks while it waits. Nothing is queued on disk, and nothing sends for you after `send` returns.
+
 ### Exit codes for `roost send`
 
 `roost send` verifies its own submit rather than trusting a fire-and-forget `send-keys`, and its exit code says what went wrong:
 
 | exit | meaning | what to do |
 |------|---------|------------|
+| `6` | `--when-idle` only: the target still read ⏳ **working** at the bound (`@roost-send-idle-timeout`). **Nothing** was typed | retry later, or raise the bound |
 | `4` | **submitted, but no turn began** inside the bound — or the pane went away first. The text **was** delivered | do **not** send it again: the prompt may be running. `roost screen` it, and `roost doctor` if the badge never moves |
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
@@ -583,8 +604,9 @@ A codex pane is identified at its first prompt, because that is when codex first
 | `started` | bool | `true` when roost proved a new turn began. `false` means it did not watch — the target had no badge, or was already `working`/`blocked`, or the bound is set to `0` |
 | `state` | string or `null` | the agent state just after the wait |
 | `sent_by` | string or `null` | who sent the prompt, as kept beside the turn: the `--from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`: with no turn there is nothing to keep it beside |
+| `waited` | integer | **only with `--when-idle`**: how many seconds the send was held while the target read `working`. `0` when it was not busy. Absent without the flag, so a plain `send --json` prints exactly what it printed before |
 
-A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began. Read the exit status first.
+A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began, and exit `6`, where `--when-idle` gave up. Read the exit status first.
 
 A `turn` of `null` with `started` of `true` is the ordinary shape when replies are not being recorded: roost proved the agent acted, but has no numbering to name the turn with.
 
