@@ -303,3 +303,43 @@ read -r p f <<<"$(pane_draw '[paste]')"
 slow_send "look-alike [paste]" "$p" "$f" "LOOKALIKE-B-HEAD-0001"
 
 tmux -S "$s" set-option -gu @roost-send-ready-timeout
+
+# --- 7. a message that QUOTES a placeholder is not proof by itself (#176 review) -
+#
+# Once the pane echoes, the message is part of the screen. A cold start that
+# eats the front leaves the tail on screen, and if the tail carries a
+# placeholder shape — a brief about this very code does — the count goes up
+# and the cut message would be taken as delivered: no C-u, no re-paste, Enter
+# on the tail, no warning. Found by review with a control (the same message
+# without the shape retried and arrived whole). So a message that itself holds
+# a placeholder shape is checked by its head only.
+#
+# The fixture echoes (no collapse) and discards its first 40 bytes once, the
+# way a cold start does; a re-paste then arrives whole.
+pane_headcut() {
+  local d f p
+  d="$(mktemp -d "$sdir/headcut.XXXX")"; f="$d/submitted"; : > "$f"
+  p="$(tmux -S "$s" new-window -P -F '#{pane_id}' -d "exec python3 -u $FIXTURE 0 $f 40")"
+  printf '%s %s' "$p" "$f"
+}
+headlost() {  # headlost LABEL MSG
+  local label="$1" msg="$2" p f got
+  read -r p f <<<"$(pane_headcut)"
+  sleep 1.0
+  "$ROOST" send "$p" "$msg" >/dev/null 2>&1; rc=$?
+  sleep 0.8
+  got="$(cat "$f" 2>/dev/null || true)"
+  assert_eq "$rc" "0" "$label: send exits 0"
+  assert_contains "$got" "$msg" "$label: the WHOLE message is submitted, head included"
+}
+headlost "quoted Claude shape" \
+  "HEADLOST-0001 this front part is eaten by the cold start. Please review the fix for [Pasted text #1] placeholders."
+headlost "quoted pi shape" \
+  "HEADLOST-0002 this front part is eaten by the cold start. pi draws [paste #1 +12 lines] for this."
+headlost "quoted opencode 2 shape" \
+  "HEADLOST-0003 this front part is eaten by the cold start. opencode 2 draws [Pasted ~12 lines] for this."
+# Control: the same shape of send with no placeholder in the text. It must
+# pass on the code with or without this section's fix; if it failed, the
+# fixture and not the placeholder would be the cause.
+headlost "control, no shape" \
+  "HEADLOST-0004 this front part is eaten by the cold start. Nothing bracketed in this one at all."

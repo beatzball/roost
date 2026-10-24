@@ -49,7 +49,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   screen before the paste now proves the paste landed, at once and with no
   warning. Claude's sends get the same: they used to wait out the same loop
   in silence. A placeholder left on the screen by an earlier send no longer
-  counts, and no longer hides the warning for this one.
+  counts, and no longer hides the warning for this one. A message whose own
+  text quotes one of the shapes is still checked by its head, so a cut message
+  cannot pass as delivered.
 
 ### Changed
 

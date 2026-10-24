@@ -1652,12 +1652,31 @@ JSON
     # one scrolls off as the new one appears, the count stands still and this
     # send falls back to the slow path below, which is loud and slow, not
     # lossy.
+    #
+    # LC_ALL=C on the grep: in a UTF-8 locale GNU grep (3.5+) reads a byte
+    # string that is not valid UTF-8 as BINARY and prints no -o lines at all,
+    # so a baseline capture that tripped it would count 0 and every old
+    # placeholder would then read as new. The pattern is ASCII, so the C
+    # locale matches exactly the same text everywhere else (found by review;
+    # not measured, since tmux captures are normally valid UTF-8).
     placeholder_count() {
       printf '%s' "$1" \
-        | grep -oE '\[(Pastedtext#[0-9]+|paste#[0-9]+|Pasted~[0-9]+)[A-Za-z0-9+~#]*\]' 2>/dev/null \
+        | LC_ALL=C grep -oE '\[(Pastedtext#[0-9]+|paste#[0-9]+|Pasted~[0-9]+)[A-Za-z0-9+~#]*\]' 2>/dev/null \
         | wc -l | tr -d ' ' || true
     }
     pre_placeholders="$(placeholder_count "$pre")"
+    # NOT for a message that itself holds a placeholder shape (found by review,
+    # reproduced with a control). Once a pane echoes, the message is part of
+    # the screen: a cold start that eats the FRONT leaves the tail on screen,
+    # and a tail that quotes `[Pasted text #1]` — a brief about this very code
+    # does — raises the count on the first check. Enter then lands on the cut
+    # tail with no retry and no warning, the exact loss the head check exists
+    # to stop. Requiring more than the baseline PLUS the message's own count
+    # is not enough, because the tail alone can carry every one of them. So
+    # such a send is checked by its head only, the slow path as before #176:
+    # slower on a collapsing pane, never a silent cut.
+    placeholder_proof=1
+    [ "$(placeholder_count "$(printf '%s' "$msg" | tr -d '[:space:]')")" -gt 0 ] 2>/dev/null && placeholder_proof=0 || true
 
     screen_has_head() {
       local now
@@ -1665,6 +1684,7 @@ JSON
       case "$now" in
         *"$head"*) return 0 ;;
       esac
+      [ "$placeholder_proof" = 1 ] || return 1
       [ "$(placeholder_count "$now")" -gt "$pre_placeholders" ] 2>/dev/null
     }
 
