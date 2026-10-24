@@ -528,8 +528,12 @@ roost_record_append() {
 # `idle --interrupted` (codex's Interrupt, copilot's aborted idle). The
 # sidecar is written second: a reader that sees the file without it reads an
 # empty reply, which is true, rather than an outcome that is not there yet.
+#
+# TEXT, when given, is the turn's MAIN reply: an interrupt that ends a turn
+# held by background work (#97) must not lose the answer the agent already
+# gave, which the hold kept only on the pane (flock round 1 on #95).
 roost_record_append_interrupted() {
-  roost_record_append "$1" "$2" "" || return 1
+  roost_record_append "$1" "$2" "${3:-}" || return 1
   roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2" || true
   return 0
 }

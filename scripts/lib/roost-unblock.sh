@@ -242,6 +242,22 @@ roost_unblock_token() {
   ROOST_UNBLOCK_TOKEN="$$.$RANDOM$RANDOM"
 }
 
+# roost_unblock_held_reply PANE SINCE -> ROOST_UNBLOCK_HELD, the main reply of
+# a turn held by its own background work (#97), or "" when the pane is not
+# held for this stamp. A recovery that ends such a turn records THIS as the
+# turn's text instead of an empty file: the hold put the main reply on the
+# pane and nothing on disk, so clearing @roost-reply without it threw the
+# agent's answer away (flock round 1 on #95, reproduced). Read before the
+# clear, which unsets the reply; the hold record must agree with SINCE, the
+# @roost-transcript rule.
+roost_unblock_held_reply() {
+  local bg
+  ROOST_UNBLOCK_HELD=""
+  bg="$(t show-options -pqv -t "$1" @roost-background 2>/dev/null || true)"
+  case "$bg" in "$2 "?*) ;; *) return 0 ;; esac
+  ROOST_UNBLOCK_HELD="$(t show-options -pqv -t "$1" @roost-reply 2>/dev/null || true)"
+}
+
 # roost_unblock_pane TARGET -> 0 iff TARGET's pane read `blocked` and was
 # cleared here. Any other answer is 1, and a 1 changes nothing.
 roost_unblock_pane() {
@@ -264,6 +280,7 @@ roost_unblock_pane() {
   roost_claude_declined "$rpath" "$since" || return 1
   now="$(date +%s)"
   roost_unblock_token
+  roost_unblock_held_reply "$pane" "$since"
   # One tmux command: the condition is evaluated and the unsets run with no
   # other client able to act in between. $since is digits only (checked
   # above) and $pane is %N, so neither can break out of the format or the
@@ -273,7 +290,7 @@ roost_unblock_pane() {
   # dialog that was just declined, as @roost-blocked-on does, and go with it.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
   roost_events_unblocked "$pane" "$now" "$since" blocked "the dialog was declined or dismissed" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
@@ -284,7 +301,7 @@ roost_unblock_pane() {
   # the same reason; fails soft the same way.
   if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
     case "$RF_STATE" in
-      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" || true ;;
+      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" || true ;;
     esac
   fi
   return 0
@@ -333,8 +350,9 @@ roost_unblock_pane() {
 #   5. The clear is a compare-and-clear in one tmux command.
 #
 # What it writes: it UNSETS @agent_state (never a value), @roost-reply (a turn
-# that fired no Stop left the previous turn's answer there), @roost-reply-turn
-# and @roost-transcript, and writes @roost-ended "<since> interrupted" -- the
+# that fired no Stop left the previous turn's answer there), @roost-reply-turn,
+# @roost-transcript and a hold record (#97: the turn is over, so nothing holds
+# it -- the held main reply becomes the turn's text below), and writes @roost-ended "<since> interrupted" -- the
 # record `wait-done` reads to exit 5 instead of 0, ignored by every reader
 # unless its first word still equals @agent_since -- and @roost-unblocked
 # "<now> since=<stamp>", as the decline does. Then ONE EMPTY TURN FILE with an
@@ -514,12 +532,13 @@ roost_interrupted_pane() {
   roost_claude_interrupted "$rpath" "$since" || return 1
   now="$(date +%s)"
   roost_unblock_token
+  roost_unblock_held_reply "$pane" "$since"
   # One tmux command, test and unsets together, as the decline's clear. The
   # outcome record is written in the same command: a reader that sees the
   # badge gone finds the reason beside it, or finds neither.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   # This caller's token, not the second: see roost_unblock_token.
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "working" ] \
@@ -534,7 +553,7 @@ roost_interrupted_pane() {
   # costs the turn number, never the outcome.
   if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
     case "$RF_STATE" in
-      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" || true ;;
+      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" || true ;;
     esac
   fi
   return 0
