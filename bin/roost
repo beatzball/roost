@@ -3082,9 +3082,17 @@ EOF
       # the empty reply is printed, as any turn's is, and stderr says why it
       # is empty, so an empty line is never mistaken for an agent that said
       # nothing.
+      #
+      # An interrupt that ended a turn held by background work (#97) saves
+      # the turn's main reply instead of an empty file, so the "no reply"
+      # half of the notice is said only when the text really is empty.
       roost_record_get_turn_field "$RF_DIR" "$want" outcome || true
       if [ "$ROOST_RECORD_FIELD" = interrupted ]; then
-        echo "roost read: turn $want of '$raw' was interrupted, and recorded no reply." >&2
+        if [ -n "$ROOST_RECORD_TEXT" ]; then
+          echo "roost read: turn $want of '$raw' was interrupted; this is the main reply it had given." >&2
+        else
+          echo "roost read: turn $want of '$raw' was interrupted, and recorded no reply." >&2
+        fi
       fi
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
