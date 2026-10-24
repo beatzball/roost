@@ -242,6 +242,35 @@ roost_unblock_token() {
   ROOST_UNBLOCK_TOKEN="$$.$RANDOM$RANDOM"
 }
 
+# roost_unblock_record_turn PANE -- after a recovery cleared PANE: append the
+# interrupted turn (the held main reply as its text, when there was one) to
+# the pane's record, only for a record this roost can write (state 0) or that
+# has none yet (1). Fails soft: the badge is already cleared and `wait-done`
+# reads @roost-ended, so a record that could not be written costs the turn
+# number, never the outcome.
+#
+# When NO durable copy was saved -- recording off (ROOST_RECORD_DIR=""), a
+# record roost cannot write, a full disk -- and the turn had a held main
+# reply, that reply is put back on the pane, which the clear unset: the
+# pane was its only copy, and losing it there lost the agent's answer for
+# good (flock round 2, reproduced on both recovery paths). The badge and the
+# hold record stay cleared. A reader between the clear and this write sees
+# no reply for that moment; the clear has to come first, because only the
+# caller whose clear landed may write.
+roost_unblock_record_turn() {
+  local saved=0
+  if record_for "$1" "$1" && [ "$RF_LIVE" = 1 ]; then
+    case "$RF_STATE" in
+      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
+    esac
+  fi
+  if [ "$saved" = 0 ] && [ -n "${ROOST_UNBLOCK_HELD:-}" ]; then
+    . "${BASH_SOURCE[0]%/*}/roost-reply.sh" 2>/dev/null || return 0
+    t set-option -p -t "$1" @roost-reply "$(roost_reply_escape "$ROOST_UNBLOCK_HELD")" 2>/dev/null || true
+  fi
+  return 0
+}
+
 # roost_unblock_held_reply PANE SINCE -> ROOST_UNBLOCK_HELD, the main reply of
 # a turn held by its own background work (#97), or "" when the pane is not
 # held for this stamp. A recovery that ends such a turn records THIS as the
@@ -299,11 +328,7 @@ roost_unblock_pane() {
     || return 1
   # The empty turn (#95), as roost_interrupted_pane below writes it, and for
   # the same reason; fails soft the same way.
-  if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
-    case "$RF_STATE" in
-      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" || true ;;
-    esac
-  fi
+  roost_unblock_record_turn "$pane"
   return 0
 }
 
@@ -551,10 +576,6 @@ roost_interrupted_pane() {
   # is left alone, as everywhere. Fails soft: the badge is already cleared
   # and `wait-done` reads @roost-ended, so a record that could not be written
   # costs the turn number, never the outcome.
-  if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
-    case "$RF_STATE" in
-      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" || true ;;
-    esac
-  fi
+  roost_unblock_record_turn "$pane"
   return 0
 }
