@@ -537,6 +537,43 @@ t0="$(date +%s)"; ans --expect "$fp" "$d4" --approve; t1="$(date +%s)"
 assert_contains "$err" "inside 1 s" "a bound of 0 is clamped up to 1"
 T set -g @roost-answer-timeout 1
 
+# --- 9b. the pane lock (#181) -------------------------------------------------
+# `send` holds a per-pane lock from before its first key to after its turn
+# watch (#175); `answer` takes the same one, so a `send --force` and an
+# `answer` aimed at one dialog cannot both land. The holder below is a bash
+# whose $0 carries "roost", which is what the lock's staleness test asks of a
+# live pid (tests/test-send-lock.sh case 5 is the same shape; two commands,
+# because bash execs a lone -c command in place and the holder would then be
+# a bare sleep with no roost in its args).
+lockdir() { printf '%s/roost-send-lock.roost.%s' "$work" "${1#%}"; }
+T set -g @roost-send-lock-timeout 1
+l1="$(open_dialog state l1)"; fp="$(fpof "$l1")"
+bash -c 'sleep 60; true' roost-fake-holder & holder=$!
+mkdir "$(lockdir "$l1")"; printf '%s\n' "$holder" >"$(lockdir "$l1")/pid"
+ans --expect "$fp" "$l1" --approve
+assert_eq "$rc" 11 "another live roost holds the pane's lock: exit 11 after the bound"
+assert_contains "$err" "another command is typing into" "...naming the reason"
+assert_contains "$err" "Nothing was sent" "...and that nothing was sent"
+assert_eq "$(keys l1)" "" "...and no key reached the dialog"
+assert_eq "$(opt "$l1" @agent_state)" blocked "...which still reads blocked"
+[ -d "$(lockdir "$l1")" ]; assert_true $? "...and the live holder's lock was not stolen"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+# The same lock, now a dead holder's: taken over, the key sent, the lock gone.
+ans --expect "$fp" "$l1" --approve
+assert_eq "$rc,$out" "0,$l1 approve $fp" "a dead holder's lock is taken over and the dialog answered"
+assert_eq "$(keys l1)" "31" "...with one key"
+[ ! -d "$(lockdir "$l1")" ]; assert_true $? "...and the lock is dropped afterwards"
+# Held through the confirm wait: on a dialog that never confirms, the lock is
+# there mid-wait and gone once the call has exited 10.
+l2="$(open_dialog none l2)"; fp2="$(fpof "$l2")"
+( env -u TMUX -u TMUX_PANE "$ROOST" answer --expect "$fp2" "$l2" --approve </dev/null >/dev/null 2>&1; echo $? >"$work/l2.rc" ) &
+n=40; while [ "$n" -gt 0 ] && [ ! -d "$(lockdir "$l2")" ]; do sleep 0.05; n=$((n - 1)); done
+[ -d "$(lockdir "$l2")" ]; assert_true $? "the lock is held while the call waits for its proof"
+wait
+assert_eq "$(cat "$work/l2.rc")" 10 "...the call ran out its bound as before (exit 10)"
+[ ! -d "$(lockdir "$l2")" ]; assert_true $? "...and the lock is gone once it has exited"
+T set -gu @roost-send-lock-timeout
+
 # --- 10. nothing but `roost answer` sends a key into a dialog (§7.4) ----------
 # A hook, an adapter or another roost command that called `answer` would be
 # roost answering on its own. Comment lines are skipped (the help text and

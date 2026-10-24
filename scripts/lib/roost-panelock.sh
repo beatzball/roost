@@ -7,8 +7,8 @@
 # writer and this file is its lock; `answer` (#142), which types a key into a
 # blocked pane and then watches the badge, is the second and should take the
 # same one, so that a `send --force` and an `answer` aimed at one dialog
-# cannot both land. It does not yet: roost-answer.sh sends its key with no
-# lock, and docs/known-gaps.md lists that under #175.
+# cannot both land. Since #181 it does: `answer` takes the lock just before
+# its key, re-checks it at the key, and holds it through its confirm wait.
 #
 # THE LOCK IS A DIRECTORY BESIDE THE SERVER'S SOCKET, named for the socket and
 # the pane: `<socket dir>/roost-send-lock.<socket name>.<N>`. That scopes it to
@@ -118,6 +118,11 @@
 #       failure beats two writers typing over each other.
 #   roost_panelock_drop
 #       Removes the lock this process holds, if any. Always 0.
+#   roost_panelock_timeout RAW
+#       Prints the seconds a writer waits for the lock, from the raw value of
+#       `@roost-send-lock-timeout`: 60 when unset or not digits, leading zeros
+#       stripped, clamped to 600. One place for both verbs, so `send` and
+#       `answer` cannot read the same knob two ways.
 #
 # The polls are a tenth of a second (`sleep 1` where sleep cannot do fractions),
 # so TIMEOUT 0 means one attempt and no wait — plus the one more attempt a
@@ -260,6 +265,25 @@ roost_panelock_take() {
     sleep 0.1 2>/dev/null || sleep 1
     ticks=$((ticks + 1))
   done
+}
+
+# Clamped by LENGTH first — an O(1) test, so this bound can never itself be
+# slow, and it caps the work the strip loop could ever be asked to do. Leading
+# zeros are stripped the way bin/roost strips its other knobs and for the same
+# measured reason: `08` is octal to `$(( ))` and aborts it under set -e, and a
+# message should say "8s", not "08s". Stripped BEFORE the value clamp, or
+# `0000000` would read as "over the cap" and a configured no-wait would wait
+# ten minutes (found by review, tests/test-send-lock.sh pins both).
+roost_panelock_timeout() {
+  local v="$1"
+  case "$v" in ''|*[!0-9]*) v=60 ;; esac
+  [ "${#v}" -gt 40 ] && v=600
+  while [ "${#v}" -gt 1 ] && [ "${v%${v#?}}" = 0 ]; do
+    v="${v#0}"
+  done
+  case "$v" in ????*) v=600 ;; esac
+  [ "$v" -gt 600 ] 2>/dev/null && v=600 || true
+  printf '%s\n' "$v"
 }
 
 roost_panelock_check() {

@@ -7,6 +7,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`roost answer` takes the per-pane send lock.** A `send --force` and an
+  `answer` aimed at one dialog could both land, because `answer` typed its key
+  with nothing held (#181). It now takes the same lock `send` holds, just
+  before its key, re-checks it at the key, and holds it through its confirm
+  wait. When it cannot hold the lock — another command typing into the pane
+  for the whole `@roost-send-lock-timeout` wait, a lock that cannot be named
+  or made, or one taken from under the call — it exits 11 with nothing sent,
+  and the call can simply be repeated.
+
 ## [0.9.0]
 
 A human can now answer a blocked pane from anywhere. `roost answer --expect FP

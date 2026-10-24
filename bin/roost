@@ -1144,11 +1144,9 @@ JSON
     #
     # The lock itself — a directory beside the server's socket, with a dead
     # holder's lock taken over — lives in scripts/lib/roost-panelock.sh, so
-    # that `answer` (#142), the other command that types into a pane, can
-    # take the same one rather than a copy. It does not yet (its key goes in
-    # through scripts/lib/roost-answer.sh with no lock), so a `send --force`
-    # and an `answer` aimed at one dialog can still both land; that is
-    # listed in docs/known-gaps.md under #175.
+    # that `answer` (#142), the other command that types into a pane, takes
+    # the same one rather than a copy (#181): a `send --force` and an
+    # `answer` aimed at one dialog cannot both land.
     #
     # HELD FROM HERE TO EXIT, not just around the paste. The turn watch at the
     # end of this command is part of what the lock protects: two senders that
@@ -1230,22 +1228,9 @@ JSON
     # exit 2 "no such target" into an exit 1 with nothing on stderr (found by
     # review, with a tmux stub). The other knobs are read after the target
     # check and never saw this.
-    lock_timeout="$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)"
-    case "$lock_timeout" in ''|*[!0-9]*) lock_timeout=60 ;; esac
-    # Clamped by LENGTH first — an O(1) test, so this bound can never itself be
-    # slow, and it caps the work the strip loop below could ever be asked to do.
-    [ "${#lock_timeout}" -gt 40 ] && lock_timeout=600
-    # Leading zeros are stripped, the same loop and the same reason as
-    # @roost-send-turn-timeout below: `08` is octal to `$(( ))` and aborts
-    # it, and the library strips its copy too — this one is so the message
-    # says "8s", not "08s" (measured, tests/test-send-lock.sh). Stripped
-    # BEFORE the value clamp, or `0000000` would read as "over the cap" and
-    # a configured no-wait would wait ten minutes (found by review).
-    while [ "${#lock_timeout}" -gt 1 ] && [ "${lock_timeout%${lock_timeout#?}}" = 0 ]; do
-      lock_timeout="${lock_timeout#0}"
-    done
-    case "$lock_timeout" in ????*) lock_timeout=600 ;; esac
-    [ "$lock_timeout" -gt 600 ] 2>/dev/null && lock_timeout=600 || true
+    # The clamp and the zero strip live in roost_panelock_timeout, shared with
+    # `answer` (#181), so the two verbs cannot read one knob two ways.
+    lock_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
     lock_rc=0
     roost_panelock_take "$lock_sock" "$lock_pane" "$lock_timeout" || lock_rc=$?
     case "$lock_rc" in
@@ -2161,6 +2146,10 @@ JSON
     #   9   the caller is an agent in a roost pane, and --force was not given
     #   10  the key WAS sent, and nothing confirmed it inside the bound: do not
     #       answer again
+    #   11  the pane's lock could not be held (#181): another command — a
+    #       `roost send` — was typing into it for the whole wait, or the lock
+    #       could not be named or made, or it was taken from this call before
+    #       the key. Nothing was sent; try again.
     #
     # Only exit 0 and 10 have sent anything. 10 is to `answer` what 4 is to
     # `send`: the input went in, so a second try would be a second input.
@@ -2402,6 +2391,42 @@ EOF
       exit 6
     fi
 
+    # THE PANE LOCK (#181), taken here and not earlier: every refusal above
+    # needs no lock, and must not wait on one. `send` holds a per-pane lock
+    # from before its first key to after its turn watch (#175), and a key
+    # typed into a box another command is pasting into is the same two-writers
+    # case the lock exists for — a `send --force` and an `answer` aimed at
+    # one dialog. The same library, the same knob (@roost-send-lock-timeout,
+    # 60 s by default), the same shapes: taken before the key, re-checked at
+    # the key, held through the confirm wait below (so a `send` that is
+    # waiting cannot slip in between the key and its proof), and dropped on
+    # every way out by the EXIT trap. INT and TERM exit, they do not clean up
+    # and carry on (the lesson `send` learned, flock review of #179).
+    #
+    # Exit 11 for every way the lock is not held, and nothing is sent on any
+    # of them: another writer for the whole wait, a socket path that is not
+    # absolute (tmux reports it as the server was started with), a lock
+    # directory that cannot be made or written, or a lock taken from under
+    # this call before the key.
+    . "$ROOST_HOME/scripts/lib/roost-panelock.sh"
+    ans_cleanup() { roost_panelock_drop; return 0; }
+    trap 'ans_cleanup' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    lock_sock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+    lock_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
+    lock_rc=0
+    roost_panelock_take "$lock_sock" "$pane" "$lock_timeout" || lock_rc=$?
+    case "$lock_rc" in
+      0) ;;
+      1) echo "roost answer: another command is typing into '$raw' (a roost send holds its lock) and did not finish within ${lock_timeout}s. Nothing was sent; try again" >&2
+         exit 11 ;;
+      2) echo "roost answer: the server's socket path '$lock_sock' is not absolute, so no pane lock can be named for '$raw'. Nothing was sent; start the server, or set ROOST_SOCKET, with an absolute path" >&2
+         exit 11 ;;
+      *) echo "roost answer: could not make or write the pane lock beside '$lock_sock' for '$raw'. Nothing was sent; the socket directory must be writable" >&2
+         exit 11 ;;
+    esac
+
     # Step 9, the send: ONE key group, ONCE, in one tmux command that tests
     # everything above again at the instant it sends (roost_answer_send says
     # how). There is no retry anywhere.
@@ -2411,6 +2436,12 @@ EOF
     fi
     sent_at="$(date +%s)"
     nonce="$$.$RANDOM"
+    # Still this call's pane? The one tmux call between here and the key is
+    # the gap the lock cannot close; everything wider, it does.
+    if ! roost_panelock_check; then
+      echo "roost answer: the pane lock for '$raw' was taken from this call. Nothing was sent; try again" >&2
+      exit 11
+    fi
     src=0
     roost_answer_send "$pane" "$fp" "$ROOST_ANSWER_KEY" "$fp $sent_at $act_word $by" "$nonce" || src=$?
     if [ "$src" -eq 1 ]; then
