@@ -515,6 +515,25 @@ roost_record_append() {
   return 0
 }
 
+# roost_record_append_interrupted DIR SOCKET -> ROOST_RECORD_TURN, and 0; 1
+# when nothing was recorded. An EMPTY turn file, then `replies/NNNNNN.outcome`
+# holding `interrupted` (#95). It exists so an interrupted prompt KEEPS its
+# turn number: a turn that ends with no reply records nothing, so the next
+# prompt's reply would take its number and `wait-done --turn N` would return
+# on the wrong prompt (the turn-over design, §5.4). The file is empty because
+# the turn produced nothing; the sidecar says why, and is what `wait-done
+# --turn N` reads to exit 5 and `read --turn N` to say so. Both are written by
+# the two writers of this outcome: scripts/lib/roost-unblock.sh after a Claude
+# interrupt it proved from the transcript, and scripts/roost-agent-state on
+# `idle --interrupted` (codex's Interrupt, copilot's aborted idle). The
+# sidecar is written second: a reader that sees the file without it reads an
+# empty reply, which is true, rather than an outcome that is not there yet.
+roost_record_append_interrupted() {
+  roost_record_append "$1" "$2" "" || return 1
+  roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2" || true
+  return 0
+}
+
 # roost_record_prune DIR — remove the oldest turns beyond ROOST_RECORD_KEEP.
 # Rescans after each removal rather than sorting once: normally one file goes
 # per turn, and a keep lowered by hand is a one-off.
@@ -529,8 +548,8 @@ roost_record_prune() {
     roost_record_turn_file "$1" "$ROOST_RECORD_MIN"
     f="$ROOST_RECORD_FILE"
     [ -f "$f" ] || return 0
-    # The turn's sidecars go with it — `.pane` and `.sent_by` today, any
-    # `.<field>` later.
+    # The turn's sidecars go with it — `.pane`, `.sent_by` and `.outcome`
+    # today, any `.<field>` later.
     rm -f "$f" "$f".* || return 0
     roost_record_scan "$1/replies"
   done

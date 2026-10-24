@@ -1,5 +1,7 @@
 # roost-unblock.sh — clear a Claude Code `blocked` badge that a declined or
-# dismissed permission dialog left behind (#38), and only clear it.
+# dismissed permission dialog left behind (#38), and only clear it; and, since
+# #95, clear a `working` badge that an Esc mid-stream or mid-tool left behind,
+# recording the turn as `interrupted` (the second half of this file).
 #
 # Sourced by bin/roost. Defines functions and one constant and runs nothing at
 # source time. It needs bin/roost's `t` (tmux on the right server).
@@ -256,4 +258,252 @@ roost_unblock_pane() {
   roost_events_unblocked "$pane" "$now" "$since" 2>/dev/null || true
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
     && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ]
+}
+
+
+# --- an interrupted turn (#95) -----------------------------------------------
+#
+# Step 2 of docs/airig/specs/2026-09-29-turn-over-design.md. Esc while the
+# model streams, and Esc while a foreground tool runs, fire NO Claude hook at
+# all -- measured on 2.1.283 (M5, M6 there) and again on 2.1.310 (known-gaps,
+# "Step 1 measurements"): no Stop, no StopFailure, no PostToolUseFailure, no
+# Notification in 80 s. So the ⏳ UserPromptSubmit stamped stays until the next
+# prompt, `wait-done` burns its timeout, and `read` calls the previous reply
+# stale for ever. What Claude DOES write is its transcript, and the two tails
+# are fixed shapes:
+#
+#   mid-stream   assistant  (the partial answer; isAbortedMidStream on 2.1.310)
+#                user       message.content = [text "[Request interrupted by user]"]
+#   mid-tool     user       message.content = [tool_result "The user doesn't want
+#                           to proceed with this tool use. …"], toolDenialKind
+#                           "user-rejected"
+#                user       message.content = [text "[Request interrupted by user
+#                           for tool use]"]
+#
+# and, unlike the declined dialog above, NO `system turn_duration` after
+# either. The decline's three records on a blocked pane are the reader above;
+# these two pairs on a WORKING pane are this one. Same rules, same reasons:
+#
+#   1. The pane reads `working` at PANE scope. A blocked pane is a dialog, and
+#      the decline reader's; a done or idle pane has nothing to recover.
+#   2. @roost-transcript is "<@agent_since> <absolute path>" and its first
+#      word equals the pane's @agent_since. UserPromptSubmit writes it with
+#      the `working` stamp (scripts/roost-agent-state), and the transition
+#      out of a dialog re-stamps it, so a working pane has one for its own
+#      turn and never an earlier turn's.
+#   3. The transcript is a readable regular file, and a JSON reader exists.
+#   4. Walking backwards from the last line, skipping only the SKIP types,
+#      the first two records are exactly one of the two pairs above, in order,
+#      each with a timestamp no older than @agent_since. An unknown record
+#      type, a line that is not JSON, a missing timestamp, a turn_duration, a
+#      tool_use that is not the rejection: cannot tell, stay working. A newer
+#      prompt after the Esc stamps a newer @agent_since than the marker, so
+#      rule 4 fails and nothing is cleared -- which is right: that pane is
+#      working on the newer prompt.
+#   5. The clear is a compare-and-clear in one tmux command.
+#
+# What it writes: it UNSETS @agent_state (never a value), @roost-reply (a turn
+# that fired no Stop left the previous turn's answer there), @roost-reply-turn
+# and @roost-transcript, and writes @roost-ended "<since> interrupted" -- the
+# record `wait-done` reads to exit 5 instead of 0, ignored by every reader
+# unless its first word still equals @agent_since -- and @roost-unblocked
+# "<now> since=<stamp>", as the decline does. Then ONE EMPTY TURN FILE with an
+# `outcome` sidecar of `interrupted` (scripts/lib/roost-record.sh), so the
+# interrupted prompt keeps its number and the next prompt's reply does not
+# take it (§5.4): `wait-done --turn N` on it exits 5, `read --turn N` prints
+# nothing and says why.
+#
+# What can break it: the transcript format is Claude's, not a contract. A
+# renamed marker fails closed -- the pane stays working, as before #95 -- and
+# the live smoke tests under tests/live/ are the guard after a Claude upgrade.
+
+# roost_claude_interrupted FILE SINCE -> 0 iff FILE's tail is one of the two
+# interrupt shapes, no older than SINCE (epoch seconds). python3 first, then
+# jq; with neither, nothing can be known and the answer is no.
+roost_claude_interrupted() {
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  case "$2" in ''|*[!0-9]*) return 1 ;; esac
+  if command -v python3 >/dev/null 2>&1; then
+    roost_claude_interrupted_py "$1" "$2"
+  elif command -v jq >/dev/null 2>&1; then
+    roost_claude_interrupted_jq "$1" "$2"
+  else
+    return 1
+  fi
+}
+
+roost_claude_interrupted_py() {
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  case "$2" in ''|*[!0-9]*) return 1 ;; esac
+  python3 - "$1" "$2" "$ROOST_UNBLOCK_TAIL_BYTES" <<'PY' 2>/dev/null
+import json
+import sys
+from datetime import datetime, timezone
+
+# The same SKIP set as the decline reader, for the same reason: a type not
+# named here is not skipped, and an unknown type means "cannot tell".
+SKIP = {
+    "last-prompt", "ai-title", "mode", "permission-mode", "atis-latch",
+    "bridge-session", "attachment", "file-history-snapshot",
+}
+STREAM = "[Request interrupted by user]"
+TOOL = "[Request interrupted by user for tool use]"
+REJECT = "The user doesn't want to proceed with this tool use."
+
+
+def stamp(rec):
+    t = rec.get("timestamp")
+    if not isinstance(t, str):
+        return None
+    try:
+        return datetime.strptime(t, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def content(rec):
+    msg = rec.get("message")
+    return msg.get("content") if isinstance(msg, dict) else None
+
+
+def is_text(rec, text):
+    return rec.get("type") == "user" and content(rec) == [{"type": "text", "text": text}]
+
+
+def is_assistant(rec):
+    return rec.get("type") == "assistant" and isinstance(rec.get("message"), dict)
+
+
+def is_rejection(rec):
+    c = content(rec)
+    return (rec.get("type") == "user"
+            and rec.get("toolDenialKind") == "user-rejected"
+            and isinstance(c, list) and len(c) > 0
+            and all(isinstance(b, dict) and b.get("type") == "tool_result"
+                    and isinstance(b.get("content"), str) and b["content"].startswith(REJECT)
+                    for b in c))
+
+
+def main():
+    path, since, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    with open(path, "rb") as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        start = max(0, size - limit)
+        fh.seek(start)
+        lines = fh.read().split(b"\n")
+    if start > 0:
+        lines = lines[1:]      # a seek lands mid-line; that line is not a record
+    want = None
+    for raw in reversed(lines):
+        if not raw.strip():
+            continue
+        rec = json.loads(raw)  # not JSON: raises, and the answer is no
+        if not isinstance(rec, dict):
+            return 1
+        if rec.get("type") in SKIP:
+            continue
+        t = stamp(rec)
+        if t is None or t < since:
+            return 1
+        if want is None:
+            # The newest conversation record decides which pair this could be.
+            if is_text(rec, STREAM):
+                want = is_assistant
+            elif is_text(rec, TOOL):
+                want = is_rejection
+            else:
+                return 1
+            continue
+        return 0 if want(rec) else 1
+    return 1
+
+
+try:
+    sys.exit(main())
+except Exception:
+    sys.exit(1)
+PY
+}
+
+roost_claude_interrupted_jq() {
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  case "$2" in ''|*[!0-9]*) return 1 ;; esac
+  local size cut
+  size="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+  case "$size" in ''|*[!0-9]*) return 1 ;; esac
+  cut=0; [ "$size" -gt "$ROOST_UNBLOCK_TAIL_BYTES" ] && cut=1
+  # The python walk as a filter, the shape of roost_claude_declined_jq: the
+  # newest two conversation records, both no older than SINCE, forming one
+  # of the two pairs.
+  tail -c "$ROOST_UNBLOCK_TAIL_BYTES" "$1" 2>/dev/null | jq -R -s -e \
+    --argjson since "$2" --argjson cut "$cut" '
+    def skip: ["last-prompt","ai-title","mode","permission-mode","atis-latch",
+               "bridge-session","attachment","file-history-snapshot"];
+    def stamp: try (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null;
+    def recent: type == "object" and (stamp | type) == "number" and stamp >= $since;
+    def is_text(t): .type == "user" and .message.content == [{"type": "text", "text": t}];
+    def is_rejection: .type == "user" and .toolDenialKind == "user-rejected"
+      and (.message.content | type) == "array" and (.message.content | length) > 0
+      and (.message.content | all(.[]; type == "object" and .type == "tool_result"
+            and (.content | type) == "string"
+            and (.content | startswith("The user doesn'"'"'t want to proceed with this tool use."))));
+    [ split("\n") | (if $cut == 1 then .[1:] else . end)[]
+      | select(test("^\\s*$") | not)
+      | (try fromjson catch "not json") ]
+    | reverse
+    | map(select((type == "object" and ((.type | tostring) as $t | skip | index($t))) | not))
+    | .[0:2] as $r
+    | ($r | length) == 2
+      and ($r | all(.[]; recent))
+      and ((($r[0] | is_text("[Request interrupted by user]"))
+            and $r[1].type == "assistant" and ($r[1].message | type) == "object")
+           or (($r[0] | is_text("[Request interrupted by user for tool use]"))
+               and ($r[1] | is_rejection)))
+    ' >/dev/null 2>&1
+}
+
+# roost_interrupted_pane TARGET -> 0 iff TARGET's pane read `working`, its
+# transcript ends in an interrupt for this stamp, and it was cleared here.
+# Any other answer is 1, and a 1 changes nothing. Needs bin/roost's `t` and
+# `record_for`.
+roost_interrupted_pane() {
+  local info pane since state rec rsince rpath now
+  info="$(t display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
+  pane="${info%% *}"
+  since="${info#* }"
+  case "$pane" in %[0-9]*) : ;; *) return 1 ;; esac
+  state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  [ "$state" = "working" ] || return 1
+  case "$since" in ''|*[!0-9]*) return 1 ;; esac
+  rec="$(t show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
+  rsince="${rec%% *}"
+  rpath="${rec#* }"
+  [ -n "$rec" ] && [ "$rsince" = "$since" ] || return 1
+  case "$rpath" in /*) : ;; *) return 1 ;; esac
+  roost_claude_interrupted "$rpath" "$since" || return 1
+  now="$(date +%s)"
+  # One tmux command, test and unsets together, as the decline's clear. The
+  # outcome record is written in the same command: a reader that sees the
+  # badge gone finds the reason beside it, or finds neither.
+  t if-shell -F -t "$pane" \
+    "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
+    2>/dev/null || return 1
+  [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "working" ] \
+    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ] \
+    || return 1
+  . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
+  roost_events_unblocked "$pane" "$now" "$since" working "the turn was interrupted" 2>/dev/null || true
+  # The empty turn (#95, §5.4): only for a pane whose record this roost can
+  # write (state 0) or that has none yet (1); an unreadable or newer record
+  # is left alone, as everywhere. Fails soft: the badge is already cleared
+  # and `wait-done` reads @roost-ended, so a record that could not be written
+  # costs the turn number, never the outcome.
+  if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
+    case "$RF_STATE" in
+      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" || true ;;
+    esac
+  fi
+  return 0
 }

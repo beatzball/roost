@@ -939,6 +939,52 @@ EOF
   fi
 fi
 
+# The transcript at the START of a turn (#95). Claude's UserPromptSubmit
+# carries `transcript_path` like every other hook, and recording it with the
+# `working` stamp is what gives scripts/lib/roost-unblock.sh a transcript to
+# read for a WORKING pane: an Esc mid-stream or mid-tool fires no event, and
+# the only record of it is that file. Until now only the dialog hooks
+# recorded it, so an interrupted turn with no dialog in it could never be
+# recovered.
+#
+# Read only for a plain `working` from Claude's prompt hook: not under
+# --tool-hook (PostToolUse is the hot path and Claude blocks on it), not from
+# a tty (`roost state working` typed by a human must never wait on a stdin
+# nobody closes), and not when stdin is empty (an adapter's `roost state
+# working` with stdin from /dev/null carries nothing; the record it finds is
+# left as it is -- it names the same session's file, and a stamp that does
+# not match it ignores it anyway). A payload that WAS read and carried no
+# usable path removes an older record instead, as the dialog hooks do: an
+# older record could share this second's stamp, so it is removed rather than
+# trusted. The same checks as the dialog path: an absolute path, no tab, no
+# newline, no trailing `;`. It is WRITTEN below, in the same tmux command as
+# the stamp, with the stamp's own second, for the reason the dialog path
+# gives: the reader trusts a record only when its first word equals
+# @agent_since. A UserPromptSubmit on a pane that already reads working is a
+# repeat and bails before the write, which is right: the turn it belongs to
+# has a record already.
+prompt_transcript="" prompt_payload=0
+if [ "$state" = "working" ] && [ "$tool_hook" = 0 ] && [ ! -t 0 ]; then
+  payload="$(cat 2>/dev/null || true)"
+  if [ -n "$payload" ]; then
+    prompt_payload=1
+    if command -v python3 >/dev/null 2>&1; then
+      prompt_transcript="$(printf '%s' "$payload" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+p = d.get("transcript_path") if isinstance(d, dict) else None
+sys.stdout.write(p if isinstance(p, str) and "\n" not in p else "")' 2>/dev/null || true)"
+    elif command -v jq >/dev/null 2>&1; then
+      prompt_transcript="$(printf '%s' "$payload" | jq -r 'if type == "object" and (.transcript_path | type) == "string" and ((.transcript_path | test("\n")) | not) then .transcript_path else "" end' 2>/dev/null || true)"
+    fi
+    case "$prompt_transcript" in /*) ;; *) prompt_transcript="" ;; esac
+    case "$prompt_transcript" in *$'\t'*|*$'\n'*|*';') prompt_transcript="" ;; esac
+  fi
+fi
+
 # roost_stamp_blocked NOW — write everything a 🛑 stamp owns, in ONE tmux
 # command, from wherever the stamp came from.
 #
@@ -1430,8 +1476,31 @@ else
       tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-background-types "$now $bg_types" 2>/dev/null || true
     fi
   else
-    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" 2>/dev/null || true
-    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_since "$now" 2>/dev/null || true
+    # One command for the badge and the stamp, and with them, on a transition
+    # to working, the transcript record (#95): the prompt hook's path when it
+    # carried one, else -- leaving a dialog -- the path the dialog hook
+    # recorded, re-stamped with THIS second, so an Esc later in the same turn
+    # still has a record whose first word is the pane's @agent_since. A
+    # prompt hook whose payload carried no usable path removes the older
+    # record (it could share this second's stamp); a `working` that read no
+    # payload at all leaves it. Read from the pane once, only on a transition
+    # out of blocked, which is once per dialog, never on the PostToolUse hot
+    # path.
+    stamp_wr=(set-option -p -t "$TMUX_PANE" @agent_state "$state"
+              ';' set-option -p -t "$TMUX_PANE" @agent_since "$now")
+    if [ "$state" = "working" ]; then
+      if [ -n "$prompt_transcript" ]; then
+        stamp_wr+=(';' set-option -p -t "$TMUX_PANE" @roost-transcript "$now $prompt_transcript")
+      elif [ "$prompt_payload" = 1 ]; then
+        stamp_wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-transcript)
+      elif [ "$prev" = "blocked" ]; then
+        old_tr="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-transcript 2>/dev/null || true)"
+        case "$old_tr" in
+          *" /"*) stamp_wr+=(';' set-option -p -t "$TMUX_PANE" @roost-transcript "$now ${old_tr#* }") ;;
+        esac
+      fi
+    fi
+    tmux -S "$sock" "${stamp_wr[@]}" 2>/dev/null || true
   fi
 fi
 

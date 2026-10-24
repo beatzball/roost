@@ -428,17 +428,21 @@ roost_events__turn() {
 # Two changes happen without the agent's hook running, so the hook cannot log
 # them: roost itself clearing a 🛑 after a declined dialog, and a pane closing.
 
-# roost_events_unblocked PANE NOW SINCE — scripts/lib/roost-unblock.sh calls
-# this after its one-command clear, with the stamp it wrote. The line is
-# written only when that clear is what the pane now shows: @agent_state unset
-# and @roost-unblocked holding exactly "NOW since=SINCE". Anything else means
-# the clear did not land, or another writer has moved the pane since and logs
-# its own line.
+# roost_events_unblocked PANE NOW SINCE [FROM REASON] — scripts/lib/roost-
+# unblock.sh calls this after its one-command clear, with the stamp it wrote.
+# The line is written only when that clear is what the pane now shows:
+# @agent_state unset and @roost-unblocked holding exactly "NOW since=SINCE".
+# Anything else means the clear did not land, or another writer has moved
+# the pane since and logs its own line.
+#
+# FROM and REASON default to the declined dialog's (`blocked`, "the dialog
+# was declined or dismissed"), so that line is unchanged; the interrupted
+# turn (#95) passes `working` and "the turn was interrupted".
 #
 # `to` is null, as `status --json` shows the pane: the clear UNSETS the state.
 # Needs bin/roost's `t`, the way the reader below does.
 roost_events_unblocked() {
-  local info rest boot window cur unb session
+  local info rest boot window cur unb session from="${4:-blocked}" reason="${5:-the dialog was declined or dismissed}"
   roost_events_dir
   [ -n "$ROOST_EVENTS_DIR" ] || return 0
   # `|` between the fields, not a tab. This runs under bin/roost, whose tmux
@@ -465,7 +469,7 @@ roost_events_unblocked() {
   [ "${#session}" -le 64 ] || session=""
   roost_events__turn "$boot" "$1" ""
   roost_events_line "$(date +%s)" "$boot" "$1" "$window" "$session" \
-    state blocked "" "$ROOST_EVENTS_TURN" "the dialog was declined or dismissed" || return 0
+    state "$from" "" "$ROOST_EVENTS_TURN" "$reason" || return 0
   roost_events_write "$ROOST_EVENTS_LINE"
 }
 

@@ -1458,6 +1458,16 @@ JSON
       echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
       exit 3
     fi
+    # The working-pane sibling (#95): an Esc mid-stream or mid-tool fires no
+    # event either, so a `working` badge can be a turn the human already
+    # stopped. roost_interrupted_pane clears it only when Claude's transcript
+    # proves the interrupt is the newest thing since the stamp, and it only
+    # unsets; the turn watch below then re-reads the badge and sees a pane
+    # with none, which is what such a pane is. When it cannot prove it, the
+    # send goes on as to any working pane: the text queues.
+    if [ "$state" = "working" ]; then
+      roost_interrupted_pane "$tgt" || true
+    fi
     # Two-step submit: literal text, a beat, then Enter. A single
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
     delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null)"
@@ -3056,6 +3066,14 @@ EOF
       if [ "$RF_LIVE" = 0 ]; then
         echo "roost read: '$raw' is gone — this is its recorded turn $want." >&2
       fi
+      # An interrupted turn (#95) is an EMPTY file with an `outcome` sidecar:
+      # the empty reply is printed, as any turn's is, and stderr says why it
+      # is empty, so an empty line is never mistaken for an agent that said
+      # nothing.
+      roost_record_get_turn_field "$RF_DIR" "$want" outcome || true
+      if [ "$ROOST_RECORD_FIELD" = interrupted ]; then
+        echo "roost read: turn $want of '$raw' was interrupted, and recorded no reply." >&2
+      fi
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         json_state=""
@@ -3138,9 +3156,14 @@ EOF
     # agrees with them whether or not a reply is stored. A clear also unsets
     # @roost-reply — a declined turn fired no Stop, so what was stored is the
     # previous turn's — and read then falls back to the screen and says so.
-    if [ "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" = "blocked" ]; then
-      roost_unblock_pane "$tgt" || true
-    fi
+    #
+    # And a `working` left by an interrupted turn (#95) is offered to
+    # roost_interrupted_pane the same way: it clears the stale badge and the
+    # previous turn's reply, and read falls back to the screen and says so.
+    case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" in
+      blocked) roost_unblock_pane "$tgt" || true ;;
+      working) roost_interrupted_pane "$tgt" || true ;;
+    esac
     reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
     if [ -n "$reply" ]; then
       # A reply recorded at the end of turn N is still on the pane during turn
@@ -3829,10 +3852,15 @@ EOF
       # the snapshot is taken again so the checks below read what it left.
       # Once a second, not on every quarter-second tick: the helper reads a
       # transcript, and the recovery it exists for is not a race.
+      #
+      # And every `working` pane to roost_interrupted_pane (#95), for the
+      # same reason: an Esc mid-turn fires no event, and a waiter on that
+      # pane would burn its whole timeout on a turn the human already ended.
       if [ $((ticks % 4)) = 0 ]; then
         offered=0
         while read -r _id _dead _pp _job _st; do
           [ "$_st" = "blocked" ] && { roost_unblock_pane "$_id" || true; offered=1; }
+          [ "$_st" = "working" ] && { roost_interrupted_pane "$_id" || true; offered=1; }
         done <<< "$rows"
         if [ "$offered" = 1 ]; then
           # The snapshot ABOVE becomes the history before the snapshot is taken
