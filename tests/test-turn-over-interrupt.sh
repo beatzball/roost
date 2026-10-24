@@ -228,21 +228,21 @@ UPS='{"session_id":"00000000-0000-4000-8000-000000000001","transcript_path":"/tm
 edit() { python3 -c 'import json,sys
 d=json.loads(sys.argv[1]); exec(sys.argv[2]); print(json.dumps(d))' "$1" "$2"; }
 p="$(newpane)"; require_pane "$p" ups
-hook "$p" working <<< "$UPS"
+hook "$p" working --prompt-hook <<< "$UPS"
 assert_eq "$(opt "$p" @roost-transcript)" "$(opt "$p" @agent_since) /tmp/roost-fixture/00000000-0000-4000-8000-000000000001.jsonl" \
   "UserPromptSubmit records '<stamp> <transcript_path>' with the working stamp"
 printf '{"last_assistant_message":"R"}' | hook "$p" done --stop-hook
 sleep 1
-hook "$p" working <<< "$(edit "$UPS" 'd["transcript_path"]="relative.jsonl"')"
+hook "$p" working --prompt-hook <<< "$(edit "$UPS" 'd["transcript_path"]="relative.jsonl"')"
 assert_eq "$(opt "$p" @roost-transcript)" "" "a relative transcript_path records nothing (the old record goes: it was another stamp's)"
 printf '{"last_assistant_message":"R"}' | hook "$p" done --stop-hook
 sleep 1
-hook "$p" working <<< "$(edit "$UPS" 'd["transcript_path"]="/tmp/roost-fixture/a\tb.jsonl"')"
+hook "$p" working --prompt-hook <<< "$(edit "$UPS" 'd["transcript_path"]="/tmp/roost-fixture/a\tb.jsonl"')"
 assert_eq "$(opt "$p" @roost-transcript)" "" "a path with a tab records nothing"
 printf '{"last_assistant_message":"R"}' | hook "$p" done --stop-hook
 sleep 1
 X set-option -p -t "$p" @roost-transcript "1 /tmp/old"
-hook "$p" working </dev/null
+hook "$p" working --prompt-hook </dev/null
 assert_eq "$(opt "$p" @roost-transcript)" "1 /tmp/old" "working with no payload (an adapter's roost state) leaves an existing record alone"
 printf '{"last_assistant_message":"R"}' | hook "$p" done --stop-hook
 sleep 1
@@ -253,7 +253,7 @@ assert_eq "$(opt "$p" @roost-transcript)" "1 /tmp/old" "the tool hook (PostToolU
 # record must follow the new working stamp or an Esc later in the turn would
 # never be recovered.
 p="$(newpane)"; require_pane "$p" dialog
-hook "$p" working <<< "$UPS"
+hook "$p" working --prompt-hook <<< "$UPS"
 sleep 1
 PR='{"session_id":"00000000-0000-4000-8000-000000000001","transcript_path":"/tmp/roost-fixture/00000000-0000-4000-8000-000000000001.jsonl","cwd":"/tmp/roost-fixture/proj","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"mkdir x","description":"d"}}'
 hook "$p" blocked --permission-request-hook <<< "$PR"

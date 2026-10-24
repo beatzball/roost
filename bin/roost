@@ -987,6 +987,11 @@ JSON
 # transcript_path, and \`roost send\`, \`read\` and \`wait-done\` read Claude's own
 # transcript to prove the dialog was declined. Leave them off and a declined
 # dialog keeps its red until your next prompt.
+# --prompt-hook on the UserPromptSubmit entry records the turn's transcript
+# path, so an Esc mid-answer or mid-tool -- which fires no hook at all -- can
+# be read from Claude's own transcript by \`roost send\`, \`read\` and
+# \`wait-done\`, and the turn reported as interrupted. Leave it off and the
+# badge reads working until your next prompt after such an Esc.
 # --stop-hook on the Stop entry is what powers \`roost read\`: it lets the hook
 # read Stop's JSON payload, whose last_assistant_message field carries the
 # turn's reply. Leave it off and everything still badges correctly — \`roost

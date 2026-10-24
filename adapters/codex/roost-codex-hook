@@ -346,13 +346,11 @@ elif [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
 elif [ "$stop_hook" = 1 ]; then
   ROOST_AGENT_NAME=codex "$sink" "$state" --stop-hook || true
 else
-  # stdin from /dev/null, not inherited. Since #95 the sink reads a plain
-  # `working`'s stdin for Claude's UserPromptSubmit payload, to record its
-  # transcript_path for the interrupt reader -- and that reader reads CLAUDE
-  # transcripts: codex's rollout file must not be recorded (the dialog path
-  # below says the same). Inheriting stdin would also let the sink drain the
-  # payload the identity read below still needs (caught by
-  # tests/test-identity-adapters.sh).
+  # stdin from /dev/null, not inherited. The sink reads stdin only under a
+  # flag (Claude's --prompt-hook, #95), so nothing here needs it, and an
+  # empty stdin keeps it that way if a flag is ever added to this call: the
+  # identity read below still needs the payload (tests/test-identity.sh
+  # catches a sink that drains it).
   ROOST_AGENT_NAME=codex "$sink" "$state" < /dev/null || true
 fi
 

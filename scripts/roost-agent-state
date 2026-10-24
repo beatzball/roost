@@ -112,6 +112,15 @@ stop_while_blocked=0
 # the pane already reads 🛑. See the agent_id check below.
 tool_hook=0
 [ "${2:-}" = "--tool-hook" ] && tool_hook=1
+# Claude Code's UserPromptSubmit, with `working`, and only it (#95). It means
+# "stdin is that event's payload": the transcript path is taken from it so an
+# Esc later in the turn can be read from Claude's transcript. A flag, for the
+# reason every flag above is one: `roost state working` is public, and a
+# script that badges itself from inside a `while read` loop, or with a stdin
+# that stays open, must never have its input eaten or its badge held until
+# the writer closes (both reproduced by review, flock round 1 on #95).
+prompt_hook=0
+[ "${2:-}" = "--prompt-hook" ] && [ "$state" = "working" ] && prompt_hook=1
 # `idle --interrupted` (#95): the turn is over because a HUMAN stopped it.
 # codex's adapter passes it on `Interrupt`, copilot's on an aborted
 # `session.idle`, and `roost state idle --interrupted` is the public spelling.
@@ -971,13 +980,16 @@ fi
 # recorded it, so an interrupted turn with no dialog in it could never be
 # recovered.
 #
-# Read only for a plain `working` from Claude's prompt hook: not under
-# --tool-hook (PostToolUse is the hot path and Claude blocks on it), not from
-# a tty (`roost state working` typed by a human must never wait on a stdin
-# nobody closes), and not when stdin is empty (an adapter's `roost state
-# working` with stdin from /dev/null carries nothing; the record it finds is
-# left as it is -- it names the same session's file, and a stamp that does
-# not match it ignores it anyway). A payload that WAS read and carried no
+# Read only under --prompt-hook, which only Claude's UserPromptSubmit entry
+# passes (scripts/lib/roost-hooks.sh): never for a plain `working`, so
+# PostToolUse's hot path, an adapter's `roost state working` and a human's
+# pay nothing and read nothing. Not from a tty either, and not when stdin is
+# empty. A `working` that read no payload leaves an older record as it is --
+# it names the same session's file, and a stamp that does not match it
+# ignores it anyway. A wiring from before the flag (an older settings.json,
+# a wiring file from a server started before the upgrade) records nothing
+# here: no Esc recovery for a turn with no dialog, which is the behaviour
+# before #95, and `roost doctor` names it. A payload that WAS read and carried no
 # usable path removes an older record instead, as the dialog hooks do: an
 # older record could share this second's stamp, so it is removed rather than
 # trusted. The same checks as the dialog path: an absolute path, no tab, no
@@ -988,7 +1000,7 @@ fi
 # repeat and bails before the write, which is right: the turn it belongs to
 # has a record already.
 prompt_transcript="" prompt_payload=0
-if [ "$state" = "working" ] && [ "$tool_hook" = 0 ] && [ ! -t 0 ]; then
+if [ "$prompt_hook" = 1 ] && [ ! -t 0 ]; then
   payload="$(cat 2>/dev/null || true)"
   if [ -n "$payload" ]; then
     prompt_payload=1

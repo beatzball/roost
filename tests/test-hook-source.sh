@@ -37,6 +37,13 @@ assert_eq "$claude_out" "$bare_out" \
 # differ between a fixture and a live run; AGENTS.md §1 forbids committing an
 # absolute home path, which is why the fixture carries a token instead of one.
 #
+# One deliberate edit for #95, claude only: the UserPromptSubmit command
+# gained --prompt-hook (the sink reads the prompt's payload only under that
+# flag), plus one paragraph of prose. Re-captured from `roost hooks claude`
+# and diffed, not typed. `roost install` recognises the older command as
+# roost's own by its target prefix and replaces it, as it did for #38's
+# --notification-hook.
+#
 # One deliberate edit since that capture: #39 rewrote the COMMENT lines of the
 # codex fixture that described Stop, because a Stop with no reply now badges
 # error and the old prose told users it could not. Only prose moved. The four

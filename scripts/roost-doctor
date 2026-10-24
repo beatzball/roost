@@ -192,6 +192,14 @@ case "$(_settings_state "$settings")" in
       # the roost-session-context check above, and the same caveat — a name
       # anywhere in the file counts, which costs a line of advice in the false
       # positive and the whole feature in the false negative.
+      # And the UserPromptSubmit entry's --prompt-hook (#95). A config wired
+      # before it badges every turn as before; what it lacks is the transcript
+      # path recorded at the start of a turn, so an Esc in the middle of an
+      # answer or a tool -- which fires no Claude hook -- leaves the pane ⏳
+      # working until the next prompt, as it did before #95. Matched on the
+      # flag, as the checks above are.
+      grep -q -- --prompt-hook "$settings" 2>/dev/null \
+        || warn "$settings has no --prompt-hook on the UserPromptSubmit hook — a Claude turn stopped with Esc mid-answer stays ⏳ working until the next prompt; re-run: roost hooks, or run: roost install"
       grep -q PostToolUseFailure "$settings" 2>/dev/null \
         || warn "$settings has no PostToolUseFailure hook — a Claude tool that FAILS after you approved it leaves the pane 🛑 blocked for the rest of the turn, because PostToolUse fires only on success; re-run: roost hooks, or run: roost install"
     fi
