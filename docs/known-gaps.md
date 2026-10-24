@@ -2026,6 +2026,44 @@ not promise.
   nothing is "cannot tell" and keeps the lock. Severity: low — bounded, and
   loud either way.
 
+### `send --when-idle`: what it does not cover (#56)
+
+`roost send --when-idle` polls the target's `@agent_state` about once a
+second, before it takes the send lock, until the pane reads anything but
+`working`; then it takes the lock, reads the state again under it, and drops
+the lock and goes back to waiting if another sender got in first. Past
+`@roost-send-idle-timeout` (default 300 s, at most 3600) it exits 6 with
+nothing typed. Five things it does not promise.
+
+- **A turn shorter than a second can be missed.** The poll is one second. A
+  pane that goes working, done, working again between two polls is read as
+  working throughout, and the send keeps waiting for the next gap. It never
+  pastes into a pane that READ working; it can only wait longer than it had
+  to. Severity: low — a later poll catches the next gap, and the bound is
+  the worst case. Not measured against a real harness.
+- **The read under the lock is the last look.** Between it and the paste
+  there are a few tmux calls and no sleep. Another roost send cannot get in
+  there (it needs the lock); a harness that stamps `working` on its own in
+  that gap (a background task finishing into a new turn, a human typing in
+  the pane) can, and the text then lands mid-turn as a plain send's would.
+  The rest of the window is the send lock's, listed above. Severity: low.
+- **Nothing waits on `blocked`.** A blocked target is refused at exit 3 with
+  or without the flag, on purpose: a dialog is for a human to answer. A
+  caller that wants "wait until it can take a prompt" must still retry exit
+  3 itself. Severity: a note, not a defect.
+- **The bound is the wait for `working`, not the whole command.** The lock
+  wait after it has its own bound (`@roost-send-lock-timeout`, 60 s, exit 1),
+  and the paste and turn watch take their usual time. So a held send can run
+  past `@roost-send-idle-timeout` by up to a lock bound and a send. Two held
+  senders at one pane: the second can wait on the lock while the first
+  watches for its turn (up to `@roost-send-turn-timeout`, 10 s), well inside
+  the lock's 60 s. Severity: low.
+- **`waited` is in the `--json` document only with the flag.** Every other
+  field of every document is always present; this one is absent without
+  `--when-idle`, because the plain send must print exactly what it printed
+  before. A program that reads `waited` must treat absent as "not held".
+  Severity: a note.
+
 ### The subagent count is never reset (Phase 0 lane D)
 
 `@roost-subagents` and `@roost-subagent-ids` go up on `SubagentStart`, down
