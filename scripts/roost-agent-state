@@ -522,8 +522,18 @@ EOF
         tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply "$(roost_reply_encode "$reply")" \; \
           set-option -pu -t "$TMUX_PANE" @roost-reply-turn \; "${bg_wr[@]}" 2>/dev/null || true
       else
-        tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
-          set-option -pu -t "$TMUX_PANE" @roost-reply-turn \; "${bg_wr[@]}" 2>/dev/null || true
+        # No reply of its own. When the pane is ALREADY held for this stamp,
+        # the reply on it is this turn's main answer from an earlier held
+        # Stop, and it stays: a middle Stop of a long hold (two tasks, then
+        # one) that ended on a tool call must not erase the answer the
+        # release records (flock round 2, reproduced). Otherwise the stored
+        # reply is an earlier turn's and goes, as before. Tested by tmux in
+        # this same command, against the record as it stands before bg_wr
+        # rewrites it.
+        tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+          "#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}" "" \
+          "set-option -pu -t $TMUX_PANE @roost-reply ; set-option -pu -t $TMUX_PANE @roost-reply-turn" \; \
+          "${bg_wr[@]}" 2>/dev/null || true
       fi
     elif [ -n "$reply" ]; then
       # Sourced here, inside the branch, rather than at the top of the file:
