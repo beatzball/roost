@@ -7,8 +7,32 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+A turn is over when the agent has stopped acting on the prompt **and nothing
+it started for that prompt is still running**. Three things a coordinator will
+see differently. A Claude Code pane whose turn started a `run_in_background`
+command, a background agent or a `Monitor` now stays ⏳ working until that work
+ends, instead of reading ✅ done for the whole run of it (measured at 30 s per
+task); a short `wait-done` on it exits 1 (timed out) where it used to exit 0
+into files that were still changing, and `roost read` prints the answer with a
+"main reply; N tasks still running" note instead of silence. An interrupted
+turn — Esc in Claude Code mid-answer or mid-tool, a Claude dialog declined,
+codex's Interrupt, copilot's aborted turn — makes `wait-done` exit **5** instead of 0, and a Claude pane
+left ⏳ by an Esc is cleared the next time `send`, `read` or `wait-done` looks
+at it, from Claude's own transcript. And `wait-done --json` exists. The design
+is `docs/airig/specs/2026-09-29-turn-over-design.md`; what is still open is in
+`docs/known-gaps.md`.
+
 ### Added
 
+- **`roost wait-done --json` (#110).** One document per outcome — `done`,
+  `error`, `timeout`, `died`, `gone`, `interrupted` — with the pane, its state,
+  the error reason, the background count, the seconds waited, the turn when
+  `--turn` was given, and on `done` the same `reply` object `read --json`
+  prints. Nothing on stdout for a usage refusal, like every other `--json`.
+- **`read --json` says whether a reply is final.** `final` is `false` for the
+  main reply of a Claude turn whose background work still runs, with
+  `background` counting the tasks; `status --json` gains `background` per pane.
+  Both are `null`, never `0`, when roost could not see.
 - **`roost send --when-idle`: hold a prompt until the agent is free (#56).**
   A plain `send` pastes at once, and into an agent that is ⏳ working the text
   lands in the middle of the turn that is running: the agent folds it into
@@ -55,6 +79,31 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A Claude Code pane stays working while its own background work runs
+  (#97).** Claude's `Stop` lists the work it still has running, and starts a
+  turn of its own when that work ends; roost now holds the pane at `working`
+  from the first `Stop` to the one whose list is empty, and records the
+  turn's reply once, from that last one. Work the agent hands to another pane
+  with `roost spawn` or `roost split` never holds it. A held pane reads
+  `working`, so `send --when-idle` waits for it to be released, and a plain
+  `send` to it says `no turn number:` because it is mid-turn. A `Stop` with no
+  `background_tasks` at all — an older Claude — keeps today's `done`, on
+  purpose; a list roost cannot read holds. A background task of a kind roost
+  has not measured holds too, and `roost doctor` names the pane and the kind.
+  Claude Code only: the other harnesses do not report background work.
+- **`wait-done` exits 5 for an interrupted turn (#95).** It used to exit 0,
+  the same as finished, for a turn the human had stopped: on every harness.
+  Now a Claude Esc mid-stream or mid-tool is read from Claude's transcript
+  (a declined dialog already was, and now counts as interrupted too)
+  (the badge it left is cleared, the turn is recorded as `interrupted` with
+  an empty reply so turn numbers stay aligned with prompts), codex's
+  `Interrupt` and copilot's aborted turn record the same outcome, and
+  `wait-done` says `was interrupted, not done`. Exits 0, 1 and 2 keep their
+  meanings; a copilot turn the human aborted reads 💤 idle, not ✅ done.
+  Reading an Esc needs the new `--prompt-hook` on Claude's UserPromptSubmit
+  entry: run `roost install` (and restart a roost server started before the
+  upgrade); `roost doctor` says when it is missing. Without it everything
+  badges as before.
 - **The roost skill has an "If you are the worker" section**, and the
   driving-a-fleet page says the same (#177). A pane given a task by another
   pane hands its result back as its final reply, never with `roost send`; it
