@@ -89,18 +89,43 @@ wait_state "$p" done
 assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" \
   "detector proof: the fixture records turn 1"
 
-# --- 1. working, then done after 2 s ----------------------------------------
-echo "1. a working target that finishes after two seconds"
+# --- 1. working, then done after the third poll -----------------------------
+# The badge flips from a KNOWN POINT in the hold, not from a wall-clock
+# `sleep 2` (#190): on a loaded macOS runner the sleep, the one-second poll
+# and `date +%s` rounding added up to `waited` 4, outside a 2-or-3 window.
+# A wrapper `tmux`, on the PATH of this one send only, logs every read of
+# @agent_state; the flipper waits for the THIRD read. Poll 3 starting means
+# poll 2 read `working`, and two `sleep 1`s lie between the first poll's
+# clock read and any read after poll 3 starts, so `waited` is at least 2 on
+# every run however slow the runner. The upper bound is the send's own wall
+# time, which grows with the load instead of being guessed. An exec wrapper,
+# never a symlink, so no `>` can reach the real binary.
+echo "1. a working target that finishes after the third poll"
+pollbin="$work/pollbin"; mkdir -p "$pollbin"
+printf '#!/bin/sh\ncase "$*" in *@agent_state*) echo poll >>"%s/polls" ;; esac\nexec '\''%s'\'' "$@"\n' \
+  "$work" "$(command -v tmux)" > "$pollbin/tmux"
+chmod +x "$pollbin/tmux"
+: >"$work/polls"
 badge "$p" working
-( sleep 2; badge "$p" done ) &
-snd w1 --when-idle --json "$p" "second prompt"
+# Bounded (30 s): if the wrapper never logs, the badge still flips, the send
+# still ends, and the "saw three polls" line below fails instead of a hang.
+( n=300
+  while [ "$n" -gt 0 ] && [ "$(grep -c . "$work/polls")" -lt 3 ]; do sleep 0.1; n=$((n - 1)); done
+  [ "$n" -gt 0 ] && : >"$work/w1.seen"
+  badge "$p" done ) &
+PATH="$pollbin:$PATH" snd w1 --when-idle --json "$p" "second prompt"
 wait
+[ -f "$work/w1.seen" ]; assert_true $? "detector proof: the wrapper saw three polls before the badge flipped"
 assert_eq "$(cat "$work/w1.rc")" 0 "the held send exits 0"
 assert_eq "$(jv w1 'd["turn"], d["started"]')" "(2, True)" "...and names the turn the prompt started: 2"
-case "$(jv w1 'd["waited"]')" in
-  2|3) assert_true 0 "...and says it waited 2 or 3 seconds" ;;
-  *)   assert_true 1 "...and says it waited 2 or 3 seconds (got '$(jv w1 'd["waited"]')')" ;;
-esac
+# 0 or 1 is a send that was not held for the two polls it read `working` on,
+# and fails here; so does a count longer than the whole send took.
+# An over-count (time added after a working read) is NOT pinned here, on
+# purpose: a tight upper bound is what brought back the load flake (#190).
+w1w="$(jv w1 'd["waited"]')"; w1s="$(cat "$work/w1.secs")"
+case "$w1w" in ''|*[!0-9]*) w1w=-1 ;; esac
+[ "$w1w" -ge 2 ] && [ "$w1w" -le "$w1s" ]
+assert_true $? "...and says it waited at least 2 seconds and no longer than the send took (got '$w1w', send took ${w1s}s)"
 wait_state "$p" done
 assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "REPLY-TO[second prompt]" \
   "...and turn 2 is the reply to that prompt"
@@ -138,12 +163,19 @@ wait
 assert_eq "$(cat "$work/w2j.rc") [$(cat "$work/w2j.out")]" "6 []" "--json on a timeout: exit 6 and nothing on stdout"
 # 0 means do not wait at all: one look, and exit 6 at once.
 T set-option -g @roost-send-idle-timeout 0000000
-snd w2z --when-idle "$c" "not this either"
+# "At once" is counted in LOOKS, through case 1's wrapper, not only in whole
+# seconds: a 0-or-1-second window is the shape #190 found too tight on a
+# loaded runner. One read of @agent_state is a send that did not wait; a wait
+# of any length polls again after its `sleep 1`. The wall time keeps the same
+# loose bound as the other "at once" lines in this file.
+: >"$work/polls"
+PATH="$pollbin:$PATH" snd w2z --when-idle "$c" "not this either"
 wait
 assert_eq "$(cat "$work/w2z.rc")" 6 "@roost-send-idle-timeout 0000000 is zero: exit 6"
+assert_eq "$(grep -c . "$work/polls")" 1 "...after one look at the badge"
 case "$(cat "$work/w2z.secs")" in
-  0|1) assert_true 0 "...at once" ;;
-  *)   assert_true 1 "...at once (took $(cat "$work/w2z.secs")s)" ;;
+  0|1|2) assert_true 0 "...at once" ;;
+  *)     assert_true 1 "...at once (took $(cat "$work/w2z.secs")s)" ;;
 esac
 assert_contains "$(cat "$work/w2z.err")" "0s" "...and the message names 0s, not 0000000s"
 assert_eq "$(T capture-pane -p -t "$c")" "$screen_before" "...and nothing was typed"

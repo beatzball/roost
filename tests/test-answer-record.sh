@@ -232,8 +232,15 @@ assert_eq "$(sj)" '{"fingerprint": "'"$g"'", "harness": "claude", "kind": "quest
 tmux -S "$s" set -p -t "$pane" @roost-answered "000000000000 1790748772 approve terminal"
 assert_eq "$(sj | python3 -c 'import json,sys; print(json.load(sys.stdin)["answered"])')" "None" \
   "status --json: an answer to a DIFFERENT dialog is not this dialog's answer"
+# The upper-case case is a FIXED fingerprint with letters (#186). Upper-casing
+# the random $g was a valid record whenever $g had no letter a-f, about one
+# run in 300, and the case then failed for being right.
+uc=abcdef012345
+tmux -S "$s" set -p -t "$pane" @roost-dialog "$uc claude question 3 9a0c51e2"
+assert_eq "$(sj | python3 -c 'import json,sys; print(json.load(sys.stdin)["fingerprint"])')" "$uc" \
+  "(control) status --json: the lower-case form of the upper-case case is a valid record"
 for bad in "zz$g" "$g claude question 3" "$g claude question 3 9a0c51e2 extra" "$g bash question 3 9a0c51e2" \
-           "$g claude permission 3 9a0c51e2" "$g claude question x 9a0c51e2" "$(printf '%s' "$g" | tr a-f A-F) claude question 3 9a0c51e2"; do
+           "$g claude permission 3 9a0c51e2" "$g claude question x 9a0c51e2" "$(printf '%s' "$uc" | tr a-f A-F) claude question 3 9a0c51e2"; do
   tmux -S "$s" set -p -t "$pane" @roost-dialog "$bad"
   assert_eq "$(sj)" "null" "status --json: a record that is not the right shape is null ($bad)"
 done
