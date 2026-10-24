@@ -1602,9 +1602,14 @@ else
     # path.
     stamp_wr=()
     # Back to working from a dialog is the same turn: a hold goes with it
-    # (hold_carry). A new prompt is a new turn and needs nothing carried --
-    # a released hold is already gone.
-    if [ "$state" = "working" ] && [ "$prev" = "blocked" ] && [ "$prompt_hook" = 0 ]; then
+    # (hold_carry). The ONLY same-turn way back is the approved tool's
+    # PostToolUse / PostToolUseFailure, and both pass --tool-hook; anything
+    # else stamping working on a blocked pane is a NEW prompt -- an older
+    # wiring's UserPromptSubmit has no --prompt-hook, and `roost state
+    # working` has neither -- and must not inherit the previous turn's hold
+    # (flock round 2, reproduced: the old main reply read as this turn's, and
+    # a no-reply Stop filed it as this turn's file).
+    if [ "$state" = "working" ] && [ "$prev" = "blocked" ] && [ "$tool_hook" = 1 ]; then
       hold_carry "$now"
       stamp_wr+=("${HOLD_WR[@]}")
     fi
