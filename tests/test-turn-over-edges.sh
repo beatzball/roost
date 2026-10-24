@@ -378,6 +378,32 @@ wl="$(printf '%s\n' "$dout" | grep -F "$wd/claude/settings.json" | grep -F -- '-
 assert_contains "$wl" "roost wiring on" "...and names the command that regenerates it"
 X set-option -gu @roost-wiring-active
 
+# --- 18. send on a pane held by background work (after the rebase onto #183/#184) -----
+# A held pane reads `working`, so a plain send is the mid-turn case (#177's
+# line says so) and `send --when-idle` (#183) waits for the release.
+p="$(newpane)"; require_pane "$p" send-held
+hook "$p" working --prompt-hook <<< "$UPS"
+hook "$p" done --stop-hook <<< "$SHELL1"
+assert_eq "$(opt "$p" @agent_state)" "working" "setup: the pane is held"
+"$ROOST" send "$p" "true" > "$work/out" 2> "$work/err"; rc=$?
+assert_eq "$rc" "0" "a plain send to a held pane delivers (exit 0)"
+assert_eq "$(cat "$work/out")" "" "...with no turn number on stdout"
+assert_contains "$(cat "$work/err")" "no turn number: '$p' is mid-turn" "...and says why: the pane is mid-turn"
+X set-option -g @roost-send-idle-timeout 1
+"$ROOST" send --when-idle "$p" "true" > "$work/out" 2> "$work/err"; rc=$?
+assert_eq "$rc" "6" "send --when-idle waits on a held pane, and past its bound exits 6 with nothing typed"
+X set-option -gu @roost-send-idle-timeout
+# This stand-in pane has no prompt hook, so once the text lands no new turn
+# starts: exit 4, "submitted, no turn began" -- which proves the send went
+# out after the release rather than timing out (that is 6).
+X set-option -g @roost-send-turn-timeout 1
+( sleep 2; hook "$p" done --stop-hook <<< "$EMPTY" ) &
+"$ROOST" send --when-idle "$p" "true" > "$work/out" 2> "$work/err"; rc=$?
+wait
+X set-option -gu @roost-send-turn-timeout
+assert_eq "$rc" "4" "...and sends once the final Stop releases the pane (exit 4 here: the stand-in starts no turn)"
+assert_eq "$(opt "$p" @agent_state)" "done" "...by which time the pane reads done"
+
 [ -z "$(find "$work/canary" -type f 2>/dev/null)" ]; assert_true $? "nothing was written under HOME or the XDG dirs"
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
