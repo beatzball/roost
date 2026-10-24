@@ -153,7 +153,7 @@ event="${1:-}"
 # their own hooks.json, and a badge from a signal nobody measured is worse than
 # no badge.
 #
-#   Interrupt         the human stopped the turn           -> idle, reply cleared (#38)
+#   Interrupt         the human stopped the turn           -> idle, reply cleared, outcome interrupted (#38, #95)
 #
 # Interrupt is the only event that ends a DECLINED turn. Measured on 0.154.0
 # with a logger on all twelve events: `3. No` at a dialog fired Interrupt 42ms
@@ -164,13 +164,13 @@ event="${1:-}"
 #
 # `idle`, not done or error. done would badge ✅ "this turn finished its work";
 # error would notify and say something broke. The honest report is "the turn
-# is over, and nobody is working". Note what idle does NOT change: `roost
-# wait-done` counts only working and blocked as busy, so it exits 0 on an
-# interrupted turn exactly as it would on done — docs/known-gaps.md records
-# that for every harness. And because no Stop follows, the
-# stored reply is the previous turn's, so `--stop-hook` clears it. Interrupt
-# does not read the Stop verdict below, so it cannot reach #39's error path; a
-# later Stop still decides its own turn.
+# is over, and nobody is working". Since #95 the sink also records the OUTCOME
+# beside that idle -- `--interrupted` writes @roost-ended "<stamp>
+# interrupted" and an empty turn file -- which is what makes `roost wait-done`
+# exit 5 ("was interrupted, not done") instead of the 0 it used to share with
+# done. And because no Stop follows, the stored reply is the previous turn's,
+# so the sink clears it. Interrupt does not read the Stop verdict below, so it
+# cannot reach #39's error path; a later Stop still decides its own turn.
 stop_hook=0
 interrupt=0
 case "$event" in
@@ -333,10 +333,10 @@ if [ "$event" = "PermissionRequest" ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -
   esac
 fi
 
-# Interrupt: `idle --stop-hook` with stdin from /dev/null, which is not a tty,
-# so the sink's reply-clearing arm runs and nothing waits on codex's pipe.
+# Interrupt: `idle --interrupted` with stdin from /dev/null, which is not a
+# tty, so the sink's reply-clearing arm runs and nothing waits on codex's pipe.
 if [ "$interrupt" = 1 ]; then
-  ROOST_AGENT_NAME=codex "$sink" idle --stop-hook < /dev/null || true
+  ROOST_AGENT_NAME=codex "$sink" idle --interrupted < /dev/null || true
 elif [ "$dialog_payload" = 1 ]; then
   printf '%s' "$payload" \
     | ROOST_AGENT_NAME=codex ROOST_DIALOG_HARNESS=codex "$sink" blocked --permission-request-hook || true
@@ -346,7 +346,12 @@ elif [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
 elif [ "$stop_hook" = 1 ]; then
   ROOST_AGENT_NAME=codex "$sink" "$state" --stop-hook || true
 else
-  ROOST_AGENT_NAME=codex "$sink" "$state" || true
+  # stdin from /dev/null, not inherited. The sink reads stdin only under a
+  # flag (Claude's --prompt-hook, #95), so nothing here needs it, and an
+  # empty stdin keeps it that way if a flag is ever added to this call: the
+  # identity read below still needs the payload (tests/test-identity.sh
+  # catches a sink that drains it).
+  ROOST_AGENT_NAME=codex "$sink" "$state" < /dev/null || true
 fi
 
 # --- UserPromptSubmit: who this agent is (#141) -------------------------------
@@ -388,8 +393,8 @@ fi
 # too — the safe direction: no identity, the badge untouched.
 #
 # AFTER the badge, not before it (review). The `working` a human is watching
-# for must not wait on a `cat`, a `ps`, a reader and a tmux read. The sink does
-# not read stdin for `working`, so the payload is still here to read.
+# for must not wait on a `cat`, a `ps`, a reader and a tmux read. The sink is
+# handed /dev/null above, so the payload is still here to read.
 if [ "$event" = "UserPromptSubmit" ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   identity_payload="$(cat 2>/dev/null || true)"
   case "$(ps -o command= -p "$PPID" 2>/dev/null || true)" in

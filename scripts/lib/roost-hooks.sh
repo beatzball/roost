@@ -173,7 +173,7 @@ roost_hooks_claude() {
         "hooks": [ { "type": "command", "command": "$context" } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "$target working" } ] }
+      { "hooks": [ { "type": "command", "command": "$target working --prompt-hook" } ] }
     ],
     "PermissionRequest": [
       { "hooks": [ { "type": "command", "command": "$target blocked --permission-request-hook" } ] }

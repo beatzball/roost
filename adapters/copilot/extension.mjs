@@ -430,6 +430,21 @@ export const RoostState = () => {
           // leaves `last` on `error`, so the pane keeps the badge and no
           // process is spawned to say otherwise.
           if (died) return
+          // An ABORTED turn (#95): the human stopped it, and copilot says so
+          // on the idle that ends it (`session.idle {aborted: true}`, recorded
+          // on 1.0.83 after an Esc at a permission dialog -- docs/known-gaps.md,
+          // the #38 table). That turn did not finish its work, so it is not
+          // `done`: it is `idle`, with the outcome recorded, which is what
+          // `roost wait-done` reads to exit 5 instead of 0. The half-built
+          // reply is dropped for the reason session.error drops it: nothing
+          // this turn said is its answer. `last` is set by hand because the
+          // call carries a flag `set` does not know.
+          if (event.data?.aborted === true) {
+            pending = null
+            last = "idle"
+            await run(["state", "idle", "--interrupted"])
+            return
+          }
           // AWAIT the reply before reporting done, and in this order. `roost
           // wait-done` returns the instant the badge stops being
           // working/blocked, and the documented idiom is wait-done then read —

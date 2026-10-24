@@ -508,10 +508,55 @@ roost_record_append() {
   rm -f "$tmp"
   ROOST_RECORD_TURN="$n"
 
-  roost_record_prune "$dir"
+  # ROOST_RECORD_NO_PRUNE=1 defers the prune to the caller, for a turn that is
+  # not complete until a sidecar is written too (roost_record_append_interrupted):
+  # pruning first and rolling the turn back after would leave the record
+  # with no turns at all, and the next append would reuse a number.
+  [ "${ROOST_RECORD_NO_PRUNE:-}" = 1 ] || roost_record_prune "$dir"
   if [ "$created" = 1 ]; then
     roost_record_sweep
   fi
+  return 0
+}
+
+# roost_record_append_interrupted DIR SOCKET -> ROOST_RECORD_TURN, and 0; 1
+# when nothing was recorded. An EMPTY turn file, then `replies/NNNNNN.outcome`
+# holding `interrupted` (#95). It exists so an interrupted prompt KEEPS its
+# turn number: a turn that ends with no reply records nothing, so the next
+# prompt's reply would take its number and `wait-done --turn N` would return
+# on the wrong prompt (the turn-over design, §5.4). The file is empty because
+# the turn produced nothing; the sidecar says why, and is what `wait-done
+# --turn N` reads to exit 5 and `read --turn N` to say so. Both are written by
+# the two writers of this outcome: scripts/lib/roost-unblock.sh after a Claude
+# interrupt it proved from the transcript, and scripts/roost-agent-state on
+# `idle --interrupted` (codex's Interrupt, copilot's aborted idle). The
+# sidecar is written second: a reader that sees the file without it reads an
+# empty reply, which is true, rather than an outcome that is not there yet.
+#
+# TEXT, when given, is the turn's MAIN reply: an interrupt that ends a turn
+# held by background work (#97) must not lose the answer the agent already
+# gave, which the hold kept only on the pane (flock round 1 on #95).
+#
+# BOTH WRITES OR NEITHER (flock round 1 on #95). A turn file without its
+# sidecar reads as a turn that FINISHED with an empty reply, and once the
+# pane's own @roost-ended has gone stale `wait-done --turn N` would exit 0 on
+# it: a false done, the direction this design exists to remove. So when the
+# sidecar cannot be written the turn file is taken back and the call returns
+# 1 -- "could not record", the behaviour before #95 (no turn file, the next
+# prompt takes the number). The callers keep the badge change either way.
+#
+# The prune waits until both are written (flock round 2, reproduced): with
+# ROOST_RECORD_KEEP=1 the append pruned turn N-1, the rollback then removed
+# turn N, and the next append reused N-1's number.
+roost_record_append_interrupted() {
+  ROOST_RECORD_NO_PRUNE=1 roost_record_append "$1" "$2" "${3:-}" || return 1
+  if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2"; then
+    roost_record_turn_file "$1" "$ROOST_RECORD_TURN"
+    rm -f "$ROOST_RECORD_FILE" "$ROOST_RECORD_FILE".* 2>/dev/null || true
+    ROOST_RECORD_TURN=""
+    return 1
+  fi
+  roost_record_prune "$1"
   return 0
 }
 
@@ -529,8 +574,8 @@ roost_record_prune() {
     roost_record_turn_file "$1" "$ROOST_RECORD_MIN"
     f="$ROOST_RECORD_FILE"
     [ -f "$f" ] || return 0
-    # The turn's sidecars go with it — `.pane` and `.sent_by` today, any
-    # `.<field>` later.
+    # The turn's sidecars go with it — `.pane`, `.sent_by` and `.outcome`
+    # today, any `.<field>` later.
     rm -f "$f" "$f".* || return 0
     roost_record_scan "$1/replies"
   done

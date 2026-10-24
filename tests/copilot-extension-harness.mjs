@@ -39,7 +39,7 @@ writeFileSync(
   `#!/bin/sh\n` +
     `if [ "$1" = reply ] && [ "$2" = - ]; then via=stdin; arg=\`cat\`; else via=argv; arg="$2"; fi\n` +
     `esc=\`printf '%s' "$arg" | tr '\\n' '\\036'\`\n` +
-    `printf '%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" >> "${log}"\n`
+    `printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$1" "$esc" "\${ROOST_AGENT_NAME:-}" "$via" "\${3:-}" >> "${log}"\n`
 )
 chmodSync(shim, 0o755)
 const REAL_PATH = process.env.PATH
@@ -67,6 +67,9 @@ const envNames = () => cols().map((c) => c[2])
 // How each reply travelled, in order. "argv" here is the #86 regression: a
 // reply on the command line dies at exec on Linux past 131072 bytes.
 const replyVias = () => cols().filter((c) => c[0] === "reply").map((c) => c[3]).join(",")
+// The third word of each `state` call, in order: "" for a plain state,
+// "--interrupted" for an aborted turn's idle (#95).
+const stateFlags = () => cols().filter((c) => c[0] === "state").map((c) => c[4]).join(",")
 
 const { RoostState } = await import(join(HERE, "..", "adapters", "copilot", "extension.mjs"))
 
@@ -150,6 +153,22 @@ check(calls(), "working,blocked,working,done", "an ask_user elicitation also blo
 fire = fresh()
 await fire(ev("assistant.turn_start"), ev("session.error", { errorType: "query", message: "Could not connect" }))
 check(calls(), "working,error", "session.error reports error")
+
+// An aborted turn (#95): copilot ends a turn the human stopped with
+// `session.idle {aborted: true}` (recorded on 1.0.83 after an Esc at a
+// permission dialog). That is `idle --interrupted`, never `done`: the turn
+// did not finish, and `roost wait-done` must say so with exit 5. A plain
+// session.idle keeps reporting done, and a reply the aborted turn had built
+// up is not published.
+fire = fresh()
+await fire(ev("assistant.turn_start"), said("half an answ", "aa1"), ev("session.idle", { aborted: true }))
+check(calls(), "working,idle", "session.idle {aborted: true} reports idle, not done")
+check(stateFlags(), ",--interrupted", "...with --interrupted on the idle, so the outcome is recorded")
+check(replies().join("|"), "", "...and the aborted turn's half-built reply is not published")
+fire = fresh()
+await fire(ev("assistant.turn_start"), ev("session.idle", { aborted: false }))
+check(calls(), "working,done", "session.idle {aborted: false} is an ordinary finish")
+check(stateFlags(), ",", "...with no flag")
 
 fire = fresh()
 await fire(ev("session.background_tasks_changed"), ev("model.call_start"), ev("assistant.reasoning"), ev("hook.start"), ev("model.turn_retry"))

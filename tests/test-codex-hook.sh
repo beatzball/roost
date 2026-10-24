@@ -476,6 +476,10 @@ ihook Interrupt "$INTERRUPT_PAYLOAD"
 assert_eq "$?" "0" "Interrupt exits 0"
 assert_eq "$(pstate "$ip")" "idle" "Interrupt after a declined dialog leaves blocked, for idle"
 assert_eq "$(preply "$ip")" "" "...and clears the previous turn's reply, which is not this turn's"
+assert_eq "$(tmux -S "$s" show-options -pqv -t "$ip" @roost-ended)" "$(tmux -S "$s" show-options -pqv -t "$ip" @agent_since) interrupted" \
+  "...and records @roost-ended '<stamp> interrupted' beside the idle (#95)"
+ROOST_SOCKET="$s" "$HERE/bin/roost" wait-done "$ip" 2 >/dev/null 2>&1
+assert_eq "$?" "5" "...so wait-done exits 5, not 0, for the interrupted turn"
 assert_eq "$(tmux -S "$s" show-options -pqv -t "$ip" @roost-error-reason)" "" \
   "...and is not an error: no reason is recorded"
 # What this pins is that the send is no longer REFUSED: before the Interrupt the

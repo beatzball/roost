@@ -1,7 +1,9 @@
 # When is a turn over, and who may say so — design for #95, #97, #105
 
-Status: **approved 2026-09-29. Step 0 built (PR #139, `6db2398`); steps 1–5 not
-started.** All nine questions are decided by the human and listed, dated, in
+Status: **approved 2026-09-29. Step 0 built (PR #139, `6db2398`); steps 1 to 3
+built on 2026-10-24 (Q3 as the §10 item 2 deferral; the A1–A3 and §10
+measurements are in `docs/known-gaps.md`, "Step 1 measurements"); steps 4 and 5
+not started.** All nine questions are decided by the human and listed, dated, in
 §8 — Q1 and Q2 on 2026-09-27, Q3–Q9 and the limits on 2026-09-28/29. §9 records
 the two places they bend the "could not tell is never done" rule, and §10 what
 the design's author expects to break in step 1. Read §10 before building.

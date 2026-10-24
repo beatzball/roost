@@ -379,6 +379,7 @@ It needs the `%N` pane, which is why `send` prints one. Turns are numbered per p
 | `1` (`timed out waiting for turn N`) | the turn you named was still not recorded when the timeout ran out | `roost screen` the pane; the agent may never have started it |
 | `2` (`died`) | an agent pane closed, or its process exited, or an agent started from the pane's shell prompt exited, while its badge read `working` or `blocked` — the message names the pane | re-resolve or respawn; do not wait again |
 | `2` (`is gone`) | the target did not exist when `wait-done` started | re-resolve the target |
+| `5` (`was interrupted, not done`) | the turn ended because a human stopped it: Esc in Claude Code mid-answer or mid-tool, or a Claude permission dialog answered No or dismissed (both read from Claude's own transcript), codex's `Interrupt`, copilot's aborted turn. The pane is not busy, and nothing it said is this turn's answer | re-prompt, or ask the human; do not read the pane as a result |
 
 An agent you typed at a shell prompt in the pane is caught too: when its hook marks it busy, roost notes which job holds the pane's terminal, and `wait-done` reports `died` once that job is gone and the shell has the terminal back.
 
@@ -388,7 +389,9 @@ Three limits:
 - **A Claude killed in the middle of a reply is detected only after about five minutes.** While it replies, Claude runs a helper (`caffeinate`) that outlives it for up to 300 seconds, and `wait-done` waits until no process the agent started is left. A shorter timeout exits 1. A Claude killed between replies is caught at once.
 - **An agent under a wrapper that keeps running is not detected.** If a script starts the agent without `exec` and keeps running after the agent dies, the script still holds the terminal, so `wait-done` waits for its timeout and exits 1. Run the agent directly, or end the script when the agent ends.
 
-A target that was gone used to exit `0`. If a script relied on that, it now sees `2`. A `set -e` script stops on a dead agent rather than continuing.
+A target that was gone used to exit `0`. If a script relied on that, it now sees `2`. A `set -e` script stops on a dead agent rather than continuing. An interrupted turn used to exit `0` too; it now exits `5`.
+
+**A Claude Code pane stays busy while its own background work runs.** A turn that started a `run_in_background` command, a background agent or a `Monitor` is not over when its answer lands: Claude's `Stop` lists the work still running, roost keeps the pane ⏳ `working`, and `wait-done` keeps waiting — until the turn Claude starts by itself when that work ends, whose `Stop` lists nothing. The answer is still readable in the meantime: `roost read` prints it with a stderr note (`main reply; 2 tasks still running`), and `read --json` says `"final": false, "background": 2`. Work the agent hands to **another pane** (`roost spawn`, `roost split`) never holds it. A pane held this way reads `working` to `send`, which queues the text and prints no turn number. Claude Code only; the other harnesses do not report background work, so their badges are unchanged.
 
 ## Close one agent: `roost close`
 
@@ -495,7 +498,7 @@ Each answer is kept, one line per answer, in the pane's record beside its replie
 
 ## Machine-readable output: `--json`
 
-The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So eight commands also print a JSON document when you pass `--json`:
+The commands above print English for a person. A program that parses that English breaks the day a message is reworded. So nine commands also print a JSON document when you pass `--json`:
 
 ```sh
 roost status --json
@@ -506,6 +509,7 @@ roost send --json api "run the tests"   # flags go before the target, as with --
 roost close --json %12             # flags go before the target, as with --force
 roost answer --json --expect 3f9c1a2b7d4e %3 --approve
 roost state done --json          # the flag goes AFTER the state
+roost wait-done --json api 300   # flags go before the target
 ```
 
 Without `--json`, every one of them prints exactly what it printed before, byte for byte, with the same exit status.
@@ -532,7 +536,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 ### `roost status --json`
 
 ```json
-{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1,"dialog":null}]}
+{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1,"background":null,"dialog":null}]}
 ```
 
 | field | type | meaning |
@@ -557,6 +561,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `panes[].harness` | string or `null` | which agent it is: `claude`, `codex`, `opencode`, `copilot`, `pi`, or the name an adapter passed to `roost identify` |
 | `panes[].transcript` | string or `null` | the path of the agent's transcript, when its harness keeps one file per session (Claude Code, codex, pi) |
 | `panes[].subagents` | integer or `null` | how many subagents the agent has running right now. `0` once they have all finished; `null` for a pane that has never run one, and for every harness but Claude Code, which is the only one that reports it. A count, not a state: `state` still says whether the agent itself is busy |
+| `panes[].background` | integer or `null` | how many background tasks of its own hold a Claude Code pane at `working` (a `run_in_background` command, a background agent, a `Monitor`). `null` for every pane that is not held, for a hold roost could not count, and for every harness but Claude Code — never `0` for "could not see" |
 | `panes[].dialog` | object or `null` | the dialog a 🛑 blocked pane is showing, for [`roost answer`](#answer-a-dialog-from-anywhere-roost-answer). `null` unless `state` is `blocked` and the agent's hook described the dialog (Claude Code, and codex) |
 | `panes[].dialog.fingerprint` | string | twelve hex characters, new for each dialog: what `roost answer --expect` takes |
 | `panes[].dialog.harness` | string | `claude` or `codex` |
@@ -577,7 +582,7 @@ A codex pane is identified at its first prompt, because that is when codex first
 ### `roost read --json`
 
 ```json
-{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:%1"}
+{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:%1","final":true,"background":null}
 ```
 
 | field | type | meaning |
@@ -592,6 +597,10 @@ A codex pane is identified at its first prompt, because that is when codex first
 | `lossy` | bool | `text` may differ from the bytes the agent wrote: invalid UTF-8 was replaced, or tmux 3.4/3.5a had already rewritten the reply (below) |
 | `turn` | integer or `null` | the kept turn whose file supplied `text`, numbered as `roost send` numbers them. `null` when replies are not recorded, when `text` is the screen, or when what the pane holds is not a kept turn's reply |
 | `sent_by` | string or `null` | who sent the prompt that started that turn: the `roost send --from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`, and for a turn that was not started through `roost send` |
+| `final` | bool | `false` when `text` is the **main reply** of a Claude Code turn whose background work still runs in the pane: the answer is ready and the turn is not over. `true` otherwise, including on the screen fallback |
+| `background` | integer or `null` | how many of that turn's background tasks still run, when `final` is `false` and roost could count them; `null` otherwise — never `0` for "could not see" |
+
+A main reply is `"stale": false, "final": false`: it is this turn's answer, not an earlier turn's. Once the work ends and the turn is over, the final reply replaces it and is recorded as that turn; the main reply is not kept.
 
 `--json` and `--render` cannot be combined: one is for programs and the other is for people.
 
@@ -673,7 +682,27 @@ A close that fails prints **nothing** on stdout, as every `--json` command does.
 
 An answer that fails prints **nothing** on stdout, as every `--json` command does — including exit `10`, where the key was sent. Read the exit status first.
 
-`wait-done` does not take `--json` yet. `send --json` is new; `schema` did not change for it, because adding a command that takes `--json` is not a breaking change (see above).
+### `roost wait-done --json`
+
+The document **is** the outcome, so it is printed on every outcome — exit `0`, `1`, `2` and `5` alike — and only a usage refusal (a bad timeout, `--turn` on a window target, a pane with no record) prints nothing:
+
+```json
+{"schema":1,"command":"wait-done","target":"api","pane":"%3","state":"done","outcome":"done","error_reason":null,"background":null,"elapsed":42,"turn":7,"reply":{"source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:%1","final":true,"background":null}}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `target` | string | the target as you typed it |
+| `pane` | string or `null` | the `%N` the outcome is about: the pane you named, or in a window the pane that errored or died; `null` when no single pane is |
+| `state` | string or `null` | that pane's badge when `wait-done` returned |
+| `outcome` | string | `done`, `error`, `timeout`, `died`, `gone` or `interrupted` — the row of the exit table above |
+| `error_reason` | string or `null` | why the pane is in error, when its adapter recorded a reason |
+| `background` | integer or `null` | how many background tasks were still holding the pane when the wait ended (a `timeout` on a held Claude pane); `null` otherwise |
+| `elapsed` | integer | whole seconds `wait-done` waited |
+| `turn` | integer or `null` | the `--turn N` you asked for; `null` without it |
+| `reply` | object or `null` | on `done` for a `%N` pane with a recorded reply, the same fields `read --json` prints for it (everything but `schema`, `command`, `target` and `pane`); `null` otherwise. `read --turn` the turn number instead when you need the kept file |
+
+`send --json` and `wait-done --json` are newer than the rest; `schema` did not change for them, because adding a command that takes `--json` is not a breaking change (see above). Neither did the `interrupted` outcome, a new value in a field that lists names.
 
 ### Every state change as it happens: `roost events`
 

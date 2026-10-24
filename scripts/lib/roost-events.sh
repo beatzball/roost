@@ -401,19 +401,21 @@ roost_events__shape() {
 # belongs to, numbered as `roost send` numbers them, or "" (null) when replies
 # are not kept and there is no numbering.
 #
-# The newest recorded turn is N. A Stop that recorded its reply in this very
-# call (ROOST_RECORD_TURN, set by roost-record.sh in the same shell) is turn
-# N; everything else belongs to the turn not yet recorded, N+1 — the number
-# `send` prints for a prompt, `wait-done --turn` waits for and a reply will be
-# filed under. A turn that ends with no reply (an error, an interrupt) records
-# nothing, so the next turn shares its number, exactly as `send` would say.
+# The newest recorded turn is N. A call that filed a turn in this very call
+# (ROOST_RECORD_TURN, set by roost-record.sh in the same shell: a Stop that
+# recorded its reply, or an `idle --interrupted` that recorded the empty
+# interrupted turn, #95) is turn N; everything else belongs to the turn not
+# yet recorded, N+1 — the number `send` prints for a prompt, `wait-done
+# --turn` waits for and a reply will be filed under. A turn that ends with no
+# reply and no interrupt record (an error) records nothing, so the next turn
+# shares its number, exactly as `send` would say.
 roost_events__turn() {
   local LC_ALL=C
   ROOST_EVENTS_TURN=""
   roost_record_root
   [ -n "$ROOST_RECORD_ROOT" ] || return 0
   roost_record_pane_dir "$1" "$2" || return 0
-  if [ "$3" = done ]; then
+  if [ "$3" = done ] || [ "$3" = idle ]; then
     case "${ROOST_RECORD_TURN:-}" in
       ''|*[!0-9]*) ;;
       *) ROOST_EVENTS_TURN="$ROOST_RECORD_TURN"; return 0 ;;
@@ -428,17 +430,24 @@ roost_events__turn() {
 # Two changes happen without the agent's hook running, so the hook cannot log
 # them: roost itself clearing a 🛑 after a declined dialog, and a pane closing.
 
-# roost_events_unblocked PANE NOW SINCE — scripts/lib/roost-unblock.sh calls
-# this after its one-command clear, with the stamp it wrote. The line is
-# written only when that clear is what the pane now shows: @agent_state unset
-# and @roost-unblocked holding exactly "NOW since=SINCE". Anything else means
-# the clear did not land, or another writer has moved the pane since and logs
-# its own line.
+# roost_events_unblocked PANE NOW SINCE [FROM REASON TOKEN] — scripts/lib/roost-
+# unblock.sh calls this after its one-command clear, with the stamp it wrote.
+# The line is written only when that clear is what the pane now shows:
+# @agent_state unset and @roost-unblocked holding exactly "NOW since=SINCE",
+# followed by " by=TOKEN" when a TOKEN is given -- the caller's own token, so
+# of several callers in one second only the one whose clear landed logs it.
+# Anything else means the clear did not land, or another writer has moved
+# the pane since and logs its own line.
+#
+# FROM and REASON default to the declined dialog's (`blocked`, "the dialog
+# was declined or dismissed"), so that line is unchanged; the interrupted
+# turn (#95) passes `working` and "the turn was interrupted".
 #
 # `to` is null, as `status --json` shows the pane: the clear UNSETS the state.
 # Needs bin/roost's `t`, the way the reader below does.
 roost_events_unblocked() {
-  local info rest boot window cur unb session
+  local info rest boot window cur unb session from="${4:-blocked}" reason="${5:-the dialog was declined or dismissed}" want="$2 since=$3"
+  [ -n "${6:-}" ] && want="$want by=$6"
   roost_events_dir
   [ -n "$ROOST_EVENTS_DIR" ] || return 0
   # `|` between the fields, not a tab. This runs under bin/roost, whose tmux
@@ -457,7 +466,7 @@ roost_events_unblocked() {
   window="${rest%%|*}"; rest="${rest#*|}"
   cur="${rest%%|*}"; rest="${rest#*|}"
   unb="${rest%%|*}"; session="${rest#*|}"
-  [ -z "$cur" ] && [ "$unb" = "$2 since=$3" ] || return 0
+  [ -z "$cur" ] && [ "$unb" = "$want" ] || return 0
   roost_events__shape "$boot" "$1" "$window" || return 0
   case "$session" in
     *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-]*) session="" ;;
@@ -465,7 +474,7 @@ roost_events_unblocked() {
   [ "${#session}" -le 64 ] || session=""
   roost_events__turn "$boot" "$1" ""
   roost_events_line "$(date +%s)" "$boot" "$1" "$window" "$session" \
-    state blocked "" "$ROOST_EVENTS_TURN" "the dialog was declined or dismissed" || return 0
+    state "$from" "" "$ROOST_EVENTS_TURN" "$reason" || return 0
   roost_events_write "$ROOST_EVENTS_LINE"
 }
 

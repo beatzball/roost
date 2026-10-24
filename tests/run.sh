@@ -47,6 +47,12 @@ shard_weight() {
     test-reply-record.sh) echo 24 ;;
     # One local macOS run (2026-10-24, 28 s), not a CI log: re-measure with the rest.
     test-send-when-idle.sh) echo 28 ;;
+    # Added 2026-10-24 for the turn-over steps 1 to 3 (#95, #97), each timed
+    # once on the dev Mac, not off a CI log: 20.3 s, 12.5 s and (fix loop 1)
+    # 28.6 s (after the rebase added the send checks).
+    test-turn-over-interrupt.sh) echo 20 ;;
+    test-turn-over-hold.sh) echo 13 ;;
+    test-turn-over-edges.sh) echo 29 ;;
     *) echo 5 ;;
   esac
 }

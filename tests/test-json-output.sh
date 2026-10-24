@@ -179,11 +179,11 @@ status_doc() {
   printf '{"schema":1,"command":"status","running":true,"socket":"%s","socket_kind":"path",' "$s"
   printf '"sessions":[{"name":"main","windows":2,"attached_clients":0},{"name":"side","windows":2,"attached_clients":0}],'
   printf '"panes":['
-  printf '{"id":"%%0","session":"main","window_id":"@0","window_index":0,"window_name":"api","pane_index":0,"name":null,"command":"sleep","state":"done","since":1789000000,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":0,"dialog":null},'
-  printf '{"id":"%%1","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":0,"name":null,"command":"sleep","state":"working","since":1789000100,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":2,"dialog":null},'
-  printf '{"id":"%%2","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":1,"name":%s,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null},' "$1"
-  printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null},'
-  printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null}'
+  printf '{"id":"%%0","session":"main","window_id":"@0","window_index":0,"window_name":"api","pane_index":0,"name":null,"command":"sleep","state":"done","since":1789000000,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":0,"dialog":null,"background":null},'
+  printf '{"id":"%%1","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":0,"name":null,"command":"sleep","state":"working","since":1789000100,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":2,"dialog":null,"background":null},'
+  printf '{"id":"%%2","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":1,"name":%s,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null},' "$1"
+  printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null},'
+  printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null}'
   printf ']}'
 }
 cap st "$ROOST" status --json
@@ -212,26 +212,26 @@ read_case() {  # read_case NAME TARGET EXPECTED-JSON LABEL
   doc_is "$1" "$3" "$4"
   cmp -s "$work/$1.err" "$work/$1_h.err"; assert_true $? "$4: stderr is byte-identical to the human mode"
 }
-read_case r0 %0 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false,"sent_by":null}' \
+read_case r0 %0 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json returns a recorded reply"
 assert_eq "$(rc r0)" 0 "read --json on a reply exits 0"
-read_case rn main:api '{"schema":1,"command":"read","target":"main:api","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false,"sent_by":null}' \
+read_case rn main:api '{"schema":1,"command":"read","target":"main:api","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":null,"text":"hello from api","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json keeps the target as typed and resolves the pane"
-read_case r1 %1 '{"schema":1,"command":"read","target":"%1","pane":"%1","source":"reply","state":"working","stale":true,"error_reason":null,"turn":null,"text":"old reply from web","lossy":false,"sent_by":null}' \
+read_case r1 %1 '{"schema":1,"command":"read","target":"%1","pane":"%1","source":"reply","state":"working","stale":true,"error_reason":null,"turn":null,"text":"old reply from web","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json marks a reply on a working pane stale"
-read_case r2 %2 '{"schema":1,"command":"read","target":"%2","pane":"%2","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false,"sent_by":null}' \
+read_case r2 %2 '{"schema":1,"command":"read","target":"%2","pane":"%2","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json falls back to the screen and says so in source"
 assert_eq "$(jv r2 'd["text"]')" "$(cat "$work/r2_h.out")" "read --json screen text is the human stdout without its final newline"
-read_case r3 %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"screen","state":"error","stale":false,"error_reason":"rate_limit","turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false,"sent_by":null}' \
+read_case r3 %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"screen","state":"error","stale":false,"error_reason":"rate_limit","turn":null,"text":"screen-line-one\nscreen-line-two","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json carries an errored pane's recorded reason"
-read_case r4 %4 '{"schema":1,"command":"read","target":"%4","pane":"%4","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"","lossy":false,"sent_by":null}' \
+read_case r4 %4 '{"schema":1,"command":"read","target":"%4","pane":"%4","source":"screen","state":null,"stale":false,"error_reason":null,"turn":null,"text":"","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json on a blank screen is a valid empty document"
 assert_eq "$(rc r4)" 0 "read --json on a blank screen exits 0 (the human mode's exit 1 is a separate bug)"
 # A reply stored on an ERRORED pane is stale too: every adapter drops the reply
 # of a failed turn, so whatever is stored is an earlier turn's. The human mode
 # says so on stderr; `stale` must say the same, and the reason must come along.
 as_pane %3 "$ROOST" reply "an earlier turn's answer"
-read_case r3r %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"reply","state":"error","stale":true,"error_reason":"rate_limit","turn":null,"text":"an earlier turn'"'"'s answer","lossy":false,"sent_by":null}' \
+read_case r3r %3 '{"schema":1,"command":"read","target":"%3","pane":"%3","source":"reply","state":"error","stale":true,"error_reason":"rate_limit","turn":null,"text":"an earlier turn'"'"'s answer","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json marks a reply on an errored pane stale and carries the reason"
 T set-option -pu -t %3 @roost-reply
 cap r99 "$ROOST" read --json %99
@@ -393,10 +393,10 @@ env ROOST_RECORD_DIR="$work/rec" TMUX="$s,$spid,0" TMUX_PANE=%0 "$ROOST" reply "
 [ -f "$rrec/replies/000002" ]; assert_true $? "two turns are kept for %0 (control)"
 printf 'coord' > "$rrec/replies/000002.sent_by"
 cap rs env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json %0
-doc_is rs '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":2,"text":"kept two","lossy":false,"sent_by":"coord"}' \
+doc_is rs '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"reply","state":"done","stale":false,"error_reason":null,"turn":2,"text":"kept two","lossy":false,"sent_by":"coord","final":true,"background":null}' \
   "read --json carries the sent_by kept beside the turn it serves"
 cap rs1 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json --turn 1 %0
-doc_is rs1 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"record","state":"done","stale":false,"error_reason":null,"turn":1,"text":"kept one","lossy":false,"sent_by":null}' \
+doc_is rs1 '{"schema":1,"command":"read","target":"%0","pane":"%0","source":"record","state":"done","stale":false,"error_reason":null,"turn":1,"text":"kept one","lossy":false,"sent_by":null,"final":true,"background":null}' \
   "read --json --turn on a turn with no sidecar says sent_by null"
 cap rs2 env ROOST_RECORD_DIR="$work/rec" "$ROOST" read --json --turn 2 %0
 assert_eq "$(jv rs2 'd["sent_by"]')" coord "read --json --turn carries the sidecar of that turn"

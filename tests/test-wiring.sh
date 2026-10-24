@@ -251,9 +251,9 @@ tmux -S "$B/sockB/roost" -f /dev/null new-session -d -s main 'sleep 600'
 ROOST_SOCKET="$B/sock/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$WIRING" apply >/dev/null 2>&1
 ROOST_SOCKET="$B/sockB/roost" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" "$copy/scripts/roost-wiring" apply >/dev/null 2>&1
 [ "$IDB" != "$ID" ]; assert_true $? "a second checkout has a different id"
-assert_contains "$(cat "$(settings_of "$B/xdg")")" "\"$HERE/scripts/roost-agent-state working\"" \
+assert_contains "$(cat "$(settings_of "$B/xdg")")" "\"$HERE/scripts/roost-agent-state working --prompt-hook\"" \
   "after the second checkout's server starts, the first checkout's file still names the first checkout"
-assert_contains "$(cat "$B/xdg/roost/wiring/$IDB/claude/settings.json")" "\"$copy/scripts/roost-agent-state working\"" \
+assert_contains "$(cat "$B/xdg/roost/wiring/$IDB/claude/settings.json")" "\"$copy/scripts/roost-agent-state working --prompt-hook\"" \
   "the second checkout writes its own directory"
 assert_eq "$(g show-environment -g ROOST_WIRING_DIR)" "ROOST_WIRING_DIR=$(wdir_of "$B/xdg")" \
   "the first server still names the first checkout's directory"
