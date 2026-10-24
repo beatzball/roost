@@ -346,7 +346,14 @@ elif [ "$stop_hook" = 1 ] && [ ! -t 0 ]; then
 elif [ "$stop_hook" = 1 ]; then
   ROOST_AGENT_NAME=codex "$sink" "$state" --stop-hook || true
 else
-  ROOST_AGENT_NAME=codex "$sink" "$state" || true
+  # stdin from /dev/null, not inherited. Since #95 the sink reads a plain
+  # `working`'s stdin for Claude's UserPromptSubmit payload, to record its
+  # transcript_path for the interrupt reader -- and that reader reads CLAUDE
+  # transcripts: codex's rollout file must not be recorded (the dialog path
+  # below says the same). Inheriting stdin would also let the sink drain the
+  # payload the identity read below still needs (caught by
+  # tests/test-identity-adapters.sh).
+  ROOST_AGENT_NAME=codex "$sink" "$state" < /dev/null || true
 fi
 
 # --- UserPromptSubmit: who this agent is (#141) -------------------------------
@@ -388,8 +395,8 @@ fi
 # too — the safe direction: no identity, the badge untouched.
 #
 # AFTER the badge, not before it (review). The `working` a human is watching
-# for must not wait on a `cat`, a `ps`, a reader and a tmux read. The sink does
-# not read stdin for `working`, so the payload is still here to read.
+# for must not wait on a `cat`, a `ps`, a reader and a tmux read. The sink is
+# handed /dev/null above, so the payload is still here to read.
 if [ "$event" = "UserPromptSubmit" ] && [ ! -t 0 ] && [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
   identity_payload="$(cat 2>/dev/null || true)"
   case "$(ps -o command= -p "$PPID" 2>/dev/null || true)" in
