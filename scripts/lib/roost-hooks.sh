@@ -158,8 +158,22 @@ _roost_hooks_root() {
 # working when Claude exits before that work ends (#188): such a Claude fires
 # SessionEnd and no Stop, measured on 2.1.310 for `/exit`, Ctrl-C twice, a
 # TERM, a HUP and `respawn-pane -k`. For every other pane it reads once and
-# changes nothing. No matcher: its matcher is the exit REASON, and every
-# reason measured -- `prompt_input_exit` and `other` -- ends a held turn.
+# changes nothing. No matcher: its matcher is the REASON, and every reason
+# ends the held turn, because every reason ends the session that owned it.
+# What differs is what the turn is recorded as, and the hook decides that
+# from the payload: `prompt_input_exit` and `other` (measured) and `logout`
+# (from Claude Code's hooks reference, not measured) are exits, `died`;
+# `clear` (measured once on 2.1.310) and `resume` (reference, not measured)
+# leave the agent at its prompt in a new session, `interrupted`.
+# scripts/roost-agent-state's SessionEnd block says why.
+#
+# `"timeout": 10` on it, as the codex entries below carry: Claude gives a
+# SessionEnd hook 1.5 s by default, on exit, `/clear` and `/resume` alike
+# (the hooks reference), and a hook cancelled between its release and its
+# record leaves the turn without its file. The held release measured 114 to
+# 126 ms over five runs on a loaded machine (flock round 1 on #188), so the
+# default fits today; the timeout is what keeps it fitting on a slow one. A
+# per-hook timeout raises Claude's overall SessionEnd budget to match.
 roost_hooks_claude() {
   local target context
   if [ $# -ge 1 ]; then target="$1"
@@ -208,7 +222,7 @@ roost_hooks_claude() {
       { "hooks": [ { "type": "command", "command": "$target --subagent-hook stop" } ] }
     ],
     "SessionEnd": [
-      { "hooks": [ { "type": "command", "command": "$target --session-end-hook" } ] }
+      { "hooks": [ { "type": "command", "command": "$target --session-end-hook", "timeout": 10 } ] }
     ]
   }
 }

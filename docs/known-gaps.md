@@ -224,18 +224,57 @@ stated; "not measured" means not measured.
 
   The payload carries `cwd, hook_event_name, prompt_id, reason, session_id,
   transcript_path` and no `background_tasks`. `--session-end-hook` releases a
-  pane held for its stamp, and only when the payload's `transcript_path`
-  equals the one in `@roost-transcript`: the badge is unset, `@roost-ended`
-  reads `died`, `wait-done` exits 2, and the held main reply is kept as the
-  turn (outcome `died`) and on the pane. With the fix, all six cases above
-  released the pane in the live rig. What is left:
+  pane held for its stamp, and only when the payload's `session_id` is the
+  hold's owner, `@roost-background-session`, which the Stop that held the
+  pane wrote (and a prompt that reaches an already-held pane rewrites, so the
+  old Claude's SessionEnd after a respawn cannot release the new one's turn):
+  the badge is unset, `@roost-ended` reads `died`, `wait-done` exits 2, and
+  the held main reply is kept as the turn (outcome `died`) and on the pane.
+  The turn file is written only after the release is seen to land, so a
+  SessionEnd that loses a race files nothing. With the first version of the
+  fix (which matched `@roost-transcript`), all six cases above released the
+  pane in the live rig; with the owner rule, `/exit` then "Exit and stop
+  tasks" was run again, one run: released, `died`, `wait-done` exit 2. The
+  respawn race itself was tested with fixture payloads only. What is left:
+  - **`clear` and `resume` are recorded as `interrupted`** (`clear` measured
+    once on 2.1.310; `resume` and `logout` not measured). Claude Code's hooks
+    reference lists five reasons: `clear`, `resume`, `logout`,
+    `prompt_input_exit`, `other`. After `/clear` or an interactive `/resume`
+    the Claude is still in the pane at its prompt, so roost records the held
+    turn as `interrupted` (`wait-done` exits 5), not `died`; `logout` and any
+    reason roost does not know are `died`. Measured for `/clear` on a held
+    pane: no dialog; `SessionEnd` reason `clear` with the old session id,
+    then `SessionStart` source `clear` with a new id; the pane was released
+    as interrupted. **The background shell kept running** in the new
+    session, so from `/clear` until it ended the pane showed no badge while
+    work ran in it (medium, measured once). When it ended, the new session
+    got the notification as a `UserPromptSubmit` and a `Stop`: turn 1 is the
+    main reply (interrupted), turn 2 the notification's answer (done).
+  - **`claude --resume <the same id>` in the same pane after a respawn**
+    keeps the session id, so the old process's late SessionEnd matches the
+    new process's hold (reasoned, not measured). It needs the new process to
+    prompt, run background work and Stop held inside the ~4 s before the old
+    SessionEnd lands; the stamp check is what stands in the way.
+  - **A gap between the release and the turn file** (reasoned, not
+    measured; the interrupt recovery has the same one). `wait-done --turn N`
+    waits for the file as well as the badge, so it polls through the gap;
+    but the `outcome` sidecar is written just after the turn file, and a
+    `wait-done --turn N` that reads in the microseconds between the two
+    would call the turn done. A hook cancelled inside the gap leaves the
+    badge released, `@roost-ended` saying why, and no turn file, so
+    `wait-done --turn N` times out. The entry carries `"timeout": 10`,
+    since Claude's SessionEnd default is 1.5 s.
   - **A wiring from before #188 has no `SessionEnd` entry**, and such a pane
     stays ⏳ until #54 or #64 sees the agent go, as before. `roost doctor`
     names both the user's settings file and a server's wiring file.
-  - **No transcript record, no release.** A held pane whose
-    `@roost-transcript` is missing (a wiring older than `--prompt-hook`)
-    cannot be matched to the session that ended, so it stays held: the safe
-    direction.
+  - **No owner, no release.** A hold with no `@roost-background-session` --
+    written by a roost before this fix, by a Stop whose payload had no
+    usable `session_id`, or after a prompt with none reached the held pane
+    -- cannot be matched to the session that ended, so it stays held: the
+    safe direction.
+  - **A Claude that exits mid-turn with no hold still reads ⏳** until #54
+    or #64 sees it go (not changed here). The same event and session check
+    could release it; that is the next step, not this fix.
   - **`kill -KILL` runs no hook** (reasoned, not measured): the pane stays ⏳
     until #54 or #64, as before.
   - **The subagent count is not cleared** when Claude exits with a

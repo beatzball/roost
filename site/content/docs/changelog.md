@@ -25,11 +25,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
   released the hold. roost now wires `SessionEnd`: the pane's badge is
   cleared, `wait-done` exits **2** (`died`) instead of timing out, and the
   turn's main reply is kept, with `read` saying the background work never
-  reported back. A pane that is not held, or a `SessionEnd` from another
-  Claude session, changes nothing. **Run `roost install`** after upgrading to
-  add the new hook entry, and restart a roost server started before it;
-  `roost doctor` says when either is missing. Without it everything behaves
-  as in 0.10.0.
+  reported back. `/clear` and `/resume` leave Claude at its prompt, so after
+  them the turn is recorded as interrupted and `wait-done` exits **5**. A pane
+  that is not held, or a `SessionEnd` from another Claude session — the old
+  one after a `respawn-pane -k` among them — changes nothing. **Run `roost
+  install`** after upgrading to add the new hook entry, and restart a roost
+  server started before it; `roost doctor` says when either is missing.
+  Without it everything behaves as in 0.10.0.
 
 ## [0.10.0]
 

@@ -379,7 +379,7 @@ It needs the `%N` pane, which is why `send` prints one. Turns are numbered per p
 | `1` (`timed out waiting for turn N`) | the turn you named was still not recorded when the timeout ran out | `roost screen` the pane; the agent may never have started it |
 | `2` (`died`) | an agent pane closed, or its process exited, or an agent started from the pane's shell prompt exited, while its badge read `working` or `blocked`; or Claude exited while its background work still held the pane — the message names the pane | re-resolve or respawn; do not wait again |
 | `2` (`is gone`) | the target did not exist when `wait-done` started | re-resolve the target |
-| `5` (`was interrupted, not done`) | the turn ended because a human stopped it: Esc in Claude Code mid-answer or mid-tool, or a Claude permission dialog answered No or dismissed (both read from Claude's own transcript), codex's `Interrupt`, copilot's aborted turn. The pane is not busy, and nothing it said is this turn's answer | re-prompt, or ask the human; do not read the pane as a result |
+| `5` (`was interrupted, not done`) | the turn ended because a human stopped it: Esc in Claude Code mid-answer or mid-tool, or a Claude permission dialog answered No or dismissed (both read from Claude's own transcript), codex's `Interrupt`, copilot's aborted turn, or a Claude `/clear` or `/resume` while its background work still held the pane. The pane is not busy, and nothing it said is this turn's answer | re-prompt, or ask the human; do not read the pane as a result |
 
 An agent you typed at a shell prompt in the pane is caught too: when its hook marks it busy, roost notes which job holds the pane's terminal, and `wait-done` reports `died` once that job is gone and the shell has the terminal back.
 

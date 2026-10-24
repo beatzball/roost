@@ -46,8 +46,9 @@
 # SessionEnd is what lets go of a pane held ⏳ working by background work when
 # Claude exits before that work ends: Claude fires it and no Stop, so without
 # it the badge reads working for ever. It badges nothing; it unsets the badge
-# and records the turn as died, so `roost wait-done` exits 2. For any pane
-# that is not held it changes nothing.
+# and records the turn as died, so `roost wait-done` exits 2 -- or, after
+# `/clear` or `/resume`, which leave Claude at its prompt, as interrupted,
+# exit 5. For any pane that is not held it changes nothing.
 #
 # SessionStart is the odd one out: the other ten report OUTWARD, and it
 # is the only one that feeds context IN. It tells the agent it is inside roost
@@ -98,7 +99,7 @@
       { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state --subagent-hook stop" } ] }
     ],
     "SessionEnd": [
-      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state --session-end-hook" } ] }
+      { "hooks": [ { "type": "command", "command": "@@ROOST_HOME@@/scripts/roost-agent-state --session-end-hook", "timeout": 10 } ] }
     ]
   }
 }
