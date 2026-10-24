@@ -2064,6 +2064,33 @@ nothing typed. Five things it does not promise.
   before. A program that reads `waited` must treat absent as "not held".
   Severity: a note.
 
+### `send` takes a new paste placeholder as delivery (#176): what that does not cover
+
+A long or multi-line paste is drawn by Claude Code, pi and opencode 2 as a
+placeholder, not as the text, so `send` cannot find the message on the
+screen. Since #176 it counts the placeholders of three known shapes —
+`[Pasted text #N …]`, `[paste #N …]`, `[Pasted ~N …]` — before the paste and
+after, and one more than before is proof the paste landed. Four things it
+does not promise.
+
+- **A shape it does not know falls back to the slow path.** A harness that
+  changes its wording, or a new harness, gets the old behaviour: re-paste for
+  the whole `@roost-send-ready-timeout` (15 s), print "accepted the keys but
+  does not show them", and submit anyway. Loud and slow, not lossy. Severity:
+  low. The pi and opencode 2 shapes come from #176 (pi 1.4.0, opencode
+  2.1.3); this fix was tested against a fixture that draws them, not
+  re-measured against the real harnesses.
+- **A placeholder proves a paste arrived, not that all of it did.** The text
+  behind it cannot be read from the screen. This is what Claude's placeholder
+  always meant here; it now covers pi and opencode 2 too. Severity: a note.
+- **An old placeholder that scrolls off as the new one appears hides it.**
+  The count stands still and the send takes the slow path above. Severity:
+  low — wrong only in the loud direction.
+- **A placeholder from something else counts.** A human pasting into the
+  same pane in the same second, or the harness drawing one for its own
+  reasons, reads as this send's. Another roost send cannot: it waits on the
+  send lock. Severity: low, not measured.
+
 ### The subagent count is never reset (Phase 0 lane D)
 
 `@roost-subagents` and `@roost-subagent-ids` go up on `SubagentStart`, down

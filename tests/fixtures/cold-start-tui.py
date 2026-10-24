@@ -2,7 +2,8 @@
 # Deterministic stand-in for the cold-start race: an agent TUI that is not
 # reading its terminal yet when the pane already exists.
 #
-#   usage: cold-start-tui.py STARTUP_DELAY_SECONDS SUBMITTED_LINES_FILE [HEADCUT_BYTES]
+#   usage: cold-start-tui.py STARTUP_DELAY_SECONDS SUBMITTED_LINES_FILE [HEADCUT_BYTES
+#          [collapse | draw TEMPLATE_FILE]]
 #
 # HEADCUT_BYTES models a SECOND, separate loss reported from the field and not
 # explained by the startup race: two briefs of 3466 and 3502 bytes were cut at
@@ -52,7 +53,24 @@ headcut = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 # placeholder instead of the text, so the message is nowhere on screen and any
 # check that reads the screen for it can never match. The text is still
 # submitted in full — the placeholder is a rendering, not a loss.
-collapse = len(sys.argv) > 4 and sys.argv[4] == "collapse"
+collapse = len(sys.argv) > 4 and sys.argv[4] in ("collapse", "draw")
+# DRAW is COLLAPSE with someone else's placeholder (#176). The fifth argument
+# names a FILE holding a Python %-template, drawn when the paste block CLOSES —
+# pi and opencode 2 put a size in theirs, which is not known until the end:
+#
+#   [paste #%(n)d +%(lines)d lines]   pi, a multi-line paste
+#   [paste #%(n)d %(chars)d chars]    pi, a long single line
+#   [Pasted ~%(lines)d lines]         opencode 2
+#
+# A file and not an argument because the template carries `#` and `%`, and it
+# would travel through a tmux shell-command string to get here. A template that
+# is not a placeholder at all (`*`, `[pasted]`) is how a test models a TUI that
+# shows SOMETHING for a paste but nothing roost can recognise.
+template = None
+if collapse and sys.argv[4] == "draw":
+    with open(sys.argv[5]) as tf:
+        template = tf.read().rstrip("\n")
+paste_from = 0
 pastes = 0
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
@@ -131,11 +149,27 @@ try:
                     line.append(text[i:end])
                     in_paste = False
                     i = end + 6
+                    if template is not None:
+                        # tmux turns each newline of a paste into \r, so
+                        # either counts as a line break here.
+                        block = "".join(line[paste_from:])
+                        out.write(template % {
+                            "n": pastes,
+                            "lines": block.count("\r") + block.count("\n") + 1,
+                            "chars": len(block),
+                        })
                     continue
                 if text.startswith("\x1b[200~", i):
                     in_paste = True
                     pastes += 1
-                    out.write("[Pasted text #%d]" % pastes)
+                    paste_from = len(line)
+                    # One line per paste block, beside the submitted file: a
+                    # C-u erases the placeholder a re-paste replaces, so the
+                    # SCREEN cannot tell a test how many pastes there were.
+                    with open(submitted_path + ".pastes", "a") as pf:
+                        pf.write("paste %d\n" % pastes)
+                    if template is None:
+                        out.write("[Pasted text #%d]" % pastes)
                     i += 6
                     continue
                 ch = text[i]

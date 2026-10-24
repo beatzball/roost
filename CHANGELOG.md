@@ -39,6 +39,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
   names the cause — the first one being a pane with no badge yet, and the
   commonest a pane that is mid-turn, where the prompt is queued inside the
   harness. Stdout, `--json` and every exit code are unchanged.
+- **A long `send` to pi or opencode 2 is quick and quiet again (#176).** Both
+  draw a placeholder for a long or multi-line paste — pi `[paste #1 +12
+  lines]` or `[paste #1 4210 chars]`, opencode 2 `[Pasted ~12 lines]` — and
+  `send` knew only Claude's `[Pasted text #1]`. So every such send re-pasted
+  for the whole `@roost-send-ready-timeout`, about 19 s, and then printed
+  "accepted the keys but does not show them", which agents read as a failed
+  delivery. A placeholder of any of the three shapes that was not on the
+  screen before the paste now proves the paste landed, at once and with no
+  warning. Claude's sends get the same: they used to wait out the same loop
+  in silence. A placeholder left on the screen by an earlier send no longer
+  counts, and no longer hides the warning for this one.
 
 ### Changed
 
