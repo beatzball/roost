@@ -573,9 +573,12 @@ l2="$(open_dialog none l2)"; fp2="$(fpof "$l2")"
 ( env -u TMUX -u TMUX_PANE "$ROOST" answer --expect "$fp2" "$l2" --approve </dev/null >/dev/null 2>&1; echo $? >"$work/l2.rc" ) &
 n=200; while [ "$n" -gt 0 ] && [ ! -d "$(lockdir "$l2")" ]; do sleep 0.05; n=$((n - 1)); done
 [ -d "$(lockdir "$l2")" ]; assert_true $? "the lock is held while the call waits for its proof"
-assert_eq "$(keys l2)" "31" "...and the key had gone in before the hold began"
 wait
 assert_eq "$(cat "$work/l2.rc")" 10 "...the call ran out its bound as before (exit 10)"
+# Asserted AFTER the call has exited, not when the lock first appears: the
+# lock is taken BEFORE the key, so at that first instant the key may not be
+# in yet (a macOS runner caught the first version of this line racing it).
+assert_eq "$(keys l2)" "31" "...and the key went in under the lock"
 [ ! -d "$(lockdir "$l2")" ]; assert_true $? "...and the lock is gone once it has exited"
 T set -g @roost-answer-timeout 1
 # The dialog can go WHILE the call waits for the lock: a person approves a
