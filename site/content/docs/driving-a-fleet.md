@@ -43,6 +43,15 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 
 `spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place. `view` is for neither — it is for a **human**, and it picks pane or window for you. State is **per-pane**, so `wait-done %N` waits on that one pane whichever way it was created; give it a window target instead and it waits for every agent pane in that window.
 
+### If you are the worker
+
+Another pane gave you a task, and is waiting on your reply:
+
+- **Your result is your final reply.** That is what `roost read --turn N` returns to the pane that asked. Do not `roost send` it back.
+- **Never `send` to a busy pane.** A `working` coordinator cannot verify delivery, and two workers finishing together collide on one input line. `send` holds a per-pane lock since 0.9.0, so the second one waits, and may give up with exit 1.
+- **A message that arrives mid-turn is folded into the running turn by the harness.** So message N is not turn N. Identify messages by an id in the text, not by turn order.
+- **Empty output from `send` with exit 0 means submitted, with no turn number.** The stderr line that starts `roost send: no turn number:` says why. It is not a failed delivery: do not send it again.
+
 ## Show a human something: `roost view`
 
 `spawn` and `split` open things you will talk to. `view` opens a thing a person will *read* — a diff, a plan, a log tail, a build watcher:
@@ -196,6 +205,8 @@ Two fields: **the `%N` pane the text went into**, and **the turn that prompt sta
 - the target was **already `working` or `blocked`** — it is mid-turn, the prompt queues inside the harness, and the turn it will take is not the next number;
 - its **replies are not being recorded** (`ROOST_RECORD_DIR=""`), so there are no turn numbers at all. `send` still proves a turn began; it just cannot name it;
 - the turn **began and then errored**. An errored turn records nothing — the adapter drops the half-built reply, because a failed turn has no answer to publish — so a number would name a reply that will never exist. Still exit 0: a turn did begin.
+
+`send` says which one it was, in one line on stderr that starts `roost send: no turn number:`. The text **was** submitted in every case, so an empty capture with exit 0 is not a failed delivery. `--json` prints no such line; its `started`, `turn` and `state` fields already say the same.
 
 The wait is bounded by `@roost-send-turn-timeout`, in seconds, default `10`. Anything that is not a whole number of seconds reads as `10`; anything over `120` is clamped to `120`; leading zeros are stripped, so `08` is eight seconds and `00` is the same as `0`. Set it to `0` to turn the whole thing off and get the pre-existing behaviour back:
 
