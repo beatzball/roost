@@ -109,6 +109,98 @@ detached `opencode serve`. Whether a `run_in_background` shell is a child of
 `claude` at all, and whether Claude's agent-team teammates, which can run in
 other panes, appear in `background_tasks`.
 
+**Step 1 measurements (Claude Code 2.1.310, tmux 3.6, macOS 26.3, 2026-10-24).**
+Taken before step 1 was built, with the rig the design's §2 describes rebuilt
+on 2.1.310: two throwaway `-S` servers whose socket path ended in `/roost`,
+`HOME`, `XDG_CONFIG_HOME` and `XDG_STATE_HOME` at temp directories, a local
+fake Messages API scripting each reply from a marker in the prompt, a logger on
+25 hook events that also recorded each hook's pid chain and the pane's
+`pane_pid`, `--model haiku --permission-mode default --setting-sources local
+--settings <file>` with `permissions.allow` for the commands the rig runs.
+Run 1 was eleven prompts in one pane, run 2 five prompts in another;
+`~/.claude/settings.json` was hashed before and after each run and did not
+change; `~/.claude.json` changed (tip and queue counters, which this machine's
+own live Claude session writes) and gained no project key. "Once" means one
+run. The raw logs, the fake API, the logger and the scripts that drove them
+were kept with the lane's work, not committed; the payloads and transcript
+tails the tests need are in `tests/fixtures/claude-stop-bg-*.json`,
+`claude-ups-task-notification.json` and `claude-transcript-interrupt-*.jsonl`,
+scrubbed of ids and paths.
+
+- **A1 holds: a `run_in_background` shell is in the pane's process tree.** A
+  `sleep 30` started with `run_in_background: true` had the chain `sleep <-
+  zsh <- claude <- zsh (the pane's own process) <- tmux`, 1 of 1; a
+  background subagent's foreground `sleep 20`, the same, 1 of 1; the two
+  shells of a `Monitor`, the same, 2 of 2. Every one of the 72 logged hook
+  calls across both runs had the pane's `pane_pid` in its chain. So step 1
+  is built from Claude's list, as the design planned.
+- **A2, agent teams: not measured.** No team tool was offered to the fake
+  (the list Claude sent: Agent, AskUserQuestion, Bash, DeferredToolPlaceholder,
+  Edit, ListAgents, Read, ReportFindings, ScheduleWakeup, Skill, ToolSearch,
+  Workflow, Write; `Monitor` and `TaskStop` are reachable through
+  `ToolSearch`). The rule stands: an unknown `type` holds `working`, and
+  `roost doctor` names the pane and the type.
+- **A3 holds: the list stays empty after `roost spawn` and `roost split`.**
+  A turn whose `Bash` ran `roost spawn rig-a 'sleep 600'` ended with
+  `background_tasks: []`; so did one that ran `roost split 'sleep 600'`. Once
+  each. The new panes were the tmux server's children.
+- **M2 again, twice (30 s and 15 s).** `Stop` with one running `shell` 266 ms
+  after the prompt; ✅ done 144 ms after that `Stop`; done for 29.9 s / 14.9 s;
+  then a `UserPromptSubmit` whose `prompt` is the `<task-notification>` text
+  (`<task-id>`, `<tool-use-id>`, `<output-file>`, `<status>completed</status>`,
+  `<summary>`) and a `Stop` with `[]` 258 ms / 104 ms later. The notification
+  turn carries a **new `prompt_id`** (4 of 4 notification turns), so nothing
+  but its prompt text ties it to the task; the deferral built in step 1 does
+  not need the link. `@roost-reply-turn` went up by one for every
+  notification turn, as M2 found.
+- **M3 again, once (20 s).** `Agent` with `run_in_background: true`:
+  `PostToolUse` (`status: async_launched`) and `SubagentStart` in the same
+  millisecond, `Stop` with one running `subagent` 106 ms later, ✅ done 144 ms
+  after that. The subagent's `PostToolUse` on the main pane at +20.1 s
+  stamped ⏳ again (M3's accident), then `SubagentStop` (its
+  `background_tasks` still listing the agent as running, as M10 says), the
+  notification `UserPromptSubmit`, and `Stop` with `[]`.
+- **A `Monitor` is a `shell` in the list, not a new type** (once, two
+  monitors). The tool returns `{"taskId","timeoutMs","persistent":false}` and
+  the `Stop` lists it as `type: "shell", status: "running"` with its command.
+  Each monitor's end brought its own notification turn, and the `Stop`
+  between them still listed the one left. Under the ownership rule a pane is
+  held for the whole life of a `Monitor`; the skill says so.
+- **`session_crons` is not a hold** (once). `ScheduleWakeup {delaySeconds:
+  60}` put `[{"id","schedule":"2 23 * * *","recurring":false,"prompt"}]` in
+  `session_crons` with `background_tasks: []`, on that `Stop` and the two
+  after it. The wake-up turn did not start within 2 min 15 s; not measured
+  beyond that.
+- **Does the releasing `Stop` come? (§10 item 3)** Killed with `TaskStop`
+  (once): the turn that called it ended with a `Stop` whose list is `[]`,
+  and no notification turn followed in 25 s. Killed from the task panel:
+  **not measured**. Claude exits with work running (once): `/exit` opened a
+  Claude dialog ("Background work is running … 1. Exit and stop tasks"; no
+  hook fired for it); after confirming, `SessionEnd` and **no `Stop`**, and
+  the task was killed. A human prompt typed while the work runs (once): that
+  turn's `Stop` **also** listed the running task, and the notification turn
+  released with `[]`; a prompt typed exactly as the work ends was not driven,
+  so not measured.
+- **M5 again, once.** Esc 6 s into a slow stream: no hook of any kind in
+  80 s. Transcript tail: an `assistant` text record with `isAbortedMidStream:
+  true`, then a `user` record whose `message.content` is `[{"type":"text",
+  "text":"[Request interrupted by user]"}]` with `interruptedMessageId`. No
+  `turn_duration`.
+- **M6 again, once.** Esc 4 s into a foreground `perl -e 'sleep 30'`: no hook
+  in 20 s. Tail: a `user` `tool_result` with `toolDenialKind: "user-rejected"`
+  and content starting "The user doesn't want to proceed with this tool
+  use.", then `user` text `[Request interrupted by user for tool use]`. No
+  `turn_duration`: the #38 decline's first two records without its third. A
+  prompt typed afterwards fired `UserPromptSubmit` and `Stop` as usual. (A
+  foreground `sleep 30` is refused by Claude 2.1.310 itself — "Blocked:
+  standalone sleep" — hence perl.)
+- **Transcript record types new since 2.1.270**, all metadata: `api-request`,
+  `api-request-blob`, `api-request-shape`, `file-history-snapshot`,
+  `queue-operation`, and `system` with subtype `stop_hook_summary`, which
+  carries hook command paths. None landed after an interrupt marker in the
+  two tails above; a reader that meets one there says "could not tell", as
+  the decline reader does.
+
 **What that leaves live, most serious first.**
 
 - **A Claude pane reads ✅ done while its background work still runs (#97).**
