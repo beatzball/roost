@@ -49,10 +49,10 @@ shard_weight() {
     test-send-when-idle.sh) echo 28 ;;
     # Added 2026-10-24 for the turn-over steps 1 to 3 (#95, #97), each timed
     # once on the dev Mac, not off a CI log: 20.3 s, 12.5 s and (fix loop 1)
-    # 13.9 s.
+    # 23.8 s (after fix loop 2).
     test-turn-over-interrupt.sh) echo 20 ;;
     test-turn-over-hold.sh) echo 13 ;;
-    test-turn-over-edges.sh) echo 14 ;;
+    test-turn-over-edges.sh) echo 24 ;;
     *) echo 5 ;;
   esac
 }

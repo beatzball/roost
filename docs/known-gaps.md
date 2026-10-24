@@ -255,6 +255,14 @@ stated; "not measured" means not measured.
   the turn's file (flock round 1); it is taken back off the pane, so a main
   reply longer than the 12 KB pane cap is recorded cut, with its truncation
   marker (low: the release with no reply of its own is itself rare).
+- **After a recovery saves a held turn's answer, plain `read` shows the
+  screen; `read --turn N` has the answer** (low, by design). Recovery may only
+  unset, so the badge and `@roost-reply` go and the main reply lives in turn
+  N's file. A coordinator that gets exit 5 from `wait-done` and then runs a
+  plain `read` gets the screen with its notice; `read --turn N` (or
+  `wait-done --json`'s `turn`) is the way to the answer. With recording off
+  there is no file, so the answer is put back on the pane instead, and plain
+  `read` serves it.
 - **A Claude settings file or wiring from before #95 recovers no Esc** (low,
   by design). The transcript path is recorded at the start of a turn only
   under `--prompt-hook` on the UserPromptSubmit entry, so a plain `roost
