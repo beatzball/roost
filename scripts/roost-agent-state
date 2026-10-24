@@ -477,6 +477,34 @@ EOF
     # record again there, with the new stamp, in the same command as the
     # badge. @roost-background-types is written the same way, only when a
     # running item's type is not one of the two measured kinds.
+    # A RELEASE WITH NO REPLY OF ITS OWN (flock round 1 on #95/#97,
+    # reproduced). The held Stop above put the turn's main reply on the pane
+    # and nothing on disk, on the promise that the release records the turn.
+    # A release whose last_assistant_message is empty or absent -- a turn that
+    # ended on a tool call, or a payload no reader could parse -- would take
+    # the "produced nothing" arm below: unset the reply, append nothing. The
+    # agent's answer was then gone from the pane AND from disk, and the
+    # prompt lost its number, so the NEXT prompt's reply became turn N and
+    # `wait-done --turn N` / `read --turn N` answered for the wrong prompt.
+    #
+    # So when this Stop is not itself held, has no reply, and the pane's hold
+    # record agrees with its stamp (the @roost-transcript rule: a record from
+    # another stamp says nothing about this turn), the held main reply is
+    # taken back off the pane and recorded as this prompt's ONE turn file;
+    # and with no held reply either, an EMPTY turn file keeps the numbering.
+    # The pane value is what tmux stored, so a main reply longer than the
+    # 12 KB cap is recorded with its truncation marker: docs/known-gaps.md.
+    # One tmux read, only on a Stop with no reply, never on the hot path.
+    release_empty=0
+    if [ "$held" = 0 ] && [ -z "$reply" ]; then
+      rel="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
+      rel_since="${rel%%|*}"; rel_bg="${rel#*|}"
+      case "$rel_since" in ''|*[!0123456789]*) rel_since="" ;; esac
+      if [ -n "$rel_since" ] && [ "${rel_bg%% *}" = "$rel_since" ] && [ "$rel_bg" != "$rel_since" ]; then
+        reply="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+        [ -n "$reply" ] || release_empty=1
+      fi
+    fi
     if [ "$held" = 1 ]; then
       state="working"
       bg_wr=(set-option -p -t "$TMUX_PANE" -F @roost-background "#{@agent_since} $bg_count")
@@ -562,6 +590,30 @@ EOF
       else
         tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
           "$(roost_reply_encode "$reply")" \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
+      fi
+    elif [ "$release_empty" = 1 ]; then
+      # A held turn released with no reply anywhere (above): ONE empty turn
+      # file, so the prompt keeps its number, the pointer at it, the reply and
+      # the hold record cleared, in one command. Records off: the clears only.
+      . "$SELF_DIR/lib/roost-record.sh"
+      turn=""
+      roost_record_root
+      if [ -n "$ROOST_RECORD_ROOT" ]; then
+        boot="$(tmux -S "$sock" display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+        if roost_record_pane_dir "$boot" "$TMUX_PANE" \
+           && roost_record_append "$ROOST_RECORD_PANE_DIR" "$sock" ""; then
+          turn="$ROOST_RECORD_TURN"
+        fi
+      fi
+      if [ -n "$turn" ]; then
+        tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
+          set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
+      else
+        tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
           set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
       fi
