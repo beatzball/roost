@@ -1523,9 +1523,19 @@ else
       set-option -pu -t "$TMUX_PANE" @roost-answer-nonce 2>/dev/null || true
   fi
   if [ "$stop_while_blocked" = 1 ]; then
-    # A held Stop (#97) that moves a blocked pane writes its hold record
-    # beside the new stamp, for the reason the held arm below gives. $now is
-    # digits and $bg_count digits or `?`, so neither can break the string.
+    # A held Stop (#97) ALWAYS comes through here: stop_while_blocked is set
+    # for every `done --stop-hook` (near the top), before the hold rewrites
+    # $state to working. So a held Stop on a pane that was not already
+    # working -- done, idle, error, no badge yet, or blocked on its second
+    # Stop -- stamps `working` in the else-branch below, and that stamp is a
+    # NEW @agent_since. The @roost-background written above the bail carried
+    # the old one, so it is written again here, in the same tmux command as
+    # the badge: a reader that sees this stamp finds a record that agrees
+    # with it, never one that disagrees for the gap between two calls. (A
+    # separate arm for this case was dead code: flock round 1 found it, and
+    # tests/test-turn-over-edges.sh section 9 drives a held Stop into a pane
+    # that really reads blocked.) $now is digits and $bg_count digits or `?`,
+    # so neither can break the string.
     held_wr=""
     if [ "$held" = 1 ]; then
       held_wr=" ; set-option -p -t $TMUX_PANE @roost-background '$now $bg_count'"
@@ -1579,19 +1589,6 @@ else
       "set-option -p -t $TMUX_PANE @roost-stop-swallowed 1" \
       "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now$held_wr ; set-option -pu -t $TMUX_PANE @roost-ended ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed ; set-option -pu -t $TMUX_PANE @roost-dialog ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce" \
       2>/dev/null || true
-  elif [ "$held" = 1 ]; then
-    # A held Stop (#97) on a pane that was NOT already working -- done, idle,
-    # error, or no badge yet -- stamps `working` here, and the stamp is a NEW
-    # @agent_since. The @roost-background written above the bail carried the
-    # old one, so it is written again here, in the same tmux command as the
-    # badge: a reader that sees this stamp finds a record that agrees with
-    # it, or none, never one that disagrees for the gap between two calls.
-    tmux -S "$sock" set-option -p -t "$TMUX_PANE" @agent_state "$state" \; \
-      set-option -p -t "$TMUX_PANE" @agent_since "$now" \; \
-      set-option -p -t "$TMUX_PANE" @roost-background "$now $bg_count" 2>/dev/null || true
-    if [ -n "$bg_types" ]; then
-      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-background-types "$now $bg_types" 2>/dev/null || true
-    fi
   else
     # One command for the badge and the stamp, and with them, on a transition
     # to working, the transcript record (#95): the prompt hook's path when it
