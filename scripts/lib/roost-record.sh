@@ -508,7 +508,11 @@ roost_record_append() {
   rm -f "$tmp"
   ROOST_RECORD_TURN="$n"
 
-  roost_record_prune "$dir"
+  # ROOST_RECORD_NO_PRUNE=1 defers the prune to the caller, for a turn that is
+  # not complete until a sidecar is written too (roost_record_append_interrupted):
+  # pruning first and rolling the turn back after would leave the record
+  # with no turns at all, and the next append would reuse a number.
+  [ "${ROOST_RECORD_NO_PRUNE:-}" = 1 ] || roost_record_prune "$dir"
   if [ "$created" = 1 ]; then
     roost_record_sweep
   fi
@@ -540,14 +544,19 @@ roost_record_append() {
 # sidecar cannot be written the turn file is taken back and the call returns
 # 1 -- "could not record", the behaviour before #95 (no turn file, the next
 # prompt takes the number). The callers keep the badge change either way.
+#
+# The prune waits until both are written (flock round 2, reproduced): with
+# ROOST_RECORD_KEEP=1 the append pruned turn N-1, the rollback then removed
+# turn N, and the next append reused N-1's number.
 roost_record_append_interrupted() {
-  roost_record_append "$1" "$2" "${3:-}" || return 1
+  ROOST_RECORD_NO_PRUNE=1 roost_record_append "$1" "$2" "${3:-}" || return 1
   if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2"; then
     roost_record_turn_file "$1" "$ROOST_RECORD_TURN"
     rm -f "$ROOST_RECORD_FILE" "$ROOST_RECORD_FILE".* 2>/dev/null || true
     ROOST_RECORD_TURN=""
     return 1
   fi
+  roost_record_prune "$1"
   return 0
 }
 
