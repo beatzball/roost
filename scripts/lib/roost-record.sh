@@ -532,9 +532,22 @@ roost_record_append() {
 # TEXT, when given, is the turn's MAIN reply: an interrupt that ends a turn
 # held by background work (#97) must not lose the answer the agent already
 # gave, which the hold kept only on the pane (flock round 1 on #95).
+#
+# BOTH WRITES OR NEITHER (flock round 1 on #95). A turn file without its
+# sidecar reads as a turn that FINISHED with an empty reply, and once the
+# pane's own @roost-ended has gone stale `wait-done --turn N` would exit 0 on
+# it: a false done, the direction this design exists to remove. So when the
+# sidecar cannot be written the turn file is taken back and the call returns
+# 1 -- "could not record", the behaviour before #95 (no turn file, the next
+# prompt takes the number). The callers keep the badge change either way.
 roost_record_append_interrupted() {
   roost_record_append "$1" "$2" "${3:-}" || return 1
-  roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2" || true
+  if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2"; then
+    roost_record_turn_file "$1" "$ROOST_RECORD_TURN"
+    rm -f "$ROOST_RECORD_FILE" "$ROOST_RECORD_FILE".* 2>/dev/null || true
+    ROOST_RECORD_TURN=""
+    return 1
+  fi
   return 0
 }
 
