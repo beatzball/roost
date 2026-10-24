@@ -2006,12 +2006,12 @@ not promise.
   file system. The text sits in `prefix + =` until the server is restarted
   or someone deletes it. Severity: low — a SIGKILL inside a two-call window,
   and the message was the sender's own prompt.
-- **`roost answer` does not take the lock yet.** Its key goes in through
-  scripts/lib/roost-answer.sh with no lock, so a `send --force` and an
-  `answer` aimed at one blocked dialog can both land. Severity: low — both
-  are a person's verbs, on a pane `send` refuses without `--force`. What
-  closes it: `answer` calling roost_panelock_take, _check and _drop around
-  its key, which the library was written for.
+- **`roost answer` takes the lock too, since #181**, just before its key and
+  through its confirm wait, and exits 11 with nothing sent when it cannot
+  hold it. What it does not do is clear a `send`'s abandoned draft: it types
+  one key into a dialog, not text into an input box, and a draft left by a
+  send that stopped is that send's to clear (it does, while it holds the
+  lock).
 - **A holder stopped for a minute between its mkdir and its pid write writes
   its pid into the taker's lock.** A lock with no pid file is "gone" once it
   is a minute old; a SIGSTOP in that microsecond window, held for a minute,
