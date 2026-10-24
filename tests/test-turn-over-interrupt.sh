@@ -138,9 +138,7 @@ hook "$p" working </dev/null
 printf '{"last_assistant_message":"NEXT"}' | hook "$p" done --stop-hook
 assert_eq "$(turns_in "$p")" "2" "the next turn is recorded as turn 2"
 assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEXT" "...and read --turn 2 is its reply"
-pane_has "$p" @roost-ended; assert_eq "$?" "0" "@roost-ended is left where it was (a new stamp makes it stale)"
-case "$(opt "$p" @roost-ended)" in "$(opt "$p" @agent_since) "*) r=matches ;; *) r=stale ;; esac
-assert_eq "$r" "stale" "...and its first word no longer equals @agent_since"
+pane_has "$p" @roost-ended; assert_eq "$?" "1" "the next turn's working stamp clears @roost-ended: it described the interrupted turn"
 
 # --- 3. read and wait-done recover too; status never does --------------------------
 p="$(newpane)"; require_pane "$p" read/tool

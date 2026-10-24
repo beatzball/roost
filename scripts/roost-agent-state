@@ -1165,9 +1165,15 @@ roost_stamp_blocked() {
           ';')
     fi
   fi
+  # @roost-ended goes with every stamp but an interrupt's (#95): it says how
+  # the PREVIOUS turn ended, and a reader trusts it only while its first word
+  # equals @agent_since -- which a turn that starts and ends in the same
+  # second as the interrupt would still match (flock round 1, reproduced:
+  # exit 5 on a pane that read done). Unset in the stamp's own command.
   wr+=(set-option -p -t "$TMUX_PANE" @agent_state blocked
       ';' set-option -p -t "$TMUX_PANE" @agent_since "$1"
-      ';' set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed)
+      ';' set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed
+      ';' set-option -pu -t "$TMUX_PANE" @roost-ended)
   if [ -n "$transcript" ]; then
     wr+=(';' set-option -p -t "$TMUX_PANE" @roost-transcript "$1 $transcript")
   elif [ "$notification_hook" = 1 ] || [ "$permission_request_hook" = 1 ]; then
@@ -1548,7 +1554,7 @@ else
     tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
       "#{&&:#{==:#{@agent_state},blocked},#{==:#{@roost-stop-swallowed},}}" \
       "set-option -p -t $TMUX_PANE @roost-stop-swallowed 1" \
-      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now$held_wr ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed ; set-option -pu -t $TMUX_PANE @roost-dialog ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce" \
+      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now$held_wr ; set-option -pu -t $TMUX_PANE @roost-ended ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed ; set-option -pu -t $TMUX_PANE @roost-dialog ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce" \
       2>/dev/null || true
   elif [ "$held" = 1 ]; then
     # A held Stop (#97) on a pane that was NOT already working -- done, idle,
@@ -1582,6 +1588,10 @@ else
     # must find the sidecar that says why turn N is empty. Only on a
     # transition: a repeat idle bailed out above, and two interrupts with no
     # prompt between them are one turn, not two.
+    #
+    # Every other stamp CLEARS @roost-ended, in this same command: the outcome
+    # belongs to the turn that was interrupted, and a new stamp in the same
+    # second would otherwise still match it (see roost_stamp_blocked).
     if [ "$interrupted_hook" = 1 ]; then
       stamp_wr+=(';' set-option -p -t "$TMUX_PANE" @roost-ended "$now interrupted")
       . "$SELF_DIR/lib/roost-record.sh"
@@ -1592,6 +1602,8 @@ else
           roost_record_append_interrupted "$ROOST_RECORD_PANE_DIR" "$sock" || true
         fi
       fi
+    else
+      stamp_wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-ended)
     fi
     if [ "$state" = "working" ]; then
       if [ -n "$prompt_transcript" ]; then
