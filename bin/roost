@@ -3195,8 +3195,12 @@ EOF
       # an earlier stamp can never make an old reply read as current. `?` is a
       # count roost could not read (a malformed list, held on purpose): still
       # this turn's main reply, and null in the JSON rather than 0.
+      #
+      # `blocked` too: a dialog inside a held turn carries the record onto its
+      # stamp (scripts/roost-agent-state, hold_carry), and the reply on the
+      # pane is still that turn's main reply.
       read_held=0 read_bg="" json_final=1 json_bg=""
-      if [ "$state" = working ]; then
+      if [ "$state" = working ] || [ "$state" = blocked ]; then
         read_bg_rec="$(t display-message -p -t "$tgt" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
         read_bg_since="${read_bg_rec%%|*}"; read_bg_rec="${read_bg_rec#*|}"
         case "$read_bg_since" in ''|*[!0-9]*) read_bg_since="" ;; esac
@@ -3760,7 +3764,7 @@ EOF
       info="$(t display-message -p -t "$1" '#{@agent_state}|#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
       state="${info%%|*}"; info="${info#*|}"; since="${info%%|*}"; bgrec="${info#*|}"
       case "$since" in ''|*[!0-9]*) since="" ;; esac
-      if [ "$state" = working ] && [ -n "$since" ] && [ "${bgrec%% *}" = "$since" ] && [ "$bgrec" != "$since" ]; then
+      if { [ "$state" = working ] || [ "$state" = blocked ]; } && [ -n "$since" ] && [ "${bgrec%% *}" = "$since" ] && [ "$bgrec" != "$since" ]; then
         held=1 final=0
         bg="${bgrec#* }"
         case "$bg" in ''|*[!0-9]*) bg="" ;; esac

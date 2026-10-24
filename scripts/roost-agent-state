@@ -1073,6 +1073,26 @@ sys.stdout.write(p if isinstance(p, str) and "\n" not in p else "")' 2>/dev/null
   fi
 fi
 
+# hold_carry NOW -> HOLD_WR, tmux commands (each ending in `;`) that move a
+# hold record (#97) onto the stamp NOW, when it agrees with the stamp the pane
+# holds at that instant. A dialog inside a held turn stamps `blocked`, and the
+# approved tool's PostToolUse stamps `working` again: both are the SAME turn,
+# but each moves @agent_since, so the hold record "<old stamp> N" stopped
+# matching and `read` called the turn's own main reply stale and final
+# (flock round 1 on #95/#97, reproduced). tmux makes the comparison and the
+# rewrite inside the stamp's own command, so nothing can land between them;
+# a record from another stamp, or none, is left exactly as it is. Placed
+# BEFORE the @agent_since write in that command, so it compares with the old
+# stamp. NOW is digits, so it cannot break the format.
+hold_carry() {
+  local opt
+  HOLD_WR=()
+  for opt in @roost-background @roost-background-types; do
+    HOLD_WR+=(if-shell -F -t "$TMUX_PANE" "#{==:#{s/ .*//:#{$opt}},#{@agent_since}}"
+      "set-option -p -t $TMUX_PANE -F $opt '$1 #{s/^[^ ]* //:#{$opt}}'" ';')
+  done
+}
+
 # roost_stamp_blocked NOW — write everything a 🛑 stamp owns, in ONE tmux
 # command, from wherever the stamp came from.
 #
@@ -1170,6 +1190,9 @@ roost_stamp_blocked() {
   # equals @agent_since -- which a turn that starts and ends in the same
   # second as the interrupt would still match (flock round 1, reproduced:
   # exit 5 on a pane that read done). Unset in the stamp's own command.
+  # A dialog inside a held turn keeps the hold (hold_carry above).
+  hold_carry "$1"
+  wr+=("${HOLD_WR[@]}")
   wr+=(set-option -p -t "$TMUX_PANE" @agent_state blocked
       ';' set-option -p -t "$TMUX_PANE" @agent_since "$1"
       ';' set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed
@@ -1580,7 +1603,15 @@ else
     # payload at all leaves it. Read from the pane once, only on a transition
     # out of blocked, which is once per dialog, never on the PostToolUse hot
     # path.
-    stamp_wr=(set-option -p -t "$TMUX_PANE" @agent_state "$state"
+    stamp_wr=()
+    # Back to working from a dialog is the same turn: a hold goes with it
+    # (hold_carry). A new prompt is a new turn and needs nothing carried --
+    # a released hold is already gone.
+    if [ "$state" = "working" ] && [ "$prev" = "blocked" ] && [ "$prompt_hook" = 0 ]; then
+      hold_carry "$now"
+      stamp_wr+=("${HOLD_WR[@]}")
+    fi
+    stamp_wr+=(set-option -p -t "$TMUX_PANE" @agent_state "$state"
               ';' set-option -p -t "$TMUX_PANE" @agent_since "$now")
     # The interrupted outcome (#95) beside the idle it leaves, with the stamp's
     # own second, and the empty turn file BEFORE the stamp, for the reply's
