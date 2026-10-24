@@ -16,20 +16,29 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0]
+
 A turn is over when the agent has stopped acting on the prompt **and nothing
-it started for that prompt is still running**. Three things a coordinator will
-see differently. A Claude Code pane whose turn started a `run_in_background`
-command, a background agent or a `Monitor` now stays ⏳ working until that work
-ends, instead of reading ✅ done for the whole run of it (measured at 30 s per
-task); a short `wait-done` on it exits 1 (timed out) where it used to exit 0
-into files that were still changing, and `roost read` prints the answer with a
-"main reply; N tasks still running" note instead of silence. An interrupted
-turn — Esc in Claude Code mid-answer or mid-tool, a Claude dialog declined,
-codex's Interrupt, copilot's aborted turn — makes `wait-done` exit **5** instead of 0, and a Claude pane
-left ⏳ by an Esc is cleared the next time `send`, `read` or `wait-done` looks
-at it, from Claude's own transcript. And `wait-done --json` exists. The design
-is `docs/airig/specs/2026-09-29-turn-over-design.md`; what is still open is in
-`docs/known-gaps.md`.
+it started for that prompt is still running**, and roost now says so. A Claude
+Code pane whose turn started a `run_in_background` command, a background agent
+or a `Monitor` stays ⏳ working until that work ends, instead of reading ✅ done
+for the whole run of it (measured at 30 s per task). A turn the human stopped,
+with Esc, a declined dialog, codex's Interrupt or copilot's abort, makes
+`wait-done` exit **5**, not 0, and a pane an Esc left ⏳ is cleared the next
+time `send`, `read` or `wait-done` looks at it. `wait-done --json` exists. And
+pushing a prompt into a busy agent got safer: `send --when-idle` holds it until
+the agent is free, a long send to pi or opencode 2 takes under a second instead
+of 19 with a false warning, and an empty `send` now says on stderr why it named
+no turn.
+
+Three things to know. **Run `roost install`** after upgrading, and restart a
+roost server started before it: Claude's prompt hook gains `--prompt-hook`,
+which interrupt recovery needs, and `roost doctor` says when it is missing.
+**A short `wait-done` on a Claude pane with background work now exits 1**
+(timed out), where it used to exit 0 into files that were still changing. And
+**if Claude exits while its background work runs, the pane stays ⏳** until it
+is closed (#188); `docs/known-gaps.md` lists this and the rest of what is still
+open.
 
 ### Added
 
