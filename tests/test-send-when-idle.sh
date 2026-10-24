@@ -155,6 +155,9 @@ unbadge "$c"
 snd w3 --when-idle --json "$c" "into a plain pane"
 wait
 assert_eq "$(cat "$work/w3.rc")" 0 "no badge: exit 0"
+# Exact, not "0 or 1": `waited` adds up only the time spent after a poll read
+# `working` (fix loop 1), so a pane that never read busy adds nothing however
+# the clock's second boundaries fall.
 assert_eq "$(jv w3 'd["waited"]')" 0 "...having waited 0 seconds"
 case "$(cat "$work/w3.secs")" in
   0|1|2) assert_true 0 "...at once" ;;
@@ -193,6 +196,97 @@ wait_state "$q" done
 ra="$("$ROOST" read --turn "$ta" "$q" 2>/dev/null)"
 rb="$("$ROOST" read --turn "$tb" "$q" 2>/dev/null)"
 assert_eq "$ra|$rb" "REPLY-TO[prompt from A]|REPLY-TO[prompt from B]" "...and each turn is its own sender's prompt"
+
+# --- 5b. a dead pane is not waited on (fix loop 1) ---------------------------
+# A pane kept by remain-on-exit after its agent died still has its id and its
+# last badge. Without the flag the dead-pane refusal is exit 2 ("pick another
+# target"); with it, the first cut waited the whole bound and said exit 6. The
+# bound is 5 here so the unfixed code fails in 5 s rather than 300.
+echo "5b. a dead pane that still reads working"
+# Set on THIS window, before its command exits: tmux reads remain-on-exit when
+# the pane dies, so a global flipped back off straight after new-window lost
+# the race on one run and the pane was gone, not dead.
+dp="$(T new-window -d -P -F '#{pane_id}' 'sleep 0.5')"
+require_pane "$dp" "dead pane"
+T set-option -w -t "$dp" remain-on-exit on
+n=50; while [ "$n" -gt 0 ] && [ "$(T display-message -p -t "$dp" '#{pane_dead}')" != 1 ]; do sleep 0.1; n=$((n - 1)); done
+assert_eq "$(T display-message -p -t "$dp" '#{pane_dead}')" 1 "detector proof: the pane is dead and kept"
+badge "$dp" working
+T set-option -g @roost-send-idle-timeout 5
+snd w5d --when-idle "$dp" "into a dead pane"
+wait
+assert_eq "$(cat "$work/w5d.rc")" 2 "a dead pane reading working: exit 2, as without the flag"
+assert_contains "$(cat "$work/w5d.err")" "dead pane" "...with the dead-pane message"
+case "$(cat "$work/w5d.secs")" in
+  0|1|2) assert_true 0 "...at once, not after the bound" ;;
+  *)     assert_true 1 "...at once, not after the bound (took $(cat "$work/w5d.secs")s)" ;;
+esac
+[ ! -d "$(lockdir "$dp")" ]; assert_true $? "...and no lock directory is left"
+T set-option -g -u @roost-send-idle-timeout
+
+# --- 5c. working under the lock, every time (fix loop 1) ---------------------
+# The re-check under the lock found `working`, dropped the lock and went round
+# with no sleep and no look at the clock; a pane that read idle outside the
+# lock and working under it spun the CPU forever. That pane is made exact here
+# with a tmux on PATH that answers the re-check's query, and only that one,
+# with `working` — the real badge stays `done` for every other read. It is a
+# script that execs the real tmux by absolute path, never a symlink: `>`
+# through a symlinked shim has destroyed real binaries on this machine before.
+echo "5c. a pane that reads working only under the lock"
+real_tmux="$(command -v tmux)"
+mkdir -p "$work/shim"
+cat >"$work/shim/tmux" <<SHIM
+#!/bin/sh
+for a in "\$@"; do
+  case "\$a" in
+    '#{@agent_state}'|'#{pane_dead} #{@agent_state}')
+      case "\$a" in '#{@agent_state}') echo working ;; *) echo 0 working ;; esac
+      exit 0 ;;
+  esac
+done
+exec "$real_tmux" "\$@"
+SHIM
+chmod +x "$work/shim/tmux"
+sp="$(newcat)"
+badge "$sp" done
+T set-option -g @roost-send-idle-timeout 2
+t0=$(date +%s)
+PATH="$work/shim:$PATH" perl -e 'alarm 20; exec @ARGV' "$ROOST" send --when-idle "$sp" "never typed" >"$work/w5c.out" 2>"$work/w5c.err"; rc=$?
+secs=$(( $(date +%s) - t0 ))
+assert_eq "$rc" 6 "working under the lock every time: exit 6 at the bound, not a spin"
+case "$secs" in
+  2|3|4|5) assert_true 0 "...after about the bound" ;;
+  *)       assert_true 1 "...after about the bound (took ${secs}s)" ;;
+esac
+[ ! -d "$(lockdir "$sp")" ]; assert_true $? "...and no lock directory is left"
+case "$(T capture-pane -p -t "$sp")" in
+  *"never typed"*) assert_true 1 "...and nothing was typed" ;;
+  *)               assert_true 0 "...and nothing was typed" ;;
+esac
+T set-option -g -u @roost-send-idle-timeout
+
+# --- 5d. `waited` is time held for `working`, not the lock wait (fix loop 1) -
+# A pane that is `done` throughout, whose send lock a live roost holds for
+# three seconds: the send waits on the LOCK, never on the pane, and `waited`
+# must say 0. The holder is a bash whose $0 mentions roost, as in
+# tests/test-send-lock.sh, so it is not taken over while it lives.
+echo "5d. waited does not count the lock wait"
+lp="$(newcat)"
+badge "$lp" done
+# A cat starts no turn, so the turn watch is off: this case is about the hold.
+T set-option -g @roost-send-turn-timeout 0
+bash -c 'sleep 3; true' roost-fake-holder & holder=$!
+mkdir "$(lockdir "$lp")"
+printf '%s\n' "$holder" >"$(lockdir "$lp")/pid"
+snd w5l --when-idle --json "$lp" "after the lock"
+wait
+assert_eq "$(cat "$work/w5l.rc")" 0 "a done pane behind a held lock: exit 0"
+case "$(cat "$work/w5l.secs")" in
+  3|4|5|6) assert_true 0 "...after the lock was given up" ;;
+  *)       assert_true 1 "...after the lock was given up (took $(cat "$work/w5l.secs")s)" ;;
+esac
+assert_eq "$(jv w5l 'd["waited"]')" 0 "...and waited says 0: the pane was never working"
+T set-option -g -u @roost-send-turn-timeout
 
 # --- 6. the default send is unchanged ----------------------------------------
 echo "6. without --when-idle, a working target is pasted into at once"

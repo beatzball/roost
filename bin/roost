@@ -1275,50 +1275,81 @@ JSON
     # no wait). Past it: exit 6, nothing typed, one stderr line. 6 because 1
     # to 4 are taken here, and `send` and `wait-done` must not share a code
     # (#43 plans to fuse them): wait-done has 0, 1, 2 and 5.
+    #
+    # A DEAD pane is not waited on (fix loop 1, found by review): one kept by
+    # remain-on-exit after its agent died still has its id and its last
+    # badge, which can be `working` forever. Without the flag it reaches the
+    # dead-pane refusal below, exit 2, "pick another target"; the first cut
+    # of this wait sat out the whole bound on it and said exit 6. So the poll
+    # and the re-check both read #{pane_dead}, and a dead pane ends the wait
+    # and goes down to that refusal.
+    #
+    # `waited` (--json) is the time spent HELD FOR `working` and nothing
+    # else: it starts counting at a poll that read `working`, so a pane that
+    # never read busy reports exactly 0, however long the lock wait after it
+    # took and however the clock's second boundaries fell.
     idle_waited=0
     if [ "$when_idle" -eq 1 ] && [ -n "$lock_pane" ]; then
       idle_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
-      idle_start="$(date +%s)"
-      idle_deadline=$((idle_start + idle_timeout))
+      idle_deadline=$(( $(date +%s) + idle_timeout ))
     fi
-    # send_idle_wait -> 0 once $lock_pane reads anything but `working` (or is
-    # gone), 1 at the deadline with it still working. Two fields, the pane id
-    # first: an empty id is a pane that has gone, and the state is last
-    # because it is the field that can be empty.
+    send_idle_timeout() {
+      # Nothing was typed and no lock is held: the lock is dropped before
+      # every return to the wait. Nothing on stdout, --json or not, like
+      # every other failure of this command.
+      echo "roost send: '$raw' still reads working after ${idle_timeout}s (--when-idle; @roost-send-idle-timeout) — nothing was submitted" >&2
+      exit 6
+    }
+    # send_idle_wait -> 0 once $lock_pane reads anything but `working`, is
+    # dead, or is gone; 1 at the deadline with it still working. Three
+    # fields, the pane id first: an empty id is a pane that has gone, and the
+    # state is last because it is the field that can be empty. Adds the
+    # seconds it held to $idle_waited.
     send_idle_wait() {
-      local info now
+      local info rest now held_from=""
       while :; do
-        info="$(t display-message -p -t "$lock_pane" '#{pane_id} #{@agent_state}' 2>/dev/null || true)"
-        [ -n "${info%% *}" ] || return 0
-        [ "${info#* }" = working ] || return 0
+        info="$(t display-message -p -t "$lock_pane" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+        rest="${info#* }"
+        if [ -z "${info%% *}" ] || [ "${rest%% *}" = 1 ] || [ "${rest#* }" != working ]; then
+          [ -z "$held_from" ] || idle_waited=$(( idle_waited + $(date +%s) - held_from ))
+          return 0
+        fi
         now="$(date +%s)"
-        [ "$now" -lt "$idle_deadline" ] || return 1
+        [ -n "$held_from" ] || held_from="$now"
+        if [ "$now" -ge "$idle_deadline" ]; then
+          idle_waited=$(( idle_waited + now - held_from ))
+          return 1
+        fi
         sleep 1 2>/dev/null || true
       done
     }
     while :; do
       if [ "$when_idle" -eq 1 ] && [ -n "$lock_pane" ] && ! send_idle_wait; then
-        # Nothing was typed and no lock is held: the lock is dropped before
-        # every return to the wait. Nothing on stdout, --json or not, like
-        # every other failure of this command.
-        echo "roost send: '$raw' still reads working after ${idle_timeout}s (--when-idle; @roost-send-idle-timeout) — nothing was submitted" >&2
-        exit 6
+        send_idle_timeout
       fi
       lock_rc=0
       roost_panelock_take "$lock_sock" "$lock_pane" "$lock_timeout" || lock_rc=$?
       # The re-check under the lock. Only on 0: every other code exits or
       # falls through to the "no such target" check below, as without the
-      # flag.
+      # flag. A dead pane passes, so the dead-pane exit 2 below is what the
+      # caller sees.
       if [ "$when_idle" -eq 1 ] && [ "$lock_rc" = 0 ] \
-         && [ "$(t display-message -p -t "$lock_pane" '#{@agent_state}' 2>/dev/null || true)" = working ]; then
+         && [ "$(t display-message -p -t "$lock_pane" '#{pane_dead} #{@agent_state}' 2>/dev/null || true)" = "0 working" ]; then
         roost_panelock_drop
+        # NOT straight back to the poll (fix loop 1, found by review,
+        # reproduced with a bound of 0): the poll returns as soon as it reads
+        # not-working, before it looks at the clock, so a pane that read idle
+        # outside the lock and working under it went round this loop with no
+        # sleep and no deadline, spinning the CPU and never timing out. The
+        # deadline is checked here, and a second is slept — and counted as
+        # held, because the pane did read working — before the next look.
+        [ "$(date +%s)" -lt "$idle_deadline" ] || send_idle_timeout
+        sleep 1 2>/dev/null || true
+        idle_waited=$((idle_waited + 1))
         continue
       fi
       break
     done
-    if [ "$when_idle" -eq 1 ] && [ -n "$lock_pane" ]; then
-      idle_waited=$(( $(date +%s) - idle_start ))
-    fi
     # `waited` joins the --json document only when --when-idle was given, so a
     # plain send's document stays byte for byte what it was. An array, and
     # expanded with `${a[@]+...}`, because an empty "${a[@]}" under `set -u`

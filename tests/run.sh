@@ -45,8 +45,8 @@ shard_weight() {
     test-claude-permission-request.sh) echo 25 ;;
     test-adapter-install.sh) echo 25 ;;
     test-reply-record.sh) echo 24 ;;
-    # One local macOS run (2026-10-23), not a CI log: re-measure with the rest.
-    test-send-when-idle.sh) echo 21 ;;
+    # One local macOS run (2026-10-24, 28 s), not a CI log: re-measure with the rest.
+    test-send-when-idle.sh) echo 28 ;;
     *) echo 5 ;;
   esac
 }
