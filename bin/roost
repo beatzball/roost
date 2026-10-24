@@ -2418,7 +2418,17 @@ EOF
     lock_rc=0
     roost_panelock_take "$lock_sock" "$pane" "$lock_timeout" || lock_rc=$?
     case "$lock_rc" in
-      0) ;;
+      0) # The wait may have been long, and the screen checks above are from
+         # before it. The send itself re-tests the badge, the fingerprint, the
+         # answered record and copy mode at the instant it sends, but not the
+         # SCREEN: a slow tool approved at the pane during the wait leaves the
+         # pane blocked with the same fingerprint and the dialog gone, and an
+         # Escape would then interrupt the running tool (found by review).
+         # So the marker is read once more, now, under the lock.
+         if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+           echo "roost answer: '$raw' changed while waiting for its pane lock: the dialog is no longer on its screen. Nothing was sent" >&2
+           exit 7
+         fi ;;
       1) echo "roost answer: another command is typing into '$raw' (a roost send holds its lock) and did not finish within ${lock_timeout}s. Nothing was sent; try again" >&2
          exit 11 ;;
       2) echo "roost answer: the server's socket path '$lock_sock' is not absolute, so no pane lock can be named for '$raw'. Nothing was sent; start the server, or set ROOST_SOCKET, with an absolute path" >&2
