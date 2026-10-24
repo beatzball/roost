@@ -829,11 +829,16 @@ app-servers by environment, as the probe did.
 
 ---
 
-## 9. Open questions for the human
+## 9. Decisions
 
 Each with option A (the proposal) and B, and one line of why.
 
-**Q1. When do agents come back after a reboot?**
+**Decided by the human on 2026-10-24: A, A, A, A.** Agents resume on first
+attach, not at login (Q1); a manual restore resumes by default (Q2); the
+saved shape lives under `XDG_STATE_HOME` (Q3); a Claude pane with no recorded
+id gets a printed, never-run resume line (Q4).
+
+**Q1. When do agents come back after a reboot?** Decided: A.
 - **A.** `persist` restores **placement** at login and resumes agents when a
   person first attaches to that server (`roost`, `roost session NAME`), paced;
   `roost restore --resume` does it by hand any time.
@@ -842,7 +847,7 @@ Each with option A (the proposal) and B, and one line of why.
   booted needs the headroom (lesson 4), and a Keychain prompt at login (§8.2
   item 4) is the kind of surprise that turns a feature off.
 
-**Q2. Does a manual `roost restore` resume agents by default?**
+**Q2. Does a manual `roost restore` resume agents by default?** Decided: A.
 - **A.** Yes: every pane with a recorded conversation is resumed; `--no-resume`
   places shells only.
 - **B.** No: shells only; `--resume` opts in, as #51's text said.
@@ -851,7 +856,7 @@ Each with option A (the proposal) and B, and one line of why.
   and the fleet of shells is what the incident called useless; B is #51's
   original caution about cost, which the measurement removes.
 
-**Q3. Where does the saved shape live?**
+**Q3. Where does the saved shape live?** Decided: A.
 - **A.** `${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/`, beside the
   pane records and the event log, one `rm -rf` to forget everything.
 - **B.** `${XDG_CONFIG_HOME:-~/.config}/roost/shapes/<server>/`, beside
@@ -862,7 +867,7 @@ Each with option A (the proposal) and B, and one line of why.
   reboot the file exists for.
 
 **Q4. A Claude pane with no recorded id (13 of 32 today, §2.6): fall back to
-Claude's own store?**
+Claude's own store?** Decided: A.
 - **A.** Print, never run: restore and `revive` show `claude --resume <newest
   id under ~/.claude/projects/<cwd>>` for such a pane and a person decides.
 - **B.** No fallback: the pane is a shell in its directory with a note, and
