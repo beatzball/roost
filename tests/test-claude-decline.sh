@@ -135,7 +135,7 @@ wait_for "$p" 'SENT-OK'; assert_true $? "the send after a declined dialog is del
 pane_has "$p" @agent_state; assert_eq "$?" "1" "recovery UNSETS @agent_state — it never writes a value"
 pane_has "$p" @roost-reply; assert_eq "$?" "1" "the previous turn's reply is cleared with it"
 pane_has "$p" @roost-transcript; assert_eq "$?" "1" "the transcript record is cleared with it"
-assert_eq "$(opt "$p" @roost-unblocked | sed 's/^[0-9]* //')" "since=$NO_SINCE" \
+assert_eq "$(opt "$p" @roost-unblocked | sed 's/^[0-9]* //; s/ by=[0-9.]*$//')" "since=$NO_SINCE" \
   "the clear is recorded on the pane, naming the stamp it cleared"
 
 # --- 3. wait-done and read ---------------------------------------------------

@@ -430,10 +430,12 @@ roost_events__turn() {
 # Two changes happen without the agent's hook running, so the hook cannot log
 # them: roost itself clearing a 🛑 after a declined dialog, and a pane closing.
 
-# roost_events_unblocked PANE NOW SINCE [FROM REASON] — scripts/lib/roost-
+# roost_events_unblocked PANE NOW SINCE [FROM REASON TOKEN] — scripts/lib/roost-
 # unblock.sh calls this after its one-command clear, with the stamp it wrote.
 # The line is written only when that clear is what the pane now shows:
-# @agent_state unset and @roost-unblocked holding exactly "NOW since=SINCE".
+# @agent_state unset and @roost-unblocked holding exactly "NOW since=SINCE",
+# followed by " by=TOKEN" when a TOKEN is given -- the caller's own token, so
+# of several callers in one second only the one whose clear landed logs it.
 # Anything else means the clear did not land, or another writer has moved
 # the pane since and logs its own line.
 #
@@ -444,7 +446,8 @@ roost_events__turn() {
 # `to` is null, as `status --json` shows the pane: the clear UNSETS the state.
 # Needs bin/roost's `t`, the way the reader below does.
 roost_events_unblocked() {
-  local info rest boot window cur unb session from="${4:-blocked}" reason="${5:-the dialog was declined or dismissed}"
+  local info rest boot window cur unb session from="${4:-blocked}" reason="${5:-the dialog was declined or dismissed}" want="$2 since=$3"
+  [ -n "${6:-}" ] && want="$want by=$6"
   roost_events_dir
   [ -n "$ROOST_EVENTS_DIR" ] || return 0
   # `|` between the fields, not a tab. This runs under bin/roost, whose tmux
@@ -463,7 +466,7 @@ roost_events_unblocked() {
   window="${rest%%|*}"; rest="${rest#*|}"
   cur="${rest%%|*}"; rest="${rest#*|}"
   unb="${rest%%|*}"; session="${rest#*|}"
-  [ -z "$cur" ] && [ "$unb" = "$2 since=$3" ] || return 0
+  [ -z "$cur" ] && [ "$unb" = "$want" ] || return 0
   roost_events__shape "$boot" "$1" "$window" || return 0
   case "$session" in
     *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-]*) session="" ;;

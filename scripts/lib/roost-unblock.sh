@@ -65,8 +65,8 @@
 # just been declined, #91), @roost-stop-swallowed (that dialog's one-Stop
 # allowance, spent or not), @roost-dialog, @roost-answered and
 # @roost-answer-nonce (that dialog's record for `roost answer`, #142), and
-# writes @roost-unblocked "<now>
-# since=<stamp>" so a false clear can be found later, and -- since #95 --
+# writes @roost-unblocked "<now> since=<stamp> by=<token>" so a false clear can
+# be found later, and -- since #95 --
 # @roost-ended "<stamp> interrupted", because a declined dialog ended the turn
 # and the human ended it: `wait-done` reads that record to exit 5 instead of
 # 0 (the M7 measurement, "interrupted looks like success"), and an empty turn
@@ -226,6 +226,22 @@ roost_claude_declined_jq() {
     ' >/dev/null 2>&1
 }
 
+# roost_unblock_token -> ROOST_UNBLOCK_TOKEN, a word unique to this caller:
+# its pid and two $RANDOMs, digits and dots only, so it sits in a tmux format
+# and a command string unquoted by anything but '…'.
+#
+# WHY IT EXISTS (flock round 1 on #95, reproduced 20 of 20 runs). The clear
+# below is a compare-and-clear, so only one of several callers recovering one
+# pane at once -- a wait-done poll, a read, a send -- actually clears it. But
+# the check AFTER it read @roost-unblocked back as "<now> since=<stamp>", and
+# every caller that ran in the same second computed the same value: each
+# believed it had won, and each appended an empty interrupted turn, so one
+# prompt took three turn numbers. With the token in the value, the read-back
+# names exactly one caller, and only that caller records the turn.
+roost_unblock_token() {
+  ROOST_UNBLOCK_TOKEN="$$.$RANDOM$RANDOM"
+}
+
 # roost_unblock_pane TARGET -> 0 iff TARGET's pane read `blocked` and was
 # cleared here. Any other answer is 1, and a 1 changes nothing.
 roost_unblock_pane() {
@@ -247,6 +263,7 @@ roost_unblock_pane() {
   case "$rpath" in /*) : ;; *) return 1 ;; esac
   roost_claude_declined "$rpath" "$since" || return 1
   now="$(date +%s)"
+  roost_unblock_token
   # One tmux command: the condition is evaluated and the unsets run with no
   # other client able to act in between. $since is digits only (checked
   # above) and $pane is %N, so neither can break out of the format or the
@@ -256,12 +273,12 @@ roost_unblock_pane() {
   # dialog that was just declined, as @roost-blocked-on does, and go with it.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
-  roost_events_unblocked "$pane" "$now" "$since" 2>/dev/null || true
+  roost_events_unblocked "$pane" "$now" "$since" blocked "the dialog was declined or dismissed" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
-    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ] \
+    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
     || return 1
   # The empty turn (#95), as roost_interrupted_pane below writes it, and for
   # the same reason; fails soft the same way.
@@ -496,18 +513,20 @@ roost_interrupted_pane() {
   case "$rpath" in /*) : ;; *) return 1 ;; esac
   roost_claude_interrupted "$rpath" "$since" || return 1
   now="$(date +%s)"
+  roost_unblock_token
   # One tmux command, test and unsets together, as the decline's clear. The
   # outcome record is written in the same command: a reader that sees the
   # badge gone finds the reason beside it, or finds neither.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
+  # This caller's token, not the second: see roost_unblock_token.
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "working" ] \
-    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ] \
+    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
     || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
-  roost_events_unblocked "$pane" "$now" "$since" working "the turn was interrupted" 2>/dev/null || true
+  roost_events_unblocked "$pane" "$now" "$since" working "the turn was interrupted" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
   # The empty turn (#95, §5.4): only for a pane whose record this roost can
   # write (state 0) or that has none yet (1); an unreadable or newer record
   # is left alone, as everywhere. Fails soft: the badge is already cleared

@@ -125,7 +125,7 @@ pane_has "$p" @agent_state; assert_eq "$?" "1" "recovery UNSETS @agent_state —
 pane_has "$p" @roost-reply; assert_eq "$?" "1" "the previous turn's reply is cleared with it"
 pane_has "$p" @roost-transcript; assert_eq "$?" "1" "the transcript record is cleared with it"
 assert_eq "$(opt "$p" @roost-ended)" "$STREAM_SINCE interrupted" "@roost-ended records '<since> interrupted'"
-assert_eq "$(opt "$p" @roost-unblocked | sed 's/^[0-9]* //')" "since=$STREAM_SINCE" "the clear is recorded, naming the stamp"
+assert_eq "$(opt "$p" @roost-unblocked | sed 's/^[0-9]* //; s/ by=[0-9.]*$//')" "since=$STREAM_SINCE" "the clear is recorded, naming the stamp"
 assert_eq "$(turns_in "$p")" "1" "ONE turn file was written for the interrupted turn"
 assert_eq "$(wc -c < "$(recdir "$p")/replies/000001" | tr -d ' ')" "0" "...and it is EMPTY: the turn has no reply"
 assert_eq "$(cat "$(recdir "$p")/replies/000001.outcome")" "interrupted" "...with an outcome sidecar saying interrupted"
