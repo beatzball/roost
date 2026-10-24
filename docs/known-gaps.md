@@ -2121,6 +2121,28 @@ is a different trade, not a fix to this one, and it is a follow-up.
 
 ## Behaviour changes
 
+### `send` now writes a stderr line whenever it names no turn (#177)
+
+Every `roost send` that submits the text and prints no `%N TURN` now adds one
+line on stderr that starts `roost send: no turn number:` and says why. Stdout,
+`--json` and the exit codes did not change. Two things to know, neither a
+defect:
+
+- **A send to a plain shell or a log tail gets the line every time**, as "has
+  no badge yet". roost cannot tell a pane that is not an agent from an agent
+  whose first turn has not started — both have no badge — so it says the
+  second, which is the case that confused workers. A script that sends into a
+  helper shell and treats any stderr as failure now sees a line where it saw
+  none. Two tests in the suite asserted empty stderr on such a send
+  (tests/test-coordination.sh, tests/test-send-paste.sh); they now take out
+  that one line and still fail on any other. Severity: low. What would close
+  it: a way to tell "never an agent" from "not yet", for example the Claude
+  SessionStart `idle` stamp the `sent_by` entry above asks for.
+- **The badge named is the one read before the paste.** A pane that was
+  `working` when `send` looked and has finished by the time it returns is
+  still reported as mid-turn, which is what decided that it was not watched.
+  Severity: none; it is the honest reason for that send.
+
 ### Replies are kept on disk, and `read` prints long ones whole (#42)
 
 Every recorded reply is now also written to a file under

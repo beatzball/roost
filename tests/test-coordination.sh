@@ -405,7 +405,12 @@ if command -v python3 >/dev/null 2>&1; then
   # expression expected" to stderr for the empty case, and $out already
   # captured stderr (2>&1) above — so a clamp regression back to "" shows up
   # here as non-empty $out even though rc stays 0.
-  assert_eq "$out" "" '@roost-send-retries "000" produces no stderr (rules out the empty-string regression)'
+  #
+  # Less the one line `send` prints on purpose for a pane it cannot number
+  # (#177): this pane has no badge, so that line is expected here, and it is
+  # the ONLY one taken out — anything else on stderr still fails this.
+  assert_eq "$(printf '%s\n' "$out" | grep -v "^roost send: no turn number: " || true)" "" \
+    '@roost-send-retries "000" produces no stderr (rules out the empty-string regression)'
 
   # a very long digit string is still clamped (to 20) and does not hang: the
   # whole call — including the up-to-20-iteration retry loop at a shortened

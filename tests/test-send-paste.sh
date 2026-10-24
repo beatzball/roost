@@ -189,4 +189,7 @@ assert_eq "$(printf '%s\n' "$got" | grep -c 'COLLAPSE-HEAD-0001')" "1" \
 # A placeholder accounts for the missing text, so it is the expected success
 # rendering, not an unknown. Warning here would fire on every long send to a
 # real agent and train the reader to ignore the notice where it matters.
-assert_eq "$err" "" "...and roost does not cry wolf about a placeholder it can explain"
+# The one line taken out is #177's: this fixture has no badge, so `send` says
+# there is no turn number, and that is about the turn, not the paste.
+assert_eq "$(printf '%s\n' "$err" | grep -v "^roost send: no turn number: " || true)" "" \
+  "...and roost does not cry wolf about a placeholder it can explain"

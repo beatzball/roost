@@ -137,6 +137,11 @@ both fields or neither. There is no turn number when:
 
 Fall back to plain `wait-done` and `read` in all of those.
 
+`send` says which one it was, in one line on stderr that starts
+`roost send: no turn number:`. The text WAS submitted in every case, so an
+empty capture with exit 0 is not a failed delivery. `--json` prints no such
+line; its `started`, `turn` and `state` fields already say the same.
+
 **If the target may be busy, pass `--when-idle`.** A plain send into a
 `working` agent lands in the middle of its turn, gets folded into that turn,
 and gives you no turn number. `roost send --when-idle --from "$me" TARGET
@@ -377,6 +382,23 @@ turn. If there is nothing new for the human to look at, do not call it.
 When several agents are working at once, only the one coordinating them should
 call `view`. Five reviewers each opening a view means five viewers at a human
 who asked for one result.
+
+## If you are the worker
+
+Another pane gave you a task, and is waiting on your reply:
+
+- **Your result is your final reply.** That is what `roost read --turn N`
+  returns to the pane that asked. Do not `roost send` it back.
+- **Never `send` to a busy pane.** A `working` coordinator cannot verify
+  delivery, and two workers finishing together collide on one input line.
+  `send` holds a per-pane lock since 0.9.0, so the second one waits, and may
+  give up with exit 1.
+- **A message that arrives mid-turn is folded into the running turn by the
+  harness.** So message N is not turn N. Identify messages by an id in the
+  text, not by turn order.
+- **Empty output from `send` with exit 0 means submitted, with no turn
+  number.** The stderr line that starts `roost send: no turn number:` says
+  why. It is not a failed delivery: do not send it again.
 
 ## Reporting your own state
 

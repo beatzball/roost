@@ -164,6 +164,30 @@ case "$(cat "$work/w3.secs")" in
   *)     assert_true 1 "...at once (took $(cat "$work/w3.secs")s)" ;;
 esac
 assert_contains "$(T capture-pane -p -t "$c")" "into a plain pane" "...and the text landed"
+# #177: a held send that names no turn says why on stderr, as a plain one does.
+snd w3h --when-idle "$c" "plain again"
+wait
+assert_eq "$(cat "$work/w3h.rc") [$(cat "$work/w3h.out")]" "0 []" "no badge, human form: exit 0 and no turn number"
+assert_eq "$(cat "$work/w3h.err")" "roost send: no turn number: '$c' has no badge yet (its first turn has not started)" \
+  "...and the one stderr line says it has no badge yet"
+# And the line names the badge read AFTER the wait, not the `working` that was
+# waited out: with the turn watch off there is no number, and the reason is
+# the watch, not "mid-turn".
+T set-option -g @roost-send-turn-timeout 0
+badge "$c" working
+( sleep 1; badge "$c" done ) &
+snd w3t --when-idle "$c" "after the wait"
+wait
+assert_eq "$(cat "$work/w3t.rc") [$(cat "$work/w3t.out")]" "0 []" "held past working, watch off: exit 0 and no turn number"
+assert_eq "$(cat "$work/w3t.err")" "roost send: no turn number: '$c' was not watched (@roost-send-turn-timeout is 0)" \
+  "...and the stderr line names the watch, not the working it waited out"
+# Detector proof: it really was held, or the line above proves nothing.
+case "$(cat "$work/w3t.secs")" in
+  1|2|3) assert_true 0 "detector proof: ...the send really was held for the working badge" ;;
+  *)     assert_true 1 "detector proof: ...the send really was held for the working badge (took $(cat "$work/w3t.secs")s)" ;;
+esac
+T set-option -g -u @roost-send-turn-timeout
+unbadge "$c"
 
 # --- 4. blocked is still refused ---------------------------------------------
 echo "4. a blocked target"
@@ -295,6 +319,8 @@ badge "$d" working
 snd w6 "$d" "pasted at once"
 wait
 assert_eq "$(cat "$work/w6.rc") [$(cat "$work/w6.out")]" "0 []" "exit 0 and no turn number, as before"
+assert_eq "$(cat "$work/w6.err")" "roost send: no turn number: '$d' is mid-turn; the prompt is queued inside the harness" \
+  "...and the one stderr line (#177) says the prompt is queued mid-turn"
 case "$(cat "$work/w6.secs")" in
   0|1|2) assert_true 0 "...at once" ;;
   *)     assert_true 1 "...at once (took $(cat "$work/w6.secs")s)" ;;

@@ -705,6 +705,130 @@ outside "$ROOST" send --from "%7x" "$p" "not a pane id" >/dev/null 2>&1
 assert_eq "$(cat "$(side "$p" "$next")")" "%7x" "% followed by anything but digits is a word, kept as given"
 "$ROOST" wait-done --turn "$next" "$p" 30 >/dev/null 2>&1
 
+# --- 14. no turn number: one stderr line says why (#177) --------------------
+#
+# Empty stdout with exit 0 has more than one honest cause, and in a real run
+# both workers read it as a failed delivery: one wrote "I'm unsure it was
+# delivered, though the peer clearly responded". So every path that submits
+# the text and names no turn says which cause it was, on stderr, in one line.
+# Stdout stays empty — it is the "you cannot use --turn here" signal callers
+# branch on — and --json stays as it was, because its started/turn/state fields
+# already carry the same facts and a program reading it asked for no prose.
+#
+# send_both TARGET TEXT... -> $both_rc, $both_out, $both_err
+send_both() {
+  local errf="$work/send-err"
+  both_out="$("$ROOST" send "$@" 2>"$errf")"; both_rc=$?
+  both_err="$(cat "$errf")"
+}
+
+# 14a. no badge yet: a pane whose first turn has not started.
+# HISTFILE empty: this shell is killed below, and on the way out it would
+# otherwise save the lines typed into it into the canary HOME.
+nb="$(T new-window -d -P -F '#{pane_id}' 'ENV= HISTFILE= exec /bin/sh')"
+require_pane "$nb" "no-badge shell"
+sleep 0.3
+assert_eq "$(state "$nb")" "" "detector proof: the pane has no badge"
+send_both "$nb" "echo first"
+assert_eq "$both_rc" 0 "no badge: still exit 0"
+assert_eq "$both_out" "" "no badge: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$nb' has no badge yet (its first turn has not started)" \
+  "no badge: one stderr line says why there is no turn number"
+doc="$("$ROOST" send --json "$nb" "echo json" 2>"$work/send-err")"
+assert_contains "$doc" '"started":false' "no badge --json: the document is unchanged (started false)"
+assert_contains "$doc" '"turn":null' "no badge --json: ...and turn null"
+assert_eq "$(cat "$work/send-err")" "" "no badge --json: no prose on stderr"
+
+# 14b. mid-turn: the badge is set by hand, so nothing else can move it.
+T set-option -p -t "$nb" @agent_state working
+assert_eq "$(state "$nb")" "working" "detector proof: the pane reads working"
+send_both "$nb" "echo queued"
+assert_eq "$both_rc" 0 "mid-turn: still exit 0"
+assert_eq "$both_out" "" "mid-turn: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$nb' is mid-turn; the prompt is queued inside the harness" \
+  "mid-turn: one stderr line says the prompt is queued"
+
+# 14c. blocked, sent through with --force: not watched either.
+T set-option -p -t "$nb" @agent_state blocked
+send_both --force "$nb" "echo forced"
+assert_eq "$both_rc" 0 "blocked --force: still exit 0"
+assert_eq "$both_out" "" "blocked --force: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$nb' is blocked at a dialog (sent with --force); a turn is watched only from done or idle" \
+  "blocked --force: one stderr line says why"
+T set-option -p -u -t "$nb" @agent_state
+T kill-pane -t "$nb" 2>/dev/null || true
+
+# 14d. recording off: a turn started, and there is nothing to number it by.
+T set-option -g @roost-send-turn-timeout 4
+ro="$(T new-window -d -P -F '#{pane_id}' "exec env ROOST_RECORD_DIR= /bin/sh $AGENT $HOOK 0 0.3")"
+require_pane "$ro" "recording-off agent (14d)"
+n=50
+while [ "$n" -gt 0 ]; do
+  T capture-pane -p -t "$ro" 2>/dev/null | grep -q READY && break
+  sleep 0.1; n=$((n - 1))
+done
+env ROOST_RECORD_DIR="" "$ROOST" send "$ro" "warm up" >/dev/null 2>&1
+wait_state "$ro" done
+both_out="$(env ROOST_RECORD_DIR="" "$ROOST" send "$ro" "no record" 2>"$work/send-err")"; both_rc=$?
+both_err="$(cat "$work/send-err")"
+assert_eq "$both_rc" 0 "recording off: still exit 0"
+assert_eq "$both_out" "" "recording off: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$ro' started a turn, but recording is off (ROOST_RECORD_DIR is empty or not an absolute path, or there is no state directory), so turns are not numbered" \
+  "recording off: one stderr line says turns are not numbered"
+wait_state "$ro" done
+# A RELATIVE ROOST_RECORD_DIR is refused the same way (roost_record_root
+# accepts only an absolute root), so it gets the same line, not a claim that
+# the variable is empty.
+both_out="$(env ROOST_RECORD_DIR=rec "$ROOST" send "$ro" "relative record dir" 2>"$work/send-err")"; both_rc=$?
+both_err="$(cat "$work/send-err")"
+assert_eq "$both_rc" 0 "relative ROOST_RECORD_DIR: still exit 0"
+assert_eq "$both_out" "" "relative ROOST_RECORD_DIR: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$ro' started a turn, but recording is off (ROOST_RECORD_DIR is empty or not an absolute path, or there is no state directory), so turns are not numbered" \
+  "relative ROOST_RECORD_DIR: the same recording-off line, which names that cause too"
+assert_file_absent "$PWD/rec" "relative ROOST_RECORD_DIR: nothing was written under the relative path"
+wait_state "$ro" done
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
+
+# 14e. the watch turned off with @roost-send-turn-timeout 0.
+T set-option -g @roost-send-turn-timeout 0
+send_both "$ro" "unwatched"
+assert_eq "$both_rc" 0 "watch off: still exit 0"
+assert_eq "$both_out" "" "watch off: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$ro' was not watched (@roost-send-turn-timeout is 0)" \
+  "watch off: one stderr line says the watch is off"
+T set-option -gu @roost-send-turn-timeout 2>/dev/null || true
+wait_state "$ro" done
+T kill-pane -t "$ro" 2>/dev/null || true
+
+# 14f. an errored turn: started, and never numbered (see 12).
+ep="$(T new-window -d -P -F '#{pane_id}' 'ENV= HISTFILE= exec /bin/sh')"
+require_pane "$ep" "error pane (14f)"
+sleep 0.3
+spid="$(T display -p '#{pid}')"
+env TMUX="$s,$spid,0" TMUX_PANE="$ep" "$HOOK" working </dev/null
+printf '{"last_assistant_message":"an answer"}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$ep" "$HOOK" done --stop-hook
+( sleep 1; env TMUX="$s,$spid,0" TMUX_PANE="$ep" "$HOOK" error </dev/null ) &
+send_both "$ep" "this one errors"
+wait
+assert_eq "$both_rc" 0 "errored turn: still exit 0"
+assert_eq "$both_out" "" "errored turn: stdout stays empty"
+assert_eq "$both_err" "roost send: no turn number: '$ep' started a turn that ended in error, and an errored turn is not numbered" \
+  "errored turn: one stderr line says why"
+T kill-pane -t "$ep" 2>/dev/null || true
+
+# 14g. a NUMBERED send stays silent on stderr: the line is only for no number.
+# Warmed up first: the fixture has no badge until its first turn (13a).
+ok="$(newagent 0 0.3)"
+"$ROOST" send "$ok" "warm up" >/dev/null 2>&1
+wait_state "$ok" done
+send_both "$ok" "numbered"
+assert_eq "$both_rc" 0 "numbered send: exit 0"
+assert_contains "$both_out" "$ok " "numbered send: stdout names the pane and turn"
+assert_eq "$both_err" "" "numbered send: nothing on stderr"
+wait_state "$ok" done
+T kill-pane -t "$ok" 2>/dev/null || true
+
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
 assert_eq "$found" "" "nothing was written into HOME/XDG during this file"

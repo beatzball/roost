@@ -1761,7 +1761,7 @@ JSON
     # one that never started — the caller then either re-sends a prompt that is
     # already running, or tells a human the agent is wedged when it is not.
     turn_watch=0 turn_base=0 turn_dir="" turn_num="" turn_started=0 turn_have_base=0
-    turn_pane="" turn_since="" turn_reply=""
+    turn_pane="" turn_since="" turn_reply="" turn_errored=0 turn_rec_bad=0
     turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
     turn_pane="${turn_info%% *}"
     turn_rest="${turn_info#* }"
@@ -1792,6 +1792,9 @@ JSON
         # number would be worse than none.
         0) roost_record_scan "$RF_DIR/replies"; turn_dir="$RF_DIR"; turn_base="$ROOST_RECORD_MAX"; turn_have_base=1 ;;
         1) turn_dir="$RF_DIR"; turn_base=0; turn_have_base=1 ;;
+        # Kept only so the no-number line at the end can say which of the
+        # two "no base" causes this was (#177).
+        *) turn_rec_bad=1 ;;
       esac
     fi
 
@@ -2089,7 +2092,7 @@ JSON
         #    `wait-done`'s timeout and its own `is in error state` exit are for.
         case "$turn_now" in
           ''|done|idle) ;;
-          error) turn_started=1; break ;;
+          error) turn_started=1; turn_errored=1; break ;;
           *) turn_started=1
              if [ "$turn_have_base" = 1 ]; then turn_num=$((turn_base + 1)); fi
              break ;;
@@ -2242,6 +2245,45 @@ JSON
       exit 0
     fi
     if [ -n "$turn_num" ]; then printf '%s %s\n' "$turn_pane" "$turn_num"; fi
+    # WHY THERE IS NO NUMBER (#177), one line on stderr, and only on the human
+    # path: --json already carries started/turn/state and a program reading it
+    # asked for no prose. The empty stdout above is correct and stays — it is
+    # what tells a caller "--turn is not available here" — but on its own it
+    # was read as a failed delivery: in a real two-worker run both agents took
+    # the silence for a lost message, and one went on to write that it was
+    # "unsure it was delivered, though the peer clearly responded". Every one
+    # of these sends DID submit the text, so each line says which honest cause
+    # left it unnumbered. The badge named is the one read at baseline, which is
+    # the one that decided whether to watch at all. An unknown badge is not
+    # echoed: it is a pane option anyone can set, and stderr is a terminal.
+    if [ -z "$turn_num" ]; then
+      case "$turn_state" in
+        '') echo "roost send: no turn number: '$raw' has no badge yet (its first turn has not started)" >&2 ;;
+        working) echo "roost send: no turn number: '$raw' is mid-turn; the prompt is queued inside the harness" >&2 ;;
+        blocked) echo "roost send: no turn number: '$raw' is blocked at a dialog (sent with --force); a turn is watched only from done or idle" >&2 ;;
+        done|idle)
+          if [ "$turn_timeout" = 0 ]; then
+            echo "roost send: no turn number: '$raw' was not watched (@roost-send-turn-timeout is 0)" >&2
+          elif [ "$turn_errored" = 1 ]; then
+            echo "roost send: no turn number: '$raw' started a turn that ended in error, and an errored turn is not numbered" >&2
+          elif [ "$turn_have_base" = 0 ] && [ -z "${ROOST_RECORD_ROOT:-}" ]; then
+            # Empty root has three causes, not one (roost_record_root in
+            # scripts/lib/roost-record.sh): ROOST_RECORD_DIR set to "", set to a
+            # RELATIVE path, or unset with neither XDG_STATE_HOME nor HOME
+            # absolute. The line names all three rather than guess which.
+            echo "roost send: no turn number: '$raw' started a turn, but recording is off (ROOST_RECORD_DIR is empty or not an absolute path, or there is no state directory), so turns are not numbered" >&2
+          elif [ "$turn_have_base" = 0 ] && [ "$turn_rec_bad" = 1 ]; then
+            echo "roost send: no turn number: '$raw' started a turn, but its record is one this roost cannot read (see \`roost read $raw\`)" >&2
+          elif [ "$turn_have_base" = 0 ]; then
+            echo "roost send: no turn number: '$raw' started a turn, but this pane has no record to number it by" >&2
+          else
+            # Signals 3 and 4 above: a stamp or a reply moved, and neither
+            # names a turn, so none was taken from them.
+            echo "roost send: no turn number: '$raw' started a turn, but roost saw only its badge stamp or reply change, and neither names the turn" >&2
+          fi ;;
+        *) echo "roost send: no turn number: '$raw' has a badge that is not watched; a turn is watched only from done or idle" >&2 ;;
+      esac
+    fi
     exit 0
     ;;
   answer)

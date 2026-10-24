@@ -41,6 +41,22 @@ and this project uses [Semantic Versioning](https://semver.org/).
   for the whole `@roost-send-lock-timeout` wait, a lock that cannot be named
   or made, or one taken from under the call — it exits 11 with nothing sent,
   and the call can simply be repeated.
+- **`roost send` says why it printed no turn number.** An empty stdout at exit
+  0 has several honest causes, and workers in a real run read every one of
+  them as a lost message (#177). Each path that submits the text and names no
+  turn now adds one stderr line that starts `roost send: no turn number:` and
+  names the cause — the first one being a pane with no badge yet, and the
+  commonest a pane that is mid-turn, where the prompt is queued inside the
+  harness. Stdout, `--json` and every exit code are unchanged.
+
+### Changed
+
+- **The roost skill has an "If you are the worker" section**, and the
+  driving-a-fleet page says the same (#177). A pane given a task by another
+  pane hands its result back as its final reply, never with `roost send`; it
+  never sends to a busy pane; it identifies messages by an id in the text,
+  because a message that lands mid-turn joins the running turn; and it reads
+  an empty `send` at exit 0 as submitted, not lost.
 
 ## [0.9.0]
 
