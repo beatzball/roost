@@ -249,7 +249,20 @@ stated; "not measured" means not measured.
   That prompt gets no turn file of its own, and `send` to a held pane prints
   no turn number (it takes the "already mid-turn" path), so a coordinator
   never had one to lose. The main reply is not kept on disk either, once the
-  final reply replaces it — the cost of building Q3 as a deferral.
+  final reply replaces it — the cost of building Q3 as a deferral. When the
+  release has NO reply of its own (a turn that ended on a tool call), or the
+  held turn is ended by an Esc or a declined dialog, the held main reply IS
+  the turn's file (flock round 1); it is taken back off the pane, so a main
+  reply longer than the 12 KB pane cap is recorded cut, with its truncation
+  marker (low: the release with no reply of its own is itself rare).
+- **A Claude settings file or wiring from before #95 recovers no Esc** (low,
+  by design). The transcript path is recorded at the start of a turn only
+  under `--prompt-hook` on the UserPromptSubmit entry, so a plain `roost
+  state working` never reads its stdin. An older `settings.json` badges
+  exactly as before and an Esc mid-turn leaves ⏳ until the next prompt, as
+  before #95; `roost doctor` names the missing flag and `roost install`
+  replaces the entry. A roost server started before the upgrade keeps its old
+  wiring file until it is restarted.
 - **After a Claude interrupt the pane has no badge, so the next `send`
   prints no turn number** (low). Recovery may only unset, so the pane is
   neither done nor idle, and `send`'s turn watch runs only from those two.
