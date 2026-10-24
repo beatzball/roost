@@ -157,15 +157,30 @@ assert_eq "$(opt "$p" @roost-ended)" "$TOOL_SINCE interrupted" "...and records i
 
 p="$(newpane)"; require_pane "$p" wait-done/stream
 stamp "$p" "$work/interrupt-stream.jsonl" "$STREAM_SINCE"
-"$ROOST" wait-done "$p" 5 >/dev/null 2>"$work/err"; rc=$?
-[ "$rc" -ne 1 ]; assert_true $? "wait-done returns on an interrupted pane instead of burning its timeout (exit $rc)"
+"$ROOST" wait-done "$p" 5 >"$work/out" 2>"$work/err"; rc=$?
+assert_eq "$rc" "5" "wait-done exits 5 on an interrupted pane: not done, not a timeout"
+assert_eq "$(cat "$work/err")" "roost: '$p' was interrupted, not done" "...with the one stderr line"
+assert_eq "$(cat "$work/out")" "" "...and nothing on stdout"
 pane_has "$p" @agent_state; assert_eq "$?" "1" "wait-done's recovery unsets the badge too"
+"$ROOST" wait-done "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "5" "a second wait-done on the same interrupted turn exits 5 again (the record outlives the clear)"
+"$ROOST" wait-done --turn 1 "$p" 5 >/dev/null 2>"$work/err"; rc=$?
+assert_eq "$rc" "5" "wait-done --turn 1 on the interrupted turn exits 5 (its outcome sidecar)"
+assert_contains "$(cat "$work/err")" "turn 1 of '$p' was interrupted" "...naming the turn"
+hook "$p" working </dev/null
+printf '{"last_assistant_message":"NEXT"}' | hook "$p" done --stop-hook
+"$ROOST" wait-done "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "after the next turn finishes, wait-done exits 0: the stamp moved, the record is stale"
+"$ROOST" wait-done --turn 2 "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "...and --turn 2 (the finished turn) exits 0"
+"$ROOST" wait-done --turn 1 "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "5" "...while --turn 1 (the interrupted one) still exits 5"
 
 w="$(X new-window -d -P -F '#{window_id}' 'ENV= exec /bin/sh')"
 wp="$(X display-message -p -t "$w" '#{pane_id}')"
 stamp "$wp" "$work/interrupt-tool.jsonl" "$TOOL_SINCE"
 "$ROOST" wait-done "$w" 5 >/dev/null 2>&1; rc=$?
-[ "$rc" -ne 1 ]; assert_true $? "wait-done on a WINDOW target recovers its interrupted pane (exit $rc)"
+assert_eq "$rc" "5" "wait-done on a WINDOW target recovers its interrupted pane and exits 5"
 
 p="$(newpane)"; require_pane "$p" status
 stamp "$p" "$work/interrupt-stream.jsonl" "$STREAM_SINCE"
@@ -249,7 +264,44 @@ assert_eq "$(opt "$p" @agent_state)" "working" "the approved tool's PostToolUse 
 assert_eq "$(opt "$p" @roost-transcript)" "$(opt "$p" @agent_since) /tmp/roost-fixture/00000000-0000-4000-8000-000000000001.jsonl" \
   "...and the record follows the new working stamp, so a later Esc in this turn can be read"
 
-# --- 6. the canaries ------------------------------------------------------------------
+# --- 6. the sink's `idle --interrupted`: codex and copilot's spelling -----------------
+p="$(newpane)"; require_pane "$p" sinkint
+hook "$p" working </dev/null
+X set-option -p -t "$p" @roost-reply "PREVIOUS-TURN-REPLY"
+sleep 1
+hook "$p" idle --interrupted </dev/null; rc=$?
+assert_eq "$rc" "0" "idle --interrupted exits 0"
+assert_eq "$(opt "$p" @agent_state)" "idle" "...and stamps idle"
+assert_eq "$(opt "$p" @roost-ended)" "$(opt "$p" @agent_since) interrupted" "...with @roost-ended '<stamp> interrupted', the stamp being the new @agent_since"
+pane_has "$p" @roost-reply; assert_eq "$?" "1" "...and the previous turn's reply cleared"
+assert_eq "$(turns_in "$p")" "1" "...and one empty turn file"
+assert_eq "$(cat "$(recdir "$p")/replies/000001.outcome")" "interrupted" "...with its outcome sidecar"
+"$ROOST" wait-done "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "5" "wait-done exits 5 for it"
+hook "$p" idle --interrupted </dev/null
+assert_eq "$(turns_in "$p")" "1" "a second interrupt with no prompt between is not a second turn"
+assert_eq "$(opt "$p" @roost-ended)" "$(opt "$p" @agent_since) interrupted" "...and the record still agrees with the stamp"
+p="$(newpane)"; require_pane "$p" statearm
+hook "$p" working </dev/null
+sleep 1
+env TMUX="$s,$spid,0" TMUX_PANE="$p" "$ROOST" state idle --interrupted </dev/null
+assert_eq "$(opt "$p" @roost-ended)" "$(opt "$p" @agent_since) interrupted" "roost state idle --interrupted reaches the sink with the flag"
+p="$(newpane)"; require_pane "$p" plainidle
+hook "$p" working </dev/null
+sleep 1
+env TMUX="$s,$spid,0" TMUX_PANE="$p" "$ROOST" state idle </dev/null
+pane_has "$p" @roost-ended; assert_eq "$?" "1" "a plain idle records no outcome"
+assert_eq "$(turns_in "$p")" "0" "...and no turn file"
+"$ROOST" wait-done "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "...so wait-done exits 0 for it"
+p="$(newpane)"; require_pane "$p" stale-ended
+hook "$p" working </dev/null
+X set-option -p -t "$p" @roost-ended "1 interrupted"
+X set-option -pu -t "$p" @agent_state
+"$ROOST" wait-done "$p" 5 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "an @roost-ended whose first word is not @agent_since is ignored: exit 0"
+
+# --- 7. the canaries ------------------------------------------------------------------
 [ -z "$(find "$work/canary" -type f 2>/dev/null)" ]; assert_true $? "nothing was written under HOME or the XDG dirs"
 
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

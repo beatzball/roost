@@ -112,6 +112,18 @@ stop_while_blocked=0
 # the pane already reads 🛑. See the agent_id check below.
 tool_hook=0
 [ "${2:-}" = "--tool-hook" ] && tool_hook=1
+# `idle --interrupted` (#95): the turn is over because a HUMAN stopped it.
+# codex's adapter passes it on `Interrupt`, copilot's on an aborted
+# `session.idle`, and `roost state idle --interrupted` is the public spelling.
+# It stamps idle as a plain `idle` does and adds three things: it clears the
+# previous turn's reply (no Stop replaced it), it records @roost-ended
+# "<stamp> interrupted" in the same tmux command as the badge -- the record
+# `roost wait-done` reads to exit 5 instead of 0 -- and it appends an EMPTY
+# turn file with an `outcome` sidecar, so the interrupted prompt keeps its
+# turn number (scripts/lib/roost-record.sh says why). Only with idle: an
+# interrupt that leaves any other badge is not one roost has measured.
+interrupted_hook=0
+[ "${2:-}" = "--interrupted" ] && [ "$state" = "idle" ] && interrupted_hook=1
 
 # Must be inside tmux, in a known pane.
 [ -n "${TMUX:-}" ] || exit 0
@@ -589,13 +601,25 @@ elif [ "$stop_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
   # Only adapters/codex/roost-codex-hook passes `error --stop-hook` today: codex
   # has no error event, so its adapter decides from the Stop payload (#39).
   tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
-elif [ "$stop_hook" = 1 ] && [ "$state" = "idle" ] && [ ! -t 0 ]; then
+elif { [ "$stop_hook" = 1 ] || [ "$interrupted_hook" = 1 ]; } && [ "$state" = "idle" ] && [ ! -t 0 ]; then
   # A turn that ended because the human INTERRUPTED it — declined a dialog,
   # pressed Esc — has no answer either, and no Stop fires to replace the stored
   # one, so it is the previous turn's. Cleared for the same reasons as the error
-  # arm above. Only adapters/codex/roost-codex-hook passes `idle --stop-hook`,
-  # on codex's Interrupt event (#38).
-  tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
+  # arm above. adapters/codex/roost-codex-hook passed `idle --stop-hook` on
+  # codex's Interrupt event (#38) and passes `idle --interrupted` since #95;
+  # the older spelling is kept for an adapter that still uses it.
+  #
+  # With --interrupted the outcome is written here too, ABOVE the bail and in
+  # the same command, as `#{@agent_since} interrupted`: a second interrupt on
+  # a pane that already reads idle bails out below and must still leave the
+  # record agreeing with the stamp the pane holds. The stamp below writes it
+  # again with the new second when the badge moves.
+  if [ "$interrupted_hook" = 1 ]; then
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
+      set-option -p -t "$TMUX_PANE" -F @roost-ended '#{@agent_since} interrupted' 2>/dev/null || true
+  else
+    tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply 2>/dev/null || true
+  fi
 elif [ "$stop_failure_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
   # Claude Code's StopFailure: the turn ended on an API error — a rate limit,
   # an overload, a model that does not exist (#55). Claude fires it INSTEAD of
@@ -1488,6 +1512,23 @@ else
     # path.
     stamp_wr=(set-option -p -t "$TMUX_PANE" @agent_state "$state"
               ';' set-option -p -t "$TMUX_PANE" @agent_since "$now")
+    # The interrupted outcome (#95) beside the idle it leaves, with the stamp's
+    # own second, and the empty turn file BEFORE the stamp, for the reply's
+    # reason: `wait-done --turn N` returns the instant the badge moves and
+    # must find the sidecar that says why turn N is empty. Only on a
+    # transition: a repeat idle bailed out above, and two interrupts with no
+    # prompt between them are one turn, not two.
+    if [ "$interrupted_hook" = 1 ]; then
+      stamp_wr+=(';' set-option -p -t "$TMUX_PANE" @roost-ended "$now interrupted")
+      . "$SELF_DIR/lib/roost-record.sh"
+      roost_record_root
+      if [ -n "$ROOST_RECORD_ROOT" ]; then
+        boot="$(tmux -S "$sock" display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+        if roost_record_pane_dir "$boot" "$TMUX_PANE"; then
+          roost_record_append_interrupted "$ROOST_RECORD_PANE_DIR" "$sock" || true
+        fi
+      fi
+    fi
     if [ "$state" = "working" ]; then
       if [ -n "$prompt_transcript" ]; then
         stamp_wr+=(';' set-option -p -t "$TMUX_PANE" @roost-transcript "$now $prompt_transcript")

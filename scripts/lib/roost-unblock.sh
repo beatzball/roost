@@ -58,7 +58,7 @@
 #
 # --- what it writes ----------------------------------------------------------
 #
-# Only unsets, plus one record of its own. It UNSETS @agent_state (never writes
+# Only unsets, plus two records of its own. It UNSETS @agent_state (never writes
 # a value: setting state is the job of a harness event), @roost-reply (a
 # declined turn fired no Stop, so what is stored is the previous turn's answer),
 # @roost-transcript, @roost-blocked-on (the description of the dialog that has
@@ -66,8 +66,12 @@
 # allowance, spent or not), @roost-dialog, @roost-answered and
 # @roost-answer-nonce (that dialog's record for `roost answer`, #142), and
 # writes @roost-unblocked "<now>
-# since=<stamp>" so a false clear can be found later. It never writes anything
-# under ~/.claude: the transcript is only ever opened for reading.
+# since=<stamp>" so a false clear can be found later, and -- since #95 --
+# @roost-ended "<stamp> interrupted", because a declined dialog ended the turn
+# and the human ended it: `wait-done` reads that record to exit 5 instead of
+# 0 (the M7 measurement, "interrupted looks like success"), and an empty turn
+# file with an `outcome` sidecar keeps the turn's number. It never writes
+# anything under ~/.claude: the transcript is only ever opened for reading.
 #
 # --- what can break it -------------------------------------------------------
 #
@@ -252,12 +256,21 @@ roost_unblock_pane() {
   # dialog that was just declined, as @roost-blocked-on does, and go with it.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since'" \
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
   roost_events_unblocked "$pane" "$now" "$since" 2>/dev/null || true
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
-    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ]
+    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since" ] \
+    || return 1
+  # The empty turn (#95), as roost_interrupted_pane below writes it, and for
+  # the same reason; fails soft the same way.
+  if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
+    case "$RF_STATE" in
+      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" || true ;;
+    esac
+  fi
+  return 0
 }
 
 

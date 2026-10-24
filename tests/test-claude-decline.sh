@@ -141,9 +141,11 @@ assert_eq "$(opt "$p" @roost-unblocked | sed 's/^[0-9]* //')" "since=$NO_SINCE" 
 # --- 3. wait-done and read ---------------------------------------------------
 p="$(newpane)"; require_pane "$p" "wait-done/esc"
 stamp "$p" "$work/esc.jsonl" "$ESC_SINCE"
-"$ROOST" wait-done "$p" 5 >/dev/null 2>&1; rc=$?
-assert_eq "$rc" "0" "wait-done returns on a pane whose dialog was dismissed (Esc)"
+"$ROOST" wait-done "$p" 5 >/dev/null 2>"$work/wd.err"; rc=$?
+assert_eq "$rc" "5" "wait-done returns on a pane whose dialog was dismissed (Esc): exit 5, the turn was interrupted (#95)"
+assert_contains "$(cat "$work/wd.err")" "was interrupted, not done" "...and says so"
 pane_has "$p" @agent_state; assert_eq "$?" "1" "wait-done's recovery unsets the badge too"
+assert_eq "$(opt "$p" @roost-ended)" "$ESC_SINCE interrupted" "...and records the outcome beside the stamp it cleared"
 
 p="$(newpane)"; require_pane "$p" "read/no"
 stamp "$p" "$work/no.jsonl" "$NO_SINCE"
@@ -159,7 +161,7 @@ w="$(X new-window -d -P -F '#{window_id}' 'ENV= exec /bin/sh')"
 wp="$(X display-message -p -t "$w" '#{pane_id}')"
 stamp "$wp" "$work/esc.jsonl" "$ESC_SINCE"
 "$ROOST" wait-done "$w" 5 >/dev/null 2>&1; rc=$?
-assert_eq "$rc" "0" "wait-done on a WINDOW target recovers its declined pane"
+assert_eq "$rc" "5" "wait-done on a WINDOW target recovers its declined pane, and exits 5 for it"
 
 # --- 4. everything that must stay blocked -----------------------------------
 # refused PANE LABEL — send must exit 3, and the pane must be untouched.

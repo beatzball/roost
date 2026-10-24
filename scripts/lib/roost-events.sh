@@ -401,19 +401,21 @@ roost_events__shape() {
 # belongs to, numbered as `roost send` numbers them, or "" (null) when replies
 # are not kept and there is no numbering.
 #
-# The newest recorded turn is N. A Stop that recorded its reply in this very
-# call (ROOST_RECORD_TURN, set by roost-record.sh in the same shell) is turn
-# N; everything else belongs to the turn not yet recorded, N+1 — the number
-# `send` prints for a prompt, `wait-done --turn` waits for and a reply will be
-# filed under. A turn that ends with no reply (an error, an interrupt) records
-# nothing, so the next turn shares its number, exactly as `send` would say.
+# The newest recorded turn is N. A call that filed a turn in this very call
+# (ROOST_RECORD_TURN, set by roost-record.sh in the same shell: a Stop that
+# recorded its reply, or an `idle --interrupted` that recorded the empty
+# interrupted turn, #95) is turn N; everything else belongs to the turn not
+# yet recorded, N+1 — the number `send` prints for a prompt, `wait-done
+# --turn` waits for and a reply will be filed under. A turn that ends with no
+# reply and no interrupt record (an error) records nothing, so the next turn
+# shares its number, exactly as `send` would say.
 roost_events__turn() {
   local LC_ALL=C
   ROOST_EVENTS_TURN=""
   roost_record_root
   [ -n "$ROOST_RECORD_ROOT" ] || return 0
   roost_record_pane_dir "$1" "$2" || return 0
-  if [ "$3" = done ]; then
+  if [ "$3" = done ] || [ "$3" = idle ]; then
     case "${ROOST_RECORD_TURN:-}" in
       ''|*[!0-9]*) ;;
       *) ROOST_EVENTS_TURN="$ROOST_RECORD_TURN"; return 0 ;;

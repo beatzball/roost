@@ -520,6 +520,13 @@ case "${1:-up}" in
         pane z "$json_pane" recorded b "$json_recorded" || roost_jsonout_fail state
       exit 0
     fi
+    # `roost state idle --interrupted` (#95): the turn ended because a human
+    # stopped it. The copilot adapter says so for an aborted turn; codex's
+    # calls the sink directly. One more word, passed through, and the plain
+    # path above it stays one `case` and an exec.
+    if [ "${3:-}" = "--interrupted" ]; then
+      exec "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}" --interrupted
+    fi
     exec "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
     ;;
   identify)
@@ -3618,22 +3625,42 @@ EOF
     # Only a positive number. `read --turn` also takes -N, counting back from
     # the newest, and that form is refused here on purpose: counting back from
     # a newest turn that has not happened yet is not a thing to wait for.
-    wt_turn="" wt_turn_given=0 wt_dir=""
-    if [ "${2:-}" = "--turn" ]; then
-      wt_turn="${3:-}"
-      case "$wt_turn" in ''|*[!0-9]*|0*) wt_turn=bad ;; esac
-      if [ "$wt_turn" != bad ] && [ "${#wt_turn}" -gt 15 ]; then wt_turn=bad; fi
-      if [ "$wt_turn" = bad ]; then
-        echo "roost wait-done: --turn needs a turn number — N counts from the first turn, and \`roost send\` prints the one its prompt started." >&2
-        echo "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]" >&2
-        exit 1
-      fi
-      wt_turn_given=1
-      # Drop "wait-done" and the two flag words, then put the subcommand back so
-      # every positional reference below keeps its original number.
-      shift 3
-      set -- wait-done "$@"
-    fi
+    #
+    # --json (#110) sits in the same slot, once, in either order with --turn.
+    # The document is printed by wd_exit below on every OUTCOME -- done,
+    # error, timeout, died, gone, interrupted -- because for this one command
+    # a non-zero exit is a result, not a failure
+    # (docs/airig/specs/2026-09-15-json-output-design.md, "Adding wait-done
+    # later"); a usage refusal prints nothing, like every other --json.
+    wt_turn="" wt_turn_given=0 wt_dir="" wd_json=0 wd_start="$(date +%s)"
+    while :; do
+      case "${2:-}" in
+        --json)
+          if [ "$wd_json" = 1 ]; then
+            echo "roost wait-done: '--json' may be given once, before the target." >&2
+            echo "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]" >&2
+            exit 1
+          fi
+          wd_json=1
+          shift 2
+          set -- wait-done "$@" ;;
+        --turn)
+          wt_turn="${3:-}"
+          case "$wt_turn" in ''|*[!0-9]*|0*) wt_turn=bad ;; esac
+          if [ "$wt_turn" != bad ] && [ "${#wt_turn}" -gt 15 ]; then wt_turn=bad; fi
+          if [ "$wt_turn" = bad ]; then
+            echo "roost wait-done: --turn needs a turn number — N counts from the first turn, and \`roost send\` prints the one its prompt started." >&2
+            echo "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]" >&2
+            exit 1
+          fi
+          wt_turn_given=1
+          # Drop "wait-done" and the two flag words, then put the subcommand back so
+          # every positional reference below keeps its original number.
+          shift 3
+          set -- wait-done "$@" ;;
+        *) break ;;
+      esac
+    done
     need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout=0
     # TIMEOUT_SEC is refused here, before any polling, unless it is a whole
     # number of seconds (#66). It flows into `[ "$timeout" -gt 0 ]` and
@@ -3713,6 +3740,89 @@ EOF
       [ "$wt_turn_given" = 1 ] || return 0
       roost_record_turn_file "$wt_dir" "$wt_turn"
       [ -f "$ROOST_RECORD_FILE" ]
+    }
+    # wd_reply_json PANE -> WD_REPLY, the object `read --json` would print for
+    # PANE's recorded reply, less the four fields that belong to the outer
+    # document (schema, command, target, pane); 1 when the pane holds no
+    # reply. The same reads and the same rules as `read`: the pane value is
+    # the truth, the kept turn file stands in for it only while
+    # roost_record_match agrees, a held pane's main reply is `final: false`
+    # and not stale, and text tmux may have rewritten is marked lossy.
+    wd_reply_json() {
+      local reply info state since bgrec held=0 bg="" final=1 stale=0 why="" ptr turn="" kind=t sent_by="" reply_u lossy
+      reply="$(t show-options -p -t "$1" -qv @roost-reply 2>/dev/null || true)"
+      [ -n "$reply" ] || return 1
+      info="$(t display-message -p -t "$1" '#{@agent_state}|#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
+      state="${info%%|*}"; info="${info#*|}"; since="${info%%|*}"; bgrec="${info#*|}"
+      case "$since" in ''|*[!0-9]*) since="" ;; esac
+      if [ "$state" = working ] && [ -n "$since" ] && [ "${bgrec%% *}" = "$since" ] && [ "$bgrec" != "$since" ]; then
+        held=1 final=0
+        bg="${bgrec#* }"
+        case "$bg" in ''|*[!0-9]*) bg="" ;; esac
+      fi
+      case "$state" in working|blocked|error) stale=1 ;; esac
+      [ "$held" = 1 ] && stale=0
+      [ "$state" = error ] && why="$(t show-options -p -t "$1" -qv @roost-error-reason 2>/dev/null || true)"
+      if record_for "$1" "$1" && [ "$RF_LIVE" = 1 ] && [ "$RF_STATE" -eq 0 ]; then
+        ptr="$(t show-options -p -t "$1" -qv @roost-reply-turn 2>/dev/null || true)"
+        case "$ptr" in ''|*[!0-9]*|0*) ptr="" ;; esac
+        if [ -n "$ptr" ] && [ "${#ptr}" -le 15 ]; then
+          reply_u="$(t -u show-options -p -t "$1" -qv @roost-reply 2>/dev/null || true)"
+          if roost_record_match "$reply_u" "$RF_DIR" "$ptr"; then
+            reply="$ROOST_RECORD_TEXT"; turn="$ptr"
+            roost_record_get_turn_field "$RF_DIR" "$turn" sent_by || true
+            sent_by="$ROOST_RECORD_FIELD"
+          fi
+        fi
+      fi
+      if [ -z "$turn" ] && roost_jsonout_looks_escaped "$reply" && roost_jsonout_server_escapes "$1"; then kind=T; fi
+      roost_jsonout_encode "$state" "$why" "$reply" "$sent_by" || return 1
+      lossy=false
+      if [ "$kind" = T ] || [ "${ROOST_JSONOUT_LOSSY:2:1}" = 1 ]; then lossy=true; fi
+      WD_REPLY='{"source":"reply","state":'
+      if [ -n "$state" ]; then WD_REPLY="$WD_REPLY${ROOST_JSONOUT_STR[0]}"; else WD_REPLY="${WD_REPLY}null"; fi
+      if [ "$stale" = 1 ]; then WD_REPLY="$WD_REPLY,\"stale\":true"; else WD_REPLY="$WD_REPLY,\"stale\":false"; fi
+      if [ -n "$why" ]; then WD_REPLY="$WD_REPLY,\"error_reason\":${ROOST_JSONOUT_STR[1]}"; else WD_REPLY="$WD_REPLY,\"error_reason\":null"; fi
+      roost_jsonout_int "$turn"; WD_REPLY="$WD_REPLY,\"turn\":$ROOST_JSONOUT_INT"
+      WD_REPLY="$WD_REPLY,\"text\":${ROOST_JSONOUT_STR[2]},\"lossy\":$lossy"
+      if [ -n "$sent_by" ]; then WD_REPLY="$WD_REPLY,\"sent_by\":${ROOST_JSONOUT_STR[3]}"; else WD_REPLY="$WD_REPLY,\"sent_by\":null"; fi
+      if [ "$final" = 1 ]; then WD_REPLY="$WD_REPLY,\"final\":true"; else WD_REPLY="$WD_REPLY,\"final\":false"; fi
+      roost_jsonout_int "$bg"; WD_REPLY="$WD_REPLY,\"background\":$ROOST_JSONOUT_INT}"
+      return 0
+    }
+    # wd_exit CODE OUTCOME PANE STATE [REASON] -- every way out of the wait
+    # below once the target has been resolved. The stderr line has already
+    # been printed by the caller, unchanged; this prints the --json document
+    # when one was asked for, and exits CODE. PANE is "" when no single pane
+    # is the outcome's (a window that finished, a target that is gone).
+    wd_exit() {
+      local code="$1" outcome="$2" pane="$3" state="$4" reason="${5:-}" info bg reply=null elapsed pane_j state_j reason_j
+      if [ "$wd_json" = 1 ]; then
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        elapsed=$(( $(date +%s) - wd_start ))
+        bg=null
+        if [ -n "$pane" ]; then
+          info="$(t display-message -p -t "$pane" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
+          roost_jsonout_background "${info%%|*}" "${info#*|}"; bg="$ROOST_JSONOUT_INT"
+          if [ "$outcome" = done ]; then wd_reply_json "$pane" && reply="$WD_REPLY"; fi
+        fi
+        roost_jsonout_encode "$raw" "$pane" "$state" "$outcome" "$reason" || roost_jsonout_fail wait-done
+        pane_j=null; [ -n "$pane" ] && pane_j="${ROOST_JSONOUT_STR[1]}"
+        state_j=null; [ -n "$state" ] && state_j="${ROOST_JSONOUT_STR[2]}"
+        reason_j=null; [ -n "$reason" ] && reason_j="${ROOST_JSONOUT_STR[4]}"
+        roost_jsonout_int "$wt_turn"
+        printf '{"schema":%s,"command":%s,"target":%s,"pane":%s,"state":%s,"outcome":%s,"error_reason":%s,"background":%s,"elapsed":%s,"turn":%s,"reply":%s}\n' \
+          "$ROOST_JSON_SCHEMA" '"wait-done"' "${ROOST_JSONOUT_STR[0]}" "$pane_j" "$state_j" "${ROOST_JSONOUT_STR[3]}" "$reason_j" "$bg" "$elapsed" "$ROOST_JSONOUT_INT" "$reply"
+      fi
+      exit "$code"
+    }
+    # wd_state_of PANE -> the badge PANE reads in the last snapshot, or "".
+    wd_state_of() {
+      local _id _dead _pp _job _st
+      while read -r _id _dead _pp _job _st; do
+        [ "$_id" = "$1" ] && { printf '%s' "$_st"; return 0; }
+      done <<< "${rows:-}"
+      return 0
     }
     # A %N target is pane-precise; anything else aggregates the window's agent
     # panes. The two cases MUST branch on the target form: `list-panes -t %N`
@@ -3818,7 +3928,7 @@ EOF
         [ -n "$_id" ] || continue
         case "$1" in
           "$_id "*|*$'\n'"$_id "*) ;;
-          *) echo "roost: '$raw' died: pane $_id closed while it read $_st" >&2; exit 2 ;;
+          *) echo "roost: '$raw' died: pane $_id closed while it read $_st" >&2; wd_exit 2 died "$_id" "$_st" ;;
         esac
       done <<< "$busy_seen"
     }
@@ -3832,10 +3942,12 @@ EOF
       if ! rows="$(snapshot)"; then
         if [ "$first" = 1 ]; then
           echo "roost: '$raw' is gone: no such pane or window. roost cannot tell an agent that finished and closed its pane from one that died" >&2
+          wd_exit 2 gone "" ""
         elif [ -n "$busy_seen" ]; then
           # Not first, and the last poll saw something busy.
           read -r _id _st <<< "$busy_seen"
           echo "roost: '$raw' died: its pane closed while $_id read $_st" >&2
+          wd_exit 2 died "$_id" "$_st"
         else
           # Reachable only with --turn (#92), and only now. Before it, an empty
           # $busy_seen on a later pass was impossible — the loop broke out the
@@ -3846,7 +3958,7 @@ EOF
           # message with two holes in it.
           echo "roost: '$raw' died: its pane closed before turn $wt_turn was recorded" >&2
         fi
-        exit 2
+        wd_exit 2 died "" ""
       fi
       # Every `blocked` pane is offered to roost_unblock_pane (see above), then
       # the snapshot is taken again so the checks below read what it left.
@@ -3914,7 +4026,7 @@ EOF
         # event) prints the one line it always has.
         why="$(t show-options -p -t "$err_pane" -qv @roost-error-reason 2>/dev/null || true)"
         [ -n "$why" ] && echo "roost: $err_pane: $why" >&2
-        exit 1
+        wd_exit 1 error "$err_pane" error "$why"
       fi
       died_if_vanished "$rows"
       # A dead pane still badged busy: its process exited without finishing,
@@ -3926,11 +4038,11 @@ EOF
           working|blocked)
             if [ "$_dead" = 1 ]; then
               echo "roost: '$raw' died: pane $_id is dead (its process exited) while it read $_st" >&2
-              exit 2
+              wd_exit 2 died "$_id" "$_st"
             fi
             if job_gone "${_pp#p}" "$_job"; then
               echo "roost: '$raw' died: the agent in pane $_id exited inside its shell while it read $_st — the job that held its terminal has no process left, and the shell has the terminal back" >&2
-              exit 2
+              wd_exit 2 died "$_id" "$_st"
             fi
             busy_seen="$busy_seen$_id $_st"$'\n'
             ;;
@@ -3952,10 +4064,50 @@ EOF
         else
           echo "roost: timed out waiting for '$raw'" >&2
         fi
-        exit 1
+        # The pane and its badge, for --json: a %N target's own; a window
+        # target has no single pane to name.
+        case "$tgt" in
+          %*) wd_exit 1 timeout "$tgt" "$(wd_state_of "$tgt")" ;;
+          *) wd_exit 1 timeout "" "" ;;
+        esac
       fi
     done
-    exit 0
+    # Not busy, and the turn (if one was asked for) is on disk. That used to be
+    # exit 0 without a further look, and it was wrong for a turn the human
+    # STOPPED (#95): a codex Interrupt leaves idle, a copilot abort leaves
+    # idle, a Claude Esc or declined dialog leaves no badge once roost has
+    # recovered it, and every one of them read as "finished". Each of those
+    # now records @roost-ended "<@agent_since> interrupted" in the same tmux
+    # command as the badge it leaves, and that record counts only while its
+    # first word is still the pane's @agent_since -- the @roost-transcript
+    # rule, so a stamp from the next turn retires it. A turn asked for by
+    # number carries the same answer in its `outcome` sidecar: the empty turn
+    # file the recovery wrote so the numbering stayed aligned.
+    #
+    # Exit 5, not 1 (already error, timeout and usage, and a retry-on-timeout
+    # loop would retry an interrupted turn) and not 3 or 4 (`send`'s, and #43
+    # may fuse the two commands); the design's Q2.
+    if [ "$wt_turn_given" = 1 ]; then
+      roost_record_get_turn_field "$wt_dir" "$wt_turn" outcome || true
+      if [ "$ROOST_RECORD_FIELD" = interrupted ]; then
+        echo "roost: turn $wt_turn of '$raw' was interrupted, not done" >&2
+        wd_exit 5 interrupted "$tgt" "$(wd_state_of "$tgt")"
+      fi
+    fi
+    while read -r _id _dead _pp _job _st; do
+      [ -n "$_id" ] || continue
+      _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-ended}' 2>/dev/null || true)"
+      _esince="${_ended%%|*}"; _ended="${_ended#*|}"
+      case "$_esince" in ''|*[!0-9]*) continue ;; esac
+      if [ "$_ended" = "$_esince interrupted" ]; then
+        echo "roost: '$raw' was interrupted, not done" >&2
+        wd_exit 5 interrupted "$_id" "$_st"
+      fi
+    done <<< "$rows"
+    case "$tgt" in
+      %*) wd_exit 0 done "$tgt" "$(wd_state_of "$tgt")" ;;
+      *) wd_exit 0 done "" "" ;;
+    esac
     ;;
   forget)
     # Delete kept replies (#42). The pane records live under one directory the
