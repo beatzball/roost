@@ -347,6 +347,37 @@ held_val="$(opt "$p" @roost-reply)"
 ROOST_REPLY_MAX=40 hook "$p" done --stop-hook <<< "$(edit "$EMPTY" 'd["last_assistant_message"]=""')"
 assert_eq "$(opt "$p" @roost-reply)" "$held_val" "the release stores the held reply as it was, not encoded a second time"
 
+# --- 17. roost doctor names a wiring without --prompt-hook (r2 non-blocking) -----------
+# Both Claude settings files: the user's, and the one roost generates for its
+# panes at server start (a server older than the upgrade keeps the old one).
+dh="$work/doctor-home"; mkdir -p "$dh/.claude"; wd="$work/wiring"; mkdir -p "$wd/claude"
+run_doc() {
+  env HOME="$dh" XDG_CONFIG_HOME="$dh/.config" XDG_DATA_HOME="$dh/.local/share" \
+      COPILOT_HOME="$dh/.copilot" PI_CODING_AGENT_DIR="$dh/.pi/agent" \
+      CODEX_HOME="$dh/.codex" CLAUDE_SETTINGS="$dh/.claude/settings.json" \
+      COLORTERM=truecolor ROOST_CONFIG_SOCK=/nonexistent/roost-edge-sock \
+      ROOST_NOTIFY_SOCK=/nonexistent/roost-edge-sock \
+      TMUX="$s,0,0" ROOST_WIRING_DIR="$wd" ROOST_TMUX="$(command -v tmux)" \
+      "$HERE/scripts/roost-doctor" 2>&1
+}
+no_prompt_flag() { sed 's/ working --prompt-hook"/ working"/' "$1" > "$1.tmp" && mv "$1.tmp" "$1"; }
+X set-option -g @roost-wiring-active on
+"$ROOST" hooks claude | sed -n '/^{/,$p' > "$dh/.claude/settings.json"
+"$ROOST" hooks claude | sed -n '/^{/,$p' > "$wd/claude/settings.json"
+dout="$(run_doc)"
+case "$dout" in *"--prompt-hook"*) r=warned ;; *) r=quiet ;; esac
+assert_eq "$r" "quiet" "doctor is quiet about --prompt-hook when both files have it"
+no_prompt_flag "$dh/.claude/settings.json"
+dout="$(run_doc)"
+assert_contains "$dout" "$dh/.claude/settings.json has no --prompt-hook" "doctor names a settings.json without --prompt-hook"
+"$ROOST" hooks claude | sed -n '/^{/,$p' > "$dh/.claude/settings.json"
+no_prompt_flag "$wd/claude/settings.json"
+dout="$(run_doc)"
+wl="$(printf '%s\n' "$dout" | grep -F "$wd/claude/settings.json" | grep -F -- '--prompt-hook' | head -1)"
+[ -n "$wl" ]; assert_true $? "doctor names a server wiring file without --prompt-hook"
+assert_contains "$wl" "roost wiring on" "...and names the command that regenerates it"
+X set-option -gu @roost-wiring-active
+
 [ -z "$(find "$work/canary" -type f 2>/dev/null)" ]; assert_true $? "nothing was written under HOME or the XDG dirs"
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
