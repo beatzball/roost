@@ -7,6 +7,21 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Claude pane held ⏳ working by background work no longer stays working
+  for ever when Claude exits (#188).** Claude fires `SessionEnd` and no
+  `Stop` when it exits before its background work ends — `/exit`, Ctrl-C
+  twice, a closed terminal, a killed process, `respawn-pane -k` — so nothing
+  released the hold. roost now wires `SessionEnd`: the pane's badge is
+  cleared, `wait-done` exits **2** (`died`) instead of timing out, and the
+  turn's main reply is kept, with `read` saying the background work never
+  reported back. A pane that is not held, or a `SessionEnd` from another
+  Claude session, changes nothing. **Run `roost install`** after upgrading to
+  add the new hook entry, and restart a roost server started before it;
+  `roost doctor` says when either is missing. Without it everything behaves
+  as in 0.10.0.
+
 ## [0.10.0]
 
 A turn is over when the agent has stopped acting on the prompt **and nothing

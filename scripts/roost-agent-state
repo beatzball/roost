@@ -10,6 +10,7 @@
 #
 #   usage: roost-agent-state <working|blocked|error|done|idle> [--stop-hook]
 #          roost-agent-state --subagent-hook start|stop
+#          roost-agent-state --session-end-hook
 #
 # --stop-hook additionally reads Claude Code's Stop payload from stdin and
 # records that turn's reply on the pane, which is what `roost read` returns.
@@ -28,6 +29,11 @@
 # subagents are running and their ids (@roost-subagents, @roost-subagent-ids).
 # It reads stdin the way --stop-hook does, touches those two options and
 # nothing else, and exits before any of the state logic below -- see its block.
+#
+# The third form, --session-end-hook, goes with Claude's SessionEnd (#188). It
+# also exits before the state logic: it does nothing at all unless the pane is
+# held at working by background work (#97), and then releases it as `died`
+# -- see its block.
 set -euo pipefail
 
 # Resolve this script's own directory even when invoked via a symlink — same
@@ -299,6 +305,132 @@ if isinstance(t, str) and t and isinstance(a, str) and 0 < len(a) <= 64 and all(
         "set-option -p -t $TMUX_PANE -F @roost-subagents '$dec' ; set-option -p -t $TMUX_PANE -F @roost-subagent-ids '$strike'" \
         2>/dev/null || true
     fi
+  fi
+  exit 0
+fi
+
+# Claude's SessionEnd: the agent is EXITING (#188). It matters for one pane
+# only -- one held at `working` by its own background work (#97) -- and for
+# every other pane this block reads once and exits, before any of the state
+# logic below.
+#
+# WHY A HELD PANE NEEDS IT. A held pane is released by the Stop of the turn
+# Claude starts when its background work ends. A Claude that exits first
+# never starts that turn. Measured on 2.1.310 with the fake Messages API rig
+# (tests/live/claude-background-smoke.sh), one run each: `/exit` and Ctrl-C
+# twice both open Claude's "Background work is running" dialog, and either
+# answer -- "Exit and stop tasks", or "Move to background and exit", which
+# leaves the work running under pid 1, outside this pane -- fires SessionEnd
+# with reason `prompt_input_exit` and no Stop. `kill -TERM`, `kill -HUP` (a
+# closed terminal) and `respawn-pane -k` fire SessionEnd with reason `other`,
+# and no Stop; after the respawn it fired about 4 s later, into the same
+# pane. Before this hook every one of them left the pane ⏳ for ever, and
+# `wait-done` could only time out. docs/known-gaps.md has the table.
+#
+# WHAT IT WRITES. The turn is over, and it did not finish: the work it was
+# waiting on was stopped, or left the pane, with the agent. So this is not a
+# `done`. It is the design's `died` (docs/airig/specs/2026-09-29-turn-over-
+# design.md, §3, source 3, "agent gone": unset, outcome `died`), written by
+# the agent's last report of itself rather than inferred later: the badge is
+# UNSET, @roost-ended reads "<stamp> died" -- `wait-done` exits 2 on it, the
+# exit it already gives for a pane whose agent is gone -- and the held main
+# reply, which the hold kept only on the pane, becomes the prompt's ONE turn
+# file with an `outcome` sidecar of `died`, the way the interrupt recovery
+# keeps it (scripts/lib/roost-unblock.sh). The reply stays on the pane as
+# well, with its pointer: the pane's screen is now a shell prompt, so the
+# screen fallback a cleared reply would hand `read` has nothing on it.
+#
+# WHICH SESSION. SessionEnd carries no background_tasks (measured: its keys
+# are cwd, hook_event_name, prompt_id, reason, session_id, transcript_path),
+# so nothing in it says the pane was held; the pane does. What the payload
+# does say is which session ended, and that is checked, because the end of
+# ANOTHER Claude can reach this pane: the old process after a
+# `respawn-pane -k`, whose SessionEnd lands after the new one may have
+# started (measured, above), and -- reasoned, not measured -- a `claude -p`
+# run by a tool in this pane, which inherits TMUX_PANE. The rule: the payload's transcript_path must equal the path in
+# @roost-transcript, which this session's UserPromptSubmit recorded (measured
+# byte-equal). The path, not the stamp in front of it: a held Stop that moved
+# the badge re-stamps the hold record but not the transcript record, and a
+# different session cannot have held this pane without a prompt of its own,
+# which rewrites the path. No record (a wiring older than --prompt-hook), no
+# path in the payload, or no reader to get it out: "could not tell", and the
+# pane stays held -- the safe direction, today's behaviour.
+#
+# THE RELEASE IS ONE TMUX COMMAND, and tmux tests the hold in it: the pane
+# still reads working, with the stamp and the hold record this block read.
+# Anything that moved in between -- there is nothing measured that could, the
+# agent is exiting -- leaves the pane as it found it. The turn file is
+# written BEFORE the release, for the reply's reason: a `wait-done --turn N`
+# that sees the badge go must find the sidecar that says why. The event log
+# line (#98) is armed only once the release is seen to have landed.
+#
+# Claude only: no other harness has been measured exiting with work held,
+# and only Claude's adapter can hold a pane at all.
+if [ "${1:-}" = "--session-end-hook" ]; then
+  # A tty means a human typed the flag; `cat` would wait for ^D. Skip.
+  [ ! -t 0 ] || exit 0
+  payload="$(cat 2>/dev/null || true)"
+  # The one read every SessionEnd pays. `|` between the fields: none of the
+  # first three can hold one, and the transcript path is last, so whatever is
+  # left is it.
+  cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
+    '#{@agent_state}|#{@agent_since}|#{@roost-background}|#{@roost-transcript}' 2>/dev/null || true)"
+  se_state="${cur%%|*}"; cur="${cur#*|}"
+  se_since="${cur%%|*}"; cur="${cur#*|}"
+  se_bg="${cur%%|*}"; se_tr="${cur#*|}"
+  [ "$se_state" = working ] || exit 0
+  case "$se_since" in ''|*[!0123456789]*) exit 0 ;; esac
+  # Held for THIS stamp, with a count the hook wrote (digits, or `?`): the
+  # value goes into the format below, so nothing else may.
+  case "$se_bg" in "$se_since "?*) ;; *) exit 0 ;; esac
+  case "${se_bg#* }" in *[!0123456789?]*) exit 0 ;; esac
+  se_tr="${se_tr#* }"
+  case "$se_tr" in /*) ;; *) exit 0 ;; esac
+  se_path=""
+  if command -v python3 >/dev/null 2>&1; then
+    se_path="$(printf '%s' "$payload" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+p = d.get("transcript_path") if isinstance(d, dict) else None
+sys.stdout.write(p if isinstance(p, str) and "\n" not in p else "")' 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    se_path="$(printf '%s' "$payload" | jq -r 'if type == "object" and (.transcript_path | type) == "string" and ((.transcript_path | test("\n")) | not) then .transcript_path else "" end' 2>/dev/null || true)"
+  fi
+  [ -n "$se_path" ] && [ "$se_path" = "$se_tr" ] || exit 0
+  # The held main reply, as tmux stores it: what the record and the pane's
+  # `.pane` sidecar both keep, so it is never encoded a second time (the
+  # Stop release's reply_from_pane says why).
+  se_reply="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+  . "$SELF_DIR/lib/roost-record.sh"
+  turn=""
+  roost_record_root
+  if [ -n "$ROOST_RECORD_ROOT" ]; then
+    boot="$(tmux -S "$sock" display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+    if roost_record_pane_dir "$boot" "$TMUX_PANE" \
+       && roost_record_append_outcome "$ROOST_RECORD_PANE_DIR" "$sock" died "$se_reply"; then
+      turn="$ROOST_RECORD_TURN"
+      [ -z "$se_reply" ] || roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$se_reply" || true
+    fi
+  fi
+  # The pointer names the new turn file only when there is a reply for it to
+  # go with; otherwise an older pointer must not pair with nothing.
+  if [ -n "$turn" ] && [ -n "$se_reply" ]; then
+    se_ptr="set-option -p -t $TMUX_PANE @roost-reply-turn $turn"
+  else
+    se_ptr="set-option -pu -t $TMUX_PANE @roost-reply-turn"
+  fi
+  tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+    "#{&&:#{==:#{@agent_state},working},#{&&:#{==:#{@agent_since},$se_since},#{==:#{@roost-background},$se_bg}}}" \
+    "set-option -pu -t $TMUX_PANE @agent_state ; $se_ptr ; set-option -pu -t $TMUX_PANE @roost-background ; set-option -pu -t $TMUX_PANE @roost-background-types ; set-option -pu -t $TMUX_PANE @roost-transcript ; set-option -p -t $TMUX_PANE @roost-ended '$se_since died'" \
+    2>/dev/null || true
+  # Seen to land: the badge gone and the outcome this call wrote.
+  if [ "$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}|#{@roost-ended}' 2>/dev/null || true)" = "|$se_since died" ]; then
+    . "$SELF_DIR/lib/roost-events.sh" || true
+    roost_events_arm "$sock" "$TMUX_PANE" working "" 0 0 "$turn" || true
+    tmux -S "$sock" refresh-client -S 2>/dev/null || true
   fi
   exit 0
 fi

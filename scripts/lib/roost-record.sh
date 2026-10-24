@@ -549,8 +549,20 @@ roost_record_append() {
 # ROOST_RECORD_KEEP=1 the append pruned turn N-1, the rollback then removed
 # turn N, and the next append reused N-1's number.
 roost_record_append_interrupted() {
-  ROOST_RECORD_NO_PRUNE=1 roost_record_append "$1" "$2" "${3:-}" || return 1
-  if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2"; then
+  roost_record_append_outcome "$1" "$2" interrupted "${3:-}"
+}
+
+# roost_record_append_outcome DIR SOCKET OUTCOME [TEXT] -> ROOST_RECORD_TURN,
+# and 0; 1 when nothing was recorded. The body of the function above, with
+# the outcome as an argument: every rule written there -- both files or
+# neither, the sidecar second, the prune last -- holds for any outcome. The
+# second outcome is `died` (#188): a Claude that exits while background work
+# holds its pane fires SessionEnd and no Stop, and scripts/roost-agent-state
+# records the held main reply as that prompt's turn with this sidecar beside
+# it. OUTCOME is one word of [a-z_], which roost_record_put_turn_field checks.
+roost_record_append_outcome() {
+  ROOST_RECORD_NO_PRUNE=1 roost_record_append "$1" "$2" "${4:-}" || return 1
+  if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome "$3" "$2"; then
     roost_record_turn_file "$1" "$ROOST_RECORD_TURN"
     rm -f "$ROOST_RECORD_FILE" "$ROOST_RECORD_FILE".* 2>/dev/null || true
     ROOST_RECORD_TURN=""

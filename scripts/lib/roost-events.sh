@@ -289,11 +289,22 @@ roost_events_line() {
 #
 # The hook installs no other EXIT trap. One added later would replace this one
 # silently; it would have to call roost_events__fire itself.
+#
+# ONE OTHER CALL, from the hook's own SessionEnd block (#188), which exits
+# long before that early exit: it releases a pane held by background work,
+# and arms this only once its one-command release is seen to have landed,
+# with STATE "" (the release UNSETS the badge, as the recoveries do) and
+# FILED, the turn it recorded just before the release.
 
-# roost_events_arm SOCKET PANE PREV STATE PERMISSION_REQUEST_HOOK STOP_WHILE_BLOCKED
+# roost_events_arm SOCKET PANE PREV STATE PERMISSION_REQUEST_HOOK STOP_WHILE_BLOCKED [FILED]
+#
+# FILED is the number of a turn this call has ALREADY written, which the line
+# then names (roost_events__turn says why only done and idle can tell that by
+# themselves). Empty, or not given, for every other caller.
 roost_events_arm() {
   ROOST_EVENTS__SOCK="$1" ROOST_EVENTS__PANE="$2" ROOST_EVENTS__PREV="$3"
   ROOST_EVENTS__STATE="$4" ROOST_EVENTS__PRH="$5" ROOST_EVENTS__SWB="$6"
+  ROOST_EVENTS__FILED="${7:-}"
   ROOST_EVENTS__OLD_ON=""
   roost_events_dir
   [ -n "$ROOST_EVENTS_DIR" ] || return 0
@@ -415,6 +426,14 @@ roost_events__turn() {
   roost_record_root
   [ -n "$ROOST_RECORD_ROOT" ] || return 0
   roost_record_pane_dir "$1" "$2" || return 0
+  # A caller that filed a turn and leaves no badge (the SessionEnd release,
+  # #188) says which, through roost_events_arm's FILED. Never read from
+  # ROOST_RECORD_TURN for an empty TO: bin/roost can record a turn for one
+  # pane and log a line for another in the same shell.
+  case "${ROOST_EVENTS__FILED:-}" in
+    ''|*[!0-9]*) ;;
+    *) ROOST_EVENTS_TURN="$ROOST_EVENTS__FILED"; return 0 ;;
+  esac
   if [ "$3" = done ] || [ "$3" = idle ]; then
     case "${ROOST_RECORD_TURN:-}" in
       ''|*[!0-9]*) ;;
