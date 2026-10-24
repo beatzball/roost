@@ -269,8 +269,8 @@ roost read: ('$pt' is in error state: a reason; roost screen reads the screen wi
 tmux -S "$s" set-option -p -t "$pt" @agent_state done
 tmux -S "$s" set-option -p -t "$pt" @roost-reply "SET BY HAND"
 json="$("$ROOST" read --json "$pt")"
-assert_eq "$json" "{\"schema\":1,\"command\":\"read\",\"target\":\"$pt\",\"pane\":\"$pt\",\"source\":\"reply\",\"state\":\"done\",\"stale\":false,\"error_reason\":null,\"turn\":null,\"text\":\"SET BY HAND\",\"lossy\":false,\"sent_by\":null}" \
-  "no record: --json is unchanged but for the added \"turn\":null and \"sent_by\":null"
+assert_eq "$json" "{\"schema\":1,\"command\":\"read\",\"target\":\"$pt\",\"pane\":\"$pt\",\"source\":\"reply\",\"state\":\"done\",\"stale\":false,\"error_reason\":null,\"turn\":null,\"text\":\"SET BY HAND\",\"lossy\":false,\"sent_by\":null,\"final\":true,\"background\":null}" \
+  "no record: --json is unchanged but for the added \"turn\", \"sent_by\", \"final\" and \"background\""
 # With a record and a reply under the cap, the output is the same bytes as a
 # pane that has no record at all.
 pr="$(new_pane)"; require_pane "$pr" "record, small"
