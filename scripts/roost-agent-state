@@ -495,13 +495,19 @@ EOF
     # The pane value is what tmux stored, so a main reply longer than the
     # 12 KB cap is recorded with its truncation marker: docs/known-gaps.md.
     # One tmux read, only on a Stop with no reply, never on the hot path.
-    release_empty=0
+    #
+    # reply_from_pane says the reply came back off the pane: it is already
+    # what tmux stores (encoded, cut, with its truncation marker), so it is
+    # written back as it is, never encoded a second time (flock round 2: the
+    # marker's byte count otherwise described the cut text, not the reply).
+    release_empty=0 reply_from_pane=0
     if [ "$held" = 0 ] && [ -z "$reply" ]; then
       rel="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
       rel_since="${rel%%|*}"; rel_bg="${rel#*|}"
       case "$rel_since" in ''|*[!0123456789]*) rel_since="" ;; esac
       if [ -n "$rel_since" ] && [ "${rel_bg%% *}" = "$rel_since" ] && [ "$rel_bg" != "$rel_since" ]; then
         reply="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+        [ -n "$reply" ] && reply_from_pane=1
         [ -n "$reply" ] || release_empty=1
       fi
     fi
@@ -589,9 +595,14 @@ EOF
       # not also see a hold record that says the main reply is still the
       # answer. An absent key clears too -- an older Claude never set one,
       # and the unset of an option that is not set is not an error.
+      if [ "$reply_from_pane" = 1 ]; then
+        reply_enc="$(roost_reply_escape "$reply")"
+      else
+        reply_enc="$(roost_reply_encode "$reply")"
+      fi
       if [ -n "$turn" ]; then
         stored="$(tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
-          "$(roost_reply_encode "$reply")" \; \
+          "$reply_enc" \; \
           set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
           set-option -pu -t "$TMUX_PANE" @roost-background-types \; \
@@ -599,7 +610,7 @@ EOF
         roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
       else
         tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
-          "$(roost_reply_encode "$reply")" \; \
+          "$reply_enc" \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
           set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
       fi
