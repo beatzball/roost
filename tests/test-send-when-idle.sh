@@ -102,10 +102,7 @@ assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" 
 # never a symlink, so no `>` can reach the real binary.
 echo "1. a working target that finishes after the third poll"
 pollbin="$work/pollbin"; mkdir -p "$pollbin"
-printf '#!/bin/sh
-case "$*" in *@agent_state*) echo poll >>"%s/polls" ;; esac
-exec %s "$@"
-' \
+printf '#!/bin/sh\ncase "$*" in *@agent_state*) echo poll >>"%s/polls" ;; esac\nexec '\''%s'\'' "$@"\n' \
   "$work" "$(command -v tmux)" > "$pollbin/tmux"
 chmod +x "$pollbin/tmux"
 : >"$work/polls"
@@ -123,6 +120,8 @@ assert_eq "$(cat "$work/w1.rc")" 0 "the held send exits 0"
 assert_eq "$(jv w1 'd["turn"], d["started"]')" "(2, True)" "...and names the turn the prompt started: 2"
 # 0 or 1 is a send that was not held for the two polls it read `working` on,
 # and fails here; so does a count longer than the whole send took.
+# An over-count (time added after a working read) is NOT pinned here, on
+# purpose: a tight upper bound is what brought back the load flake (#190).
 w1w="$(jv w1 'd["waited"]')"; w1s="$(cat "$work/w1.secs")"
 case "$w1w" in ''|*[!0-9]*) w1w=-1 ;; esac
 [ "$w1w" -ge 2 ] && [ "$w1w" -le "$w1s" ]
