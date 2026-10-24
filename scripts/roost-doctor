@@ -946,6 +946,27 @@ while read -r _st _since _id _where; do
   warn "$_id ($_where) has read blocked for ${_age}s with no permission dialog on screen — it may be stuck. If nothing is waiting there, type into it, or run: roost send --force $_id \"...\""
 done <<< "$panes"
 
+# A pane HELD at ⏳ working by background work of a kind roost has not
+# measured (#97). Claude's Stop hook holds a pane while `background_tasks`
+# lists running work; `shell` and `subagent` are the two kinds measured to
+# live in the pane's process tree, and any other kind holds too, on the rule
+# that work roost cannot place is not assumed to live elsewhere (the turn-over
+# design, §3.1). That is the safe direction and it can be wrong -- an
+# agent-team teammate in another pane would hold this one -- so the kind is
+# recorded in @roost-background-types and named here, where the first person
+# to meet a stuck pane will look. Read-only, like the check above. The record
+# counts only while its first word is the pane's @agent_since.
+panes="$(roost_cfg_tmux list-panes -a -F '#{@agent_state}|#{@agent_since}|#{pane_id}|#{session_name}:#{window_index}|#{@roost-background-types}' 2>/dev/null || true)"
+while IFS='|' read -r _st _since _id _where _rec; do
+  [ "$_st" = "working" ] || continue
+  case "$_since" in ''|*[!0-9]*) continue ;; esac
+  case "$_id" in %[0-9]*) : ;; *) continue ;; esac
+  case "$_rec" in "$_since "*) ;; *) continue ;; esac
+  _kinds="${_rec#* }"
+  case "$_kinds" in ''|*[!A-Za-z0-9_.,?-]*) continue ;; esac
+  warn "$_id ($_where) is held working by background work of a kind roost has not measured ($_kinds) — if that work runs in another pane, this pane will read working until it ends; see docs/known-gaps.md, \"When a Claude turn is over\""
+done <<< "$panes"
+
 printf '\n  notify backend: %s\n' \
   "$("$(dirname "$0")/roost-notify" --which 2>/dev/null || echo 'auto (run roost init to choose)')"
 

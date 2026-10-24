@@ -3066,9 +3066,11 @@ EOF
         # its `.sent_by` sidecar; null when the turn has none. Read only for
         # --json, so the human mode's file reads are unchanged.
         roost_record_get_turn_field "$RF_DIR" "$want" sent_by || true
+        # `final` and `background` (#97): a kept turn is a final reply by
+        # construction -- the hold writes no turn file -- and no count applies.
         roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "$json_state" \
           stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" \
-          sent_by z "$ROOST_RECORD_FIELD" || roost_jsonout_fail read
+          sent_by z "$ROOST_RECORD_FIELD" final b 1 background i "" || roost_jsonout_fail read
         exit 0
       fi
       if [ "$render" -eq 1 ]; then
@@ -3098,7 +3100,7 @@ EOF
                   roost_record_get_turn_field "$RF_DIR" "$ROOST_RECORD_MAX" sent_by || true
                   roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "" \
                     stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" \
-                    sent_by z "$ROOST_RECORD_FIELD" || roost_jsonout_fail read
+                    sent_by z "$ROOST_RECORD_FIELD" final b 1 background i "" || roost_jsonout_fail read
                   exit 0
                 fi
                 if [ "$render" -eq 1 ]; then
@@ -3148,6 +3150,31 @@ EOF
       # is working or blocked has not finished the turn whose reply this would
       # be, so whatever is stored came from an earlier one.
       state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+      # A pane HELD at working by its own background work (#97) is the one
+      # exception to "working means the reply is from an earlier turn": the
+      # Claude Stop hook stored this turn's MAIN reply and @roost-background
+      # as "<@agent_since> N" beside it, and the turn is not over only because
+      # N tasks it started still run in the pane (the turn-over design, step
+      # 1, §10 item 5). The record counts only while its first word equals the
+      # pane's @agent_since -- the @roost-transcript rule -- so a record left by
+      # an earlier stamp can never make an old reply read as current. `?` is a
+      # count roost could not read (a malformed list, held on purpose): still
+      # this turn's main reply, and null in the JSON rather than 0.
+      read_held=0 read_bg="" json_final=1 json_bg=""
+      if [ "$state" = working ]; then
+        read_bg_rec="$(t display-message -p -t "$tgt" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
+        read_bg_since="${read_bg_rec%%|*}"; read_bg_rec="${read_bg_rec#*|}"
+        case "$read_bg_since" in ''|*[!0-9]*) read_bg_since="" ;; esac
+        if [ -n "$read_bg_since" ] && [ "${read_bg_rec%% *}" = "$read_bg_since" ] && [ "$read_bg_rec" != "$read_bg_since" ]; then
+          read_bg="${read_bg_rec#* }"
+          case "$read_bg" in
+            [0-9]*) case "$read_bg" in *[!0-9]*) read_bg="?" ;; esac ;;
+            *) read_bg="?" ;;
+          esac
+          read_held=1 json_final=0
+          [ "$read_bg" = "?" ] || json_bg="$read_bg"
+        fi
+      fi
       # `error` belongs here alongside working and blocked, and for a different
       # reason than theirs. Those two mean the turn has not finished, so
       # whatever is stored predates it. `error` means the turn finished BADLY,
@@ -3157,10 +3184,21 @@ EOF
       # reply sitting on an errored pane cannot be that turn's, either — and
       # this is the more ordinary route of the two, because a provider outage
       # is an ordinary event where an interrupted turn is not.
-      case "$state" in
-        working|blocked|error)
-          echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
-      esac
+      if [ "$read_held" = 1 ]; then
+        # One line, on stderr like the stale notice, and in its place: the
+        # answer is ready and the turn is not over. `?` reads as "tasks still
+        # running" with no number, which is all roost knows then.
+        if [ "$read_bg" = "?" ]; then
+          echo "roost read: '$raw' main reply; tasks still running — the turn is not over yet." >&2
+        else
+          echo "roost read: '$raw' main reply; $(plural "$read_bg" task) still running — the turn is not over yet." >&2
+        fi
+      else
+        case "$state" in
+          working|blocked|error)
+            echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
+        esac
+      fi
       # The kept copy of this reply (#42). @roost-reply-turn names the turn file
       # the writer made with it, and roost_record_match lets that file stand in
       # for the pane value only while the pane still holds exactly what tmux
@@ -3200,6 +3238,8 @@ EOF
         json_pane="$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)"
         json_stale=0 json_why=""
         case "$state" in working|blocked|error) json_stale=1 ;; esac
+        # A held pane's main reply is THIS turn's: not stale, not final (#97).
+        [ "$read_held" = 1 ] && json_stale=0
         if [ "$state" = "error" ]; then
           json_why="$(t show-options -p -t "$tgt" -qv @roost-error-reason 2>/dev/null || true)"
         fi
@@ -3225,7 +3265,7 @@ EOF
         fi
         roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
           stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" \
-          sent_by z "$json_sent_by" || roost_jsonout_fail read
+          sent_by z "$json_sent_by" final b "$json_final" background i "$json_bg" || roost_jsonout_fail read
         exit 0
       fi
       # $lines is deliberately NOT applied. A recorded reply is returned whole:
@@ -3301,7 +3341,7 @@ EOF
       if [ "$json_state" = "error" ]; then json_why="$why"; fi
       roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s screen state z "$json_state" \
         stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" \
-        sent_by z "" || roost_jsonout_fail read
+        sent_by z "" final b 1 background i "" || roost_jsonout_fail read
       exit 0
     fi
     screen_dump "$tgt" "$lines"

@@ -190,6 +190,18 @@ roost_jsonout_int() {
   esac
 }
 
+# roost_jsonout_background SINCE RECORD -> ROOST_JSONOUT_INT: the count in a
+# @roost-background record "<since> N" whose first word is SINCE, as a JSON
+# integer; null for anything else (no record, another stamp's record, a
+# count of `?`). Shared by `status --json` and `wait-done --json`.
+roost_jsonout_background() {
+  local LC_ALL=C rec="$2"
+  ROOST_JSONOUT_INT=null
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  case "$rec" in "$1 "*) ;; *) return 0 ;; esac
+  roost_jsonout_int "${rec#* }"
+}
+
 # roost_jsonout_emit COMMAND KEY KIND VALUE [KEY KIND VALUE]...
 #
 # Prints ONE document on one line: "schema" and "command" first, then each key
@@ -415,7 +427,7 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
-  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered
+  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg
   local ns=0 np=0 j
   # The dialog record's reader (#142). Sourced here, where it is used, so no
   # other roost command pays for it; it runs nothing at source time.
@@ -470,8 +482,13 @@ roost_jsonout_status() {
   # is showing, and whether `roost answer` has answered it. In the same call
   # for the same reason: `dialog` is null unless `state` says blocked, and the
   # two must be read at one instant for that to mean anything.
+  #
+  # Then @roost-background (#97): "<@agent_since> N" while a Claude pane is
+  # held at working by background work still running in it, written by its
+  # Stop hook. Same call, same reason as the dialog: it means something only
+  # beside the @agent_since read in the same instant.
   trusted=0
-  roost_jsonout_list 17 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 18 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -496,6 +513,7 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[14]="$(t display-message -p -t "$id" '#{@roost-subagents}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[15]="$(t display-message -p -t "$id" '#{@roost-dialog}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[16]="$(t display-message -p -t "$id" '#{@roost-answered}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[17]="$(t display-message -p -t "$id" '#{@roost-background}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
@@ -505,6 +523,7 @@ roost_jsonout_status() {
     p_harness[np]="${ROOST_JSONOUT_F[12]}"; p_tr[np]="${ROOST_JSONOUT_F[13]}"
     p_sub[np]="${ROOST_JSONOUT_F[14]}"
     p_dialog[np]="${ROOST_JSONOUT_F[15]}"; p_answered[np]="${ROOST_JSONOUT_F[16]}"
+    p_bg[np]="${ROOST_JSONOUT_F[17]}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -558,6 +577,16 @@ roost_jsonout_status() {
     # helpers it has out, and the turn-over design (#97) owns the relation
     # between the two.
     roost_jsonout_int "${p_sub[k]}"; doc="$doc,\"subagents\":$ROOST_JSONOUT_INT"
+    # How many background tasks hold a Claude pane at working (#97): the
+    # count from @roost-background, only while that record's first word is
+    # the pane's @agent_since (a record from an earlier stamp says nothing
+    # about this turn), else null. null, never 0, is also what a count of
+    # `?` gives -- a list roost could not read, so a pane held without a
+    # number -- and what every pane that is not held reads, including an
+    # older Claude that sends no list at all (the design's Q5 limits: a
+    # caller can tell "none running" from "could not see" only because 0
+    # is never made up here). Additive under the schema-1 rule.
+    roost_jsonout_background "${p_since[k]}" "${p_bg[k]}"; doc="$doc,\"background\":$ROOST_JSONOUT_INT"
     # Which dialog a blocked pane shows, and whether it was answered (#142,
     # docs/airig/specs/2026-09-30-roost-answer-design.md §4.3): always present,
     # null unless the pane reads blocked AND carries a record whose every word
