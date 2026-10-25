@@ -491,8 +491,10 @@ bail (Stop, the dialog hooks, the prompt hook) add one tmux read of
   verdict. Neither is likely; neither is checked.
 - **A process that exits mid-walk makes the walk "unverified"**, not refused:
   its `ps` fails. A reporter would have to lose that race on purpose.
-- **tmux 3.4 and 3.5a `pane_pid`** with a pane started through `sh -c` was
-  not measured live for this step; CI runs the suite on 3.4.
+- **tmux 3.5a `pane_pid` is not measured** for this step. 3.4 is:
+  `tests/test-report-filter.sh` passed in the Ubuntu 24.04 image (tmux 3.4,
+  dash as `sh`), whose in-pane cases start the pane through `sh -c` and
+  walk from it, and 3.6 on macOS.
 
 ### A Claude Code turn that fails on an API error: fixed by #55, with holes left
 
