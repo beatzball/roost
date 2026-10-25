@@ -15,6 +15,29 @@ Nothing else notifies. `done` fires every turn and would be noise, so it is
 deliberately silent. A pane on the window you are already watching never
 notifies either — you can see it.
 
+### Codex dialogs wait a few seconds first
+
+A **codex** pane that becomes blocked does not ping at once. roost waits
+`@roost-notify-delay` seconds, 5 by default, and then pings only if the pane
+has stayed blocked for the whole delay and the window is still off screen.
+Several dialogs that open together give one ping, not one each.
+
+This is for codex's auto-review. With `approvals_reviewer = "auto_review"`,
+codex asks for permission on each sandbox escalation and its own reviewer
+approves most of them about two seconds later. Without the wait, each of those
+pinged you to a pane with nothing to answer.
+
+```sh
+set -g @roost-notify-delay 10   # wait longer
+set -g @roost-notify-delay 0    # ping codex dialogs at once, as before
+```
+
+Set it on one pane with `set -p` to change only that pane. A value that is not
+a whole number counts as 5, and the longest wait is 600.
+
+Every other harness (Claude Code, opencode, copilot, pi) still pings at once,
+and an `error` always pings at once, for codex too.
+
 ## The delivery chain
 
 Delivery is cross-platform, tried in this order:

@@ -16,6 +16,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A codex dialog pings after a few seconds, and only if it is still open
+  (#195).** Under codex's auto-review, its own reviewer approves most sandbox
+  escalations about two seconds after the dialog fires, and roost used to ping
+  for each one: you followed the ping and found nothing to answer, three or
+  four times for one parallel batch. Now a codex pane that becomes 🛑 blocked
+  pings after `@roost-notify-delay` seconds (5 by default, `0` for the old
+  instant ping), only if it has stayed 🛑 for that whole time on a window that
+  is still off screen, and one batch gives one ping. Claude Code, opencode,
+  copilot and pi still ping at once, and `error` always does.
+
 ### Fixed
 
 - **A Claude pane held ⏳ working by background work no longer stays working

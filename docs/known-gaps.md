@@ -2416,6 +2416,58 @@ third case ends), and a count that is only ever the list's length (so the
 first two end, at the price that the 33rd agent is not counted at all). That
 is a different trade, not a fix to this one, and it is a follow-up.
 
+### The deferred codex ping (#195): what it does not cover
+
+A codex `blocked` pings after `@roost-notify-delay` seconds, from a child the
+hook starts and leaves running (`roost_defer_blocked_ping` in
+`scripts/roost-agent-state`). Tested on a throwaway server with fixture
+payloads (`tests/test-codex-notify-delay.sh`), not under a live codex.
+
+- **Not measured live: whether codex lets the child outlive the hook.** The
+  child closes all three streams and runs in its own process group (`set -m`),
+  so a caller that waits on the pipe or kills the hook's group leaves it
+  alone. Codex 0.164.0's own source says that is how it behaves: its hook
+  runner (`codex-rs/hooks/src/engine/command_runner.rs`, lines 302–307 and
+  352–360 at tag `rust-v0.164.0`) turns process-tree cleanup off when a hook
+  succeeds and, on a timeout, kills the hook's process GROUP, not its
+  session; an upstream test (`completed_hook_preserves_background_descendant`
+  in `command_runner_tests.rs`) checks that a detached descendant survives
+  the hook. A probe on a throwaway server found the child in its own group,
+  reparented to pid 1, holding only `/dev/null` on its three streams, with the
+  hook back in 0.11 s. What is left is a sandbox that reaps every descendant,
+  or a later codex that changes the runner; either would make the dialog ping
+  NEVER rather than late. Severity: low — source and probe agree, but it is
+  still not measured under a live codex. What would close it: one live codex
+  run with an off-screen pane and a dialog left open past the delay.
+- **A real dialog pings later.** Up to the delay, 5 s by default. That is the
+  trade the setting makes; `0` restores the instant ping.
+- **Two dialogs in one second are two dialogs.** Round 1 keyed the wait on
+  `@agent_since`, which is whole seconds, and a review reproduced the cost: a
+  dialog answered and a second opened in the same second shared the stamp,
+  and the first one's child pinged for the second while it had been open for
+  1.5 s of a 2 s delay. The wait is now keyed on `@roost-block-entry`, which
+  changes every time the pane leaves blocked and comes back, inside any
+  second. A ping always means one unbroken stretch of 🛑 as long as the delay.
+  A dialog that opens while the pane already reads 🛑 (the rest of a parallel
+  batch, or a second dialog over the first) is the same stretch: it does not
+  restart the wait, and the batch gets one ping, on the first entry's
+  deadline. Tests 1, 9, 10 and 11 in `tests/test-codex-notify-delay.sh`.
+- **A dialog that opened while its window was ON screen schedules no ping.**
+  The hook checks the window once, when the pane goes 🛑, and starts no child
+  if the human is looking at it. If they then switch away and leave the dialog
+  open, no ping comes. A dialog that opened off screen gets no ping either if
+  the human switches to its window during the delay and away again: the
+  child checks the window once, when it wakes, and stands down for good if
+  the human was looking then. That is also what happened before #195, when
+  the ping was instant or nothing. A later dialog in the same stretch that
+  arrives while the window is off screen does start a child, so a batch can
+  still ping (test 12). Severity: low — the human saw the dialog when it opened. What would
+  close it: a pane-focus hook that re-arms the wait when the window leaves the
+  screen, which roost does not have.
+- **Auto-review that DENIES, then asks the human, is still a ping.** It
+  arrives as a later dialog with a later stamp, which is the right outcome,
+  but it waits the delay too.
+
 ## Behaviour changes
 
 ### `send` now writes a stderr line whenever it names no turn (#177)
