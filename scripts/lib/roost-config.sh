@@ -19,6 +19,35 @@ roost_glyphset() {
   esac
 }
 
+# roost_glyph_background NAME -> the glyph set NAME's badge for a pane held
+# only by its own background work (#193): @agent_state is `working`, the turn
+# has ended, and @roost-background names the current stamp. Same set names
+# and the same unknown -> emoji fallback as roost_glyphset.
+#
+# Its own function, not a sixth word of roost_glyphset, on purpose. It is not
+# a sixth STATE: the state underneath is `working`, and everything that waits
+# on a pane (wait-done, send --when-idle) reads that, not this. And
+# roost_glyphset's five words are positional to every caller that splits them
+# (`grep -rn roost_glyphset` in docs/known-gaps.md: the error state's sixth
+# position once shifted every glyph by one in roost-init). A separate
+# accessor leaves every one of those callers exactly as it was.
+#
+# Each value is chosen to be 2 cells like the rest of its set, or 1 cell
+# in the 1-cell sets, and distinct from all five of them. Not 🕰 (U+1F570),
+# the issue's example: it is text-presentation by default, so tmux counts it
+# 1 cell where most terminals draw 2, which smears the bar. 🔄 and ⚪ are
+# emoji-presentation and 2 cells everywhere. ascii's [&] is the shell's own
+# "run in the background" mark. nerd's is U+F1DA, Font Awesome's
+# `history` (a clock with a turning arrow), as \xHH bytes for bash 3.2.
+roost_glyph_background() {
+  case "$1" in
+    orbs)  printf '%s' "⚪" ;;
+    ascii) printf '%s' "[&]" ;;
+    nerd)  printf '\xef\x87\x9a' ;;
+    *)     printf '%s' "🔄" ;;
+  esac
+}
+
 # roost_sep NAME -> wedge bytes for "triangle", empty otherwise.
 roost_sep() { case "$1" in triangle) printf '\xee\x82\xb0' ;; *) printf '' ;; esac; }
 
@@ -189,6 +218,30 @@ roost_backfill_glyph_error() {
   printf 'set -g @roost-glyph-error   "%s"\n' "$1" >> "$file"
 }
 
+# roost_backfill_glyph_background FILE -> append the held-by-background glyph
+# (#193) that FILE's own glyph set implies, when FILE has no
+# @roost-glyph-background line. No-op otherwise.
+#
+# The same gap as roost_backfill_glyph_error, opened again by a glyph that
+# arrived later still, and the same three rules hold for the same reasons:
+# it only APPENDS; it only fires when the four original glyphs exactly match
+# a named set, so the value is derived and never invented; and it decides on
+# the presence of the LINE, so a value the user wrote is kept. It does not
+# depend on the error line: a config with a custom error glyph and an
+# otherwise named set still gets its set's background glyph. Same return
+# contract: non-zero only when the append itself failed.
+roost_backfill_glyph_background() {
+  local file="$1" name
+  roost_cfg_file_has "$file" @roost-glyph-background && return 0
+  name="$(roost_glyphset_match \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-blocked)" \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-working)" \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-done)" \
+    "$(roost_cfg_file_opt "$file" @roost-glyph-idle)")"
+  [ "$name" = custom ] && return 0
+  printf 'set -g @roost-glyph-background "%s"\n' "$(roost_glyph_background "$name")" >> "$file"
+}
+
 # roost_apply_live HOME -> reload the running server. No server -> no-op.
 roost_apply_live() {
   local home="$1"
@@ -212,7 +265,7 @@ roost_menu_row() {
 roost_preview_keys() {
   case "$1" in
     theme)     echo "@roost-color-bar-bg @roost-color-bar-fg @roost-color-logo-bg @roost-color-active-bg @roost-color-active-fg @roost-color-idle-fg" ;;
-    glyphs)    echo "@roost-glyph-error @roost-glyph-blocked @roost-glyph-working @roost-glyph-done @roost-glyph-idle" ;;
+    glyphs)    echo "@roost-glyph-error @roost-glyph-blocked @roost-glyph-working @roost-glyph-done @roost-glyph-idle @roost-glyph-background" ;;
     separator) echo "@roost-sep-left @roost-sep-right" ;;
   esac
 }
@@ -239,6 +292,9 @@ roost_preview_apply() {
       roost_cfg_tmux set-option -g @roost-glyph-working "$3" 2>/dev/null || true
       roost_cfg_tmux set-option -g @roost-glyph-done    "$4" 2>/dev/null || true
       roost_cfg_tmux set-option -g @roost-glyph-idle    "$5" 2>/dev/null || true
+      # Not one of the five words (see roost_glyph_background), but part of
+      # the set: a preview that left it would show an emoji in an ascii bar.
+      roost_cfg_tmux set-option -g @roost-glyph-background "$(roost_glyph_background "$value")" 2>/dev/null || true
       ;;
     separator)
       s="$(roost_sep "$value")"

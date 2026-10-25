@@ -20,6 +20,7 @@ assert_contains "$(cat "$conf")" 'set -g @roost-glyph-blocked "🛑"' "writes bl
 assert_contains "$(cat "$conf")" 'set -g @roost-glyph-working "⏳"' "writes working glyph with the right value"
 assert_contains "$(cat "$conf")" 'set -g @roost-glyph-done    "✅"' "writes done glyph with the right value"
 assert_contains "$(cat "$conf")" 'set -g @roost-glyph-idle    "💤"' "writes idle glyph with the right value"
+assert_contains "$(cat "$conf")" 'set -g @roost-glyph-background "🔄"' "writes the background glyph (#193) with the right value"
 
 # the wedge must be written as real UTF-8 bytes, not a literal \u escape
 # (bash 3.2 printf has no \u; a regression would silently corrupt the bar).
@@ -40,6 +41,8 @@ case "$(grep '@roost-glyph-blocked' "$conf2")" in
   *'\u'*) assert_eq "literal-escape" "utf8-bytes" "nerd glyph written as real UTF-8 bytes" ;;
   *)      assert_eq ok ok "nerd glyph written as real UTF-8 bytes" ;;
 esac
+# The background glyph (#193) is the nerd set's own, U+F1DA, as bytes.
+assert_contains "$(cat "$conf2")" "$(printf 'set -g @roost-glyph-background "\xef\x87\x9a"')" "the nerd set writes its own background glyph, U+F1DA"
 rm -rf "$cfg2"
 
 # idempotent + backup: second run backs up the first

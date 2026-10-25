@@ -323,3 +323,58 @@ case "$(cat "$conf10" 2>/dev/null)" in
 esac
 assert_contains "$(cat "$conf10" 2>/dev/null)" 'set -g @roost-notify-backend "auto"' "a legacy config with no glyph lines still migrates its other keys"
 rm -rf "$g10"
+
+# --- Case 11: the held-by-background glyph backfill (#193). -----------------
+# Every amux.conf predates the background glyph too. The same rules as the
+# error backfill: the value is the matched set's own, a custom set gets
+# nothing invented, and a line already there is kept. Values, not names.
+g11="$(mktemp -d /tmp/amx.XXXX)"
+conf11="$(migrate_legacy "$g11" <<'EOF2'
+set -g @amux-glyph-blocked "[!]"
+set -g @amux-glyph-working "[~]"
+set -g @amux-glyph-done    "[+]"
+set -g @amux-glyph-idle    "[·]"
+EOF2
+)"
+assert_contains "$(cat "$conf11" 2>/dev/null)" 'set -g @roost-glyph-background "[&]"' "ascii legacy set: backfills the ascii background glyph [&]"
+assert_eq "$(grep -c '^set -g @roost-glyph-background ' "$conf11" 2>/dev/null | tr -d ' ')" "1" "ascii legacy set: exactly one @roost-glyph-background line"
+rm -rf "$g11"
+# A custom error glyph on a named set does not stop it.
+g12="$(mktemp -d /tmp/amx.XXXX)"
+conf12="$(migrate_legacy "$g12" <<'EOF2'
+set -g @amux-glyph-error   "(X)"
+set -g @amux-glyph-blocked "[!]"
+set -g @amux-glyph-working "[~]"
+set -g @amux-glyph-done    "[+]"
+set -g @amux-glyph-idle    "[·]"
+EOF2
+)"
+assert_contains "$(cat "$conf12" 2>/dev/null)" 'set -g @roost-glyph-background "[&]"' "a custom error glyph on a named set still gains the set's background glyph"
+assert_contains "$(cat "$conf12" 2>/dev/null)" 'set -g @roost-glyph-error   "(X)"' "...and keeps the custom error glyph"
+rm -rf "$g12"
+# A background line the user wrote is carried across, not joined by another.
+g13="$(mktemp -d /tmp/amx.XXXX)"
+conf13="$(migrate_legacy "$g13" <<'EOF2'
+set -g @amux-glyph-blocked "[!]"
+set -g @amux-glyph-working "[~]"
+set -g @amux-glyph-done    "[+]"
+set -g @amux-glyph-idle    "[·]"
+set -g @amux-glyph-background "bg"
+EOF2
+)"
+assert_eq "$(grep '^set -g @roost-glyph-background ' "$conf13" 2>/dev/null)" 'set -g @roost-glyph-background "bg"' "an existing background glyph is kept, and is the only one"
+rm -rf "$g13"
+# A custom four-glyph set matches nothing: no background glyph is invented.
+g14="$(mktemp -d /tmp/amx.XXXX)"
+conf14="$(migrate_legacy "$g14" <<'EOF2'
+set -g @amux-glyph-blocked "!!"
+set -g @amux-glyph-working "~~"
+set -g @amux-glyph-done    "++"
+set -g @amux-glyph-idle    ".."
+EOF2
+)"
+case "$(cat "$conf14" 2>/dev/null)" in
+  *"@roost-glyph-background"*) assert_eq "backfilled" "left-alone" "a custom four-glyph set gets no invented background glyph" ;;
+  *)                           assert_eq ok ok "a custom four-glyph set gets no invented background glyph" ;;
+esac
+rm -rf "$g14"

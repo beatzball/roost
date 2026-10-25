@@ -714,6 +714,32 @@ case "$out" in
 esac
 run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" >/dev/null 2>&1
 assert_eq "$?" "0" "a custom error glyph does not fail doctor (informational only)"
+
+# The held-by-background glyph (#193) opens the same gap for every config
+# written before it: no @roost-glyph-background line, so the bar inherits the
+# global 🔄. $cudir is an ascii config with no such line.
+assert_contains "$out" "has no @roost-glyph-background line" "doctor reports a missing background glyph line on the ascii set"
+assert_contains "$out" "falls back to the built-in '🔄' for a pane held by background work" "...naming the glyph it inherits"
+printf 'set -g @roost-glyph-background "[&]"\n' >> "$cudir/roost/roost.conf"
+out="$(run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" 2>&1)"
+case "$out" in
+  *"@roost-glyph-background"*) assert_eq "warned" "silent" "doctor is silent once the background glyph line is there" ;;
+  *) assert_eq ok ok "doctor is silent once the background glyph line is there" ;;
+esac
+# The emoji set's own glyph IS the global default, so a missing line there
+# changes nothing a person sees, and is not warned about.
+cat > "$cudir/roost/roost.conf" <<EOF
+set -g @roost-glyph-error   "💥"
+set -g @roost-glyph-blocked "🛑"
+set -g @roost-glyph-working "⏳"
+set -g @roost-glyph-done    "✅"
+set -g @roost-glyph-idle    "💤"
+EOF
+out="$(run_doctor "$gchome" COLORTERM=truecolor XDG_CONFIG_HOME="$cudir" 2>&1)"
+case "$out" in
+  *"@roost-glyph-background"*) assert_eq "warned" "silent" "doctor does not warn the emoji set about the background line" ;;
+  *) assert_eq ok ok "doctor does not warn the emoji set about the background line" ;;
+esac
 rm -rf "$cudir" "$gchome"
 
 # === roost doctor: stale-hook check (Phase 5 trigger) ===

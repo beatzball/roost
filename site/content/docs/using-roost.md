@@ -48,7 +48,7 @@ The prefix is **`Ctrl-s`** and the bindings mirror a typical GNU-Screen-style tm
 
 ### Status bar counts
 
-The top-right shows the whole herd rolled up, for example `💥1 🛑4 ⏳1 ✅3` (error / blocked / working / done), so you see the picture even when the window tabs scroll off.
+The top-right shows the whole herd rolled up, for example `💥1 🛑4 ⏳1 🔄2 ✅3` (error / blocked / working / background / done), so you see the picture even when the window tabs scroll off. 🔄 counts the agents that have answered but whose own background work still runs; they are still working underneath (see [the background badge](/docs/state-badges#the-background-badge)).
 
 Counts are ordered by how much they want your attention, and the glyphs are read back off the windows, so they can never disagree with the tabs.
 
@@ -62,7 +62,7 @@ The `prefix a` switcher shows how long each agent has been in its current state,
 
 ### The agent switcher
 
-`prefix a` opens a popup that lists every pane on the server, grouped by session and window. Each agent's state is coloured: red is blocked, magenta is error, yellow is working, green is done.
+`prefix a` opens a popup that lists every pane on the server, grouped by session and window. Each agent's state is coloured: red is blocked, magenta is error, yellow is working, cyan is background, green is done. A background row reads `background (2)`, and the `working` filter keeps it, because it is still working.
 
 - **It stays current.** The list reloads every two seconds while it is open, so a badge that changes shows up without reopening it.
 - **It shows the screen.** The right-hand side is the screen of the row under the cursor, so you can read what a blocked agent is asking before you jump to it. In a narrow terminal the preview moves below the list.

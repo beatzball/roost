@@ -940,6 +940,17 @@ if [ -f "$cfgfile" ]; then
         warn "$cfgfile sets @roost-glyph-error to '$have', where the '$cur' set's own error glyph is '$want' — if you chose that yourself there is nothing to fix; otherwise run: roost settings, and re-pick '$cur'"
       fi
     fi
+    # The held-by-background badge (#193) arrived after every glyph line a
+    # config written before it carries, so the same gap opens again: with no
+    # @roost-glyph-background line the bar falls back to tmux/roost.conf's
+    # global 🔄. That is the emoji set's own glyph, so only the other sets
+    # are warned about, and only for a MISSING line -- a value that differs
+    # is somebody's choice, and this check says only what it saw.
+    want="$(roost_glyph_background "$cur")"
+    fallback="$(roost_glyph_background emoji)"
+    if [ "$want" != "$fallback" ] && ! roost_cfg_file_has "$cfgfile" @roost-glyph-background; then
+      warn "$cfgfile has no @roost-glyph-background line, so your saved '$cur' glyph set falls back to the built-in '$fallback' for a pane held by background work — run: roost settings, and re-pick '$cur'"
+    fi
   fi
 fi
 
