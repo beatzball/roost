@@ -48,6 +48,25 @@ and this project uses [Semantic Versioning](https://semver.org/).
   install`** after upgrading to add the new hook entry, and restart a roost
   server started before it; `roost doctor` says when either is missing.
   Without it everything behaves as in 0.10.0.
+- **Only a pane's own agent can set its badge now, and a badge stops
+  claiming work once its agent has died (#105).** Any process that carried a
+  pane's `TMUX_PANE` — an app the agent launched that detached itself, a shell
+  that copied the variable — could stamp that pane, and nothing checked. roost
+  now walks the reporting process's parents: a report from inside the pane's
+  process tree is accepted, and one from outside it is refused, so a stray
+  `done` can never end a turn. A refused `working` or `blocked` clears a stale
+  ✅ or 💤 rather than leave it standing. `roost state --json` says
+  `"refused": "not in this pane's process tree"`, `status --json` gains
+  `refused` and `verified` per pane, and `roost doctor` names a pane that
+  refused a report, with the process id. Where the check cannot run — no
+  working `ps`, or a container that cannot see the pane's process — the
+  report is accepted as before and marked `verified: false`, and `doctor`
+  names that pane too. Every tool call of a busy agent costs nothing extra;
+  only a change of badge pays for the check. And an agent killed at a shell
+  prompt is now cleared by `send` and `read`, not only noticed by
+  `wait-done`: the badge is unset, `wait-done` exits **2**, a 🛑 left by the
+  dead agent no longer makes `send` refuse with exit 3, and `read` stops
+  calling the previous turn's reply current. `status` still changes nothing.
 
 ## [0.10.0]
 

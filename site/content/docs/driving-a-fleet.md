@@ -381,7 +381,7 @@ It needs the `%N` pane, which is why `send` prints one. Turns are numbered per p
 | `2` (`is gone`) | the target did not exist when `wait-done` started | re-resolve the target |
 | `5` (`was interrupted, not done`) | the turn ended because a human stopped it: Esc in Claude Code mid-answer or mid-tool, or a Claude permission dialog answered No or dismissed (both read from Claude's own transcript), codex's `Interrupt`, copilot's aborted turn, or a Claude `/clear` or `/resume` while its background work still held the pane. The pane is not busy, and nothing it said is this turn's answer | re-prompt, or ask the human; do not read the pane as a result |
 
-An agent you typed at a shell prompt in the pane is caught too: when its hook marks it busy, roost notes which job holds the pane's terminal, and `wait-done` reports `died` once that job is gone and the shell has the terminal back.
+An agent you typed at a shell prompt in the pane is caught too: when its hook marks it busy, roost notes which job holds the pane's terminal, and `wait-done` reports `died` once that job is gone and the shell has the terminal back. `send` and `read` make the same check, and on a dead agent all three clear the stale badge, so the pane stops reading ⏳ or 🛑 for an agent that is gone. `status` only shows what is stored and changes nothing.
 
 Three limits:
 
@@ -562,6 +562,8 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `panes[].transcript` | string or `null` | the path of the agent's transcript, when its harness keeps one file per session (Claude Code, codex, pi) |
 | `panes[].subagents` | integer or `null` | how many subagents the agent has running right now. `0` once they have all finished; `null` for a pane that has never run one, and for every harness but Claude Code, which is the only one that reports it. A count, not a state: `state` still says whether the agent itself is busy |
 | `panes[].background` | integer or `null` | how many background tasks of its own hold a Claude Code pane at `working` (a `run_in_background` command, a background agent, a `Monitor`). `null` for every pane that is not held, for a hold roost could not count, and for every harness but Claude Code — never `0` for "could not see" |
+| `panes[].verified` | bool or `null` | whether the report that set this badge came from inside the pane's own process tree. `true` when roost checked it; `false` when the check could not run (no working `ps`, or the pane's process is not visible, as in a container), so the report was accepted unchecked; `null` before any report, and for a badge set by a roost older than this check |
+| `panes[].refused` | integer or `null` | epoch seconds of the last state report the pane turned away because it came from a process outside the pane's tree (a detached app or a shell that copied the pane's `TMUX_PANE`); `null` when there has been none. `roost doctor` names such a pane, with the process id |
 | `panes[].dialog` | object or `null` | the dialog a 🛑 blocked pane is showing, for [`roost answer`](#answer-a-dialog-from-anywhere-roost-answer). `null` unless `state` is `blocked` and the agent's hook described the dialog (Claude Code, and codex) |
 | `panes[].dialog.fingerprint` | string | twelve hex characters, new for each dialog: what `roost answer --expect` takes |
 | `panes[].dialog.harness` | string | `claude` or `codex` |
@@ -634,14 +636,16 @@ A `turn` of `null` with `started` of `true` is the ordinary shape when replies a
 
 For an adapter or a script that badges itself. It sets the state exactly as `roost state STATE` does, then tells you what landed:
 
-`{"schema":1,"command":"state","requested":"done","state":"done","pane":"%7","recorded":true}`
+`{"schema":1,"command":"state","requested":"done","state":"done","pane":"%7","recorded":true,"refused":null,"verified":true}`
 
 | field | type | meaning |
 |---|---|---|
 | `requested` | string | the state you passed |
 | `state` | string or `null` | the state as recorded (an unknown word is recorded as `idle`); `null` when nothing was recorded |
 | `pane` | string or `null` | the pane it was set on; `null` outside roost |
-| `recorded` | bool | the pane's state was read back and matches. `false` means the badge did not land — outside roost, or on a server or pane that is not the one you think |
+| `recorded` | bool | the pane's state was read back and matches. `false` means the badge did not land — outside roost, or on a server or pane that is not the one you think, or a refused report (below) |
+| `refused` | string or `null` | why the report was not accepted: `"not in this pane's process tree"` when the process that ran `roost state` is not the pane's process or below it. Only the pane's own agent may report its state; a refused `done` leaves a busy badge as it is, and a refused `working` or `blocked` clears a ✅ or 💤 so it cannot stand while something claims work. `null` when the report was accepted |
+| `verified` | bool or `null` | `true` when roost checked that the report came from inside the pane; `false` when the check could not run and the report was accepted unchecked; `null` when nothing was accepted |
 
 It exits 0 even when `recorded` is `false`, as the plain command always has. Put `--json` **after** the state: `roost state --json` with the flag first still means "set idle", as it always did.
 

@@ -161,6 +161,92 @@ roost_self_socket
 sock="$ROOST_SELF_SOCK"
 [ -n "$sock" ] || exit 0
 
+# THE REPORT FILTER (#105, step 4 of docs/airig/specs/2026-09-29-turn-over-
+# design.md, §4). A report counts only when it comes from inside the pane's
+# own process tree: this script's parent is walked up with `ps -o ppid=`
+# (scripts/lib/roost-ancestry.sh) until the pane's #{pane_pid} turns up or the
+# walk runs out. Before this, anything that carried the pane's $TMUX_PANE --
+# a detached GUI app, a shell that copied the variable, a daemon, the plugin
+# of an `opencode attach` running inside its server -- badged a pane it does
+# not live in, and nothing checked.
+#
+# Three answers, and what each does (the human's Q4 and its limits, §8):
+#
+#   in       accepted, and the stamp it writes carries @roost-verified
+#            "<stamp> 1"
+#   unknown  the walk could not RUN (`ps` failed, the pane's process is not
+#            visible, as in a container): accepted, and the stamp carries
+#            "<stamp> 0" -- `verified: false` in `status --json` and
+#            `state --json`, and `roost doctor` names the pane. One of the
+#            places "could not tell" is let through, on purpose, because
+#            refusing would turn "could not check" into a silent badge loss;
+#            docs/known-gaps.md lists it
+#   out      the walk RAN and reached pid 1 without the pane: REFUSED, here,
+#            before this script writes anything at all -- not the badge, and
+#            not the reply, the hold record or the dialog record that are
+#            written above the unchanged-state bail, which are the report too
+#
+# WHERE IT RUNS, and that is the cost rule (§4.2's cost row; the brief: no
+# tmux round trip may be added to the bail). PostToolUse fires on every tool
+# call and Claude waits for this script, so the hot path -- an unchanged
+# state that is not blocked -- never walks: it bails first, and a stranger's
+# report of the state the pane already has changes nothing anyway. Every
+# call that can write does walk, at one of two points: a flag that writes
+# above the bail (Stop, StopFailure, the dialog hooks, the prompt hook, an
+# interrupt) walks at the top, with one tmux read of #{pane_pid}, once per
+# turn or dialog; any other call walks just after the bail's one read, which
+# now carries #{pane_pid} too, so a transition pays the walk's `ps` and no
+# extra round trip. SessionEnd walks inside its own block. The measured cost
+# is in docs/known-gaps.md ("The report filter").
+#
+# NOT FILTERED: --subagent-hook. It keeps a count, never the badge, and a
+# count a stranger moves is not a state report; not measured either way.
+#
+# A REFUSAL IS NOT NEUTRAL (§4.3). A pane that reads busy (working, blocked)
+# keeps its badge: a refused `done` must not end a turn, which is the safe
+# direction. A pane that reads done or idle has its badge UNSET by a refused
+# `working` or `blocked`: an old ✅ must not stand while something claims work
+# is going on, so the badge says "could not tell". tmux makes that test in the
+# same command as the unset, at the instant it writes. An `error` badge is
+# NOT unset (a case the design did not name, ruled toward its rule): an
+# unbadged pane is one `wait-done` returns 0 for, and turning a 💥 into that
+# would be a false "finished" made out of "could not tell". Either way the
+# refusal is recorded as @roost-refused "<epoch> <state> <pid>" -- the pid is
+# this script's, the process whose parents were walked -- and nothing else is
+# written: no event line, no label, no notification. So a stranger can at
+# most UNSET a done badge, never set one, and the "look again" that costs is
+# one the rules allow.
+verified="" admitted=0
+report_refuse() {
+  local now
+  now="$(date +%s)"
+  case "$1" in
+    working|blocked)
+      tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+        "#{||:#{==:#{@agent_state},done},#{==:#{@agent_state},idle}}" \
+        "set-option -pu -t $TMUX_PANE @agent_state" \; \
+        set-option -p -t "$TMUX_PANE" @roost-refused "$now $1 $$" 2>/dev/null || true ;;
+    *)
+      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-refused "$now $1 $$" 2>/dev/null || true ;;
+  esac
+  tmux -S "$sock" refresh-client -S 2>/dev/null || true
+  exit 0
+}
+# report_admit PANE_PID STATE -- the walk, from this script's parent. Returns
+# with $verified set, or refuses and exits. $PPID costs nothing to read, so
+# `roost state` typed at the pane's prompt -- whose parent IS the pane's shell
+# -- walks zero levels.
+report_admit() {
+  . "$SELF_DIR/lib/roost-ancestry.sh"
+  admitted=1
+  roost_pid_in_pane "$PPID" "$1" || true
+  case "$ROOST_ANCESTRY" in
+    in) verified=1 ;;
+    out) report_refuse "$2" ;;
+    *) verified=0 ;;
+  esac
+}
+
 # A Claude SUBAGENT started or stopped (Phase 0 lane D of the fleet board).
 # Keep the count and the ids on the pane, in @roost-subagents and
 # @roost-subagent-ids, and EXIT: nothing below this block runs. Every branch
@@ -423,9 +509,12 @@ if [ "${1:-}" = "--session-end-hook" ]; then
   # can hold one (the owner is a stamp and [A-Za-z0-9_-], checked below).
   # The boot key rides along: the release below needs it to reserve a turn
   # number, and here it costs no round trip of its own.
+  # The pane's process rides along too, for the report filter below: one
+  # read, no round trip of its own.
   cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
-    '#{start_time}-#{pid}|#{@agent_state}|#{@agent_since}|#{@roost-background}|#{@roost-background-session}' 2>/dev/null || true)"
+    '#{start_time}-#{pid}|#{pane_pid}|#{@agent_state}|#{@agent_since}|#{@roost-background}|#{@roost-background-session}' 2>/dev/null || true)"
   se_boot="${cur%%|*}"; cur="${cur#*|}"
+  se_ppid="${cur%%|*}"; cur="${cur#*|}"
   se_state="${cur%%|*}"; cur="${cur#*|}"
   se_since="${cur%%|*}"; cur="${cur#*|}"
   se_bg="${cur%%|*}"; se_own="${cur#*|}"
@@ -472,6 +561,15 @@ sys.stdout.write(s + "\n" + r)' 2>/dev/null || true)"
     clear|resume) se_outcome=interrupted ;;
     *) se_outcome=died ;;
   esac
+  # The report filter (#105, top of this file), here because this block exits
+  # before the filter's other two call points. Only a SessionEnd that would
+  # release a hold gets this far, so every other one pays nothing. The old
+  # Claude's SessionEnd after `respawn-pane -k` -- the one the owner check
+  # above already stops -- is exactly a process the filter refuses: the kill
+  # took its parent, the old shell, and left it under pid 1. A refusal keeps
+  # the hold (the pane is busy, §4.3) and records the outcome word it asked
+  # for in @roost-refused.
+  report_admit "$se_ppid" "$se_outcome"
   # The held main reply, as tmux stores it: what the record and the pane's
   # `.pane` sidecar both keep, so it is never encoded a second time (the
   # Stop release's reply_from_pane says why).
@@ -589,6 +687,18 @@ fi
 
 # Normalise: anything unrecognised is idle.
 case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
+
+# The report filter's first call point (#105, top of this file): every flag
+# whose call writes ABOVE the unchanged-state bail -- the reply and the hold
+# (Stop), the cleared reply (an error or idle Stop, an interrupt), the dialog
+# and transcript records read below (the dialog hooks, the prompt hook) --
+# walks here, before the first of those writes. Each fires once per turn or
+# per dialog, never per tool call, so the one tmux read of #{pane_pid} is
+# not on the hot path.
+if [ "$stop_hook" = 1 ] || [ "$stop_failure_hook" = 1 ] || [ "$interrupted_hook" = 1 ] \
+   || [ "$notification_hook" = 1 ] || [ "$permission_request_hook" = 1 ] || [ "$prompt_hook" = 1 ]; then
+  report_admit "$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{pane_pid}' 2>/dev/null || true)" "$state"
+fi
 
 # Why a pane is error, for `roost wait-done` and `read`. Only an adapter sets
 # it — see the write below — and the StopFailure branch further down replaces
@@ -1457,6 +1567,26 @@ hold_carry() {
   done
 }
 
+# verified_wr NOW -> VER_WR (argv form, starting with its own `;`) and VER_STR
+# (the same write inside a quoted command string): what the report filter
+# (#105, top of this file) found, recorded as @roost-verified "<NOW> 1|0" in
+# the stamp's own command. Tied to the stamp the way @roost-transcript is, so
+# a reader trusts it only while its first word equals @agent_since, and a
+# stamp from before #105 -- which wrote none -- reads as `verified: null`,
+# never as checked. Every stamp is reached only after a walk, so $verified
+# is always set there; were it not, the old mark is removed rather than left
+# to describe a stamp it does not belong to. NOW is digits and $verified is
+# 1 or 0, so neither can break the string.
+verified_wr() {
+  if [ -n "$verified" ]; then
+    VER_WR=(';' set-option -p -t "$TMUX_PANE" @roost-verified "$1 $verified")
+    VER_STR=" ; set-option -p -t $TMUX_PANE @roost-verified '$1 $verified'"
+  else
+    VER_WR=(';' set-option -pu -t "$TMUX_PANE" @roost-verified)
+    VER_STR=" ; set-option -pu -t $TMUX_PANE @roost-verified"
+  fi
+}
+
 # roost_stamp_blocked NOW — write everything a 🛑 stamp owns, in ONE tmux
 # command, from wherever the stamp came from.
 #
@@ -1578,10 +1708,13 @@ roost_stamp_blocked() {
   # A dialog inside a held turn keeps the hold (hold_carry above).
   hold_carry "$1"
   wr+=("${HOLD_WR[@]}")
+  # The report filter's mark (#105) goes with the stamp, as everywhere.
+  verified_wr "$1"
   wr+=(set-option -p -t "$TMUX_PANE" @agent_state blocked
       ';' set-option -p -t "$TMUX_PANE" @agent_since "$1"
       ';' set-option -pu -t "$TMUX_PANE" @roost-stop-swallowed
-      ';' set-option -pu -t "$TMUX_PANE" @roost-ended)
+      ';' set-option -pu -t "$TMUX_PANE" @roost-ended
+      "${VER_WR[@]}")
   if [ -n "$transcript" ]; then
     wr+=(';' set-option -p -t "$TMUX_PANE" @roost-transcript "$1 $transcript")
   elif [ "$notification_hook" = 1 ] || [ "$permission_request_hook" = 1 ]; then
@@ -1747,8 +1880,16 @@ roost_defer_blocked_ping() {
 # truthiness, which treats a pane literally named "0" as unset. $state is
 # always error/blocked/working/done/idle, never ending in X, so a trailing X
 # can only have come from the marker and is safe to strip.
+#
+# The pane's #{pane_pid} comes first in the same read, for the report filter
+# (#105, top of this file): a transition walks from it with no round trip of
+# its own. It is digits or EMPTY (tmux 3.8 prints it empty once the pane's
+# process has gone, #165), never a space, so the first space ends it; a
+# failed read is empty and leaves both halves empty.
 raw="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
-  '#{@agent_state}#{?#{==:#{@roost-name},},,X}' 2>/dev/null || true)"
+  '#{pane_pid} #{@agent_state}#{?#{==:#{@roost-name},},,X}' 2>/dev/null || true)"
+raw_pid="${raw%% *}"
+raw="${raw#* }"
 case "$raw" in
   *X) prev="${raw%X}"; has_name=1 ;;
   *)  prev="$raw";      has_name=0 ;;
@@ -1799,6 +1940,15 @@ sys.stdout.write("subagent" if isinstance(a, str) and a else "")' 2>/dev/null ||
   # the pre-#91 behaviour and the one that clears a badge rather than keeping
   # one: this must degrade towards the old bug, never towards a stuck pane.
   [ "$sub" = "subagent" ] && exit 0
+fi
+
+# The report filter's second call point (#105, top of this file): any call
+# the first one did not walk, when it can write -- a transition, or a
+# `blocked`, whose repeat restamps (below). The hot path, an unchanged state
+# that is not blocked, is not walked: it bails below having written nothing.
+# Before the event log is armed, so a refused report leaves no line.
+if [ "$admitted" = 0 ] && { [ "$state" != "$prev" ] || [ "$state" = blocked ]; }; then
+  report_admit "$raw_pid" "$state"
 fi
 # A Stop that lands while a dialog is OPEN is handled at the WRITE, near the
 # bottom of this file, and NOT here where $prev is in hand (#91, flock round
@@ -2159,11 +2309,14 @@ else
     # unsets that the $prev-keyed clear above skips for this call: they describe
     # the dialog, and whether there is still a dialog is decided here, not there.
     # @roost-dialog, @roost-answered and @roost-answer-nonce (#142) describe it
-    # too, and go with them.
+    # too, and go with them. So does the report filter's mark (#105): it
+    # belongs to the stamp the else branch writes, and the swallowed branch
+    # writes no stamp.
+    verified_wr "$now"
     tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
       "#{&&:#{==:#{@agent_state},blocked},#{==:#{@roost-stop-swallowed},}}" \
       "set-option -p -t $TMUX_PANE @roost-stop-swallowed 1" \
-      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now$held_wr ; set-option -pu -t $TMUX_PANE @roost-ended ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed ; set-option -pu -t $TMUX_PANE @roost-dialog ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce" \
+      "set-option -p -t $TMUX_PANE @agent_state $state ; set-option -p -t $TMUX_PANE @agent_since $now$held_wr ; set-option -pu -t $TMUX_PANE @roost-ended ; set-option -pu -t $TMUX_PANE @roost-blocked-on ; set-option -pu -t $TMUX_PANE @roost-stop-swallowed ; set-option -pu -t $TMUX_PANE @roost-dialog ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce$VER_STR" \
       2>/dev/null || true
   else
     # One command for the badge and the stamp, and with them, on a transition
@@ -2189,8 +2342,11 @@ else
       hold_carry "$now"
       stamp_wr+=("${HOLD_WR[@]}")
     fi
+    # The report filter's mark (#105), in the stamp's own command.
+    verified_wr "$now"
     stamp_wr+=(set-option -p -t "$TMUX_PANE" @agent_state "$state"
-              ';' set-option -p -t "$TMUX_PANE" @agent_since "$now")
+              ';' set-option -p -t "$TMUX_PANE" @agent_since "$now"
+              "${VER_WR[@]}")
     # The interrupted outcome (#95) beside the idle it leaves, with the stamp's
     # own second, and the empty turn file BEFORE the stamp, for the reply's
     # reason: `wait-done --turn N` returns the instant the badge moves and

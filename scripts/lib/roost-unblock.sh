@@ -583,3 +583,106 @@ roost_interrupted_pane() {
   roost_unblock_record_turn "$pane"
   return 0
 }
+
+
+# --- the pane whose agent died (#105, part 2) ----------------------------------
+#
+# Step 5 of docs/airig/specs/2026-09-29-turn-over-design.md, §4.4. An agent
+# typed at a shell prompt and killed there leaves the pane alive at its
+# prompt, pane_dead 0 and the badge busy, and no hook ever says otherwise.
+# #64 taught `wait-done` to see it -- job_gone in bin/roost, from the job the
+# sink recorded in @roost-agent-job and two kernel facts about it -- but
+# `wait-done` only EXITED 2: the badge went on reading working, `read` called
+# the previous turn's reply stale for ever, and `send` refused a pane left
+# blocked with exit 3 for a dialog nobody will ever answer. This moves that
+# one check into one function the three share, as roost_unblock_pane is
+# shared above, and on a death it does what the recovery channel may do
+# (§4.1): UNSET, and record why.
+#
+# `status` does NOT call it. A read command stays a read command (the human's
+# Q6): `status` shows what is stored and changes nothing.
+#
+# The rules, each fail-closed, the shape of the two readers above:
+#
+#   1. The pane reads `working` or `blocked` at PANE scope. A done, idle or
+#      error pane finished first and keeps its answer.
+#   2. job_gone says the recorded job has no process left AND the pane's
+#      shell holds the terminal again. Both facts are the kernel's; there is
+#      still no process-tree walk here, as wait-done's comment requires ("both
+#      guess"). The report filter's walk (scripts/lib/roost-ancestry.sh)
+#      admits reports and never declares a death (§4.4).
+#   3. The clear is a compare-and-clear in one tmux command: the state, the
+#      stamp and the job record must still be the ones read, so a new agent
+#      typed at the same prompt that has stamped in between wins.
+#
+# What it writes: it UNSETS @agent_state (never a value), @roost-agent-job
+# (the job is gone; a later check must not judge a new agent by it), the
+# dialog records when the pane was blocked (no dialog is open in a shell),
+# @roost-transcript and the hold record with its types and owner (the turn is
+# over), and -- unless the pane was held by background work (#97) -- the reply
+# and its pointer, which are the previous turn's: no Stop replaced them, and a
+# reply left on an unbadged pane is served as current with nothing on stderr.
+# A HELD pane's reply is this turn's main answer, kept only on the pane, so it
+# stays, and `read` says the agent died (its #188 wording, which is the truth
+# for a held pane). It writes @roost-ended "<stamp> died" -- `wait-done` exits
+# 2 on it, as it does for every pane whose agent is gone -- and
+# @roost-unblocked "<now> since=<stamp> by=<token>", as the two readers above
+# do, so the event log (#98) can name the clear and a false one can be found.
+#
+# NO TURN FILE. The interrupt recovery appends an empty one so the next
+# prompt cannot take the interrupted prompt's number (§5.4). A death is
+# different: the next prompt goes to whatever is started in that pane next,
+# and an empty `died` turn would be filed under a sidecar whose `read --turn`
+# wording is SessionEnd's ("before its background work finished"), which is
+# not what happened here. So a `wait-done --turn N` on a turn whose agent died
+# in its shell gets its exit 2 from this check, and a LATER one can be
+# satisfied by the next agent's turn N. Recorded in docs/known-gaps.md.
+#
+# The two known misses of job_gone stay as they are: Claude's `caffeinate`
+# helper keeps its job alive for up to ~300 s, and a wrapper that outlives
+# its agent keeps it for ever. Both are a badge that stays busy, never a
+# false `died`.
+
+# roost_died_pane TARGET -> 0 iff TARGET's pane read busy, its recorded agent
+# job is gone, and the pane was cleared here. Any other answer is 1, and a 1
+# changes nothing. Needs bin/roost's `t` and `job_gone`.
+roost_died_pane() {
+  local info pane since state ppid job now held_wr
+  # `|` between the fields: none can hold one. The pane pid and the job keep
+  # a fixed letter in front, as wait-done's snapshot does (#165): either can
+  # be EMPTY, and the letter keeps the fields where they are.
+  info="$(t display-message -p -t "$1" '#{pane_id}|#{@agent_since}|#{@agent_state}|p#{pane_pid}|j#{@roost-agent-job}' 2>/dev/null || true)"
+  pane="${info%%|*}"; info="${info#*|}"
+  since="${info%%|*}"; info="${info#*|}"
+  state="${info%%|*}"; info="${info#*|}"
+  ppid="${info%%|*}"; job="${info#*|}"
+  case "$pane" in %[0-9]*) : ;; *) return 1 ;; esac
+  # Pane scope only, as everywhere: a window- or global-scope value is not
+  # this pane's badge.
+  state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  case "$state" in working|blocked) : ;; *) return 1 ;; esac
+  case "$since" in ''|*[!0-9]*) return 1 ;; esac
+  job_gone "${ppid#p}" "$job" || return 1
+  # job_gone accepted it, so it is "PGID:PANE_PID", digits and one colon:
+  # safe inside the format below.
+  job="${job#j}"
+  now="$(date +%s)"
+  roost_unblock_token
+  roost_unblock_held_reply "$pane" "$since"
+  if [ -n "$ROOST_UNBLOCK_HELD" ]; then
+    held_wr=""
+  else
+    held_wr="set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; "
+  fi
+  t if-shell -F -t "$pane" \
+    "#{&&:#{==:#{@agent_state},$state},#{&&:#{==:#{@agent_since},$since},#{==:#{@roost-agent-job},$job}}}" \
+    "set-option -pu -t $pane @agent_state ; ${held_wr}set-option -pu -t $pane @roost-agent-job ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since died' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
+    2>/dev/null || return 1
+  # This caller's token, not the second: see roost_unblock_token.
+  [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" = "" ] \
+    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
+    || return 1
+  . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
+  roost_events_unblocked "$pane" "$now" "$since" "$state" "the agent exited inside its shell" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
+  return 0
+}

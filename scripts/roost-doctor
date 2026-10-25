@@ -995,6 +995,37 @@ while IFS='|' read -r _st _since _id _where _rec; do
   warn "$_id ($_where) is held working by background work of a kind roost has not measured ($_kinds) — if that work runs in another pane, this pane will read working until it ends; see docs/known-gaps.md, \"When a Claude turn is over\""
 done <<< "$panes"
 
+# The report filter (#105, scripts/roost-agent-state): two things it records
+# that a person should hear about, and this is where the design says they are
+# heard (§4.3, §9.2). Read-only, like the checks above.
+#
+#   - a pane whose badge was set by a report the filter could NOT check:
+#     @roost-verified "<stamp> 0", accepted because the walk could not run --
+#     no working `ps`, or the pane's process not visible, as in a container
+#     (the human's Q4). Named so that nobody reads a badge there as checked.
+#     The mark counts only while its first word is the pane's @agent_since.
+#   - a pane that REFUSED a report: @roost-refused "<epoch> <state> <pid>",
+#     from a process outside the pane's process tree that carried its
+#     $TMUX_PANE. The pid is the refused process's, so a person can find what
+#     sent it while it still runs.
+panes="$(roost_cfg_tmux list-panes -a -F '#{@agent_since}|#{pane_id}|#{session_name}:#{window_index}|#{@roost-verified}|#{@roost-refused}' 2>/dev/null || true)"
+while IFS='|' read -r _since _id _where _ver _ref; do
+  case "$_id" in %[0-9]*) : ;; *) continue ;; esac
+  case "$_since" in ''|*[!0-9]*) ;; *)
+    if [ "$_ver" = "$_since 0" ]; then
+      warn "$_id ($_where) shows a badge whose report could not be checked against the pane's process tree (no working ps, or the pane's process is not visible, as in a container) — it was accepted unverified; see docs/known-gaps.md, \"The report filter\""
+    fi ;;
+  esac
+  [ -n "$_ref" ] || continue
+  read -r _rat _rst _rpid _ <<EOF || true
+$_ref
+EOF
+  case "$_rat" in ''|*[!0-9]*) continue ;; esac
+  case "$_rst" in working|blocked|done|idle|error|died|interrupted) ;; *) continue ;; esac
+  case "$_rpid" in ''|*[!0-9]*) continue ;; esac
+  warn "$_id ($_where) refused a '$_rst' report $((now - 10#$_rat))s ago from pid $_rpid: that process carried this pane's TMUX_PANE but is not in its process tree — see docs/known-gaps.md, \"The report filter\""
+done <<< "$panes"
+
 printf '\n  notify backend: %s\n' \
   "$("$(dirname "$0")/roost-notify" --which 2>/dev/null || echo 'auto (run roost init to choose)')"
 

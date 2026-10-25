@@ -13,14 +13,15 @@ Keep it short. When an entry is fixed, delete it.
 
 ## Live risks
 
-### When a Claude turn is over: steps 1 to 3 built, with the holes they leave (#95, #97, #110)
+### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-
 over-design.md`, 2026-10-24): a Claude pane is held ⏳ working while its own
 background work runs and released by Claude's own final `Stop`; an
 interrupted turn is `interrupted`, `wait-done` exits 5 for it, and a Claude
-Esc is recovered from the transcript; `wait-done --json` exists. **Steps 4 and
-5 (#105, who may report a pane's state) are not built.** #95, #97 and #105 are
+Esc is recovered from the transcript; `wait-done --json` exists. **Steps 4 and 5 (#105, who may report a pane's
+state) are built too** (2026-10-25): see "The report filter (#105)" and "`wait-done`
+sees an agent that died inside a shell", below. #95, #97 and #105 are
 one question: when is a turn over, and who may say so? The measurements below
 are the ones the design was made from (2.1.283) and the ones step 1 was
 checked against (2.1.310); the list of what is still live follows them.
@@ -388,7 +389,7 @@ The rule behind every false-`done` entry in this file is that "could not
 tell" is never reported as done. **That rule is not absolute.** The human
 decided on 2026-09-28 to bend it in two places, for #97 and #105, because in
 each the strict answer would remove something that works today. The first is
-built (step 1, 2026-10-24); the second is not. Each is recorded here so
+built (step 1, 2026-10-24); the second too (step 4, 2026-10-25). Each is recorded here so
 nobody reads the rule as absolute and is surprised.
 
 - **A Claude too old to report background work keeps reading ✅ done.** A
@@ -407,17 +408,20 @@ nobody reads the rule as absolute and is surprised.
   with a count of `?`), and the JSON reports `background: null`, never `0`,
   so a coordinator can tell "no background work" from "could not see".
 - **A report whose sender cannot be verified is accepted and marked
-  unverified.** When #105's report filter is built, a report whose ancestry
-  walk cannot run — a container whose pid namespace hides the host
-  `pane_pid`, or a `ps` that fails — is accepted, not refused. Refusing would
-  turn "could not check" into a silent badge loss. **Cost:** in those cases
-  the filter protects nothing, and any process there can stamp any state,
-  `done` included, exactly as today, when nothing is checked. The real risk is
-  false confidence: once the filter ships, readers will assume every badge was
-  checked. The limits the design proposes: "cannot check" means the walk could not **run** — a walk
-  that reaches pid 1 without meeting the pane is a refusal, not "unverified" —
-  and "unverified" is visible, in `verified: false` in the JSON and in
-  `roost doctor`.
+  unverified** (built, step 4). A report whose ancestry walk cannot run — a
+  container whose pid namespace hides the host `pane_pid`, or a `ps` that
+  fails — is accepted, not refused. Refusing would turn "could not check" into
+  a silent badge loss. **Cost:** in those cases the filter protects nothing,
+  and any process there can stamp any state, `done` included, exactly as
+  before the filter, when nothing was checked. The real risk is false
+  confidence: readers will assume every badge was checked. The two limits the
+  human accepted on 2026-09-29 are built: "cannot check" means the walk could
+  not **run** — a walk that reaches pid 1 without meeting the pane is a
+  refusal, not "unverified" — and "unverified" is visible, as
+  `verified: false` in `status --json` and `state --json`, and as a
+  `roost doctor` line naming the pane. The test suite's own switch
+  (`ROOST_TEST_SKIP_ANCESTRY=1`, exported by `tests/lib.sh`) takes this same
+  path, so it is never a silent pass either.
 
 An older exception of the same shape is already live: a codex adapter on a
 machine with no working JSON reader badges a dead turn ✅ done (see the codex
@@ -425,6 +429,70 @@ entry below). The rule as it really stands: **"could not tell" is never
 reported as done, except where the only alternative removes behaviour that
 works today, and every such place is listed in this file.** Add any new one
 here.
+
+### The report filter (#105): what it does not cover
+
+**Built** (step 4 of `docs/airig/specs/2026-09-29-turn-over-design.md`,
+2026-10-25). `scripts/roost-agent-state` walks its own parent up with
+`ps -o ppid=` (`scripts/lib/roost-ancestry.sh`, `roost_pid_in_pane`) and
+accepts a report only when the pane's `#{pane_pid}` is met on the way. A walk
+that reaches pid 1 without it is **refused** (§4.3: a busy badge stays; a
+`done` or `idle` badge is unset by a refused `working` or `blocked`; the
+refusal is `@roost-refused "<epoch> <state> <pid>"`). A walk that cannot run
+is accepted and marked (the second entry of "Two places 'could not tell' is
+reported as done on purpose", above). `tests/test-report-filter.sh` pins
+each case against a real pane.
+
+**What it costs** (measured 2026-10-25, macOS, tmux 3.6, about 1,440
+processes running). The old sink (`HEAD` before the filter) and the new one
+were each called from inside a pane of a throwaway `-S` server, one process
+below the pane's shell — a Claude hook's shape (hook → claude → pane, M8) —
+in three alternating rounds of 200 calls per measure:
+
+| measure | old sink | new sink | difference |
+|---|---|---|---|
+| unchanged state (`working --tool-hook` on a working pane: the PostToolUse hot path) | 13.6–14.3 ms | 13.3–14.2 ms | none measurable: no `ps`, no extra tmux round trip (`#{pane_pid}` rides in the bail's one read) |
+| a badge change (`working --tool-hook` from done, then `done`) | 48.9–49.8 ms | 52.2–53.7 ms | about +3.5 ms, one `ps -o ppid=` level (M9 measured 2.4 ms a level) |
+
+A ratio, not a number to quote: about +7% on a transition, 0 on the hot
+path. A harness whose hook is deeper pays one `ps` per extra level; a report
+from the pane's own shell (`roost state` typed at the prompt) pays none,
+because the walk starts at the sink's `$PPID`. The flags that write above the
+bail (Stop, the dialog hooks, the prompt hook) add one tmux read of
+`#{pane_pid}` besides, once per turn or dialog.
+
+**What it leaves:**
+
+- **A nested agent passes.** A `codex exec` or `claude -p` the pane's own
+  agent started is a descendant of the pane, so the filter accepts its
+  reports (§4.2; #77 still needs its env switch).
+- **A stranger's report of the state the pane already has is not checked.**
+  It bails before the walk, which is what keeps PostToolUse free, and it
+  changes nothing; but it is not recorded as refused either, so `doctor`
+  cannot name it. Only a report that would change something is checked.
+- **The `verified` mark describes the stamp, not every report since.** It is
+  written with the badge, so a later unchanged-state report (unchecked, above)
+  leaves the stamp's mark standing.
+- **An `error` badge is not unset by a refused `working` or `blocked`.** The
+  design names done and idle; an unbadged pane is one `wait-done` exits 0 for,
+  and turning a 💥 into that would be a false "finished". So a stranger's
+  `working` leaves 💥 standing — "could not tell" either way, and the safe one.
+- **A refusal writes no event line.** A refused `working` that unsets a ✅ is
+  a badge change the event log (#98) does not record.
+- **`@roost-refused` is never cleared.** It keeps the LAST refusal, so
+  `status --json`'s `refused` and the `doctor` line name it until the pane
+  closes or another refusal replaces it. It says when, so an old one can be
+  told from a new one.
+- **`--subagent-hook` is not filtered.** It keeps a count, never the badge.
+- **Inside a container the filter protects nothing**, as accepted (Q4): the
+  walk ends at the container's own pid 1 and the host's pane pid is not
+  visible, so every report there is "unverified". Not measured: a container
+  pid that happens to EQUAL the host's pane pid would read as met or as a
+  verdict. Neither is likely; neither is checked.
+- **A process that exits mid-walk makes the walk "unverified"**, not refused:
+  its `ps` fails. A reporter would have to lose that race on purpose.
+- **tmux 3.4 and 3.5a `pane_pid`** with a pane started through `sh -c` was
+  not measured live for this step; CI runs the suite on 3.4.
 
 ### A Claude Code turn that fails on an API error: fixed by #55, with holes left
 
@@ -1581,6 +1649,42 @@ A record left by an earlier agent cannot report a later one dead: while any
 other job holds the terminal the pane is not died, and `respawn-pane -k`, which
 keeps pane options, changes the pane process the record names, so the record
 is ignored.
+
+**`send` and `read` clear it too, since #105 step 5** (2026-10-25). The check
+moved into one function, `roost_died_pane` in `scripts/lib/roost-unblock.sh`,
+which `wait-done`, `send` and `read` all call; on a death it **unsets** the
+badge, the job record, the dialog records and the hold, and writes
+`@roost-ended "<stamp> died"` (the design's recovery channel: unset only).
+`wait-done` still exits 2, and a later `wait-done` on the cleared pane exits 2
+from the record, saying the agent "exited inside its shell before its turn
+finished". `status` does **not** call it (the human's Q6): it shows what is
+stored, so a dead agent's pane reads `working` there until one of the three
+looks at it. `tests/test-died-shared.sh` pins each of these. What it leaves:
+
+- **No turn file is written for the dead turn.** The interrupt recovery
+  writes an empty one so the next prompt cannot take the interrupted prompt's
+  number; this one does not, because an empty `died` turn would be read back
+  with SessionEnd's wording ("before its background work finished"), which is
+  not what happened. So a `wait-done --turn N` on the turn whose agent died
+  gets its exit 2 from this check while the record is there, and a later one
+  can be satisfied by the NEXT agent's turn N in the same pane.
+- **A `send` to the cleared pane types into the shell.** There is no agent
+  behind the pane any more, so the text reaches the shell at its prompt and
+  runs there, as it did before the badge was cleared (then too, a `working`
+  pane let the send through). `send` does not refuse such a pane; whether it
+  should is not decided.
+- **A held pane keeps its main reply** on the pane, and only the hold record
+  goes: the reply is the dead turn's own answer, and `read` prints it and says
+  the agent died. It is not filed on disk.
+- **A death already recorded is reported at once by a later `wait-done`.**
+  The clear takes the badge and the job record, so a later wait cannot use
+  job_gone; it reads the `died` record instead, once a second, for an
+  unbadged pane, and exits 2 without waiting for a busy sibling in the same
+  window. That applies to SessionEnd's `died` (#188) too, which before waited
+  for the rest of the window. Not with `--turn N`: the record describes the
+  pane's newest turn, not turn N.
+- **The event log names the clear** ("the agent exited inside its shell"),
+  through the same `@roost-unblocked` token the two transcript recoveries use.
 
 ### opencode 2: the adapter ships with gaps, and the wiring fix has three holes (#150, #154)
 
