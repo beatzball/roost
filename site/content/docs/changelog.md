@@ -63,10 +63,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
   report is accepted as before and marked `verified: false`, and `doctor`
   names that pane too. Every tool call of a busy agent costs nothing extra;
   only a change of badge pays for the check. And an agent killed at a shell
-  prompt is now cleared by `send` and `read`, not only noticed by
-  `wait-done`: the badge is unset, `wait-done` exits **2**, a 🛑 left by the
-  dead agent no longer makes `send` refuse with exit 3, and `read` stops
-  calling the previous turn's reply current. `status` still changes nothing.
+  prompt is now cleared by `send`, `send --when-idle` and `read`, not only
+  noticed by `wait-done`: the badge is unset, `wait-done` exits **2**, a 🛑
+  left by the dead agent no longer makes `send` refuse with exit 3,
+  `--when-idle` no longer holds for its whole bound (nor for a turn ended
+  with Esc), and `read` stops calling the previous turn's reply current. The
+  dead turn keeps its number, so `wait-done --turn N` exits **2** however
+  many times it is asked and `read --turn N` says the agent exited inside its
+  shell. A new agent started at the same prompt is never taken for the dead
+  one. `status` still changes nothing.
 
 ## [0.10.0]
 

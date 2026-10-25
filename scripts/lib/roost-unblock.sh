@@ -242,10 +242,11 @@ roost_unblock_token() {
   ROOST_UNBLOCK_TOKEN="$$.$RANDOM$RANDOM"
 }
 
-# roost_unblock_record_turn PANE -- after a recovery cleared PANE: append the
-# interrupted turn (the held main reply as its text, when there was one) to
-# the pane's record, only for a record this roost can write (state 0) or that
-# has none yet (1). Fails soft: the badge is already cleared and `wait-done`
+# roost_unblock_record_turn PANE [OUTCOME] -- after a recovery cleared PANE:
+# append the ended turn (the held main reply as its text, when there was one)
+# to the pane's record, with OUTCOME in its sidecar -- `interrupted` when none
+# is given, `died_in_shell` from the dead-agent clear below -- only for a
+# record this roost can write (state 0) or that has none yet (1). Fails soft: the badge is already cleared and `wait-done`
 # reads @roost-ended, so a record that could not be written costs the turn
 # number, never the outcome.
 #
@@ -261,7 +262,7 @@ roost_unblock_record_turn() {
   local saved=0
   if record_for "$1" "$1" && [ "$RF_LIVE" = 1 ]; then
     case "$RF_STATE" in
-      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
+      0|1) roost_record_append_outcome "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "${2:-interrupted}" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
     esac
   fi
   if [ "$saved" = 0 ] && [ -n "${ROOST_UNBLOCK_HELD:-}" ]; then
@@ -613,7 +614,14 @@ roost_interrupted_pane() {
 #      admits reports and never declares a death (§4.4).
 #   3. The clear is a compare-and-clear in one tmux command: the state, the
 #      stamp and the job record must still be the ones read, so a new agent
-#      typed at the same prompt that has stamped in between wins.
+#      typed at the same prompt that has stamped in between wins. A new agent
+#      that reports `working` onto the pane that already reads working is a
+#      repeat to the sink's unchanged-state bail, which used to write nothing,
+#      so all three still matched and its live badge was cleared (fix round 1,
+#      found by review, reproduced). The sink now treats a busy report over a
+#      job record with no process left as a transition: it re-records the job
+#      and restamps, and this compare fails (scripts/roost-agent-state, the
+#      stale-job check). tests/test-died-shared.sh forces the interleaving.
 #
 # What it writes: it UNSETS @agent_state (never a value), @roost-agent-job
 # (the job is gone; a later check must not judge a new agent by it), the
@@ -629,14 +637,19 @@ roost_interrupted_pane() {
 # @roost-unblocked "<now> since=<stamp> by=<token>", as the two readers above
 # do, so the event log (#98) can name the clear and a false one can be found.
 #
-# NO TURN FILE. The interrupt recovery appends an empty one so the next
-# prompt cannot take the interrupted prompt's number (§5.4). A death is
-# different: the next prompt goes to whatever is started in that pane next,
-# and an empty `died` turn would be filed under a sidecar whose `read --turn`
-# wording is SessionEnd's ("before its background work finished"), which is
-# not what happened here. So a `wait-done --turn N` on a turn whose agent died
-# in its shell gets its exit 2 from this check, and a LATER one can be
-# satisfied by the next agent's turn N. Recorded in docs/known-gaps.md.
+# THE TURN FILE. The interrupt recovery appends an empty turn so the next
+# prompt cannot take the interrupted prompt's number (§5.4), and this does
+# the same, through the same function, with its own outcome word:
+# `died_in_shell`. The first cut filed nothing, on the ground that an empty
+# `died` turn would be read back in SessionEnd's words ("before its
+# background work finished"), which is not what happened here. But filing
+# nothing lost the outcome: the clear removes the badge and the job record
+# job_gone needs, so the FIRST `wait-done --turn N` exited 2 and the second
+# timed out -- or, with no bound, was answered by the next agent's turn N
+# (fix round 1, found by review, reproduced). A word of its own keeps both:
+# the turn has its number, and `read --turn` and `wait-done --turn` say the
+# agent exited inside its shell. A held pane's main reply is the turn's text,
+# as the interrupt recovery files it; it also stays on the pane (below).
 #
 # The two known misses of job_gone stay as they are: Claude's `caffeinate`
 # helper keeps its job alive for up to ~300 s, and a wrapper that outlives
@@ -684,5 +697,8 @@ roost_died_pane() {
     || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
   roost_events_unblocked "$pane" "$now" "$since" "$state" "the agent exited inside its shell" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
+  # The turn file (above): only the caller whose clear landed, as the two
+  # recoveries above. Fails soft the same way: @roost-ended already says died.
+  roost_unblock_record_turn "$pane" died_in_shell
   return 0
 }

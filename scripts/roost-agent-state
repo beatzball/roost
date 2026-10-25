@@ -212,7 +212,11 @@ sock="$ROOST_SELF_SOCK"
 # unbadged pane is one `wait-done` returns 0 for, and turning a 💥 into that
 # would be a false "finished" made out of "could not tell". Either way the
 # refusal is recorded as @roost-refused "<epoch> <state> <pid>" -- the pid is
-# this script's, the process whose parents were walked -- and nothing else is
+# this script's PARENT, $PPID, the process the walk started from and found
+# outside the pane: a hook's `sh`, or the stranger itself. Not this script's
+# own $$ (the first cut, found by review): the sink has exited by the time
+# anyone reads the record, and doctor's line says the process "carried this
+# pane's TMUX_PANE", which is a pid worth looking up -- and nothing else is
 # written: no event line, no label, no notification. So a stranger can at
 # most UNSET a done badge, never set one, and the "look again" that costs is
 # one the rules allow.
@@ -225,9 +229,9 @@ report_refuse() {
       tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
         "#{||:#{==:#{@agent_state},done},#{==:#{@agent_state},idle}}" \
         "set-option -pu -t $TMUX_PANE @agent_state" \; \
-        set-option -p -t "$TMUX_PANE" @roost-refused "$now $1 $$" 2>/dev/null || true ;;
+        set-option -p -t "$TMUX_PANE" @roost-refused "$now $1 $PPID" 2>/dev/null || true ;;
     *)
-      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-refused "$now $1 $$" 2>/dev/null || true ;;
+      tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-refused "$now $1 $PPID" 2>/dev/null || true ;;
   esac
   tmux -S "$sock" refresh-client -S 2>/dev/null || true
   exit 0
@@ -1885,10 +1889,18 @@ roost_defer_blocked_ping() {
 # (#105, top of this file): a transition walks from it with no round trip of
 # its own. It is digits or EMPTY (tmux 3.8 prints it empty once the pane's
 # process has gone, #165), never a space, so the first space ends it; a
-# failed read is empty and leaves both halves empty.
+# failed read is empty and leaves every field empty.
+#
+# The job record (@roost-agent-job, #64) rides second, behind a fixed `j` for
+# the reason wait-done's snapshot gives (#165): it can be EMPTY, and the
+# letter keeps the fields where they are. It is "PGID:PANE_PID", digits and
+# one colon, never a space. Read here for the stale-job check below, which
+# costs the hot path one builtin and no process.
 raw="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
-  '#{pane_pid} #{@agent_state}#{?#{==:#{@roost-name},},,X}' 2>/dev/null || true)"
+  '#{pane_pid} j#{@roost-agent-job} #{@agent_state}#{?#{==:#{@roost-name},},,X}' 2>/dev/null || true)"
 raw_pid="${raw%% *}"
+raw="${raw#* }"
+raw_job="${raw%% *}"
 raw="${raw#* }"
 case "$raw" in
   *X) prev="${raw%X}"; has_name=1 ;;
@@ -1942,12 +1954,47 @@ sys.stdout.write("subagent" if isinstance(a, str) and a else "")' 2>/dev/null ||
   [ "$sub" = "subagent" ] && exit 0
 fi
 
+# A busy report onto a pane that already reads busy, whose RECORDED JOB HAS
+# NO PROCESS LEFT (#105, fix round 1; found by review, reproduced). The job
+# record names the job that held the terminal at the last busy stamp. While
+# any process of that job lives, `kill -0 -- -PGID` succeeds -- the agent, a
+# child it restarted as, a helper in its job -- and this is the ordinary
+# repeat, which bails below. When none does, the agent that stamped is gone,
+# and whoever is reporting now is a DIFFERENT job: a replacement typed at the
+# same prompt after the first one died there.
+#
+# That report used to bail as a repeat and write nothing, and the dead-agent
+# clear (roost_died_pane, scripts/lib/roost-unblock.sh) compares the state,
+# the stamp and the job record -- all three unchanged. So a clear that had
+# already passed job_gone, and whose one tmux command went out after the
+# replacement reported, unset the live replacement's badge and recorded it as
+# died. Now such a report is not a repeat: it goes down the transition path,
+# which re-records the job from the terminal and restamps, and the clear's
+# compare fails on both. A clear that lands between this read and those
+# writes is overwritten by them, and the pane reads the replacement's
+# `working` again.
+#
+# The hot path pays one builtin `kill -0`, no fork, no tmux call: the record
+# came in the read above. No record (an agent that is the pane's own process,
+# #54; a container that cannot see the pane's process) is never stale, and a
+# reused pgid can only make a dead job look alive -- the old behaviour, never
+# a new false restamp.
+stale_job=0
+if [ "$state" = "$prev" ] && { [ "$state" = working ] || [ "$state" = blocked ]; }; then
+  sj="${raw_job#j}"; sj="${sj%%:*}"
+  case "$sj" in
+    ''|*[!0-9]*) ;;
+    *) if [ "$sj" -gt 1 ] && ! kill -0 -- "-$sj" 2>/dev/null; then stale_job=1; fi ;;
+  esac
+fi
+
 # The report filter's second call point (#105, top of this file): any call
 # the first one did not walk, when it can write -- a transition, or a
-# `blocked`, whose repeat restamps (below). The hot path, an unchanged state
-# that is not blocked, is not walked: it bails below having written nothing.
+# `blocked`, whose repeat restamps (below), or a report over a stale job
+# record (above). The hot path, an unchanged state that is not blocked, is
+# not walked: it bails below having written nothing.
 # Before the event log is armed, so a refused report leaves no line.
-if [ "$admitted" = 0 ] && { [ "$state" != "$prev" ] || [ "$state" = blocked ]; }; then
+if [ "$admitted" = 0 ] && { [ "$state" != "$prev" ] || [ "$state" = blocked ] || [ "$stale_job" = 1 ]; }; then
   report_admit "$raw_pid" "$state"
 fi
 # A Stop that lands while a dialog is OPEN is handled at the WRITE, near the
@@ -1965,7 +2012,7 @@ fi
 if [ "$state" != "$prev" ] || [ "$state" = blocked ]; then . "$SELF_DIR/lib/roost-events.sh" || true; fi
 if [ "$state" != "$prev" ] || [ "$state" = blocked ]; then roost_events_arm "$sock" "$TMUX_PANE" "$prev" "$state" "$permission_request_hook" "$stop_while_blocked" || true; fi
 
-if [ "$state" = "$prev" ]; then
+if [ "$state" = "$prev" ] && [ "$stale_job" = 0 ]; then
   # The one repeat that is NOT a no-op: a Notification for a NEW dialog on a
   # pane that still reads blocked (flock round 1 on #38, reproduced). The first
   # dialog was declined, so its recorded transcript ends in the decline

@@ -1360,6 +1360,18 @@ JSON
           idle_waited=$(( idle_waited + now - held_from ))
           return 1
         fi
+        # A `working` badge is not always a turn (#105, fix round 1; found
+        # by review, reproduced): an agent killed at its shell prompt leaves
+        # it for ever, and the send sat out the whole bound and said the
+        # pane "still reads working" about an agent that was gone. So each
+        # poll offers the pane to the two checks wait-done makes once a
+        # second, roost_died_pane and then roost_interrupted_pane (#95, an
+        # Esc'd Claude turn, the same shape). Each only ever unsets, and only
+        # on its own evidence; a clear goes straight back to the poll, which
+        # now reads no badge and returns.
+        if roost_died_pane "$lock_pane" || roost_interrupted_pane "$lock_pane"; then
+          continue
+        fi
         sleep 1 2>/dev/null || true
       done
     }
@@ -3163,6 +3175,17 @@ EOF
           echo "roost read: turn $want of '$raw' died: the agent exited before its background work finished, and recorded no reply." >&2
         fi
       fi
+      # A turn whose agent exited inside its shell (#105, step 5): the
+      # dead-agent clear files it with its own word, because #188's sentence
+      # above is about background work, and this agent simply exited. Its
+      # text is the held main reply when the pane was held, else empty.
+      if [ "$ROOST_RECORD_FIELD" = died_in_shell ]; then
+        if [ -n "$ROOST_RECORD_TEXT" ]; then
+          echo "roost read: turn $want of '$raw' died: the agent exited inside its shell before the turn finished; this is the main reply it had given." >&2
+        else
+          echo "roost read: turn $want of '$raw' died: the agent exited inside its shell before the turn finished, and recorded no reply." >&2
+        fi
+      fi
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         json_state=""
@@ -4240,6 +4263,14 @@ EOF
       fi
       if [ "$ROOST_RECORD_FIELD" = died ]; then
         echo "roost: turn $wt_turn of '$raw' died: the agent exited while its background work still ran" >&2
+        wd_exit 2 died "$tgt" "$(wd_state_of "$tgt")"
+      fi
+      # The dead-agent clear's own word (#105, step 5; fix round 1): the
+      # agent exited inside its shell. Same exit and outcome, its own
+      # sentence -- the first `wait-done --turn N` that saw the death said
+      # so from job_gone, and this is what every later one reads.
+      if [ "$ROOST_RECORD_FIELD" = died_in_shell ]; then
+        echo "roost: turn $wt_turn of '$raw' died: the agent exited inside its shell before the turn finished" >&2
         wd_exit 2 died "$tgt" "$(wd_state_of "$tgt")"
       fi
     fi

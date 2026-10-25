@@ -421,7 +421,15 @@ nobody reads the rule as absolute and is surprised.
   `verified: false` in `status --json` and `state --json`, and as a
   `roost doctor` line naming the pane. The test suite's own switch
   (`ROOST_TEST_SKIP_ANCESTRY=1`, exported by `tests/lib.sh`) takes this same
-  path, so it is never a silent pass either.
+  path, so it is never a silent pass either. It is a **deliberate bypass in
+  the shipped sink**, not only a test hook: any process that sets it is
+  accepted as unverified, wherever it runs (found by review, fix round 1).
+  Kept so because the filter's threat is a stray process, not an attacker --
+  a process that can set an environment variable can also set `TMUX_PANE`
+  and run inside the pane -- and because every such report is still marked
+  `verified: false` and named by `doctor`. Narrowing it to the suite's
+  `/tmp/amx.*` sockets was considered and not done: a test socket path is
+  not a fixed shape across the suite.
 
 An older exception of the same shape is already live: a codex adapter on a
 machine with no working JSON reader badges a dead turn ✅ done (see the codex
@@ -452,6 +460,7 @@ in three alternating rounds of 200 calls per measure:
 | measure | old sink | new sink | difference |
 |---|---|---|---|
 | unchanged state (`working --tool-hook` on a working pane: the PostToolUse hot path) | 13.6–14.3 ms | 13.3–14.2 ms | none measurable: no `ps`, no extra tmux round trip (`#{pane_pid}` rides in the bail's one read) |
+| the same, after fix round 1's stale-job check (5 alternating rounds of 200, a live job record; e01453e's sink vs the new one) | 13.07–13.51 ms | 12.87–14.47 ms | none measurable: the job record rides in the same read, and the check is a builtin `kill -0` |
 | a badge change (`working --tool-hook` from done, then `done`) | 48.9–49.8 ms | 52.2–53.7 ms | about +3.5 ms, one `ps -o ppid=` level (M9 measured 2.4 ms a level) |
 
 A ratio, not a number to quote: about +7% on a transition, 0 on the hot
@@ -479,6 +488,11 @@ bail (Stop, the dialog hooks, the prompt hook) add one tmux read of
   `working` leaves 💥 standing — "could not tell" either way, and the safe one.
 - **A refusal writes no event line.** A refused `working` that unsets a ✅ is
   a badge change the event log (#98) does not record.
+- **A refused `working` that unsets a ✅ leaves `@roost-reply` standing**
+  (found by review, fix round 1; per §4.3, which says only "unset the
+  badge"). `read` then serves the finished turn's reply on an unbadged pane
+  as current, with nothing on stderr. The reply is the last real turn's, so
+  it is not false, but nothing says the badge went for a refusal.
 - **`@roost-refused` is never cleared.** It keeps the LAST refusal, so
   `status --json`'s `refused` and the `doctor` line name it until the pane
   closes or another refusal replaces it. It says when, so an old one can be
@@ -1663,13 +1677,27 @@ finished". `status` does **not** call it (the human's Q6): it shows what is
 stored, so a dead agent's pane reads `working` there until one of the three
 looks at it. `tests/test-died-shared.sh` pins each of these. What it leaves:
 
-- **No turn file is written for the dead turn.** The interrupt recovery
-  writes an empty one so the next prompt cannot take the interrupted prompt's
-  number; this one does not, because an empty `died` turn would be read back
-  with SessionEnd's wording ("before its background work finished"), which is
-  not what happened. So a `wait-done --turn N` on the turn whose agent died
-  gets its exit 2 from this check while the record is there, and a later one
-  can be satisfied by the NEXT agent's turn N in the same pane.
+- **The dead turn is filed with its own word, `died_in_shell`** (fix round 1;
+  the first cut filed nothing, and a second `wait-done --turn N` then timed
+  out, found by review and reproduced). The turn file is empty, or the held
+  main reply, as the interrupt recovery files it, so the next prompt is
+  numbered after it (§5.4). `wait-done --turn N` exits 2 (`died`) and
+  `read --turn N` says the agent "exited inside its shell before the turn
+  finished" -- never #188's background-work sentence. What is left: the
+  file is appended after the clear, the same order the interrupt recovery
+  uses, so a NEW agent's Stop landing inside that gap (tens of milliseconds)
+  would take turn N and push the death to N+1. #188's SessionEnd release
+  closes that gap with a reserved number; this one does not. Not reproduced:
+  a new agent would have to start, prompt and finish a turn inside the gap.
+- **A replacement agent at the same prompt wins against the clear** (fix
+  round 1; found by review, reproduced). A new agent typed at the prompt
+  after the first one died, reporting `working` onto a pane that still read
+  working, was a repeat to the sink and wrote nothing, so the clear's
+  compare still matched and the live agent's badge was cleared. The sink now
+  treats a busy report over a job record with no process left as a
+  transition: it re-records the job and restamps. That costs the hot path
+  one builtin `kill -0` (measured: none, "The report filter", above), and
+  the one restamping report a `ps` and two tmux calls.
 - **A `send` to the cleared pane types into the shell.** There is no agent
   behind the pane any more, so the text reaches the shell at its prompt and
   runs there, as it did before the badge was cleared (then too, a `working`
@@ -1677,14 +1705,23 @@ looks at it. `tests/test-died-shared.sh` pins each of these. What it leaves:
   should is not decided.
 - **A held pane keeps its main reply** on the pane, and only the hold record
   goes: the reply is the dead turn's own answer, and `read` prints it and says
-  the agent died. It is not filed on disk.
+  the agent died. It is also the filed turn's text (above).
 - **A death already recorded is reported at once by a later `wait-done`.**
   The clear takes the badge and the job record, so a later wait cannot use
   job_gone; it reads the `died` record instead, once a second, for an
   unbadged pane, and exits 2 without waiting for a busy sibling in the same
   window. That applies to SessionEnd's `died` (#188) too, which before waited
   for the rest of the window. Not with `--turn N`: the record describes the
-  pane's newest turn, not turn N.
+  pane's newest turn, not turn N, whose sidecar answers instead. The read is
+  one `display-message` per UNBADGED pane per second while a sibling in the
+  window is busy (found by review): nothing for a single pane, but a window
+  of many idle panes and one busy one pays it for each idle pane.
+- **`send --when-idle` offers the pane too** (fix round 1; found by review,
+  reproduced). Its hold polled only the badge, so a dead agent held the send
+  for the whole bound and it exited 6 saying the pane "still reads working".
+  The hold now offers the pane to `roost_died_pane` and then
+  `roost_interrupted_pane` (#95's Esc, the same shape) once a second, as
+  `wait-done` does.
 - **The event log names the clear** ("the agent exited inside its shell"),
   through the same `@roost-unblocked` token the two transcript recoveries use.
 

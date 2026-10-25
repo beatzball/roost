@@ -633,7 +633,13 @@ roost_jsonout_status() {
     # failing `ps`), null before any report and for a stamp from before the
     # filter. Then `refused`: the epoch of the last report the filter turned
     # away, or null. Both are additive under the schema-1 rule.
-    roost_jsonout_verified "${p_since[k]}" "${p_ver[k]}"; doc="$doc,\"verified\":$ROOST_JSONOUT_BOOL"
+    #
+    # `verified` is null too on a pane with NO badge (fix round 1, found by
+    # review): a refused report that unsets a done badge leaves @agent_since,
+    # so the record still matched it and read `state: null, verified: true`,
+    # which a reader can take for a checked badge. The mark describes a
+    # badge, and there is none.
+    roost_jsonout_verified "${p_state[k]:+${p_since[k]}}" "${p_ver[k]}"; doc="$doc,\"verified\":$ROOST_JSONOUT_BOOL"
     roost_jsonout_refused "${p_ref[k]}"; doc="$doc,\"refused\":$ROOST_JSONOUT_INT"
     # Which dialog a blocked pane shows, and whether it was answered (#142,
     # docs/airig/specs/2026-09-30-roost-answer-design.md §4.3): always present,

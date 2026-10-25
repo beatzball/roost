@@ -198,5 +198,113 @@ assert_eq "$(pstate "$p")" "working" "a live agent: send leaves working"
 assert_eq "$(opt "$p" @roost-ended)" "" "a live agent: ...and records no outcome"
 T kill-window -t "$(win_of "$p")"
 
+# --- a replacement that reports between the check and the clear wins ----------------------
+# Fix round 1 (found by review, reproduced): the clear compares the state,
+# the stamp and the job record, and a replacement agent typed at the same
+# prompt between job_gone and the clear reported `working` onto a pane that
+# already read working -- the sink's unchanged-state bail, which wrote
+# nothing. All three still matched, and the live replacement's badge was
+# unset and recorded as died. The sink now re-records the job when the one
+# it finds has no process left, and that is what the clear loses to.
+#
+# The interleaving is forced, not hoped for: roost_died_pane runs here, in
+# this shell, with a `t` that starts the replacement and waits for its
+# report to finish just before the clear's one tmux command goes out. The
+# library is sourced and job_gone is taken from bin/roost itself, so the code
+# under test is the shipped code; the subshell keeps the `t` to itself.
+p="$(dead_agent)"; since="$(opt "$p" @agent_since)"
+rm -f "$work/agent.pid"
+(
+  . "$HERE/scripts/lib/roost-unblock.sh"
+  eval "$(sed -n '/^job_gone() {$/,/^}$/p' "$ROOST")"
+  injected=0
+  t() {
+    if [ "$1" = if-shell ] && [ "$injected" = 0 ]; then
+      injected=1
+      type_cmd "$p" "$work/agent"
+      local n=50; while [ ! -s "$work/agent.pid" ] && [ "$n" -gt 0 ]; do sleep 0.1; n=$((n - 1)); done
+    fi
+    tmux -S "$sock" "$@"
+  }
+  roost_died_pane "$p"
+); rc=$?
+[ -s "$work/agent.pid" ]; assert_true $? "race: control: the replacement started and reported before the clear"
+[ "$rc" != 0 ]; assert_true $? "race: the clear loses to a replacement that reported in between (rc $rc)"
+assert_eq "$(pstate "$p")" "working" "race: ...so the replacement's badge still reads working"
+case "$(opt "$p" @roost-ended)" in *died) r=1 ;; *) r=0 ;; esac
+assert_true "$r" "race: ...and no death is recorded against it"
+kill -0 "$(cat "$work/agent.pid" 2>/dev/null)" 2>/dev/null; assert_true $? "race: control: the replacement is alive"
+"$ROOST" wait-done "$p" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "1" "race: wait-done on the live replacement times out, not died"
+T kill-window -t "$(win_of "$p")"
+
+# The same sink change, alone: a `working` onto a pane whose recorded job has
+# no process left re-records the job from the terminal, while one whose job is
+# alive bails as before (the PostToolUse hot path: no ps there).
+p="$(dead_agent)"; old="$(record "$p")"
+rm -f "$work/agent.pid"; type_cmd "$p" "$work/agent"
+n=50; while [ ! -s "$work/agent.pid" ] && [ "$n" -gt 0 ]; do sleep 0.1; n=$((n - 1)); done
+new="$(record "$p")"
+[ -n "$new" ] && [ "$new" != "$old" ]; assert_true $? "sink: a stale job record is replaced by the reporter's ($old -> $new)"
+assert_eq "${new%%:*}" "$(fg_job "$p")" "sink: ...with the job that holds the terminal now"
+T kill-window -t "$(win_of "$p")"
+
+# --- the death is filed against its turn number -------------------------------------
+# Fix round 1 (found by review, reproduced): the clear removed the evidence
+# job_gone needs and filed no turn, so the FIRST `wait-done --turn 1` exited 2
+# and the second timed out -- or, with no bound, waited for a later agent's
+# turn 1. The death is now filed as turn N with its own outcome word, and its
+# own sentence: the agent exited inside its shell, which is not #188's
+# "before its background work finished".
+export ROOST_RECORD_DIR="$work/records"
+p="$(dead_agent)"
+"$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/t1.json" 2>"$work/t1.err"; rc=$?
+assert_eq "$rc" "2" "turn: the first wait-done --turn 1 on a dead agent exits 2"
+assert_contains "$(cat "$work/t1.json")" '"outcome":"died"' "turn: ...outcome died"
+"$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/t2.json" 2>"$work/t2.err"; rc=$?
+assert_eq "$rc" "2" "turn: the second wait-done --turn 1, after the clear, still exits 2"
+assert_contains "$(cat "$work/t2.json")" '"outcome":"died"' "turn: ...outcome died"
+assert_contains "$(cat "$work/t2.err")" "exited inside its shell" "turn: ...and says the agent exited inside its shell"
+case "$(cat "$work/t2.err")" in *"background work"*) r=1 ;; *) r=0 ;; esac
+assert_true "$r" "turn: ...not #188's background-work sentence"
+"$ROOST" read --turn 1 "$p" >"$work/t3.out" 2>"$work/t3.err"; rc=$?
+assert_eq "$rc" "0" "turn: read --turn 1 finds the filed death"
+assert_contains "$(cat "$work/t3.err")" "exited inside its shell" "turn: ...and says how the turn ended"
+assert_contains "$(cat "$work/t3.err")" "recorded no reply" "turn: ...with no reply"
+case "$(cat "$work/t3.err")" in *"background work"*) r=1 ;; *) r=0 ;; esac
+assert_true "$r" "turn: ...and not in #188's words"
+# The numbering (§5.4): the next turn is 2, so turn 1 keeps its answer.
+"$ROOST" wait-done --turn 2 "$p" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "1" "turn: turn 2 is not answered by the death of turn 1"
+T kill-window -t "$(win_of "$p")"
+
+# A HELD turn's main reply is the filed turn's text.
+p="$(dead_agent)"; since="$(opt "$p" @agent_since)"
+T set-option -p -t "$p" @roost-background "$since 1" \; set-option -p -t "$p" @roost-reply "THE HELD REPLY"
+"$ROOST" wait-done --turn 1 "$p" 2 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "2" "turn, held: wait-done --turn 1 exits 2"
+out="$("$ROOST" read --turn 1 "$p" 2>"$work/t4.err")"
+assert_eq "$out" "THE HELD REPLY" "turn, held: turn 1's text is the held main reply"
+assert_contains "$(cat "$work/t4.err")" "this is the main reply it had given" "turn, held: ...and read says so"
+T kill-window -t "$(win_of "$p")"
+export ROOST_RECORD_DIR=""
+
+# --- send --when-idle offers the pane too -------------------------------------------
+# Fix round 1 (found by review, reproduced): the when-idle hold polled only the
+# badge, which a dead agent leaves at `working` for ever, so the send sat out
+# the whole bound and exited 6 saying the pane "still reads working". The
+# hold now offers the pane to the same check once a second.
+p="$(dead_agent)"; since="$(opt "$p" @agent_since)"
+T set-option -g @roost-send-idle-timeout 5
+t0="$(date +%s)"
+"$ROOST" send --when-idle "$p" "true" >/dev/null 2>"$work/wi.err"; rc=$?
+took=$(( $(date +%s) - t0 ))
+T set-option -gu @roost-send-idle-timeout
+assert_eq "$rc" "0" "when-idle: a dead agent does not hold the send (stderr: $(cat "$work/wi.err"))"
+[ "$took" -lt 5 ]; assert_true $? "when-idle: ...it is sent before the bound (${took}s)"
+assert_eq "$(pstate "$p")" "" "when-idle: ...and the badge is unset"
+assert_eq "$(opt "$p" @roost-ended)" "$since died" "when-idle: ...as died"
+T kill-window -t "$(win_of "$p")"
+
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

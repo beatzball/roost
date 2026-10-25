@@ -110,6 +110,10 @@ assert_eq "$(since_of "$p1")" "$b4" "...and its stamp"
 ref="$(opt "$p1" @roost-refused)"
 case "$ref" in [0-9]*" done "[0-9]*) r=0 ;; *) r=1 ;; esac
 assert_true "$r" "...and @roost-refused records '<epoch> done <pid>' [$ref]"
+# The pid is the walked process, the sink's parent -- here this test shell,
+# since `env` execs the sink -- not the sink's own pid, gone once it exits
+# (fix round 1, found by review).
+assert_eq "${ref##* }" "$$" "...and the pid is the process the walk started from (\$PPID), not the sink's own"
 
 # A Stop from outside writes NOTHING, not even above the unchanged-state bail:
 # the reply and the hold record are the report too.
@@ -125,6 +129,9 @@ assert_eq "$(opt "$p1" @roost-background)" "$bg4" "...and no hold record"
 T set-option -p -t "$p1" @agent_state done
 out "$p1" working
 assert_eq "$(pstate "$p1")" "" "outside: a refused working unsets a done badge"
+# With no badge there is nothing the mark describes: verified is null, not the
+# old stamp's true (fix round 1, found by review).
+assert_eq "$(jfield "$("$ROOST" status --json)" verified "$p1")" "null" "status --json: verified is null once the badge is unset"
 T set-option -p -t "$p1" @agent_state idle
 out "$p1" blocked
 assert_eq "$(pstate "$p1")" "" "outside: a refused blocked unsets an idle badge"
