@@ -188,6 +188,93 @@ T set-option -g @roost-send-idle-timeout 1
 assert_eq "$rc" "6" "send --when-idle to a held pane holds, then exits 6 (stderr: $(cat "$work/wi.err"))"
 assert_eq "$(T show-options -pqv -t "$pa" @agent_state)|$(T show-options -pqv -t "$pa" @roost-background)" "working|1789000000 2" "...and the pane and its hold record are untouched"
 
-# --- 11. nothing was written to any home --------------------------------------
+# --- 11. a malformed hold record is no hold (flock round 1 on #193) -----------
+# The held test needs the WHOLE record: "<stamp> N" with N a whole number
+# above zero and no leading zero, or "<stamp> ?". Anything else -- no count,
+# an empty count, two spaces, a zero, a leading zero, junk -- is not a hold,
+# and every reader says so: the border, the tab, the rollup, the switcher,
+# `roost status`, `status --json` (null) and wait-done's own test (a done
+# pane's reply is final). Issue #199's empty-count record was the real path.
+# Block 9 previewed the ascii set; back to one letter per glyph.
+T set-option -g @roost-glyph-error E \; set-option -g @roost-glyph-blocked B \; \
+  set-option -g @roost-glyph-working W \; set-option -g @roost-glyph-background G \; \
+  set-option -g @roost-glyph-done D \; set-option -g @roost-glyph-idle I
+pm="$(T new-window -d -P -F '#{pane_id}' "$hold")"; require_pane "$pm" "malformed pane"
+wm="$(T display-message -p -t "$pm" '#{window_id}')"
+for rec in "1789000000" "1789000000 " "1789000000  3" "1789000000 0" "1789000000 007" "1789000000 junk" "1789000000 3 " "1789000000 -1"; do
+  T set-option -p -t "$pm" @agent_state working \; set-option -p -t "$pm" @agent_since 1789000000 \; \
+    set-option -p -t "$pm" @roost-background "$rec"
+  assert_contains "$(border "$pm")" "W $pm" "record '$rec': the border reads working"
+  assert_contains "$(border "$pm")" "· working" "record '$rec': ...and the word working"
+  assert_eq "$(badge "$wm")" "W" "record '$rec': the tab reads W"
+  assert_eq "$(jbg "$pm")" "None" "record '$rec': status --json background null"
+  assert_contains "$("$ROOST" status | grep "^    $pm ")" "[working]" "record '$rec': roost status reads [working]"
+  rows_m="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 NO_COLOR=1 "$HERE/scripts/roost-switch")"
+  assert_contains "$(printf '%s\n' "$rows_m" | awk -F'\t' -v p="$pm" '$3==p')" "W working " "record '$rec': the switcher row reads working"
+  # The rollup counts every pane on the server; compare it with the same
+  # server's rollup when this pane's record is unset.
+  out_m="$(ROOST_STATUS_SOCK="$ROOST_TEST_SOCK" "$HERE/scripts/roost-status" 2>/dev/null || true)"
+  T set-option -p -t "$pm" -u @roost-background
+  out_u="$(ROOST_STATUS_SOCK="$ROOST_TEST_SOCK" "$HERE/scripts/roost-status" 2>/dev/null || true)"
+  assert_eq "$out_m" "$out_u" "record '$rec': the rollup counts it as working"
+done
+# `read`'s held test (wait-done's is the same roost_hold): a working pane's
+# reply is this turn's main reply (final false, not stale) only under a
+# real hold. A malformed record is no hold, so the reply reads stale, as it
+# does with no record at all.
+T set-option -p -t "$pm" @roost-reply "hi"
+rd() { "$ROOST" read --json "$pm" 2>/dev/null | jget 'str(d["final"])+"/"+str(d["stale"])'; }
+T set-option -p -t "$pm" @roost-background "1789000000 2"
+assert_eq "$(rd)" "False/False" "read --json: a real hold's reply is the main reply"
+for rec in "1789000000 " "1789000000" "1789000000 0" "1789000000 007" "1789000000 junk"; do
+  T set-option -p -t "$pm" @roost-background "$rec"
+  assert_eq "$(rd)" "True/True" "record '$rec': read --json sees no hold (the reply is stale)"
+done
+T kill-pane -t "$pm"
+
+# --- 12. the real path: a fresh pane's first stamp is blocked (#199) ----------
+# Driven through the hook itself, as codex's hooks drive it: `blocked` on a
+# pane with no state, stamp or hold, then `working --tool-hook` with `{}`,
+# then a Stop with no reply. hold_carry must carry only a record that exists:
+# no record is written, the badge never reads background, and the Stop
+# appends no empty turn file.
+#
+# The hook acts only on a server whose socket ends in /roost
+# (scripts/lib/roost-socket.sh), so this block runs one of its own, with
+# records in the test's directory.
+HOOK="$HERE/scripts/roost-agent-state"
+hs="$work/hk/roost"; mkdir -p "$work/hk"
+trap 'tmux -S "$hs" kill-server 2>/dev/null; roost_test_teardown; rm -rf "$work"' EXIT
+H() { tmux -S "$hs" "$@"; }
+H -f /dev/null new-session -d -x 200 -y 50 'ENV= exec /bin/sh'
+H source-file "$HERE/tmux/roost.conf"
+H set-option -g @roost-glyph-working W \; set-option -g @roost-glyph-background G
+spid="$(H display -p '#{pid}')"; boot="$(H display -p '#{start_time}-#{pid}')"
+hook() { local p="$1"; shift; env TMUX="$hs,$spid,0" TMUX_PANE="$p" ROOST_RECORD_DIR="$work/rec" "$HOOK" "$@"; }
+hborder() { H list-panes -a -F "#{pane_id}|#{E:@roost-pane-border}" | grep "^$1|" | cut -d'|' -f2; }
+pf="$(H new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"; require_pane "$pf" "fresh pane"
+hook "$pf" blocked </dev/null
+assert_eq "$(H show-options -p -t "$pf" 2>/dev/null | grep -c '^@roost-background')" "0" "#199: a first blocked stamp writes no hold record"
+sleep 1
+hook "$pf" working --tool-hook <<< '{}'
+assert_eq "$(H show-options -pqv -t "$pf" @agent_state)" "working" "#199: the approved tool stamps working"
+assert_eq "$(H show-options -p -t "$pf" 2>/dev/null | grep -c '^@roost-background')" "0" "#199: ...and still no hold record"
+assert_contains "$(hborder "$pf")" "W $pf" "#199: ...and the border reads working, not background"
+nostop="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("last_assistant_message",None); print(json.dumps(d))' "$HERE/tests/fixtures/claude-stop-bg-empty.json")"
+hook "$pf" done --stop-hook <<< "$nostop"
+assert_eq "$(H show-options -pqv -t "$pf" @agent_state)" "done" "#199: a Stop with no reply ends the turn"
+nturn="$(ls "$work/rec/$boot/${pf#%}/replies" 2>/dev/null | grep -c '^[0-9][0-9]*$')"
+assert_eq "$nturn" "0" "#199: ...and appends no empty turn file"
+# And a malformed record that is already there (damage, or a build from
+# before this fix) is no hold to the Stop's release either: a Stop with no
+# reply appends no empty turn file for it.
+pj="$(H new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"; require_pane "$pj" "junk-record pane"
+hook "$pj" working --tool-hook <<< '{}'
+H set-option -p -t "$pj" -F @roost-background "#{@agent_since} "
+hook "$pj" done --stop-hook <<< "$nostop"
+nturn="$(ls "$work/rec/$boot/${pj#%}/replies" 2>/dev/null | grep -c '^[0-9][0-9]*$')"
+assert_eq "$nturn" "0" "a no-reply Stop on a pane with a '<stamp> ' record appends no empty turn file"
+
+# --- 13. nothing was written to any home --------------------------------------
 left="$(find "$canary" -mindepth 1 2>/dev/null | head -5)"
 assert_eq "$left" "" "nothing was written under the canary homes"

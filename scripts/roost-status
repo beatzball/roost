@@ -66,7 +66,7 @@ gi="$(roost_status_tmux show-options -gqv @roost-glyph-idle    2>/dev/null)"
 # same list-panes call, with the held test @roost-pane-border in
 # tmux/roost.conf uses (its comment explains it). No extra tmux call, and the
 # rollup and the tab can never disagree about which panes are held.
-held='#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}}}'
+held='#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}}'
 while IFS= read -r st; do
   case "$st" in
     error)   e=$((e+1)) ;;

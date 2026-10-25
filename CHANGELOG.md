@@ -35,6 +35,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A pane whose first event was a permission dialog no longer gets a bad
+  hold record (#199).** On a fresh pane, a `blocked` stamp wrote a
+  background record with no count. It then made the pane read 🔄
+  `background` while it was working, and a Stop with no reply could add an
+  empty turn file. The record is no longer written, and every reader (the
+  badges, `roost status`, `status --json`, `read` and `wait-done`) now
+  reads the same strict rule: a hold has a count above zero, or `?`, and
+  any other record is no hold.
+
 - **A Claude pane held ⏳ working by background work no longer stays working
   for ever when Claude exits (#188).** Claude fires `SessionEnd` and no
   `Stop` when it exits before its background work ends — `/exit`, Ctrl-C

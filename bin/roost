@@ -3310,12 +3310,12 @@ EOF
         read_bg_rec="$(t display-message -p -t "$tgt" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
         read_bg_since="${read_bg_rec%%|*}"; read_bg_rec="${read_bg_rec#*|}"
         case "$read_bg_since" in ''|*[!0-9]*) read_bg_since="" ;; esac
-        if [ -n "$read_bg_since" ] && [ "${read_bg_rec%% *}" = "$read_bg_since" ] && [ "$read_bg_rec" != "$read_bg_since" ]; then
-          read_bg="${read_bg_rec#* }"
-          case "$read_bg" in
-            [0-9]*) case "$read_bg" in *[!0-9]*) read_bg="?" ;; esac ;;
-            *) read_bg="?" ;;
-          esac
+        # The held test is roost_hold's (scripts/lib/roost-jsonout.sh): a
+        # malformed record is no hold, so the reply reads stale as it would
+        # with no record at all.
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        if roost_hold "$read_bg_since" "$read_bg_rec"; then
+          read_bg="$ROOST_HOLD_COUNT"
           read_held=1 json_final=0
           [ "$read_bg" = "?" ] || json_bg="$read_bg"
         fi
@@ -3882,10 +3882,12 @@ EOF
       info="$(t display-message -p -t "$1" '#{@agent_state}|#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
       state="${info%%|*}"; info="${info#*|}"; since="${info%%|*}"; bgrec="${info#*|}"
       case "$since" in ''|*[!0-9]*) since="" ;; esac
-      if { [ "$state" = working ] || [ "$state" = blocked ]; } && [ -n "$since" ] && [ "${bgrec%% *}" = "$since" ] && [ "$bgrec" != "$since" ]; then
+      # roost_hold is THE held test (scripts/lib/roost-jsonout.sh, sourced
+      # before this runs): the same one `read` and every badge apply.
+      if { [ "$state" = working ] || [ "$state" = blocked ]; } && roost_hold "$since" "$bgrec"; then
         held=1 final=0
-        bg="${bgrec#* }"
-        case "$bg" in ''|*[!0-9]*) bg="" ;; esac
+        bg="$ROOST_HOLD_COUNT"
+        [ "$bg" = "?" ] && bg=""
       fi
       case "$state" in working|blocked|error) stale=1 ;; esac
       [ "$held" = 1 ] && stale=0
@@ -4494,7 +4496,7 @@ EOF
       # held test and the same count rule as @roost-pane-border in
       # tmux/roost.conf, whose comment explains both. The state underneath is
       # still `working`, and `status --json` still says so in `state`.
-      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},#{@agent_state}},-}]'
+      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},#{@agent_state}},-}]'
     else echo "roost: not running"; fi
     ;;
   kill|down|stop)

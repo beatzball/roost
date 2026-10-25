@@ -100,7 +100,7 @@ rows() {
   # count rule of @roost-pane-border in tmux/roost.conf, whose comment
   # explains both, computed by the format engine in this same call. Field 11
   # stays the raw state: the filters read that, and a held pane IS working.
-  raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@roost-name}	#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},}' 2>/dev/null \
+  raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@roost-name}	#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},}' 2>/dev/null \
     | sort -t'	' -k2,2 -k4,4n -k8,8n)"
 
   # No panes (e.g. a dead/unreachable socket) -> $raw is empty, and
