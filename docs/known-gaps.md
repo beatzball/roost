@@ -2455,10 +2455,13 @@ payloads (`tests/test-codex-notify-delay.sh`), not under a live codex.
 - **A dialog that opened while its window was ON screen schedules no ping.**
   The hook checks the window once, when the pane goes 🛑, and starts no child
   if the human is looking at it. If they then switch away and leave the dialog
-  open, no ping comes. That is also what happened before #195, when the ping
-  was instant or nothing. A later dialog in the same stretch that arrives
-  while the window is off screen does start a child, so a batch can still
-  ping (test 12). Severity: low — the human saw the dialog when it opened. What would
+  open, no ping comes. A dialog that opened off screen gets no ping either if
+  the human switches to its window during the delay and away again: the
+  child checks the window once, when it wakes, and stands down for good if
+  the human was looking then. That is also what happened before #195, when
+  the ping was instant or nothing. A later dialog in the same stretch that
+  arrives while the window is off screen does start a child, so a batch can
+  still ping (test 12). Severity: low — the human saw the dialog when it opened. What would
   close it: a pane-focus hook that re-arms the wait when the window leaves the
   screen, which roost does not have.
 - **Auto-review that DENIES, then asks the human, is still a ping.** It

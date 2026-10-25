@@ -306,7 +306,8 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 sink="$SELF_DIR/../../scripts/roost-agent-state"
 
 # ROOST_NOTIFY_DEFER=1: a codex `blocked` pings only after @roost-notify-delay
-# seconds (default 5), and only if the same dialog is still open then (#195).
+# seconds (default 5), and only if the pane has stayed blocked for the whole
+# delay (#195).
 # Codex's auto-review approves most sandbox escalations about two seconds after
 # PermissionRequest fires, and nothing in the payload says a reviewer rather
 # than a human will answer, so an instant ping sent the human to a pane with

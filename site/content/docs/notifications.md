@@ -18,9 +18,9 @@ notifies either — you can see it.
 ### Codex dialogs wait a few seconds first
 
 A **codex** pane that becomes blocked does not ping at once. roost waits
-`@roost-notify-delay` seconds, 5 by default, and then pings only if the same
-dialog is still open and the window is still off screen. Several dialogs that
-open together give one ping, not one each.
+`@roost-notify-delay` seconds, 5 by default, and then pings only if the pane
+has stayed blocked for the whole delay and the window is still off screen.
+Several dialogs that open together give one ping, not one each.
 
 This is for codex's auto-review. With `approvals_reviewer = "auto_review"`,
 codex asks for permission on each sandbox escalation and its own reviewer

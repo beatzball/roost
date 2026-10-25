@@ -238,19 +238,22 @@ hook PostToolUse "$POST"
 # while the pane still reads blocked and before A's child wakes. That repeat
 # moves @agent_since. The pane has been blocked for the full delay, so one
 # ping must come, and only one -- and it comes on A's deadline (about S+2.85),
-# not the repeat's (about S+3.3): the pane has been waiting on the human since
+# not the repeat's (about S+3.75): the pane has been waiting on the human since
 # A, and a repeat that restarted the wait would push every batch's ping back.
+# The repeat lands at S+1.7, still before A's child wakes, and the assert
+# reads at S+3.25: about 0.3 s after A's deadline, so a slow hook on a loaded
+# CI runner does not fail a correct tree, and about 0.5 s before the repeat's.
 sleep 1
 reset
 S="$(next_second)"
 at "$S + 0.75"
 hook PermissionRequest "$(perm i1)"; sa="$(since)"
-at "$S + 1.2"
+at "$S + 1.7"
 hook PermissionRequest "$(perm i2)"; sb="$(since)"
 assert_eq "$(pstate)" "blocked" "setup: the repeat leaves the pane blocked"
 [ "$sb" != "$sa" ] && assert_eq ok ok "setup: the repeat moved the stamp to the next second" \
   || assert_eq "$sb" "not $sa" "setup: the repeat moved the stamp to the next second"
-at "$S + 3.05"
+at "$S + 3.25"
 assert_eq "$(count)" "1" "the ping comes on the first entry's deadline, not the repeat's"
 until_count 1 3
 at "$S + 5.5"
