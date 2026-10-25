@@ -1683,12 +1683,39 @@ looks at it. `tests/test-died-shared.sh` pins each of these. What it leaves:
   main reply, as the interrupt recovery files it, so the next prompt is
   numbered after it (§5.4). `wait-done --turn N` exits 2 (`died`) and
   `read --turn N` says the agent "exited inside its shell before the turn
-  finished" -- never #188's background-work sentence. What is left: the
-  file is appended after the clear, the same order the interrupt recovery
-  uses, so a NEW agent's Stop landing inside that gap (tens of milliseconds)
-  would take turn N and push the death to N+1. #188's SessionEnd release
-  closes that gap with a reserved number; this one does not. Not reproduced:
-  a new agent would have to start, prompt and finish a turn inside the gap.
+  finished" -- never #188's background-work sentence.
+- **The dead turn's number is reserved in the clear** (fix round 2; found by
+  review, reproduced with forced schedules). The file lands after the clear,
+  and a replacement agent that reported and finished inside that gap took
+  turn N, so the death became N+1; one that reported before the clear was
+  read back made the clear look refused, and the death was never filed. The
+  clear now uses #188's mechanism: the number goes into the clear's own tmux
+  command as `@roost-turn-reserved`, a clear that landed is told by its
+  token and files its turn even when a newer turn superseded it, and the
+  newer turn's pointer is left alone. `tests/test-died-shared.sh` forces both
+  schedules. What is left is #188's own gap: a hook killed between the clear
+  and the file costs the number, never the outcome.
+- **A replacement that starts before anyone looks** (fix round 2; found by
+  review). With no `send`, `read` or `wait-done` on the dead pane, the
+  replacement's first report came through the sink's stale-job check below,
+  restamped, and filed nothing, so its first reply took the dead prompt's
+  number. The sink now files the dead turn as `died_in_shell`, with the held
+  main reply when the pane was held for the old stamp, before it restamps,
+  under a number reserved the same way. The claim also unsets the old
+  turn's hold record and owner, so the dead Claude's late SessionEnd (#188)
+  finds nothing to release. Measured on the parent commit: with B's stamp in
+  the same second as A's, that late SessionEnd DID release B's live turn,
+  because the stamp, the hold and the owner all still matched
+  (`tests/test-session-end.sh` section 11, records off). Cost, counted with
+  logging wrappers on one restamping report: 13 tmux calls with records on
+  and 8 with records off, against 5 before; 2 `ps` either way. Only that
+  report pays it, once per replacement. It rests on job_gone's premise, that
+  the recorded job IS the agent's: a harness that handed the terminal to a
+  child job at a busy stamp and kept running after that child ended would
+  have its live turn filed as died. No harness has been measured doing
+  that. The claim's job-record unset, which keeps a concurrent clear from
+  filing the turn twice, has no test that can fail without it: job_gone
+  already refuses while the replacement holds the terminal.
 - **A replacement agent at the same prompt wins against the clear** (fix
   round 1; found by review, reproduced). A new agent typed at the prompt
   after the first one died, reporting `working` onto a pane that still read
@@ -1721,7 +1748,17 @@ looks at it. `tests/test-died-shared.sh` pins each of these. What it leaves:
   for the whole bound and it exited 6 saying the pane "still reads working".
   The hold now offers the pane to `roost_died_pane` and then
   `roost_interrupted_pane` (#95's Esc, the same shape) once a second, as
-  `wait-done` does.
+  `wait-done` does. Cost, counted with a logging `tmux` wrapper on a live
+  working stand-in and a 4 s bound: 28 tmux calls, 6 a second while held --
+  the poll, two in `roost_died_pane` (its snapshot, then the pane-scope
+  state) and three in `roost_interrupted_pane` -- plus 4 once per send; no
+  `ps`. Dropping the snapshot's `#{@agent_state}` field would save no call:
+  the pane-scope read is the one that counts (a format resolves window and
+  global values too), and the snapshot is still needed for the rest.
+- **The event log has a line for the replacement** (fix round 2; found by
+  review). A stale-job report is now logged as a new turn starting from no
+  state, so the log no longer reads the dead agent's `working` and the
+  replacement's `done` as one turn.
 - **The event log names the clear** ("the agent exited inside its shell"),
   through the same `@roost-unblocked` token the two transcript recoveries use.
 

@@ -412,6 +412,50 @@ tr_before="$(opt "$p" @roost-transcript)"
 hook "$p" working --prompt-hook <<< "$UPS_B"
 assert_eq "$(opt "$p" @roost-transcript)" "$tr_before" "a repeat prompt on a pane that is not held leaves the transcript record alone"
 
+# --- 11. a new session over a DEAD job: the stale-job path (#105) ----------------
+# The panes above run their hooks from this shell, so no job is ever
+# recorded, and the sink's stale-job check (#105: a busy report over a job
+# record with no process left is a new turn, not a repeat) is never reached.
+# A real `respawn-pane -k` reaches it once session A's process group is gone:
+# B's prompt is then not the unchanged-state bail of section 6 but a restamp.
+# Here the record names a process group that has exited, which is the one
+# fact the check reads. What must hold: the sink files A's held turn as
+# `died_in_shell` with A's main reply before it restamps (fix round 2), and
+# it takes A's hold record with it, so A's late SessionEnd finds nothing to
+# release -- even when B's stamp lands in the same second as A's, which the
+# stamp check alone would not catch. Records off as well: the hold goes
+# either way.
+( exit 0 ) & dead_pg=$!; wait "$dead_pg"
+kill -0 -- "-$dead_pg" 2>/dev/null; assert_eq "$?" "1" "stale: control: the recorded process group has no process left"
+for rec in on off; do
+  p="$(newpane)"; require_pane "$p" "stale-$rec"
+  if [ "$rec" = off ]; then saved_rec="$ROOST_RECORD_DIR"; export ROOST_RECORD_DIR=""; fi
+  held "$p" "A MAIN"
+  since="$(opt "$p" @agent_since)"
+  X set-option -p -t "$p" @roost-agent-job "$dead_pg:$(X display-message -p -t "$p" '#{pane_pid}')"
+  hook "$p" working --prompt-hook <<< "$UPS_B"
+  assert_eq "$(opt "$p" @agent_state)" "working" "[stale, records $rec] B's prompt over the dead job reads working"
+  pane_has "$p" @roost-background; assert_eq "$?" "1" "[stale, records $rec] ...and A's hold record is gone with A's turn"
+  pane_has "$p" @roost-background-session; assert_eq "$?" "1" "[stale, records $rec] ...and its owner"
+  if [ "$rec" = on ]; then
+    assert_eq "$(turns_in "$p")" "1" "[stale] A's turn is filed before B's restamp"
+    out="$("$ROOST" read --turn 1 "$p" 2>"$work/st.err")"
+    assert_eq "$out" "A MAIN" "[stale] ...with A's held main reply as its text"
+    assert_contains "$(cat "$work/st.err")" "exited inside its shell" "[stale] ...and read --turn 1 says A exited inside its shell"
+  fi
+  before="$(snap "$p")"
+  hook "$p" --session-end-hook <<< "$SEND_A"
+  assert_eq "$(snap "$p")" "$before" "[stale, records $rec] A's late SessionEnd releases nothing: B's turn stands"
+  if [ "$rec" = on ]; then
+    assert_eq "$(turns_in "$p")" "1" "[stale] ...and files no second turn for A"
+    hook "$p" done --stop-hook <<< "$SHELL_B"
+    hook "$p" --session-end-hook <<< "$SEND_B"
+    assert_eq "$(turns_in "$p")" "2" "[stale] B's own held turn is then turn 2"
+    assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "B MAIN" "[stale] ...with B's main reply"
+  fi
+  if [ "$rec" = off ]; then export ROOST_RECORD_DIR="$saved_rec"; fi
+done
+
 # --- 8. the reason: clear and resume are not exits ------------------------------
 for reason in clear resume logout prompt_input_exit other bogus none; do
   case "$reason" in clear|resume) want=interrupted wrc=5 ;; *) want=died wrc=2 ;; esac

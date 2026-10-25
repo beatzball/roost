@@ -1970,9 +1970,12 @@ fi
 # replacement reported, unset the live replacement's badge and recorded it as
 # died. Now such a report is not a repeat: it goes down the transition path,
 # which re-records the job from the terminal and restamps, and the clear's
-# compare fails on both. A clear that lands between this read and those
-# writes is overwritten by them, and the pane reads the replacement's
-# `working` again.
+# compare fails on the job record -- and on the stamp too, unless the
+# restamp lands in the same second as the old stamp, which it can (found by
+# review). A clear that lands between this read and those writes is
+# overwritten by them, and the pane reads the replacement's `working` again;
+# that clear files the dead turn, and the claim below then finds no badge
+# to match and files nothing.
 #
 # The hot path pays one builtin `kill -0`, no fork, no tmux call: the record
 # came in the read above. No record (an agent that is the pane's own process,
@@ -1997,6 +2000,102 @@ fi
 if [ "$admitted" = 0 ] && { [ "$state" != "$prev" ] || [ "$state" = blocked ] || [ "$stale_job" = 1 ]; }; then
   report_admit "$raw_pid" "$state"
 fi
+
+# THE DEAD TURN IS FILED BEFORE THE RESTAMP (#105, fix round 2; found by
+# review). A replacement typed at the prompt before any `send`, `read` or
+# `wait-done` offered the dead pane to its clear (roost_died_pane) came
+# through the stale-job check above and restamped, and no turn was filed for
+# the agent that died: the replacement's first reply took the dead prompt's
+# number, and `wait-done --turn N` answered it with that reply. This is the
+# moment the death is known here, so the dead turn is filed now, as the
+# clear files it: `died_in_shell`, the held main reply as its text when the
+# pane was held for the old stamp (#97), at a number reserved in the claim's
+# own tmux command (the SessionEnd block's mechanism, above).
+#
+# THE CLAIM is one tmux command that tests what this call read -- the state,
+# the old stamp and the dead job record -- and, when they still hold, unsets
+# the job record and the old turn's hold record with its types and owner,
+# and writes @roost-unblocked with a token only this call made. The job goes
+# so that the clear's compare cannot match and file the same turn again;
+# the transition path below re-records the job from the terminal. The hold
+# goes so that the dead agent's late SessionEnd (#188) finds nothing to
+# release, even when the restamp lands in the same second as the old stamp.
+# A clear that landed first unset the badge, so the claim does not match
+# and the clear has filed the turn. The token read back says this call
+# claimed it; a second report racing this one finds the job gone and files
+# nothing.
+#
+# Records off, or a record this roost cannot write: the claim still runs,
+# with no number, and nothing is filed. Fails soft: a claim or a file that
+# could not be written costs the turn number, as before this, never the
+# replacement's badge, which the transition path stamps either way.
+#
+# What it costs: only this rare report pays it, never the hot path -- a
+# tmux read, the claim, a read-back and a release, and the record's file
+# work when records are on.
+#
+# It rests on job_gone's own premise: the recorded job IS the agent's. A
+# harness that left the terminal to a child job at a busy stamp, and kept
+# running after that child ended, would have its live turn filed as died
+# here. No harness has been measured doing so (the job record's comment,
+# below); docs/known-gaps.md has it.
+if [ "$stale_job" = 1 ]; then
+  sj_info="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
+    '#{@agent_since}|#{start_time}-#{pid}|#{@roost-background}' 2>/dev/null || true)"
+  sj_since="${sj_info%%|*}"; sj_info="${sj_info#*|}"
+  sj_boot="${sj_info%%|*}"; sj_bg="${sj_info#*|}"
+  # The job record came in the hot path's read and was checked there as
+  # digits before a colon; the whole value goes into the format below, so
+  # all of it is checked here.
+  sj_job="${raw_job#j}"
+  case "$sj_since:$sj_job" in
+    *[!0123456789:]*|:*) ;;
+    *)
+      sj_tok="$$.$RANDOM$RANDOM"
+      sj_now="$(date +%s)"
+      sj_reply="" sj_res="" sj_res_wr="" sj_hint="" sj_created=0
+      # The held main reply, as tmux stores it, for the old stamp only.
+      case "$sj_bg" in
+        "$sj_since "?*) sj_reply="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)" ;;
+      esac
+      . "$SELF_DIR/lib/roost-record.sh"
+      roost_record_root
+      if [ -n "$ROOST_RECORD_ROOT" ] && roost_record_pane_dir "$sj_boot" "$TMUX_PANE" \
+         && roost_record_ensure "$ROOST_RECORD_PANE_DIR" "$sock"; then
+        sj_created="$ROOST_RECORD_CREATED"
+        sj_hint="$ROOST_RECORD_PANE_DIR/replies/.reserving.$sj_tok"
+        if { : > "$sj_hint"; } 2>/dev/null; then
+          roost_record_scan "$ROOST_RECORD_PANE_DIR/replies"
+          sj_res=$((ROOST_RECORD_MAX + 1))
+          roost_record_reserved "$ROOST_RECORD_PANE_DIR" "$sock"
+          if [ -n "$ROOST_RECORD_RESERVED" ] && [ "$ROOST_RECORD_RESERVED" -ge "$sj_res" ]; then
+            sj_res=$((ROOST_RECORD_RESERVED + 1))
+          fi
+          sj_res_wr=" ; set-option -p -t $TMUX_PANE @roost-turn-reserved $sj_res"
+        else
+          sj_hint=""
+        fi
+      fi
+      tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+        "#{&&:#{==:#{@agent_state},$prev},#{&&:#{==:#{@agent_since},$sj_since},#{==:#{@roost-agent-job},$sj_job}}}" \
+        "set-option -pu -t $TMUX_PANE @roost-agent-job ; set-option -pu -t $TMUX_PANE @roost-background ; set-option -pu -t $TMUX_PANE @roost-background-types ; set-option -pu -t $TMUX_PANE @roost-background-session ; set-option -p -t $TMUX_PANE @roost-unblocked '$sj_now since=$sj_since by=$sj_tok'$sj_res_wr" \
+        2>/dev/null || true
+      if [ "$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-unblocked 2>/dev/null || true)" = "$sj_now since=$sj_since by=$sj_tok" ] \
+         && [ -n "$sj_res" ]; then
+        # A plain assignment, for the reason the SessionEnd block gives.
+        ROOST_RECORD_AT="$sj_res"
+        roost_record_append_outcome "$ROOST_RECORD_PANE_DIR" "$sock" died_in_shell "$sj_reply" || true
+        ROOST_RECORD_AT=""
+        [ "$sj_created" != 1 ] || roost_record_sweep
+      fi
+      if [ -n "$sj_res" ]; then
+        tmux -S "$sock" if-shell -F -t "$TMUX_PANE" "#{==:#{@roost-turn-reserved},$sj_res}" \
+          "set-option -pu -t $TMUX_PANE @roost-turn-reserved" 2>/dev/null || true
+      fi
+      [ -z "$sj_hint" ] || rm -f "$sj_hint" 2>/dev/null || true
+      ;;
+  esac
+fi
 # A Stop that lands while a dialog is OPEN is handled at the WRITE, near the
 # bottom of this file, and NOT here where $prev is in hand (#91, flock round
 # 1). $prev was read above; the write happens dozens of lines later; and the
@@ -2009,8 +2108,17 @@ fi
 # way, so the PostToolUse hot path — an unchanged state that is not blocked —
 # pays neither the file read nor the call. The line is written from an EXIT
 # trap, after every write below; scripts/lib/roost-events.sh says why.
-if [ "$state" != "$prev" ] || [ "$state" = blocked ]; then . "$SELF_DIR/lib/roost-events.sh" || true; fi
-if [ "$state" != "$prev" ] || [ "$state" = blocked ]; then roost_events_arm "$sock" "$TMUX_PANE" "$prev" "$state" "$permission_request_hook" "$stop_while_blocked" || true; fi
+#
+# A report over a stale job (above) is a new turn on the pane, not a repeat,
+# so it is logged as one: from no state, as after any recovery, because the
+# turn the old state belonged to is over and filed. Without this the
+# replacement's first `working` left no line, and the log read the dead
+# agent's working, then the replacement's done, as one turn (fix round 2,
+# found by review). Only that rare report pays it.
+ev_prev="$prev"
+[ "$stale_job" = 0 ] || ev_prev=""
+if [ "$state" != "$prev" ] || [ "$state" = blocked ] || [ "$stale_job" = 1 ]; then . "$SELF_DIR/lib/roost-events.sh" || true; fi
+if [ "$state" != "$prev" ] || [ "$state" = blocked ] || [ "$stale_job" = 1 ]; then roost_events_arm "$sock" "$TMUX_PANE" "$ev_prev" "$state" "$permission_request_hook" "$stop_while_blocked" || true; fi
 
 if [ "$state" = "$prev" ] && [ "$stale_job" = 0 ]; then
   # The one repeat that is NOT a no-op: a Notification for a NEW dialog on a
@@ -2111,8 +2219,12 @@ fi
 # copilot and pi adapters report a failed turn with a plain `error` that this
 # script cannot tell from opencode's mid-turn retry. A new turn is a stamp of
 # working from a FINISHED state — done, idle, error, or no badge yet. From
-# blocked it is the same turn resuming after a dialog, and the label stays;
-# from working it never gets here (the bail above).
+# blocked it is the same turn resuming after a dialog, and the label stays.
+# From working it gets here only through the stale-job check above (#105): a
+# replacement reporting over a dead agent's job, which IS a new turn, but
+# whose label is kept as before that check existed. A label pending then was
+# written for a prompt sent to the dead agent's pane, and what becomes of it
+# after a death is #200's question, not answered here.
 #
 # BEFORE the stamp below, and that order is the guarantee: `send` writes its
 # sidecar only once it has SEEN the badge move, so the label of the turn

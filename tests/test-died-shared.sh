@@ -215,8 +215,10 @@ T kill-window -t "$(win_of "$p")"
 p="$(dead_agent)"; since="$(opt "$p" @agent_since)"
 rm -f "$work/agent.pid"
 (
+  ROOST_HOME="$HERE"
   . "$HERE/scripts/lib/roost-unblock.sh"
   eval "$(sed -n '/^job_gone() {$/,/^}$/p' "$ROOST")"
+  eval "$(sed -n '/^record_for() {$/,/^}$/p' "$ROOST")"
   injected=0
   t() {
     if [ "$1" = if-shell ] && [ "$injected" = 0 ]; then
@@ -287,6 +289,117 @@ out="$("$ROOST" read --turn 1 "$p" 2>"$work/t4.err")"
 assert_eq "$out" "THE HELD REPLY" "turn, held: turn 1's text is the held main reply"
 assert_contains "$(cat "$work/t4.err")" "this is the main reply it had given" "turn, held: ...and read says so"
 T kill-window -t "$(win_of "$p")"
+
+# --- a replacement inside the clear's gap does not take the dead turn's number ------
+# Fix round 2 (found by review, reproduced): the clear removed the badge and
+# the turn file landed after it, so a replacement agent that reported and
+# FINISHED in between took turn 1 with its own reply, and the death was filed
+# as turn 2 -- `wait-done --turn 1` returned the replacement's answer for the
+# dead prompt. If the replacement reported before the clear was read back, the
+# clear looked refused and the death was never filed at all. The clear now
+# reserves the turn's number in its own tmux command, as #188's SessionEnd
+# release does, and files a clear that landed even when a newer turn has
+# superseded it.
+#
+# Both schedules are forced, as the race above: roost_died_pane runs in a
+# subshell here with the shipped library and bin/roost's own job_gone and
+# record_for, and the replacement is typed at the pane and waited for at the
+# one point each schedule names. The replacement is a real agent to the sink:
+# it reports working, then a Stop with its reply, from inside the pane's job.
+# The sink in the pane writes records too, so the server's environment names
+# the record directory before the pane is made.
+T set-environment -g ROOST_RECORD_DIR "$ROOST_RECORD_DIR"
+cat > "$work/replacement" <<EOF
+#!/bin/sh
+ps -o pgid= -p \$\$ | tr -d ' ' >> "$work/jobs"
+"$SINK" working </dev/null
+printf '%s' '{"last_assistant_message":"NEW_REPLY","background_tasks":[]}' | "$SINK" done --stop-hook
+echo done > "$work/replacement.done"
+EOF
+chmod +x "$work/replacement"
+# replacement_done -> 0 once the replacement has filed its Stop, up to ~5s
+replacement_done() {
+  local n=100; while [ ! -s "$work/replacement.done" ] && [ "$n" -gt 0 ]; do sleep 0.05; n=$((n - 1)); done
+  [ -s "$work/replacement.done" ]
+}
+# gap_case WHERE -> $p, a dead agent offered to roost_died_pane with the
+# replacement forced in at WHERE:
+#   append    after the clear landed and was read back, before the turn is filed
+#   readback  after the clear's one tmux command, before it is read back
+gap_case() {
+  p="$(dead_agent)"; rm -f "$work/replacement.done"
+  (
+    ROOST_HOME="$HERE"
+    . "$HERE/scripts/lib/roost-unblock.sh"
+    eval "$(sed -n '/^job_gone() {$/,/^}$/p' "$ROOST")"
+    eval "$(sed -n '/^record_for() {$/,/^}$/p' "$ROOST")"
+    injected=0
+    launch() { injected=1; type_cmd "$p" "$work/replacement"; replacement_done; }
+    t() {
+      local r=0
+      tmux -S "$sock" "$@" || r=$?
+      if [ "$1" = if-shell ] && [ "$WHERE" = readback ] && [ "$injected" = 0 ]; then launch; fi
+      return "$r"
+    }
+    eval "$(declare -f roost_unblock_record_turn | sed '1s/roost_unblock_record_turn/real_record_turn/')"
+    roost_unblock_record_turn() {
+      if [ "$WHERE" = append ] && [ "$injected" = 0 ]; then launch; fi
+      real_record_turn "$@"
+    }
+    roost_died_pane "$p"
+  )
+}
+gap_checks() { # TAG
+  replacement_done; assert_true $? "$1: control: the replacement finished inside the gap"
+  "$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/g1.json" 2>/dev/null; rc=$?
+  assert_eq "$rc" "2" "$1: wait-done --turn 1 is the death, exit 2"
+  assert_contains "$(cat "$work/g1.json")" '"outcome":"died"' "$1: ...outcome died"
+  case "$(cat "$work/g1.json")" in *NEW_REPLY*) r=1 ;; *) r=0 ;; esac
+  assert_true "$r" "$1: ...not the replacement's reply"
+  "$ROOST" read --turn 1 "$p" >"$work/g1.out" 2>"$work/g1.err"
+  assert_contains "$(cat "$work/g1.err")" "exited inside its shell" "$1: read --turn 1 says the agent exited inside its shell"
+  "$ROOST" wait-done --json --turn 2 "$p" 2 >"$work/g2.json" 2>/dev/null; rc=$?
+  assert_eq "$rc" "0" "$1: wait-done --turn 2 is the replacement's turn, exit 0"
+  assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEW_REPLY" "$1: read --turn 2 is the replacement's reply"
+  assert_eq "$(opt "$p" @roost-reply-turn)" "2" "$1: the newer turn's pointer is left on its own turn"
+  assert_eq "$(opt "$p" @roost-turn-reserved)" "" "$1: the reservation is released"
+  ls -a "$ROOST_RECORD_DIR"/*/*/replies 2>/dev/null | grep -q '^\.reserving\.'; r=$?
+  [ "$r" != 0 ]; assert_true $? "$1: ...and no .reserving hint is left behind"
+  T kill-window -t "$(win_of "$p")"
+}
+WHERE=append gap_case; rc=$?
+# Here the clear was still the pane's when it was read back, so it answers 0;
+# the replacement came after that, and only the number had to hold.
+assert_eq "$rc" "0" "gap, append: the clear was the pane's when read back, so it answers 0"
+gap_checks "gap, append"
+WHERE=readback gap_case; rc=$?
+assert_eq "$rc" "1" "gap, readback: a superseded clear answers 1 (the pane is the replacement's)"
+gap_checks "gap, readback"
+
+# --- a replacement that starts before anyone looks ---------------------------------
+# Fix round 2 (found by review): nobody offered the dead pane to the clear, and
+# a replacement typed at the prompt reported working over the dead job. The
+# sink's stale-job check restamped and took the pane, and no turn was filed,
+# so the replacement's first reply became turn 1, the dead prompt's number.
+# The sink now files the dead turn as `died_in_shell` before it restamps.
+p="$(dead_agent)"; rm -f "$work/replacement.done"
+type_cmd "$p" "$work/replacement"
+p_ok=0; replacement_done && p_ok=1
+assert_eq "$p_ok" "1" "stale: control: the replacement ran with nobody looking"
+"$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/s1.json" 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "stale: wait-done --turn 1 is the death, exit 2"
+assert_contains "$(cat "$work/s1.json")" '"outcome":"died"' "stale: ...outcome died"
+"$ROOST" read --turn 1 "$p" >/dev/null 2>"$work/s1.err"
+assert_contains "$(cat "$work/s1.err")" "exited inside its shell" "stale: read --turn 1 says the agent exited inside its shell"
+assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEW_REPLY" "stale: the replacement's reply is turn 2"
+assert_eq "$(opt "$p" @roost-turn-reserved)" "" "stale: the reservation is released"
+# The event log (#98): the replacement's first `working` was a repeat to the
+# log's guard, so the log read dead agent working -> replacement done, one
+# turn. It now has a line for the restamp, from no state, numbered turn 2.
+ev="$(cat "$ROOST_RECORD_DIR"/events/* 2>/dev/null | grep "\"pane\":\"$p\"" | grep '"to":"working"' | tail -1)"
+assert_contains "$ev" '"turn":2' "stale: the restamp leaves an event line for the replacement's turn 2 ($ev)"
+T kill-window -t "$(win_of "$p")"
+T set-environment -g ROOST_RECORD_DIR ""
 export ROOST_RECORD_DIR=""
 
 # --- send --when-idle offers the pane too -------------------------------------------

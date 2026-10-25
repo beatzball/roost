@@ -62,7 +62,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   dead turn keeps its number, so `wait-done --turn N` exits **2** however
   many times it is asked and `read --turn N` says the agent exited inside its
   shell. A new agent started at the same prompt is never taken for the dead
-  one. `status` still changes nothing.
+  one, and never takes its turn number either: its first reply is the next
+  turn, whether it starts before anything looked at the pane or while `send`,
+  `read` or `wait-done` is clearing it. `status` still changes nothing.
 
 ## [0.10.0]
 
