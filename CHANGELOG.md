@@ -21,8 +21,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   that is not held, or a `SessionEnd` from another Claude session — the old
   one after a `respawn-pane -k` among them — changes nothing. A new prompt
   that lands while the ended turn is being filed takes the next turn number,
-  never the ended one's, so `wait-done --turn N` and `roost send`'s printed
-  number still name the right prompt. **Run `roost
+  never the ended one's, so `wait-done --turn N` still names the right
+  prompt; a `roost send` in that moment prints no turn number, as for any
+  pane with no badge. **Run `roost
   install`** after upgrading to add the new hook entry, and restart a roost
   server started before it; `roost doctor` says when either is missing.
   Without it everything behaves as in 0.10.0.

@@ -255,8 +255,10 @@ stated; "not measured" means not measured.
     new process's hold (reasoned, not measured). It needs the new process to
     prompt, run background work and Stop held inside the ~4 s before the old
     SessionEnd lands; the stamp check is what stands in the way.
-  - **A gap between the release and the turn file** (reasoned, not
-    measured; the interrupt recovery has the same one). `wait-done --turn N`
+  - **A gap between the release and the turn file** (provoked on every run
+    by section 9 of `tests/test-session-end.sh`, which pauses the release at
+    three points in the gap; the interrupt recovery has the same gap, and
+    that one is reasoned, not measured). `wait-done --turn N`
     waits for the file as well as the badge, so it polls through the gap;
     but the `outcome` sidecar is written just after the turn file, and a
     `wait-done --turn N` that reads in the microseconds between the two
@@ -265,9 +267,14 @@ stated; "not measured" means not measured.
     `wait-done --turn N` times out. The entry carries `"timeout": 10`,
     since Claude's SessionEnd default is 1.5 s. A new prompt inside the gap
     cannot take turn N: the release reserves N in its own tmux command
-    (`@roost-turn-reserved`), every other writer starts above it, and
-    `roost send` predicts above it, so its printed number is right too
-    (flock round 2 found both wrong). A hook cancelled inside the gap leaves
+    (`@roost-turn-reserved`), and every other writer starts above it (flock
+    round 2 found that wrong). A `roost send` inside the gap prints no turn
+    number at all: the release clears the badge, and `send` numbers only a
+    pane that reads done or idle, as for any pane with no badge. `send` also
+    counts a live reservation when it does number a pane; that only matters
+    for a done or idle pane whose reservation is still set, so it is a
+    zero-cost guard (one more field in a read `send` already makes), not
+    something the gap needs. A hook cancelled inside the gap leaves
     the reservation and a `.reserving.*` file in the record's `replies/`;
     each later turn end on that pane then pays one tmux read for it, and
     numbering skips N, which is the number that turn would have had. A

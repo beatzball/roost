@@ -832,11 +832,14 @@ T kill-pane -t "$ok" 2>/dev/null || true
 # --- 15. a reserved turn number is counted (#188) ---------------------------
 #
 # A SessionEnd release reserves the number of the turn it ended, in the same
-# tmux command as the release, and files it about 70 ms later. A send inside
-# that gap must predict the turn AFTER it, and the landing of the reserved
-# file must not be taken for this send's turn. The reservation is planted by
-# hand, with the `.reserving.*` file that makes the agent's own Stop start
-# above it, exactly as the SessionEnd block leaves them.
+# tmux command as the release, and files it about 70 ms later. This is NOT
+# that gap: inside it the release has cleared the badge, so `send` prints no
+# number at all (tests/test-session-end.sh section 9 provokes the real gap).
+# This covers the guard instead: a pane that reads done with a reservation
+# still set must be numbered the turn AFTER it, and the landing of the
+# reserved file must not be taken for this send's turn. The reservation is
+# planted by hand on a done pane, with the `.reserving.*` file that makes the
+# agent's own Stop start above it, as the SessionEnd block leaves them.
 rp="$(newagent 0 0.3)"
 "$ROOST" send "$rp" "turn one" >/dev/null 2>&1
 wait_state "$rp" done
