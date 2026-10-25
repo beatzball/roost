@@ -2416,6 +2416,32 @@ third case ends), and a count that is only ever the list's length (so the
 first two end, at the price that the 33rd agent is not counted at all). That
 is a different trade, not a fix to this one, and it is a follow-up.
 
+### The deferred codex ping (#195): what it does not cover
+
+A codex `blocked` pings after `@roost-notify-delay` seconds, from a child the
+hook starts and leaves running (`roost_defer_blocked_ping` in
+`scripts/roost-agent-state`). Tested on a throwaway server with fixture
+payloads (`tests/test-codex-notify-delay.sh`), not under a live codex.
+
+- **Not measured: whether codex lets the child outlive the hook.** The child
+  closes all three streams and runs in its own process group (`set -m`), so a
+  caller that waits on the pipe or kills the hook's group leaves it alone. A
+  caller that kills by session, or a sandbox that reaps every descendant,
+  would kill it, and the dialog would then ping NEVER rather than late.
+  Severity: medium until checked — a real dialog could go unannounced. What
+  would close it: one live codex run with an off-screen pane and a dialog left
+  open past the delay.
+- **A real dialog pings later.** Up to the delay, 5 s by default. That is the
+  trade the setting makes; `0` restores the instant ping.
+- **Two dialogs in one second share a stamp.** `@agent_since` is whole
+  seconds. If a dialog is answered and a new one opens in the same second,
+  the new one cannot claim a stamp that already pinged, so it gets no ping of
+  its own. Severity: low — the earlier ping went out at most one delay
+  before, for the same pane, and the pane still reads 🛑.
+- **Auto-review that DENIES, then asks the human, is still a ping.** It
+  arrives as a later dialog with a later stamp, which is the right outcome,
+  but it waits the delay too.
+
 ## Behaviour changes
 
 ### `send` now writes a stderr line whenever it names no turn (#177)

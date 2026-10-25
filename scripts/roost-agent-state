@@ -1576,6 +1576,115 @@ roost_stamp_blocked() {
   tmux -S "$sock" "${wr[@]}" 2>/dev/null || true
 }
 
+# --- the deferred `blocked` ping (#195) ---------------------------------------
+#
+# WHY A HARNESS CAN ASK FOR ITS PING TO WAIT. A `blocked` used to mean a human
+# is being waited on, and the ping went out the instant the pane entered it.
+# Under codex's auto-review (`approvals_reviewer = "auto_review"`) that is no
+# longer true: every sandbox escalation fires codex's PermissionRequest, and
+# about two seconds later codex's own reviewer approves it and the pane is
+# working again. Measured on one machine, 20 of 38 codex blocked states cleared
+# within 5 s once auto-review was on, against 0 of 30 before; a parallel tool
+# batch sent 3 to 4 pings in one second. The human who followed the ping found
+# nothing to answer. Nothing in codex's payload says a reviewer rather than a
+# human will answer, so roost cannot tell the two apart at the hook.
+#
+# OPT-IN, PER ADAPTER. ROOST_NOTIFY_DEFER=1 in the hook's env asks for the wait;
+# adapters/codex/roost-codex-hook sets it, the way it sets ROOST_DIALOG_HARNESS
+# and ROOST_AGENT_NAME. Unset -- Claude, opencode, copilot, pi, a hand-typed
+# `roost state blocked` -- pings at once, exactly as before. Another adapter
+# that shows the same pattern opts in with the same one line. `error` never
+# waits, for any harness: it does not clear itself.
+#
+# THE WAIT. @roost-notify-delay seconds (a pane option beats the global one,
+# default 5; 0 is the old instant ping). The self-approvals measured left
+# blocked in 1-3 s, and 20 of the 21 that were 15 s or less were 5 s or less.
+# The hook starts a detached child and exits: codex blocks on this script's
+# exit, so a hook that slept would hold up the agent for the whole delay.
+notify_defer=0
+[ "${ROOST_NOTIFY_DEFER:-}" = 1 ] && notify_defer=1
+
+# roost_notify_now MSG -- the ping itself, "roost · <window>" and MSG.
+roost_notify_now() {
+  local wname
+  wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
+  # $SELF_DIR, not `dirname "$0"`: through a symlink $0 is the symlink's own
+  # path and the sibling lookup would miss. The `|| true` is deliberate and
+  # must stay — a dead tmux server (agent windows are killable) has to
+  # degrade, never break Claude — which is exactly why the miss would be
+  # invisible, and why the path has to be right before it is swallowed.
+  ROOST_NOTIFY_SOCK="$sock" "$SELF_DIR/roost-notify" "roost · ${wname}" "$1" || true
+}
+
+# roost_defer_read -> DEFER_ACTIVE (the window's #{window_active}) and
+# DEFER_DELAY (whole seconds), in ONE tmux read. `#{@roost-notify-delay}`
+# with -t on the pane finds a pane option first, then the window's, the
+# session's and the global one, so a pane can be given its own delay.
+#
+# A bad value degrades to the default and never breaks the hook: this runs
+# inside codex's hook, whose exit code codex reads as a veto. Anything that is
+# not all digits is 5. More than four digits, or more than 600, is 600, so a
+# typo cannot leave a child sleeping for days. `10#` so "08" is eight, not a
+# bad octal number, and bash 3.2 has it.
+roost_defer_read() {
+  local r d
+  r="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active} #{@roost-notify-delay}' 2>/dev/null || true)"
+  DEFER_ACTIVE="${r%% *}"
+  d="${r#* }"
+  case "$d" in
+    ''|*[!0-9]*) d=5 ;;
+    ?????*)      d=600 ;;
+    *)           d=$((10#$d)); [ "$d" -gt 600 ] && d=600 ;;
+  esac
+  DEFER_DELAY="$d"
+}
+
+# roost_defer_blocked_ping STAMP DELAY -- ping after DELAY seconds, and only if
+# the same dialog is still open on a window that is still off screen.
+#
+# THE SAME DIALOG is "still blocked AND @agent_since still STAMP". Checking only
+# "still blocked" was tried first on a throwaway server and let 2 of 5
+# self-approved escalations through: the NEXT escalation had re-blocked the
+# pane inside the wait, and the old child pinged for a dialog that was already
+# answered. The window is checked again because a human who switched to it
+# during the wait can see the dialog and needs no ping.
+#
+# ONE PING PER BURST. A parallel tool batch is N hooks in the same second, all
+# writing the same stamp, and each starts a child. The child CLAIMS the stamp:
+# it writes @roost-notified "<stamp> <token>" only if @roost-notified does not
+# already start with that stamp, in the same tmux command as the other three
+# checks, and pings only if the record then reads back as its own. tmux runs
+# one client's command list at a time, the property roost_stamp_blocked's
+# if-shell relies on, so of N children with one stamp exactly one finds the
+# record not yet written. The token is this hook's $$: concurrent hooks are
+# separate processes, so no two share one. A later dialog has a later stamp
+# and a record that does not start with it, so it can claim again; the record
+# is never cleared, because nothing reads it but the next claim.
+#
+# DETACHED. All three standard streams are closed or redirected, so neither
+# codex nor a `$(...)` around this hook waits on a pipe the child holds open.
+# `set -m` puts the child in its own process group, so a caller that kills the
+# hook's group once the hook exits does not take the pending ping with it. The
+# parent's EXIT trap (the event log, scripts/lib/roost-events.sh) is not the
+# child's: bash resets traps in a subshell, and `trap - EXIT` says so twice.
+# Every tmux call degrades as the rest of this file does: a server that died
+# during the wait means a child that pings nothing and exits.
+roost_defer_blocked_ping() {
+  local stamp="$1" delay="$2" token="$$"
+  set -m
+  (
+    trap - EXIT
+    sleep "$delay"
+    got="$(tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+      "#{&&:#{==:#{@agent_state},blocked},#{&&:#{==:#{@agent_since},$stamp},#{&&:#{?#{m:$stamp *,#{@roost-notified}},,1},#{?#{==:#{window_active},1},,1}}}}" \
+      "set-option -p -t $TMUX_PANE @roost-notified '$stamp $token'" \
+      ';' display-message -p -t "$TMUX_PANE" '#{@roost-notified}' 2>/dev/null || true)"
+    [ "$got" = "$stamp $token" ] && roost_notify_now "needs your input"
+    exit 0
+  ) </dev/null >/dev/null 2>&1 &
+  set +m
+}
+
 # PostToolUse fires after EVERY tool call and Claude blocks on this script
 # exiting, so the common case — state already correct — must be cheap: ONE read,
 # then bail before any writes. It MUST carry `|| true`: under `set -e` a bare
@@ -1686,7 +1795,23 @@ if [ "$state" = "$prev" ]; then
   # the state did not change, and this path must stay as cheap as the bail it
   # replaces for every other repeat.
   if [ "$state" = "blocked" ]; then
-    roost_stamp_blocked "$(date +%s)"
+    restamp="$(date +%s)"
+    roost_stamp_blocked "$restamp"
+    # An opted-in harness (#195) still gets no IMMEDIATE ping here, but a
+    # pending one is scheduled for the new stamp. This is the rest of a
+    # parallel batch: one hook won the working -> blocked transition and the
+    # others land here, and when the batch spans a second boundary their later
+    # stamp is the one the pane ends up with, so the transition's own child
+    # finds the stamp moved and stands down. Without a child here that dialog
+    # would never ping at all. The claim in roost_defer_blocked_ping keeps the
+    # batch to one ping. With a delay of 0 nothing is scheduled: an instant
+    # ping is the old behaviour, and the old behaviour sends none on a repeat.
+    if [ "$notify_defer" = 1 ]; then
+      roost_defer_read
+      if [ "$DEFER_ACTIVE" != 1 ] && [ "$DEFER_DELAY" != 0 ]; then
+        roost_defer_blocked_ping "$restamp" "$DEFER_DELAY"
+      fi
+    fi
   fi
   # A prompt on a pane that already reads working, while that pane is HELD
   # by background work for its stamp (#188). This is the bail the
@@ -2115,16 +2240,25 @@ case "$state" in
   blocked) msg="needs your input" ;;
   error)   msg="hit an error" ;;
 esac
-if [ -n "$msg" ]; then
+#
+# A `blocked` from an adapter that opted in (#195) waits instead: see
+# roost_defer_blocked_ping for why, and for what the wait checks. Its read
+# replaces the plain window_active read rather than adding to it, so the
+# opted-in path is still one tmux call before the child starts. $now is the
+# stamp roost_stamp_blocked wrote above.
+if [ "$state" = "blocked" ] && [ "$notify_defer" = 1 ]; then
+  roost_defer_read
+  if [ "$DEFER_ACTIVE" != "1" ]; then
+    if [ "$DEFER_DELAY" = 0 ]; then
+      roost_notify_now "$msg"
+    else
+      roost_defer_blocked_ping "$now" "$DEFER_DELAY"
+    fi
+  fi
+elif [ -n "$msg" ]; then
   active="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_active}' 2>/dev/null || echo 0)"
   if [ "$active" != "1" ]; then
-    wname="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{window_name}' 2>/dev/null || echo agent)"
-    # $SELF_DIR, not `dirname "$0"`: through a symlink $0 is the symlink's own
-    # path and the sibling lookup would miss. The `|| true` is deliberate and
-    # must stay — a dead tmux server (agent windows are killable) has to
-    # degrade, never break Claude — which is exactly why the miss would be
-    # invisible, and why the path has to be right before it is swallowed.
-    ROOST_NOTIFY_SOCK="$sock" "$SELF_DIR/roost-notify" "roost · ${wname}" "$msg" || true
+    roost_notify_now "$msg"
   fi
 fi
 

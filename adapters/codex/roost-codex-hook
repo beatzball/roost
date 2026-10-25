@@ -305,6 +305,17 @@ SELF_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 # one; ROOST_ERROR_REASON is the sentence `roost wait-done` prints.
 sink="$SELF_DIR/../../scripts/roost-agent-state"
 
+# ROOST_NOTIFY_DEFER=1: a codex `blocked` pings only after @roost-notify-delay
+# seconds (default 5), and only if the same dialog is still open then (#195).
+# Codex's auto-review approves most sandbox escalations about two seconds after
+# PermissionRequest fires, and nothing in the payload says a reviewer rather
+# than a human will answer, so an instant ping sent the human to a pane with
+# nothing to answer. The sink's notify block says what the wait checks.
+# Exported once here, not per call, so both of the sink's `blocked` calls below
+# -- with the dialog payload, and flagless under the shared app-server -- get
+# it. Every other state ignores it, and `error` always pings at once.
+export ROOST_NOTIFY_DEFER=1
+
 # --- PermissionRequest: what the dialog is (#142) -----------------------------
 #
 # A dialog's payload goes to the sink with --permission-request-hook, as
