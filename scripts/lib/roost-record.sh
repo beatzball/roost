@@ -446,8 +446,47 @@ roost_record_ensure() {
   return 0
 }
 
+# roost_record_reserved DIR SOCKET -> ROOST_RECORD_RESERVED, the turn number
+# a SessionEnd release on DIR's pane has reserved and not yet filed, or "".
+#
+# WHY A NUMBER IS RESERVED (#188, flock round 2, reproduced). The SessionEnd
+# block in scripts/roost-agent-state releases a held pane in one tmux command
+# and files the ended turn after it, about 70 ms later. A new prompt can land
+# in between -- a respawned Claude, or the same Claude after `/clear` -- and
+# when that turn ended inside the gap, its Stop took turn N and the ended
+# turn's died reply landed as N+1, so `wait-done --turn N` returned the NEW
+# prompt's answer. So the release writes @roost-turn-reserved N in the same
+# command that unsets the badge: no prompt can land before it, and every
+# appender after it starts at N+1.
+#
+# The pane option is read only while a `.reserving.*` file sits in replies/,
+# which the SessionEnd block writes before its release and removes once it
+# has filed: every other append pays one glob and no tmux call. DIR's last
+# component is the pane number (roost_record_pane_dir). A reservation that
+# outlives its hook (cancelled at its 10 s timeout) costs a tmux read per
+# append until the file is gone, and skips nothing once a later turn is past
+# it. docs/known-gaps.md has it.
+roost_record_reserved() {
+  local h v
+  ROOST_RECORD_RESERVED=""
+  for h in "$1"/replies/.reserving.*; do
+    [ -e "$h" ] || return 0
+    [ -n "$2" ] || return 0
+    v="$(tmux -S "$2" show-options -pqv -t "%${1##*/}" @roost-turn-reserved 2>/dev/null || true)"
+    case "$v" in ''|*[!0-9]*) return 0 ;; esac
+    [ "${#v}" -le 15 ] || return 0
+    ROOST_RECORD_RESERVED=$((10#$v))
+    return 0
+  done
+  return 0
+}
+
 # roost_record_append DIR SOCKET TEXT -> ROOST_RECORD_TURN, and 0; 1 when
 # nothing was recorded. The caller then sets @roost-reply exactly as before.
+#
+# ROOST_RECORD_AT=N files at N, or the first free number after it: only the
+# SessionEnd release that reserved N sets it (roost_record_reserved), as a
+# shell variable, never exported.
 #
 # Called once per turn, from the two places that set @roost-reply, and never on
 # the PostToolUse path. Measured on the design machine: +7 to +17 ms on a turn
@@ -473,6 +512,20 @@ roost_record_append() {
 
   roost_record_scan "$dir/replies"
   n=$((ROOST_RECORD_MAX + 1))
+  # A number a SessionEnd release has reserved is never taken (#188, below):
+  # the caller that reserved it says so with ROOST_RECORD_AT and files there,
+  # every other caller starts above it.
+  if [ -n "${ROOST_RECORD_AT:-}" ]; then
+    case "$ROOST_RECORD_AT" in
+      ''|*[!0-9]*) ;;
+      *) [ "${#ROOST_RECORD_AT}" -gt 15 ] || n=$((10#$ROOST_RECORD_AT)) ;;
+    esac
+  else
+    roost_record_reserved "$dir" "$sock"
+    if [ -n "$ROOST_RECORD_RESERVED" ] && [ "$ROOST_RECORD_RESERVED" -ge "$n" ]; then
+      n=$((ROOST_RECORD_RESERVED + 1))
+    fi
+  fi
   while :; do
     # Past 15 digits every reader skips the name (roost_record_scan), so a turn
     # written there could never be read, counted or pruned. Refuse instead.
@@ -549,8 +602,20 @@ roost_record_append() {
 # ROOST_RECORD_KEEP=1 the append pruned turn N-1, the rollback then removed
 # turn N, and the next append reused N-1's number.
 roost_record_append_interrupted() {
-  ROOST_RECORD_NO_PRUNE=1 roost_record_append "$1" "$2" "${3:-}" || return 1
-  if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome interrupted "$2"; then
+  roost_record_append_outcome "$1" "$2" interrupted "${3:-}"
+}
+
+# roost_record_append_outcome DIR SOCKET OUTCOME [TEXT] -> ROOST_RECORD_TURN,
+# and 0; 1 when nothing was recorded. The body of the function above, with
+# the outcome as an argument: every rule written there -- both files or
+# neither, the sidecar second, the prune last -- holds for any outcome. The
+# second outcome is `died` (#188): a Claude that exits while background work
+# holds its pane fires SessionEnd and no Stop, and scripts/roost-agent-state
+# records the held main reply as that prompt's turn with this sidecar beside
+# it. OUTCOME is one word of [a-z_], which roost_record_put_turn_field checks.
+roost_record_append_outcome() {
+  ROOST_RECORD_NO_PRUNE=1 roost_record_append "$1" "$2" "${4:-}" || return 1
+  if ! roost_record_put_turn_field "$1" "$ROOST_RECORD_TURN" outcome "$3" "$2"; then
     roost_record_turn_file "$1" "$ROOST_RECORD_TURN"
     rm -f "$ROOST_RECORD_FILE" "$ROOST_RECORD_FILE".* 2>/dev/null || true
     ROOST_RECORD_TURN=""

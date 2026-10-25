@@ -200,6 +200,13 @@ case "$(_settings_state "$settings")" in
       # flag, as the checks above are.
       grep -q -- --prompt-hook "$settings" 2>/dev/null \
         || warn "$settings has no --prompt-hook on the UserPromptSubmit hook — a Claude turn stopped with Esc mid-answer stays ⏳ working until the next prompt; re-run: roost hooks, or run: roost install"
+      # And the SessionEnd entry (#188). A config wired before it badges every
+      # turn as before; what it lacks is the release of a pane that background
+      # work holds at working when Claude exits first -- Claude fires
+      # SessionEnd and no Stop then, so that pane stays ⏳ until it closes.
+      # Matched on the flag, as the checks above are.
+      grep -q -- --session-end-hook "$settings" 2>/dev/null \
+        || warn "$settings has no SessionEnd hook — a Claude that exits while its background work runs leaves its pane ⏳ working until the pane closes; re-run: roost hooks, or run: roost install"
       grep -q PostToolUseFailure "$settings" 2>/dev/null \
         || warn "$settings has no PostToolUseFailure hook — a Claude tool that FAILS after you approved it leaves the pane 🛑 blocked for the rest of the turn, because PostToolUse fires only on success; re-run: roost hooks, or run: roost install"
     fi
@@ -286,6 +293,12 @@ else
     # next prompt -- while the user's own settings.json check above is green.
     # Flock round 2 on #95 found only that one was checked.
     warn "$w_dir/claude/settings.json was generated before --prompt-hook existed — this roost server has been running since then, so a Claude turn stopped with Esc mid-answer stays ⏳ working until the next prompt; run: roost wiring on"
+  elif ! grep -q -- --session-end-hook "$w_dir/claude/settings.json" 2>/dev/null; then
+    # The same file, one change later again (#188): a server started before
+    # the SessionEnd entry hands its claudes no SessionEnd hook, so a Claude
+    # that exits while background work holds its pane leaves it ⏳ -- while
+    # the user's own settings.json check above is green.
+    warn "$w_dir/claude/settings.json was generated before the SessionEnd hook existed — this roost server has been running since then, so a Claude that exits while its background work runs leaves its pane ⏳ working until the pane closes; run: roost wiring on"
   fi
   w_claude="$(command -v claude 2>/dev/null || true)"
   if [ -n "$w_claude" ]; then

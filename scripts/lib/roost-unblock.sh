@@ -317,9 +317,11 @@ roost_unblock_pane() {
   #
   # @roost-dialog, @roost-answered and @roost-answer-nonce (#142) describe the
   # dialog that was just declined, as @roost-blocked-on does, and go with it.
+  # So do the hold record, its types and its owner (@roost-background-session,
+  # #188): a turn the human ended holds nothing for SessionEnd to release.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
   roost_events_unblocked "$pane" "$now" "$since" blocked "the dialog was declined or dismissed" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
@@ -561,9 +563,11 @@ roost_interrupted_pane() {
   # One tmux command, test and unsets together, as the decline's clear. The
   # outcome record is written in the same command: a reader that sees the
   # badge gone finds the reason beside it, or finds neither.
+  # The hold record, its types and its owner (@roost-background-session,
+  # #188) go with the badge, as in the decline's clear.
   t if-shell -F -t "$pane" \
     "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}" \
-    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
+    "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   # This caller's token, not the second: see roost_unblock_token.
   [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "working" ] \

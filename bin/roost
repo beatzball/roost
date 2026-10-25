@@ -1006,8 +1006,14 @@ JSON
 # this agent has running, and their ids, which \`roost status --json\` reports as
 # \`subagents\`. They never change the badge. Leave them off and every badge is
 # still right; the count is just never there.
+# SessionEnd is what lets go of a pane held ⏳ working by background work when
+# Claude exits before that work ends: Claude fires it and no Stop, so without
+# it the badge reads working for ever. It badges nothing; it unsets the badge
+# and records the turn as died, so \`roost wait-done\` exits 2 -- or, after
+# \`/clear\` or \`/resume\`, which leave Claude at its prompt, as interrupted,
+# exit 5. For any pane that is not held it changes nothing.
 #
-# SessionStart is the odd one out: the other nine report OUTWARD, and it
+# SessionStart is the odd one out: the other ten report OUTWARD, and it
 # is the only one that feeds context IN. It tells the agent it is inside roost
 # and gives it its own pane id, so it reaches for \`roost split\` rather than a
 # bare \`tmux split-window\` that would target the user's ordinary tmux server.
@@ -1840,10 +1846,16 @@ JSON
     # one that never started — the caller then either re-sends a prompt that is
     # already running, or tells a human the agent is wedged when it is not.
     turn_watch=0 turn_base=0 turn_dir="" turn_num="" turn_started=0 turn_have_base=0
-    turn_pane="" turn_since="" turn_reply="" turn_errored=0 turn_rec_bad=0
-    turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+    turn_pane="" turn_since="" turn_reply="" turn_errored=0 turn_rec_bad=0 turn_reserved=""
+    # @roost-turn-reserved rides in the same read (#188): a number a SessionEnd
+    # release has reserved and not yet filed. It is digits or empty, and an
+    # empty middle field keeps its place, as the measurement below shows for
+    # @agent_since.
+    turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@roost-turn-reserved} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
     turn_pane="${turn_info%% *}"
     turn_rest="${turn_info#* }"
+    turn_reserved="${turn_rest%% *}"
+    turn_rest="${turn_rest#* }"
     turn_since="${turn_rest%% *}"
     turn_state="${turn_rest#* }"
     case "$turn_state" in
@@ -1875,6 +1887,19 @@ JSON
         # two "no base" causes this was (#177).
         *) turn_rec_bad=1 ;;
       esac
+      # A reserved number is a turn that is already over and not yet on disk
+      # (#188): the SessionEnd release that ended it files it about 70 ms
+      # later. Counted as the base, so the prediction is the turn after it,
+      # and that file landing is not taken for this send's turn (signal 2
+      # below). Flock round 2 on #188 found the prediction one short here.
+      if [ "$turn_have_base" = 1 ]; then
+        case "$turn_reserved" in
+          ''|*[!0-9]*) ;;
+          *) if [ "${#turn_reserved}" -le 15 ] && [ "$((10#$turn_reserved))" -gt "$turn_base" ]; then
+               turn_base=$((10#$turn_reserved))
+             fi ;;
+        esac
+      fi
     fi
 
     # This one's status is NOT discarded: unlike the Enters below (where
@@ -3094,6 +3119,15 @@ EOF
           echo "roost read: turn $want of '$raw' was interrupted, and recorded no reply." >&2
         fi
       fi
+      # A turn whose agent exited while its background work held it (#188):
+      # the main reply is all there is, and the work never reported back.
+      if [ "$ROOST_RECORD_FIELD" = died ]; then
+        if [ -n "$ROOST_RECORD_TEXT" ]; then
+          echo "roost read: turn $want of '$raw' died: the agent exited before its background work finished; this is the main reply it had given." >&2
+        else
+          echo "roost read: turn $want of '$raw' died: the agent exited before its background work finished, and recorded no reply." >&2
+        fi
+      fi
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         json_state=""
@@ -3244,6 +3278,18 @@ EOF
         case "$state" in
           working|blocked|error)
             echo "roost read: '$raw' is $state — this reply is from its previous turn." >&2 ;;
+          '')
+            # No badge, and the Claude SessionEnd hook's `died` for this
+            # stamp (#188): the reply is the main reply of a turn whose agent
+            # exited while its background work held it. It is this turn's,
+            # so it is not stale; say that the work never reported back. One
+            # read, only for a pane with no badge.
+            read_end="$(t display-message -p -t "$tgt" '#{@agent_since}|#{@roost-ended}' 2>/dev/null || true)"
+            read_end_since="${read_end%%|*}"
+            case "$read_end_since" in ''|*[!0-9]*) read_end_since="" ;; esac
+            if [ -n "$read_end_since" ] && [ "${read_end#*|}" = "$read_end_since died" ]; then
+              echo "roost read: '$raw' died: the agent exited before its background work finished; this is the main reply it had given." >&2
+            fi ;;
         esac
       fi
       # The kept copy of this reply (#42). @roost-reply-turn names the turn file
@@ -4104,11 +4150,21 @@ EOF
     # Exit 5, not 1 (already error, timeout and usage, and a retry-on-timeout
     # loop would retry an interrupted turn) and not 3 or 4 (`send`'s, and #43
     # may fuse the two commands); the design's Q2.
+    #
+    # `died` is the same record with the other word (#188): the Claude
+    # SessionEnd hook writes it when the agent exits while its background
+    # work holds the pane, and it exits 2, the code a pane whose agent is
+    # gone already gives. Never 0: the work the turn was waiting on was
+    # stopped, or left the pane, with the agent.
     if [ "$wt_turn_given" = 1 ]; then
       roost_record_get_turn_field "$wt_dir" "$wt_turn" outcome || true
       if [ "$ROOST_RECORD_FIELD" = interrupted ]; then
         echo "roost: turn $wt_turn of '$raw' was interrupted, not done" >&2
         wd_exit 5 interrupted "$tgt" "$(wd_state_of "$tgt")"
+      fi
+      if [ "$ROOST_RECORD_FIELD" = died ]; then
+        echo "roost: turn $wt_turn of '$raw' died: the agent exited while its background work still ran" >&2
+        wd_exit 2 died "$tgt" "$(wd_state_of "$tgt")"
       fi
     fi
     # The pane's own record describes its NEWEST turn, so it answers only a
@@ -4125,6 +4181,10 @@ EOF
         if [ "$_ended" = "$_esince interrupted" ]; then
           echo "roost: '$raw' was interrupted, not done" >&2
           wd_exit 5 interrupted "$_id" "$_st"
+        fi
+        if [ "$_ended" = "$_esince died" ]; then
+          echo "roost: '$raw' died: the agent in pane $_id exited while its background work still ran" >&2
+          wd_exit 2 died "$_id" "$_st"
         fi
       done <<< "$rows"
     fi

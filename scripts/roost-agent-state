@@ -10,6 +10,7 @@
 #
 #   usage: roost-agent-state <working|blocked|error|done|idle> [--stop-hook]
 #          roost-agent-state --subagent-hook start|stop
+#          roost-agent-state --session-end-hook
 #
 # --stop-hook additionally reads Claude Code's Stop payload from stdin and
 # records that turn's reply on the pane, which is what `roost read` returns.
@@ -28,6 +29,12 @@
 # subagents are running and their ids (@roost-subagents, @roost-subagent-ids).
 # It reads stdin the way --stop-hook does, touches those two options and
 # nothing else, and exits before any of the state logic below -- see its block.
+#
+# The third form, --session-end-hook, goes with Claude's SessionEnd (#188). It
+# also exits before the state logic: it does nothing at all unless the pane is
+# held at working by background work (#97) for the session that ended, and
+# then releases it as `died` -- or `interrupted` after `/clear` or `/resume`,
+# which leave the agent at its prompt -- see its block.
 set -euo pipefail
 
 # Resolve this script's own directory even when invoked via a symlink — same
@@ -303,6 +310,283 @@ if isinstance(t, str) and t and isinstance(a, str) and 0 < len(a) <= 64 and all(
   exit 0
 fi
 
+# Claude's SessionEnd: the agent is EXITING (#188). It matters for one pane
+# only -- one held at `working` by its own background work (#97) -- and for
+# every other pane this block reads once and exits, before any of the state
+# logic below.
+#
+# WHY A HELD PANE NEEDS IT. A held pane is released by the Stop of the turn
+# Claude starts when its background work ends. A Claude that exits first
+# never starts that turn. Measured on 2.1.310 with the fake Messages API rig
+# (tests/live/claude-background-smoke.sh), one run each: `/exit` and Ctrl-C
+# twice both open Claude's "Background work is running" dialog, and either
+# answer -- "Exit and stop tasks", or "Move to background and exit", which
+# leaves the work running under pid 1, outside this pane -- fires SessionEnd
+# with reason `prompt_input_exit` and no Stop. `kill -TERM`, `kill -HUP` (a
+# closed terminal) and `respawn-pane -k` fire SessionEnd with reason `other`,
+# and no Stop; after the respawn it fired about 4 s later, into the same
+# pane. Before this hook every one of them left the pane ⏳ for ever, and
+# `wait-done` could only time out. docs/known-gaps.md has the table.
+#
+# WHAT IT WRITES. The turn is over, and it did not finish: the work it was
+# waiting on was stopped, or left the pane, with the agent. So this is not a
+# `done`. It is the design's `died` (docs/airig/specs/2026-09-29-turn-over-
+# design.md, §3, source 3, "agent gone": unset, outcome `died`), written by
+# the agent's last report of itself rather than inferred later: the badge is
+# UNSET, @roost-ended reads "<stamp> died" -- `wait-done` exits 2 on it, the
+# exit it already gives for a pane whose agent is gone -- and the held main
+# reply, which the hold kept only on the pane, becomes the prompt's ONE turn
+# file with an `outcome` sidecar of `died`, the way the interrupt recovery
+# keeps it (scripts/lib/roost-unblock.sh). The reply stays on the pane as
+# well, with its pointer: the pane's screen is now a shell prompt, so the
+# screen fallback a cleared reply would hand `read` has nothing on it.
+#
+# TWO REASONS ARE NOT EXITS. The payload's `reason` is one of `clear`
+# (`/clear`), `resume` (an interactive `/resume`), `logout`,
+# `prompt_input_exit` and `other` (Claude Code's hooks reference). After
+# `clear` or `resume` the Claude is still in the pane, at its prompt, in a
+# new session: the held turn is over, because the session that owned it is,
+# but the agent did not go anywhere, and `died` would send a coordinator
+# following wait-done's exit 2 ("re-resolve or respawn") to respawn a live
+# agent. So for those two the outcome is `interrupted` -- wait-done's exit
+# 5, "re-prompt, or ask the human", what a human ending a turn at the
+# keyboard is -- with every other write the same. Every other reason, and
+# one roost does not know, is `died`: the three that are exits, and an
+# unknown word is not assumed to be a live agent. Measured: `prompt_input_exit`
+# and `other` (the table above), and `clear` on 2.1.310 (one run, same rig):
+# `/clear` on a held pane opens no dialog, fires SessionEnd `clear` with the
+# old session's id and then SessionStart `clear` with a new one, and the
+# background shell KEEPS RUNNING; when it ends, the new session gets the
+# notification as a UserPromptSubmit and a Stop, so the main reply is turn N
+# (interrupted) and the notification's answer turn N+1 (done). `resume` and
+# `logout` are from the reference, not measured (docs/known-gaps.md).
+#
+# WHICH SESSION. SessionEnd carries no background_tasks (measured: its keys
+# are cwd, hook_event_name, prompt_id, reason, session_id, transcript_path),
+# so nothing in it says the pane was held; the pane does. What the payload
+# does say is which session ended, and that is checked, because the end of
+# ANOTHER Claude can reach this pane: the old process after a
+# `respawn-pane -k`, whose SessionEnd lands about 4 s after the new one may
+# have started (measured, above), and -- reasoned, not measured -- a
+# `claude -p` run by a tool in this pane, which inherits TMUX_PANE. That
+# second case is closed at SessionEnd only: a Stop checks no session, so the
+# child's Stop could already release the hold as `done` with its own reply,
+# before #188 and after it.
+#
+# The rule: the payload's `session_id` must be the hold's OWNER,
+# @roost-background-session "<stamp> <session_id>". The session that holds
+# a pane is the one whose Stop held it, and that Stop writes the owner in the
+# same tmux command as the hold record; a prompt that reaches a pane already
+# held names its own session there instead (the unchanged-state bail below
+# says why); hold_carry moves it with the stamp; every release unsets it. So
+# the owner is never a record left over from an earlier session. (The first
+# version of this block matched `transcript_path` against @roost-transcript,
+# which a prompt on an already-working pane does not rewrite: after a
+# respawn, the NEW Claude prompted and held, the record still named the OLD
+# one, and the old one's late SessionEnd released the new turn as died --
+# flock round 1 on #188, reproduced.) No owner (a hold written before #188,
+# or a Stop with no usable id), no id in the payload, or no reader to get it
+# out: "could not tell", and the pane stays held -- the safe direction,
+# today's behaviour. The one shape the rule cannot tell apart is
+# `claude --resume <the same id>` in the same pane after a respawn: the id
+# is the same session's, by Claude's own account (reasoned, not measured;
+# the stamp check, below, is what stands in its way).
+#
+# THE RELEASE IS ONE TMUX COMMAND, and tmux tests the hold in it: the pane
+# still reads working, with the stamp, the hold record and the owner this
+# block read. Anything that moved in between leaves the pane exactly as it
+# found it. The turn is recorded only AFTER that release is seen to have
+# landed -- read back with a token only this call wrote, the shape
+# scripts/lib/roost-unblock.sh uses -- so a refused release appends no turn
+# file, takes no turn number and prunes nothing. (The first version appended
+# first, so a stale SessionEnd that lost to a newer prompt filed the NEWER
+# turn's main reply as died and pushed that turn's own answer to the next
+# number: flock round 1 on #188, reproduced.) The cost is the window between
+# the badge going and the turn file landing, the one the interrupt recovery
+# has: a `wait-done --turn N` polls through it, since it waits for the file
+# as well as the badge; a hook cancelled inside it leaves the badge released
+# and @roost-ended saying why, with no turn file. A NEW prompt inside that
+# window cannot take the turn's number: the release reserves it in the same
+# command (@roost-turn-reserved, below, says how and why), and a release
+# that a newer prompt superseded after it landed still files its turn. The
+# pointer is written last, again only while the release this call made is
+# still the pane's. The event log line (#98) is armed with the turn once it
+# is filed, unless a newer turn already owns the pane.
+#
+# Claude only: no other harness has been measured exiting with work held,
+# and only Claude's adapter can hold a pane at all.
+if [ "${1:-}" = "--session-end-hook" ]; then
+  # A tty means a human typed the flag; `cat` would wait for ^D. Skip.
+  [ ! -t 0 ] || exit 0
+  payload="$(cat 2>/dev/null || true)"
+  # The one read every SessionEnd pays. `|` between the fields: none of them
+  # can hold one (the owner is a stamp and [A-Za-z0-9_-], checked below).
+  # The boot key rides along: the release below needs it to reserve a turn
+  # number, and here it costs no round trip of its own.
+  cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
+    '#{start_time}-#{pid}|#{@agent_state}|#{@agent_since}|#{@roost-background}|#{@roost-background-session}' 2>/dev/null || true)"
+  se_boot="${cur%%|*}"; cur="${cur#*|}"
+  se_state="${cur%%|*}"; cur="${cur#*|}"
+  se_since="${cur%%|*}"; cur="${cur#*|}"
+  se_bg="${cur%%|*}"; se_own="${cur#*|}"
+  [ "$se_state" = working ] || exit 0
+  case "$se_since" in ''|*[!0123456789]*) exit 0 ;; esac
+  # Held for THIS stamp, with a count the hook wrote (digits, or `?`): the
+  # value goes into the format below, so nothing else may.
+  case "$se_bg" in "$se_since "?*) ;; *) exit 0 ;; esac
+  case "${se_bg#* }" in *[!0123456789?]*) exit 0 ;; esac
+  # Owned, for THIS stamp, by an id of the shape the hook writes: it goes
+  # into the format too.
+  case "$se_own" in "$se_since "?*) ;; *) exit 0 ;; esac
+  case "${se_own#* }" in *[!A-Za-z0-9_-]*) exit 0 ;; esac
+  # The payload's session id and reason, one line each. A reason is a word
+  # of [a-z_] or nothing.
+  se_fields=""
+  if command -v python3 >/dev/null 2>&1; then
+    se_fields="$(printf '%s' "$payload" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+SID = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+s = d.get("session_id")
+if not (isinstance(s, str) and 0 < len(s) <= 64 and all(c in SID for c in s)):
+    s = ""
+r = d.get("reason")
+if not (isinstance(r, str) and 0 < len(r) <= 32 and all(c in "abcdefghijklmnopqrstuvwxyz_" for c in r)):
+    r = ""
+sys.stdout.write(s + "\n" + r)' 2>/dev/null || true)"
+  elif command -v jq >/dev/null 2>&1; then
+    se_fields="$(printf '%s' "$payload" | jq -r '
+      (if type == "object" and (.session_id | type) == "string" and (.session_id | test("\\A[A-Za-z0-9_-]{1,64}\\z")) then .session_id else "" end),
+      (if type == "object" and (.reason | type) == "string" and (.reason | test("\\A[a-z_]{1,32}\\z")) then .reason else "" end)' 2>/dev/null || true)"
+  fi
+  se_sid="${se_fields%%$'\n'*}"
+  se_reason=""
+  case "$se_fields" in *$'\n'*) se_reason="${se_fields#*$'\n'}" ;; esac
+  [ -n "$se_sid" ] && [ "$se_own" = "$se_since $se_sid" ] || exit 0
+  case "$se_reason" in
+    clear|resume) se_outcome=interrupted ;;
+    *) se_outcome=died ;;
+  esac
+  # The held main reply, as tmux stores it: what the record and the pane's
+  # `.pane` sidecar both keep, so it is never encoded a second time (the
+  # Stop release's reply_from_pane says why).
+  se_reply="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
+  # The token says the release that landed is THIS call's: a second
+  # SessionEnd for the same stamp reads the same "<stamp> died" back, and
+  # must not file the turn twice. Digits and dots only.
+  se_tok="$$.$RANDOM$RANDOM"
+  # THE TURN NUMBER IS RESERVED IN THE RELEASE (flock round 2 on #188,
+  # reproduced). The badge goes in the release; the turn file lands about
+  # 70 ms later. A new prompt can stamp the pane in between -- a respawned
+  # Claude, or this one after `/clear` -- and when its turn also ended in
+  # between, its Stop took turn N and this turn's died reply became N+1:
+  # `wait-done --turn N` then returned the NEW prompt's answer. So the number
+  # is decided here, before the release, and written as @roost-turn-reserved
+  # in the release's own command, which tmux runs whole: no prompt can stamp
+  # the pane before it, and every appender after it starts above it
+  # (roost_record_reserved). The `.reserving.<token>` file is what tells an
+  # appender to look; it is written first, so it is there before the
+  # reservation can be, and removed last.
+  #
+  # Reserved, not filed: a refused release writes no reservation, so it still
+  # appends nothing and takes no number -- the round-1 guarantee. The record
+  # is created here if the pane has none, which is not a turn.
+  #
+  # Records off, or a record this roost cannot write: no number to reserve,
+  # and the release is the same command without it.
+  . "$SELF_DIR/lib/roost-record.sh"
+  turn="" se_res="" se_hint="" se_res_wr=""
+  roost_record_root
+  if [ -n "$ROOST_RECORD_ROOT" ] && roost_record_pane_dir "$se_boot" "$TMUX_PANE" \
+     && roost_record_ensure "$ROOST_RECORD_PANE_DIR" "$sock"; then
+    se_created="$ROOST_RECORD_CREATED"
+    se_hint="$ROOST_RECORD_PANE_DIR/replies/.reserving.$se_tok"
+    if { : > "$se_hint"; } 2>/dev/null; then
+      # Above the newest turn, and above a reservation another SessionEnd
+      # holds on this pane: two reserve two numbers.
+      roost_record_scan "$ROOST_RECORD_PANE_DIR/replies"
+      se_res=$((ROOST_RECORD_MAX + 1))
+      roost_record_reserved "$ROOST_RECORD_PANE_DIR" "$sock"
+      if [ -n "$ROOST_RECORD_RESERVED" ] && [ "$ROOST_RECORD_RESERVED" -ge "$se_res" ]; then
+        se_res=$((ROOST_RECORD_RESERVED + 1))
+      fi
+      se_res_wr=" ; set-option -p -t $TMUX_PANE @roost-turn-reserved $se_res"
+    else
+      se_hint=""
+    fi
+  fi
+  # The old pointer goes in the release: it names an earlier turn's file.
+  tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+    "#{&&:#{==:#{@agent_state},working},#{&&:#{==:#{@agent_since},$se_since},#{&&:#{==:#{@roost-background},$se_bg},#{==:#{@roost-background-session},$se_own}}}}" \
+    "set-option -pu -t $TMUX_PANE @agent_state ; set-option -pu -t $TMUX_PANE @roost-reply-turn ; set-option -pu -t $TMUX_PANE @roost-background ; set-option -pu -t $TMUX_PANE @roost-background-types ; set-option -pu -t $TMUX_PANE @roost-background-session ; set-option -pu -t $TMUX_PANE @roost-transcript ; set-option -p -t $TMUX_PANE @roost-ended '$se_since $se_outcome' ; set-option -p -t $TMUX_PANE @roost-session-ended '$se_since by=$se_tok'$se_res_wr" \
+    2>/dev/null || true
+  # Landed by this call: the token only this call wrote. That alone decides
+  # whether the turn is filed. The rest of the read says whether the release
+  # is still the pane's: a new prompt in between stamps working and clears
+  # @roost-ended, and then the release was SUPERSEDED, not refused -- the
+  # turn it ended is still filed, under the number it reserved, and only
+  # what belongs to the newer turn (the pointer, the event line) is left
+  # alone. (The first version read all three as one, so a prompt landing
+  # before the read-back made a successful release look refused and the
+  # ended turn was never filed: flock round 2, reproduced.)
+  se_now="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}|#{@roost-ended}|#{@roost-session-ended}' 2>/dev/null || true)"
+  if [ "${se_now##*|}" != "$se_since by=$se_tok" ]; then
+    [ -z "$se_hint" ] || rm -f "$se_hint" 2>/dev/null || true
+    exit 0
+  fi
+  se_ours=0
+  [ "$se_now" != "|$se_since $se_outcome|$se_since by=$se_tok" ] || se_ours=1
+  if [ -n "$se_res" ]; then
+    # A plain assignment, never `ROOST_RECORD_AT=N roost_record_...`: bash
+    # exports a prefix assignment to a function's children for the length of
+    # the call, and a hook those children start would then file at N too.
+    ROOST_RECORD_AT="$se_res"
+    se_ok=0
+    roost_record_append_outcome "$ROOST_RECORD_PANE_DIR" "$sock" "$se_outcome" "$se_reply" && se_ok=1
+    ROOST_RECORD_AT=""
+    if [ "$se_ok" = 1 ]; then
+      turn="$ROOST_RECORD_TURN"
+      [ -z "$se_reply" ] || roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$se_reply" || true
+      # The append ran with the record already made, so the once-per-pane
+      # sweep it ties to creation is run here instead.
+      [ "$se_created" != 1 ] || roost_record_sweep
+    fi
+  fi
+  # One command, two tests. The pointer names the new turn file only when
+  # there is a reply for it to go with, and only while this call's release is
+  # still the pane's: a new prompt in between stamps working and owns the
+  # reply that comes next. The reservation goes once the turn is filed, or
+  # could not be, and only while it is still this call's.
+  se_fin=()
+  if [ -n "$turn" ] && [ -n "$se_reply" ]; then
+    se_fin=(if-shell -F -t "$TMUX_PANE" \
+      "#{&&:#{==:#{@agent_state},},#{==:#{@roost-session-ended},$se_since by=$se_tok}}" \
+      "set-option -p -t $TMUX_PANE @roost-reply-turn $turn")
+  fi
+  if [ -n "$se_res" ]; then
+    [ "${#se_fin[@]}" = 0 ] || se_fin+=(';')
+    se_fin+=(if-shell -F -t "$TMUX_PANE" "#{==:#{@roost-turn-reserved},$se_res}" \
+      "set-option -pu -t $TMUX_PANE @roost-turn-reserved")
+  fi
+  [ "${#se_fin[@]}" = 0 ] || tmux -S "$sock" "${se_fin[@]}" 2>/dev/null || true
+  [ -z "$se_hint" ] || rm -f "$se_hint" 2>/dev/null || true
+  # The event line (#98) reads the pane at exit, which after a superseded
+  # release shows the NEWER turn's state: a line written then would pair
+  # this turn's number with that turn's state, so none is written. The newer
+  # turn's own hooks write its lines.
+  if [ "$se_ours" = 1 ]; then
+    . "$SELF_DIR/lib/roost-events.sh" || true
+    roost_events_arm "$sock" "$TMUX_PANE" working "" 0 0 "$turn" || true
+  fi
+  tmux -S "$sock" refresh-client -S 2>/dev/null || true
+  exit 0
+fi
+
 # Normalise: anything unrecognised is idle.
 case "$state" in blocked|working|done|error) ;; *) state="idle" ;; esac
 
@@ -388,7 +672,15 @@ if [ "$stop_hook" = 1 ] && [ "$state" = "done" ]; then
     # says why a second check is kept). A `session_crons` entry is NOT a
     # hold: a scheduled wake-up is owned here but is not running now (§3.1,
     # case 4; measured: `background_tasks` stays `[]` beside it).
-    reply="" fields="" bg_verdict=""
+    #
+    # A second line, between the verdict and the reply, is the payload's
+    # `session_id` -- 1-64 of [A-Za-z0-9_-], or empty -- which a held Stop
+    # writes beside its hold record as the session that OWNS the hold
+    # (@roost-background-session, #188): the SessionEnd block releases a
+    # hold only for the session named there. Measured on 2.1.310: the Stop,
+    # UserPromptSubmit and SessionEnd payloads of one session carry the same
+    # id, byte-equal.
+    reply="" fields="" bg_verdict="" stop_sid=""
     if command -v python3 >/dev/null 2>&1; then
       fields="$(printf '%s' "$payload" | python3 -c '
 import sys, json
@@ -421,7 +713,11 @@ if isinstance(d, dict):
                     if t not in kinds:
                         kinds.append(t)
                 verdict = "hold %d %s" % (len(run), ",".join(kinds))
-sys.stdout.write(verdict + "\n" + reply)' 2>/dev/null || true)"
+sid = d.get("session_id") if isinstance(d, dict) else None
+SID = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+if not (isinstance(sid, str) and 0 < len(sid) <= 64 and all(c in SID for c in sid)):
+    sid = ""
+sys.stdout.write(verdict + "\n" + sid + "\n" + reply)' 2>/dev/null || true)"
     elif command -v jq >/dev/null 2>&1; then
       # \A and \z, not ^ and $: in jq, $ also matches before a trailing
       # newline (the StopFailure reader below documents the trap).
@@ -437,11 +733,18 @@ sys.stdout.write(verdict + "\n" + reply)' 2>/dev/null || true)"
                       else "?" end] | unique | join(","))
              end
          end),
+        (if type == "object" and (.session_id | type) == "string" and (.session_id | test("\\A[A-Za-z0-9_-]{1,64}\\z")) then .session_id else "" end),
         (if type == "object" and (.last_assistant_message | type) == "string" then .last_assistant_message else "" end)' \
         2>/dev/null || true)"
     fi
     bg_verdict="${fields%%$'\n'*}"
+    case "$fields" in *$'\n'*) fields="${fields#*$'\n'}" ;; *) fields="" ;; esac
+    stop_sid="${fields%%$'\n'*}"
     case "$fields" in *$'\n'*) reply="${fields#*$'\n'}" ;; *) reply="" ;; esac
+    # Checked again for the reason `type` is: it goes into a tmux option, and
+    # into the SessionEnd block's format (#188).
+    case "$stop_sid" in *[!A-Za-z0-9_-]*) stop_sid="" ;; esac
+    [ "${#stop_sid}" -le 64 ] || stop_sid=""
     bg_count="" bg_types=""
     case "$bg_verdict" in
       "hold "*)
@@ -519,6 +822,17 @@ EOF
       else
         bg_wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-background-types)
       fi
+      # The hold's OWNER (#188), "<@agent_since> <session_id>", in the same
+      # command as the record it owns, so the two are never out of step. It
+      # is what the SessionEnd block matches, and why that block cannot be
+      # fooled by a record that went stale: whichever session holds the pane
+      # wrote it, at the Stop that held. With no id to write, it is unset,
+      # and no SessionEnd can release this hold -- the safe direction.
+      if [ -n "$stop_sid" ]; then
+        bg_wr+=(';' set-option -p -t "$TMUX_PANE" -F @roost-background-session "#{@agent_since} $stop_sid")
+      else
+        bg_wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-background-session)
+      fi
       # The pointer names a turn file; a main reply has none yet, and a
       # pointer left from the previous turn must not pair with this reply
       # (roost_record_match would refuse it anyway, since the sidecar holds
@@ -594,7 +908,9 @@ EOF
       # types in this same command: a reader that sees the final reply must
       # not also see a hold record that says the main reply is still the
       # answer. An absent key clears too -- an older Claude never set one,
-      # and the unset of an option that is not set is not an error.
+      # and the unset of an option that is not set is not an error. The
+      # hold's owner (@roost-background-session, #188) goes with them: it
+      # names the session a hold belongs to, and there is no hold left.
       if [ "$reply_from_pane" = 1 ]; then
         reply_enc="$(roost_reply_escape "$reply")"
       else
@@ -606,13 +922,15 @@ EOF
           set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
           set-option -pu -t "$TMUX_PANE" @roost-background-types \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background-session \; \
           show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
         roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$stored" || true
       else
         tmux -S "$sock" set-option -p -t "$TMUX_PANE" @roost-reply \
           "$reply_enc" \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
-          set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
+          set-option -pu -t "$TMUX_PANE" @roost-background-types \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background-session 2>/dev/null || true
       fi
     elif [ "$release_empty" = 1 ]; then
       # A held turn released with no reply anywhere (above): ONE empty turn
@@ -632,11 +950,13 @@ EOF
         tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
           set-option -p -t "$TMUX_PANE" @roost-reply-turn "$turn" \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
-          set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
+          set-option -pu -t "$TMUX_PANE" @roost-background-types \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background-session 2>/dev/null || true
       else
         tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
           set-option -pu -t "$TMUX_PANE" @roost-background \; \
-          set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
+          set-option -pu -t "$TMUX_PANE" @roost-background-types \; \
+          set-option -pu -t "$TMUX_PANE" @roost-background-session 2>/dev/null || true
       fi
     else
       # This turn ENDED and produced nothing to record. Clearing is not
@@ -665,10 +985,12 @@ EOF
       # Guarded by the same `--stop-hook`, `done` and `[ ! -t 0 ]` conditions
       # as the write above, so a human typing `roost state done` by hand, or
       # any PostToolUse call, can never wipe a recorded reply on the way past.
-      # The hold record goes with it: this is a releasing Stop (#97).
+      # The hold record goes with it, and its owner: this is a releasing
+      # Stop (#97).
       tmux -S "$sock" set-option -pu -t "$TMUX_PANE" @roost-reply \; \
         set-option -pu -t "$TMUX_PANE" @roost-background \; \
-        set-option -pu -t "$TMUX_PANE" @roost-background-types 2>/dev/null || true
+        set-option -pu -t "$TMUX_PANE" @roost-background-types \; \
+        set-option -pu -t "$TMUX_PANE" @roost-background-session 2>/dev/null || true
     fi
   fi
 elif [ "$stop_hook" = 1 ] && [ "$state" = "error" ] && [ ! -t 0 ]; then
@@ -1072,23 +1394,41 @@ fi
 # @agent_since. A UserPromptSubmit on a pane that already reads working is a
 # repeat and bails before the write, which is right: the turn it belongs to
 # has a record already.
-prompt_transcript="" prompt_payload=0
+#
+# The same read takes the payload's `session_id` (#188), 1-64 of
+# [A-Za-z0-9_-] or empty, as a second line. It is used in one place only:
+# a prompt that reaches a pane ALREADY held by background work (below, at
+# the unchanged-state bail) names its session as the hold's owner, because
+# that prompt may be a NEW session's -- after `respawn-pane -k` the old
+# Claude's SessionEnd lands seconds later, and must not release the new
+# one's turn.
+prompt_transcript="" prompt_payload=0 prompt_sid=""
 if [ "$prompt_hook" = 1 ] && [ ! -t 0 ]; then
   payload="$(cat 2>/dev/null || true)"
   if [ -n "$payload" ]; then
     prompt_payload=1
+    prompt_fields=""
     if command -v python3 >/dev/null 2>&1; then
-      prompt_transcript="$(printf '%s' "$payload" | python3 -c '
+      prompt_fields="$(printf '%s' "$payload" | python3 -c '
 import sys, json
 try:
     d = json.load(sys.stdin)
 except Exception:
     d = {}
 p = d.get("transcript_path") if isinstance(d, dict) else None
-sys.stdout.write(p if isinstance(p, str) and "\n" not in p else "")' 2>/dev/null || true)"
+s = d.get("session_id") if isinstance(d, dict) else None
+SID = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+if not (isinstance(s, str) and 0 < len(s) <= 64 and all(c in SID for c in s)):
+    s = ""
+sys.stdout.write((p if isinstance(p, str) and "\n" not in p else "") + "\n" + s)' 2>/dev/null || true)"
     elif command -v jq >/dev/null 2>&1; then
-      prompt_transcript="$(printf '%s' "$payload" | jq -r 'if type == "object" and (.transcript_path | type) == "string" and ((.transcript_path | test("\n")) | not) then .transcript_path else "" end' 2>/dev/null || true)"
+      prompt_fields="$(printf '%s' "$payload" | jq -r '(if type == "object" and (.transcript_path | type) == "string" and ((.transcript_path | test("\n")) | not) then .transcript_path else "" end),
+        (if type == "object" and (.session_id | type) == "string" and (.session_id | test("\\A[A-Za-z0-9_-]{1,64}\\z")) then .session_id else "" end)' 2>/dev/null || true)"
     fi
+    prompt_transcript="${prompt_fields%%$'\n'*}"
+    case "$prompt_fields" in *$'\n'*) prompt_sid="${prompt_fields#*$'\n'}" ;; esac
+    case "$prompt_sid" in *[!A-Za-z0-9_-]*) prompt_sid="" ;; esac
+    [ "${#prompt_sid}" -le 64 ] || prompt_sid=""
     case "$prompt_transcript" in /*) ;; *) prompt_transcript="" ;; esac
     case "$prompt_transcript" in *$'\t'*|*$'\n'*|*';') prompt_transcript="" ;; esac
   fi
@@ -1102,13 +1442,16 @@ fi
 # matching and `read` called the turn's own main reply stale and final
 # (flock round 1 on #95/#97, reproduced). tmux makes the comparison and the
 # rewrite inside the stamp's own command, so nothing can land between them;
-# a record from another stamp, or none, is left exactly as it is. Placed
+# a record from another stamp, or none, is left exactly as it is. The hold's
+# owner (@roost-background-session, #188) is "<stamp> <session_id>" and moves
+# the same way, so a hold carried through a dialog keeps the session that the
+# SessionEnd block must match. Placed
 # BEFORE the @agent_since write in that command, so it compares with the old
 # stamp. NOW is digits, so it cannot break the format.
 hold_carry() {
   local opt
   HOLD_WR=()
-  for opt in @roost-background @roost-background-types; do
+  for opt in @roost-background @roost-background-types @roost-background-session; do
     HOLD_WR+=(if-shell -F -t "$TMUX_PANE" "#{==:#{s/ .*//:#{$opt}},#{@agent_since}}"
       "set-option -p -t $TMUX_PANE -F $opt '$1 #{s/^[^ ]* //:#{$opt}}'" ';')
   done
@@ -1345,6 +1688,42 @@ if [ "$state" = "$prev" ]; then
   if [ "$state" = "blocked" ]; then
     roost_stamp_blocked "$(date +%s)"
   fi
+  # A prompt on a pane that already reads working, while that pane is HELD
+  # by background work for its stamp (#188). This is the bail the
+  # transcript comment above calls a repeat, and for one session it is.
+  # After `respawn-pane -k` it is not: a NEW Claude's first prompt lands on
+  # the old one's held pane, stamps nothing (the badge is unchanged), and
+  # the old Claude's SessionEnd arrives about 4 s after the respawn
+  # (measured, docs/known-gaps.md). If the hold still named the old session
+  # then, that SessionEnd released the new session's turn as died (flock
+  # round 1 on #188, reproduced). So the prompt names ITS session as the
+  # owner, in one tmux command that tests the hold first; a prompt whose
+  # payload had no usable id unsets the owner instead, and then no
+  # SessionEnd can release the hold. A pane that is not held is left as it
+  # is. $prompt_sid is [A-Za-z0-9_-], so it cannot break the format.
+  #
+  # The transcript record moves with the owner, in the same command, when
+  # the payload names one: after a respawn it still named the OLD session's
+  # file, and the interrupt recovery (scripts/lib/roost-unblock.sh) then
+  # read the wrong transcript for an Esc in the new one and left the pane
+  # working until the next Stop (flock round 2 on #188). The path goes
+  # through -F for the stamp, so each `#` in it is doubled to stay a `#`; a
+  # path with a `'` would end the quoted command early and is left out, the
+  # record then staying as it was.
+  if [ "$prompt_hook" = 1 ] && [ "$prompt_payload" = 1 ]; then
+    if [ -n "$prompt_sid" ]; then
+      own_wr="set-option -p -t $TMUX_PANE -F @roost-background-session '#{@agent_since} $prompt_sid'"
+    else
+      own_wr="set-option -pu -t $TMUX_PANE @roost-background-session"
+    fi
+    case "$prompt_transcript" in
+      ''|*"'"*) ;;
+      *) own_wr="$own_wr ; set-option -p -t $TMUX_PANE -F @roost-transcript '#{@agent_since} ${prompt_transcript//\#/##}'" ;;
+    esac
+    tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+      "#{&&:#{==:#{@agent_state},working},#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}}" \
+      "$own_wr" 2>/dev/null || true
+  fi
   exit 0
 fi
 
@@ -1561,6 +1940,12 @@ else
     if [ "$held" = 1 ]; then
       held_wr=" ; set-option -p -t $TMUX_PANE @roost-background '$now $bg_count'"
       [ -n "$bg_types" ] && held_wr="$held_wr ; set-option -p -t $TMUX_PANE @roost-background-types '$now $bg_types'"
+      # The owner moves with the record (#188); $stop_sid is [A-Za-z0-9_-].
+      if [ -n "$stop_sid" ]; then
+        held_wr="$held_wr ; set-option -p -t $TMUX_PANE @roost-background-session '$now $stop_sid'"
+      else
+        held_wr="$held_wr ; set-option -pu -t $TMUX_PANE @roost-background-session"
+      fi
     fi
     # A Stop while a dialog is OPEN (#91). ONE tmux command, and the condition is
     # evaluated by tmux in the same command as the writes, so no other hook can

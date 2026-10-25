@@ -1,0 +1,8 @@
+{
+ "session_id": "00000000-0000-4000-8000-000000000001",
+ "transcript_path": "/tmp/roost-fixture/home/.claude/projects/-tmp-roost-fixture-proj/00000000-0000-4000-8000-000000000001.jsonl",
+ "cwd": "/tmp/roost-fixture/proj",
+ "prompt_id": "00000000-0000-4000-8000-000000000003",
+ "hook_event_name": "SessionEnd",
+ "reason": "prompt_input_exit"
+}

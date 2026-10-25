@@ -99,6 +99,15 @@ assert_eq "$claude_out" "$bare_out" \
 # They keep a count on the pane and never a badge. Re-captured from
 # `roost hooks claude` and diffed: six added JSON lines, four prose lines,
 # one changed line, and no existing byte moved.
+#
+# One more for #188, claude only: SessionEnd, appended after SubagentStop,
+# running `--session-end-hook`, which releases a pane background work holds
+# at working when Claude exits first. Re-captured the same way: three added
+# JSON lines, five prose lines, "the other nine" becoming "the other ten",
+# and no existing byte moved. Then round 1 of its review: `"timeout": 10` on
+# that entry (Claude's SessionEnd default is 1.5 s), and the prose line on
+# what it records grew to say `/clear` and `/resume` record interrupted:
+# one changed JSON line, and two prose lines became three.
 expected_claude="$(sed "s|@@ROOST_HOME@@|$HERE|g" "$HERE/tests/fixtures/hooks-claude.txt")"
 assert_eq "$claude_out" "$expected_claude" \
   "'roost hooks claude' is byte-identical to the fixture (d58ba14, plus #38's re-capture)"
