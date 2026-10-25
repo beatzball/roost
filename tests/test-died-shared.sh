@@ -399,6 +399,180 @@ assert_eq "$(opt "$p" @roost-turn-reserved)" "" "stale: the reservation is relea
 ev="$(cat "$ROOST_RECORD_DIR"/events/* 2>/dev/null | grep "\"pane\":\"$p\"" | grep '"to":"working"' | tail -1)"
 assert_contains "$ev" '"turn":2' "stale: the restamp leaves an event line for the replacement's turn 2 ($ev)"
 T kill-window -t "$(win_of "$p")"
+
+# --- a replacement over a dead BLOCKED turn, or one that starts blocked ------------
+# Fix round 3 (found by review, reproduced): the stale-job check above ran
+# only when the report's state was the state the pane read, so an agent that
+# died while BLOCKED, followed by a replacement whose first report was
+# `working`, came through as an ordinary transition. It re-recorded the job
+# and restamped, and no turn was filed: the replacement's reply took the dead
+# prompt's number, and `wait-done --turn 1` returned it. The check now runs
+# for any busy report over any busy state, so the dead turn is filed whatever
+# the replacement says first.
+#
+# agent-blocked: the stand-in agent, stamping blocked instead of working.
+# replacement-blocked: a replacement whose first report is blocked, then
+# working, then its Stop, so its turn ends done as the others' do.
+sed 's/" working </" blocked </' "$work/agent" > "$work/agent-blocked"
+cat > "$work/replacement-blocked" <<EOF
+#!/bin/sh
+ps -o pgid= -p \$\$ | tr -d ' ' >> "$work/jobs"
+"$SINK" blocked </dev/null
+"$SINK" working </dev/null
+printf '%s' '{"last_assistant_message":"NEW_REPLY","background_tasks":[]}' | "$SINK" done --stop-hook
+echo done > "$work/replacement.done"
+EOF
+chmod +x "$work/agent-blocked" "$work/replacement-blocked"
+# stale_case OLD FIRST: the dead agent's last stamp is OLD, the
+# replacement's first report is FIRST, and nobody looks in between.
+stale_case() {
+  local tag="stale, $1 to $2" cmd="$work/agent" rcmd="$work/replacement"
+  [ "$1" != blocked ] || cmd="$work/agent-blocked"
+  [ "$2" != blocked ] || rcmd="$work/replacement-blocked"
+  p="$(shell_pane)"
+  type_cmd "$p" "$cmd"; wait_state "$p" "$1"; wait_record "$p"
+  assert_eq "$(pstate "$p")" "$1" "$tag: control: the dead agent's last stamp is $1"
+  kill -9 -- "-$(pgid_of_record "$p")"; wait_shell_fg "$p"
+  rm -f "$work/replacement.done"
+  type_cmd "$p" "$rcmd"
+  replacement_done; assert_true $? "$tag: control: the replacement ran with nobody looking"
+  "$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/s1.json" 2>/dev/null; rc=$?
+  assert_eq "$rc" "2" "$tag: wait-done --turn 1 is the death, exit 2"
+  assert_contains "$(cat "$work/s1.json")" '"outcome":"died"' "$tag: ...outcome died"
+  "$ROOST" read --turn 1 "$p" >/dev/null 2>"$work/s1.err"
+  assert_contains "$(cat "$work/s1.err")" "exited inside its shell" "$tag: read --turn 1 says the agent exited inside its shell"
+  "$ROOST" wait-done --json --turn 2 "$p" 2 >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" "0" "$tag: wait-done --turn 2 is the replacement's turn, exit 0"
+  assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEW_REPLY" "$tag: the replacement's reply is turn 2"
+  assert_eq "$(opt "$p" @roost-turn-reserved)" "" "$tag: the reservation is released"
+  T kill-window -t "$(win_of "$p")"
+}
+stale_case blocked working
+stale_case blocked blocked
+stale_case working blocked
+
+# --- the claim and a clear at the same pane, forced -------------------------------
+# Two schedules where the sink's claim (scripts/roost-agent-state) and the
+# clear (roost_died_pane) run at once. Each is forced with a tmux stand-in on
+# the REPLACEMENT's PATH only: it holds one named sink command until this
+# test writes $work/go, so the clear, run here through the shipped library as
+# in the gap cases, lands at the one point the schedule names. The stand-in
+# holds once (the .held marker) and gives up after ~5s, so a schedule that
+# never arrives costs a timeout, not a hang.
+real_tmux="$(command -v tmux)"
+# hold_shim NAME PATTERN -> $work/NAME/tmux, holding the first call whose
+# arguments match the case PATTERN
+hold_shim() {
+  mkdir -p "$work/$1"
+  cat > "$work/$1/tmux" <<EOF
+#!/bin/sh
+case "\$*" in
+  $2)
+    if [ ! -e "$work/$1.held" ]; then
+      : > "$work/$1.held"
+      n=100; while [ ! -e "$work/go" ] && [ "\$n" -gt 0 ]; do sleep 0.05; n=\$((n - 1)); done
+    fi ;;
+esac
+exec "$real_tmux" "\$@"
+EOF
+  chmod +x "$work/$1/tmux"
+  sed "2i\\
+PATH=\"$work/$1:\$PATH\"; export PATH
+" "$work/replacement" > "$work/replacement-$1"
+  chmod +x "$work/replacement-$1"
+}
+# wait_file FILE -> 0 once FILE exists, up to ~5s
+wait_file() {
+  local n=100; while [ ! -e "$1" ] && [ "$n" -gt 0 ]; do sleep 0.05; n=$((n - 1)); done
+  [ -e "$1" ]
+}
+replies_of() { ls "$ROOST_RECORD_DIR"/*/"${p#%}"/replies 2>/dev/null | tr '\n' ' '; }
+
+# A REFUSED claim leaves the pane as it found it (fix round 3; found by
+# review, reproduced). The sink reads no reservation and reserves N; a clear
+# lands first and reserves the same N; the claim is refused, because the
+# clear unset the badge. The claim's release ran whether it landed or not,
+# so it unset the CLEAR's reservation while the clear was still filing; the
+# replacement's Stop then took N with its own reply, and the death went to
+# N+1. The release now runs only for a claim whose token read back.
+hold_shim claimhold '*if-shell*@roost-unblocked*'
+p="$(dead_agent)"; rm -f "$work/replacement.done" "$work/go" "$work/claimhold.held"
+(
+  ROOST_HOME="$HERE"
+  . "$HERE/scripts/lib/roost-unblock.sh"
+  eval "$(sed -n '/^job_gone() {$/,/^}$/p' "$ROOST")"
+  eval "$(sed -n '/^record_for() {$/,/^}$/p' "$ROOST")"
+  injected=0
+  t() {
+    if [ "$1" = if-shell ] && [ "$injected" = 0 ]; then
+      injected=1
+      type_cmd "$p" "$work/replacement-claimhold"
+      wait_file "$work/claimhold.held"
+    fi
+    tmux -S "$sock" "$@"
+  }
+  eval "$(declare -f roost_unblock_record_turn | sed '1s/roost_unblock_record_turn/real_record_turn/')"
+  roost_unblock_record_turn() {
+    opt "$p" @roost-turn-reserved > "$work/refused.reserved"
+    : > "$work/go"
+    replacement_done
+    real_record_turn "$@"
+  }
+  roost_died_pane "$p"
+)
+[ -e "$work/claimhold.held" ]; assert_true $? "refused: control: the sink's claim was held for the clear"
+assert_eq "$(cat "$work/refused.reserved" 2>/dev/null)" "1" "refused: control: the clear landed first and reserved turn 1"
+replacement_done; assert_true $? "refused: control: the replacement finished while the clear was filing"
+"$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/r1.json" 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "refused: wait-done --turn 1 is the death, exit 2 (replies: $(replies_of))"
+case "$(cat "$work/r1.json")" in *NEW_REPLY*) r=1 ;; *) r=0 ;; esac
+assert_true "$r" "refused: ...not the replacement's reply"
+assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEW_REPLY" "refused: the replacement's reply is turn 2"
+assert_eq "$(opt "$p" @roost-turn-reserved)" "" "refused: the reservation is released, by the clear that wrote it"
+T kill-window -t "$(win_of "$p")"
+
+# The claim unsets the job record (fix round 3; found by review,
+# reproduced). A clear that passed job_gone before the replacement was typed
+# compares the state, the stamp and the job record; if its one tmux command
+# lands after the claim and before the transition path re-records the job,
+# the state and the stamp are still the dead agent's. Without the unset the
+# job record matched too, and the clear unset the LIVE replacement's badge
+# and filed a second death; the replacement's reply became turn 3.
+hold_shim jobhold '*set-option*@roost-agent-job\ [0-9]*'
+p="$(dead_agent)"; rm -f "$work/replacement.done" "$work/go" "$work/jobhold.held"
+(
+  ROOST_HOME="$HERE"
+  . "$HERE/scripts/lib/roost-unblock.sh"
+  eval "$(sed -n '/^job_gone() {$/,/^}$/p' "$ROOST")"
+  eval "$(sed -n '/^record_for() {$/,/^}$/p' "$ROOST")"
+  injected=0
+  t() {
+    local r=0
+    if [ "$1" = if-shell ] && [ "$injected" = 0 ]; then
+      injected=1
+      type_cmd "$p" "$work/replacement-jobhold"
+      wait_file "$work/jobhold.held"
+      opt "$p" @roost-unblocked > "$work/jobhold.claim"
+      tmux -S "$sock" "$@" || r=$?
+      opt "$p" @agent_state > "$work/jobhold.state"
+      : > "$work/go"
+      return "$r"
+    fi
+    tmux -S "$sock" "$@"
+  }
+  roost_died_pane "$p"
+); rc=$?
+[ -e "$work/jobhold.held" ]; assert_true $? "job unset: control: the re-record was held for the clear"
+[ -s "$work/jobhold.claim" ]; assert_true $? "job unset: control: the claim landed before the clear"
+assert_eq "$rc" "1" "job unset: the clear is refused"
+assert_eq "$(cat "$work/jobhold.state" 2>/dev/null)" "working" "job unset: ...and the live replacement's badge is left"
+replacement_done; assert_true $? "job unset: control: the replacement finished"
+"$ROOST" wait-done --json --turn 1 "$p" 2 >"$work/j1.json" 2>/dev/null; rc=$?
+assert_eq "$rc" "2" "job unset: wait-done --turn 1 is the death, exit 2"
+"$ROOST" wait-done --json --turn 2 "$p" 2 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "job unset: wait-done --turn 2 is the replacement's turn, exit 0 (replies: $(replies_of))"
+assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEW_REPLY" "job unset: the replacement's reply is turn 2"
+T kill-window -t "$(win_of "$p")"
 T set-environment -g ROOST_RECORD_DIR ""
 export ROOST_RECORD_DIR=""
 

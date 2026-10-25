@@ -1982,8 +1982,18 @@ fi
 # #54; a container that cannot see the pane's process) is never stale, and a
 # reused pgid can only make a dead job look alive -- the old behaviour, never
 # a new false restamp.
+#
+# Busy onto busy, not the SAME state onto itself (fix round 3; found by
+# review, reproduced). An agent that died while blocked, followed by a
+# replacement whose first report was `working`, was an ordinary transition
+# here: it re-recorded the job and restamped, and the claim below never ran,
+# so the replacement's first reply took the dead turn's number. Whatever the
+# replacement says first, the turn the pane read busy is the dead agent's,
+# and it is filed. The added cost is the same builtin `kill -0`, on a
+# blocked/working transition only, which already pays the walk and the
+# writes below; the hot path, an unchanged `working`, is unchanged.
 stale_job=0
-if [ "$state" = "$prev" ] && { [ "$state" = working ] || [ "$state" = blocked ]; }; then
+if { [ "$state" = working ] || [ "$state" = blocked ]; } && { [ "$prev" = working ] || [ "$prev" = blocked ]; }; then
   sj="${raw_job#j}"; sj="${sj%%:*}"
   case "$sj" in
     ''|*[!0-9]*) ;;
@@ -2024,6 +2034,14 @@ fi
 # and the clear has filed the turn. The token read back says this call
 # claimed it; a second report racing this one finds the job gone and files
 # nothing.
+#
+# A REFUSED claim leaves the pane as it found it, the reservation included
+# (fix round 3; found by review, reproduced). Both read "no reservation" and
+# picked the same number when a clear landed between this call's read and
+# its claim; the release then ran for a claim that had not landed, unset the
+# CLEAR's reservation while the clear was still filing, and the
+# replacement's Stop took the number. The SessionEnd block and the clear
+# both release only what they landed; so does this.
 #
 # Records off, or a record this roost cannot write: the claim still runs,
 # with no number, and nothing is filed. Fails soft: a claim or a file that
@@ -2080,15 +2098,17 @@ if [ "$stale_job" = 1 ]; then
         "#{&&:#{==:#{@agent_state},$prev},#{&&:#{==:#{@agent_since},$sj_since},#{==:#{@roost-agent-job},$sj_job}}}" \
         "set-option -pu -t $TMUX_PANE @roost-agent-job ; set-option -pu -t $TMUX_PANE @roost-background ; set-option -pu -t $TMUX_PANE @roost-background-types ; set-option -pu -t $TMUX_PANE @roost-background-session ; set-option -p -t $TMUX_PANE @roost-unblocked '$sj_now since=$sj_since by=$sj_tok'$sj_res_wr" \
         2>/dev/null || true
-      if [ "$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-unblocked 2>/dev/null || true)" = "$sj_now since=$sj_since by=$sj_tok" ] \
-         && [ -n "$sj_res" ]; then
+      sj_landed=0
+      [ "$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-unblocked 2>/dev/null || true)" != "$sj_now since=$sj_since by=$sj_tok" ] \
+        || sj_landed=1
+      if [ "$sj_landed" = 1 ] && [ -n "$sj_res" ]; then
         # A plain assignment, for the reason the SessionEnd block gives.
         ROOST_RECORD_AT="$sj_res"
         roost_record_append_outcome "$ROOST_RECORD_PANE_DIR" "$sock" died_in_shell "$sj_reply" || true
         ROOST_RECORD_AT=""
         [ "$sj_created" != 1 ] || roost_record_sweep
       fi
-      if [ -n "$sj_res" ]; then
+      if [ "$sj_landed" = 1 ] && [ -n "$sj_res" ]; then
         tmux -S "$sock" if-shell -F -t "$TMUX_PANE" "#{==:#{@roost-turn-reserved},$sj_res}" \
           "set-option -pu -t $TMUX_PANE @roost-turn-reserved" 2>/dev/null || true
       fi

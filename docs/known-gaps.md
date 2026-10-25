@@ -1713,9 +1713,27 @@ looks at it. `tests/test-died-shared.sh` pins each of these. What it leaves:
   the recorded job IS the agent's: a harness that handed the terminal to a
   child job at a busy stamp and kept running after that child ended would
   have its live turn filed as died. No harness has been measured doing
-  that. The claim's job-record unset, which keeps a concurrent clear from
-  filing the turn twice, has no test that can fail without it: job_gone
-  already refuses while the replacement holds the terminal.
+  that. This filing raised what a wrong stale verdict costs: before it, a
+  live agent whose recorded job looked dead (that harness shape, or a
+  `kill -0` refused with EPERM on a group holding another user's process)
+  only got a harmless restamp; now its live turn is filed `died_in_shell`
+  and its hold released, so `wait-done --turn N` exits 2 on a turn still
+  running and the real reply lands at N+1. That is what makes a future
+  harness measurement matter. Fix round 3 (found by review, reproduced
+  both): the check now runs for any busy report over any busy state, so an
+  agent that died BLOCKED and a replacement whose first report is `working`
+  is filed too, where before only the same state onto itself was; and a
+  claim a concurrent clear refused no longer releases the clear's
+  reservation of the same number. The claim's job-record unset is needed
+  and tested: a clear that passed job_gone before the replacement was
+  typed, and whose command lands after the claim but before the transition
+  path re-records the job, matched on all three fields without it, unset
+  the live replacement's badge and filed a second death
+  (`tests/test-died-shared.sh`, "job unset"). Still open: the sink's claim
+  writes no `died` line to the event log (only the clear does, through
+  roost_events_unblocked, which needs an empty badge), so after a
+  replacement that started before anyone looked, `roost events` shows two
+  `working` lines and never the death. The turn record has it.
 - **A replacement agent at the same prompt wins against the clear** (fix
   round 1; found by review, reproduced). A new agent typed at the prompt
   after the first one died, reporting `working` onto a pane that still read
