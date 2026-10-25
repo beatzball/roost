@@ -81,6 +81,33 @@ reset() { : > "$NOTES"; }
 next_second() { python3 -c 'import time; s = int(time.time()) + 1; time.sleep(max(0, s + 0.02 - time.time())); print(s)'; }
 at() { python3 -c 'import sys, time; time.sleep(max(0, eval(sys.argv[1]) - time.time()))' "$1"; }
 since() { tmux -S "$s" show-options -pqv -t "$pane" @agent_since; }
+# now -> the time, to the microsecond. Cases 9 to 11 take their deadlines
+# from when each hook really ran, not from where in the second it was meant
+# to run: on a loaded CI runner one hook took more than 0.25 s to reach its
+# stamp, and fixed offsets from S carried that slip into the asserts.
+now() { python3 -c 'import time; print(repr(time.time()))'; }
+# count_by N T -- poll until N pings or the absolute time T, whichever is
+# first. Unlike until_count it ends AT T, so a case can read the count just
+# before a deadline it must not reach.
+count_by() {
+  python3 -c '
+import sys, time
+n, end, f = int(sys.argv[1]), eval(sys.argv[2]), sys.argv[3]
+while time.time() < end and sum(1 for _ in open(f)) < n:
+    time.sleep(0.05)' "$1" "$2" "$NOTES"
+}
+# retry_once CASE -- run CASE; if its setup missed (it returns 1 and sets
+# MISS_WHAT / MISS_WANT / MISS_GOT), say so and run it once more in a fresh
+# second. Only a second miss fails. The setup is two hooks landing in chosen
+# seconds, which a loaded runner can push across a boundary however wide the
+# margin; a miss is not a wrong tree, so one is forgiven and reported.
+retry_once() {
+  "$1" && return 0
+  printf '  note: %s missed (%s: got [%s]), retrying once in a fresh second\n' "$1" "$MISS_WHAT" "$MISS_GOT"
+  sleep 1
+  "$1" && return 0
+  assert_eq "$MISS_GOT" "$MISS_WANT" "$MISS_WHAT"
+}
 
 FIX_DIR=/tmp/roost-codex-fixture
 UPS='{"session_id":"01a16fcc-0000-7000-8000-000000000001","turn_id":"t1","transcript_path":null,"cwd":"'"$FIX_DIR"'/work","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"go"}'
@@ -196,69 +223,109 @@ hook PostToolUse "$POST"
 
 # --- 9. two dialogs in one second: the first's child does not ping the second
 # A opens just past second S and is approved at once; B opens in the same
-# second, so on a whole-second stamp it reads as A. A's child wakes at about
-# S+2.1 with B open; B is answered at S+2.35, past A's deadline but before its
-# own (about S+2.7). B was never open for the full delay, so nothing pings.
-# The stamps are asserted equal, so a slow machine that pushed B into the next
-# second fails here instead of passing without testing the case.
+# second, so on a whole-second stamp it reads as A. A's child wakes 2 s after
+# A's hook started, with B open; B is answered after that but before B's own
+# child wakes. B was never open for the full delay, so nothing pings.
+#
+# The real times, from the code: each hook starts its child just before it
+# returns, and the child sleeps the delay and then checks. So A's child has
+# woken by ta + 2 (ta: A's hook returned) and B's cannot wake before tb + 2
+# (tb: B's hook was called). B is answered halfway between, wherever the hooks
+# really ran. B is called at S+0.45, so its stamp is still S unless the hook
+# takes 0.55 s to reach it (measured: 0.1 to 0.3 s idle; at S+0.6 a loaded run
+# missed twice in a row). Earlier would narrow the gap between the two
+# deadlines, which only makes the case test less, never fail. The stamps are
+# compared, and a B pushed into the next second is a missed setup, retried once
+# (retry_once), not a pass that tested nothing.
+# two_dialogs TAG WHAT -- the setup cases 9 and 10 share. Sets S sa sb ta tb;
+# on a miss, clears the pane, waits out both children and returns 1.
+two_dialogs() {
+  MISS_WHAT="$2"
+  S="$(next_second)"
+  hook PermissionRequest "$(perm "${1}1")"; sa="$(since)"; ta="$(now)"
+  hook PostToolUse "$POST"
+  at "$S + 0.45"
+  tb="$(now)"; hook PermissionRequest "$(perm "${1}2")"; sb="$(since)"
+  [ "$sb" = "$sa" ] && return 0
+  MISS_WANT="$sa"; MISS_GOT="$sb"
+  hook PostToolUse "$POST"
+  at "$tb + 3"
+  return 1
+}
+case_9() {
+  reset
+  two_dialogs g "setup: the two dialogs share one whole-second stamp" || return 1
+  assert_eq "$sb" "$sa" "$MISS_WHAT"
+  at "($ta + $tb) / 2 + 2"
+  assert_eq "$(count)" "0" "a dialog not yet open for the delay is not pinged by the one before it"
+  hook PostToolUse "$POST"
+  # B's child has woken by now (B's hook returned well before tb + 1).
+  at "$tb + 4"
+  assert_eq "$(count)" "0" "two dialogs in one second, both answered inside their delay, ping nothing"
+}
 tmux -S "$s" set-option -g @roost-notify-delay 2
 sleep 1
-reset
-S="$(next_second)"
-hook PermissionRequest "$(perm g1)"; sa="$(since)"
-hook PostToolUse "$POST"
-at "$S + 0.6"
-hook PermissionRequest "$(perm g2)"; sb="$(since)"
-assert_eq "$sb" "$sa" "setup: the two dialogs share one whole-second stamp"
-at "$S + 2.35"
-assert_eq "$(count)" "0" "a dialog not yet open for the delay is not pinged by the one before it"
-hook PostToolUse "$POST"
-at "$S + 4.5"
-assert_eq "$(count)" "0" "two dialogs in one second, both answered inside their delay, ping nothing"
+retry_once case_9
 
 # --- 10. the same, but the second dialog stays open: one ping, on ITS deadline
+case_10() {
+  reset
+  two_dialogs h "setup: the two dialogs share one whole-second stamp (open case)" || return 1
+  assert_eq "$sb" "$sa" "$MISS_WHAT"
+  at "($ta + $tb) / 2 + 2"
+  assert_eq "$(count)" "0" "no ping before the open dialog's own deadline"
+  until_count 1 3
+  at "$tb + 4.4"
+  assert_eq "$(count)" "1" "the dialog left open past its own deadline pings exactly once"
+  hook PostToolUse "$POST"
+}
 sleep 1
-reset
-S="$(next_second)"
-hook PermissionRequest "$(perm h1)"; sa="$(since)"
-hook PostToolUse "$POST"
-at "$S + 0.6"
-hook PermissionRequest "$(perm h2)"; sb="$(since)"
-assert_eq "$sb" "$sa" "setup: the two dialogs share one whole-second stamp (open case)"
-at "$S + 2.35"
-assert_eq "$(count)" "0" "no ping before the open dialog's own deadline"
-until_count 1 3
-at "$S + 5"
-assert_eq "$(count)" "1" "the dialog left open past its own deadline pings exactly once"
-hook PostToolUse "$POST"
+retry_once case_10
 
 # --- 11. a repeat blocked in the next second still ends in one ping -----------
 # The rest of a batch that spans a second boundary: A moves the pane to
-# blocked late in second S, and a second hook for a second dialog lands in S+1
+# blocked in second S, and a second hook for a second dialog lands in S+1
 # while the pane still reads blocked and before A's child wakes. That repeat
 # moves @agent_since. The pane has been blocked for the full delay, so one
-# ping must come, and only one -- and it comes on A's deadline (about S+2.85),
-# not the repeat's (about S+3.75): the pane has been waiting on the human since
-# A, and a repeat that restarted the wait would push every batch's ping back.
-# The repeat lands at S+1.7, still before A's child wakes, and the assert
-# reads at S+3.25: about 0.3 s after A's deadline, so a slow hook on a loaded
-# CI runner does not fail a correct tree, and about 0.5 s before the repeat's.
+# ping must come, and only one -- and it comes on A's deadline, not the
+# repeat's: the pane has been waiting on the human since A, and a repeat that
+# restarted the wait would push every batch's ping back.
+#
+# The real times, from the code: A is called just past S (next_second), so a
+# hook up to 0.95 s slow still stamps S; on CI, A called at S+0.75 once stamped
+# S+1, the repeat's second. The repeat is called at S+1.35, so it stamps S+1
+# unless it takes 0.65 s, and returns long before A's child can wake (2 s after
+# A's hook started, ta0 + 2). The repeat's own child cannot wake before tr + 2
+# (tr: the repeat was called), so the count is read by polling up to
+# tr + 1.85: A's ping, due just after ta0 + 2, has about a second to arrive, and a
+# ping on the repeat's deadline is not yet possible. If either stamp lands in
+# the wrong second, or the repeat is not back before ta0 + 2, the setup missed
+# and is retried once.
+case_11() {
+  reset
+  S="$(next_second)"
+  ta0="$(now)"; hook PermissionRequest "$(perm i1)"; sa="$(since)"
+  at "$S + 1.35"
+  tr="$(now)"; hook PermissionRequest "$(perm i2)"; sb="$(since)"; st="$(pstate)"; tr1="$(now)"
+  early="$(python3 -c 'import sys; print(1 if float(sys.argv[1]) < float(sys.argv[2]) + 2 else 0)' "$tr1" "$ta0")"
+  if [ "$sb" = "$sa" ] || [ "$early" != 1 ]; then
+    MISS_WHAT="setup: the repeat moved the stamp to the next second, before the first child woke"
+    MISS_WANT="not $sa, early 1"; MISS_GOT="$sb, early $early"
+    hook PostToolUse "$POST"
+    at "$tr1 + 3"
+    return 1
+  fi
+  assert_eq "$st" "blocked" "setup: the repeat leaves the pane blocked"
+  assert_eq ok ok "setup: the repeat moved the stamp to the next second"
+  count_by 1 "$tr + 1.85"
+  assert_eq "$(count)" "1" "the ping comes on the first entry's deadline, not the repeat's"
+  # The repeat's child has woken by tr1 + 2; a second ping would be in by now.
+  at "$tr1 + 3"
+  assert_eq "$(count)" "1" "a batch staggered across a second boundary pings exactly once"
+  hook PostToolUse "$POST"
+}
 sleep 1
-reset
-S="$(next_second)"
-at "$S + 0.75"
-hook PermissionRequest "$(perm i1)"; sa="$(since)"
-at "$S + 1.7"
-hook PermissionRequest "$(perm i2)"; sb="$(since)"
-assert_eq "$(pstate)" "blocked" "setup: the repeat leaves the pane blocked"
-[ "$sb" != "$sa" ] && assert_eq ok ok "setup: the repeat moved the stamp to the next second" \
-  || assert_eq "$sb" "not $sa" "setup: the repeat moved the stamp to the next second"
-at "$S + 3.25"
-assert_eq "$(count)" "1" "the ping comes on the first entry's deadline, not the repeat's"
-until_count 1 3
-at "$S + 5.5"
-assert_eq "$(count)" "1" "a batch staggered across a second boundary pings exactly once"
-hook PostToolUse "$POST"
+retry_once case_11
 
 # --- 12. a repeat off screen pings when the first dialog opened on screen -----
 # The first dialog opens while the human is looking at the window, so it
