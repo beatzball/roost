@@ -18,6 +18,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A pane held only by its own background work has a badge of its own
+  (#193).** When a Claude Code turn has answered but a background command,
+  agent or `Monitor` it started still runs, the pane used to read ⏳ like an
+  agent in the middle of a turn. It now reads 🔄 `background (2)` on the pane
+  border, and 🔄 on the tab, in the status-bar counts, in the `prefix a`
+  switcher and in `roost status` (`[background (2)]`). It is still `working`
+  underneath: `wait-done`, `send --when-idle` and every exit code are
+  unchanged, and `status --json` gives the count as `background`, `null`
+  when there is none or roost could not count. Each glyph set has its own
+  (`⚪` orbs, `[&]` ascii, a history icon for nerd), and
+  `@roost-glyph-background` overrides it. A config saved before this with
+  another set shows the emoji 🔄 until you re-pick your set in
+  `roost settings`; `roost doctor` says so.
+
 - **A codex dialog pings after a few seconds, and only if it is still open
   (#195).** Under codex's auto-review, its own reviewer approves most sandbox
   escalations about two seconds after the dialog fires, and roost used to ping
@@ -29,6 +43,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
   copilot and pi still ping at once, and `error` always does.
 
 ### Fixed
+
+- **A pane whose first event was a permission dialog no longer gets a bad
+  hold record (#199).** On a fresh pane, a `blocked` stamp wrote a
+  background record with no count. It then made the pane read 🔄
+  `background` while it was working, and a Stop with no reply could add an
+  empty turn file. The record is no longer written, and every reader (the
+  badges, `roost status`, `status --json`, `read` and `wait-done`) now
+  reads the same strict rule: a hold has a count above zero, or `?`, and
+  any other record is no hold.
 
 - **A Claude pane held ⏳ working by background work no longer stays working
   for ever when Claude exits (#188).** Claude fires `SessionEnd` and no

@@ -77,7 +77,7 @@ Merge it into your `~/.claude/settings.json` (under `"hooks"`). It wires:
 | `Notification` (matcher: `permission_prompt`) | 🛑 blocked |
 | `PostToolUse` (`--tool-hook`) | ⏳ working |
 | `PostToolUseFailure` (`--tool-hook`) | ⏳ working |
-| `Stop` | ✅ done |
+| `Stop` | ✅ done, or 🔄 background while work the turn started still runs ([below](#the-background-badge)) |
 | `StopFailure` | 💥 error |
 | `SubagentStart` | — (counts a subagent) |
 | `SubagentStop` | — (counts one down) |
@@ -97,6 +97,23 @@ Some of those are subtler than they look:
 **A long-running roost server needs one more step.** roost also generates a settings file of its own for the panes it opens, and it does that when the *server* starts — so a `roost` server that has been up since before the upgrade keeps handing out the old hooks even after `roost install`. `roost doctor` names that file too. `roost wiring on` regenerates it.
 
 `scripts/roost-agent-state` is a **no-op unless it runs inside a roost pane**, so it is safe in your global Claude settings — running `claude` elsewhere does nothing. It also returns early when the state is already correct, which keeps it cheap on `PostToolUse` (that fires on every single tool call, and Claude waits for the hook to exit).
+
+### The background badge
+
+A Claude Code turn can end while work it started is still running: a `run_in_background` command, a background agent, or a `Monitor`. Claude's `Stop` lists that work, and roost keeps the pane busy until the turn Claude starts by itself when the work ends. That pane shows its own badge:
+
+```
+🔄 %12 claude · background (2) 14:20
+```
+
+- **It is still `working` underneath.** `@agent_state` reads `working`, and so does `state` in `roost status --json`. `roost wait-done` keeps waiting, `roost send --when-idle` keeps holding, and every exit code is the same as for a ⏳ pane. The background job may still change files or print a result, so the pane is not free. Only what you see is different.
+- **The number is how many jobs hold the pane.** `roost status --json` gives it as `background`. When Claude's list could not be read, roost still holds the pane but has no number: the badge reads just `background`, and `background` is `null`.
+- **The hold is all or nothing.** roost keeps it on the pane as `@roost-background`, `"<stamp> N"`. Every reader takes it only when `N` is a whole number above zero with no leading zero (`2`, not `0` or `02`), or `?` for no number. Any other value is not a hold: the badge reads ⏳ `working`, `background` is `null`, and `read` treats the reply on the pane as one from an earlier turn. The hook never writes such a value, so this only matters if the option is damaged or set by hand.
+- **It shows everywhere the badge does:** the pane border, the window tab (after ⏳ and before ✅, so a window with one busy agent and one held agent shows ⏳🔄), the status-bar counts, the `prefix a` switcher (the `working` filter keeps it, because it is working), and `roost status`, which prints `[background (2)]`.
+- **A dialog wins.** If the held agent opens a permission dialog, the pane shows 🛑 blocked, as any pane does.
+- **The glyph follows your glyph set:** 🔄 for emoji, ⚪ for orbs, `[&]` for ascii, and the Nerd Font history icon for nerd. To pick your own, set `@roost-glyph-background` in `~/.config/roost/roost.conf`, like the other glyphs. A config saved before this badge existed has no line for it, so it shows the emoji 🔄 whatever set you picked. `roost doctor` warns about that, and re-picking your set in `roost settings` writes the line.
+
+Only Claude Code reports background work. The other harnesses never show this badge.
 
 ## Any other agent
 

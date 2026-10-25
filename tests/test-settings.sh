@@ -83,6 +83,8 @@ assert_contains "$(cat "$agconf" 2>/dev/null)" "set -g @roost-glyph-error \"$1\"
   "apply_glyphs (commit path) writes @roost-glyph-error"
 assert_contains "$(cat "$agconf" 2>/dev/null)" "set -g @roost-glyph-idle \"$5\"" \
   "apply_glyphs (commit path) writes the rest of the set too"
+assert_contains "$(cat "$agconf" 2>/dev/null)" "set -g @roost-glyph-background \"$(printf '\xef\x87\x9a')\"" \
+  "apply_glyphs (commit path) writes the set's own background glyph (#193)"
 rm -rf "$agcfg"
 
 # sep map

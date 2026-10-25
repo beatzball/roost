@@ -75,7 +75,7 @@ state_set() {
 }
 
 rows() {
-  local now ge gb gw gd gi raw filter agents color
+  local now ge gb gw gg gd gi raw filter agents color
   now="$(date +%s)"
   filter="$(state_get filter)"; [ -n "$filter" ] || filter=all
   agents="$(state_get agents)"; [ -n "$agents" ] || agents=0
@@ -87,12 +87,20 @@ rows() {
   ge="$(tmx show-options -gqv @roost-glyph-error   2>/dev/null)"; [ -n "$ge" ] || ge="💥"
   gb="$(tmx show-options -gqv @roost-glyph-blocked 2>/dev/null)"; [ -n "$gb" ] || gb="🛑"
   gw="$(tmx show-options -gqv @roost-glyph-working 2>/dev/null)"; [ -n "$gw" ] || gw="⏳"
+  gg="$(tmx show-options -gqv @roost-glyph-background 2>/dev/null)"; [ -n "$gg" ] || gg="🔄"
   gd="$(tmx show-options -gqv @roost-glyph-done    2>/dev/null)"; [ -n "$gd" ] || gd="✅"
   gi="$(tmx show-options -gqv @roost-glyph-idle    2>/dev/null)"; [ -n "$gi" ] || gi="💤"
 
   # list-panes -a does NOT return panes in display order (observed %0 %2 %1), so
   # sort explicitly: session name, then window index, then pane index.
-  raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@roost-name}' 2>/dev/null \
+  #
+  # The fourteenth field is the word for a pane held at working only by its
+  # own background work (#193) -- "background (N)", or "background" for a
+  # count of `?` -- and empty for every other pane. It is the held test and
+  # count rule of @roost-pane-border in tmux/roost.conf, whose comment
+  # explains both, computed by the format engine in this same call. Field 11
+  # stays the raw state: the filters read that, and a held pane IS working.
+  raw="$(tmx list-panes -a -F '#{session_id}	#{session_name}	#{window_id}	#{window_index}	#{window_name}	#{window_panes}	#{pane_id}	#{pane_index}	#{pane_current_command}	#{b:pane_current_path}	#{@agent_state}	#{@agent_since}	#{@roost-name}	#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},}' 2>/dev/null \
     | sort -t'	' -k2,2 -k4,4n -k8,8n)"
 
   # No panes (e.g. a dead/unreachable socket) -> $raw is empty, and
@@ -119,12 +127,13 @@ rows() {
   # Two passes, because a header depends on what is VISIBLE, not on what
   # exists: under a filter, a window showing one of its three panes is one flat
   # row, and a session showing nothing gets no header at all.
-  printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v ge="$ge" -v gb="$gb" -v gw="$gw" -v gd="$gd" -v gi="$gi" \
+  printf '%s\n' "$raw" | awk -F'\t' -v now="$now" -v ge="$ge" -v gb="$gb" -v gw="$gw" -v gg="$gg" -v gd="$gd" -v gi="$gi" \
       -v filter="$filter" -v agents="$agents" -v color="$color" '
     function glyph(s) {
       if (s == "error")   return ge
       if (s == "blocked") return gb
       if (s == "working") return gw
+      if (s == "background") return gg
       if (s == "done")    return gd
       return gi
     }
@@ -137,6 +146,8 @@ rows() {
       if (s == "error")   return "\033[35m" text "\033[0m"
       if (s == "blocked") return "\033[31m" text "\033[0m"
       if (s == "working") return "\033[33m" text "\033[0m"
+      # Cyan: still busy, and not the yellow of an agent mid-turn.
+      if (s == "background") return "\033[36m" text "\033[0m"
       if (s == "done")    return "\033[32m" text "\033[0m"
       return "\033[2m" text "\033[0m"
     }
@@ -152,14 +163,22 @@ rows() {
     {
       if (!visible($11)) next
       line[++n] = $0
+      # The state column is as wide as the widest word shown, never under the
+      # 8 it always was, so a list with no held pane is laid out as before.
+      if (length($14) > sw) sw = length($14)
       shown[$3]++
       if (!($1 in seen)) { seen[$1] = 1; nsess++ }
     }
     END {
       ind = (nsess > 1) ? "  " : ""
+      if (sw < 8) sw = 8
       for (i = 1; i <= n; i++) {
         split(line[i], f, "\t")
         sid=f[1]; sname=f[2]; wid=f[3]; wname=f[5]; pid=f[7]; cmd=f[9]; path=f[10]; st=f[11]; since=f[12]; nm=f[13]
+        # A held pane (#193) is painted and badged as its own class, and
+        # named by its word; its elapsed time is still that of the turn.
+        cls = (f[14] != "") ? "background" : st
+        word = (f[14] != "") ? f[14] : st
         if (nsess > 1 && sid != lastsid) { printf "%s\t\t\t%s\n", sid, bold(sname); lastsid = sid }
         label = (nm != "" ? nm : cmd)
         # spawn NAME names the window AND the pane from the same NAME, so an
@@ -173,7 +192,9 @@ rows() {
         # The glyph is painted with the state word, not beside it: an emoji
         # ignores the colour, a Nerd Font or ascii glyph takes it, and the
         # text "glyph state" stays unbroken for anything that matches on it.
-        badge = paint(st, sprintf("%s %-8s %4s", glyph(st), st, el))
+        # The width is built into the format, not passed as a `*`: not
+        # every awk this runs under (mawk, BSD awk, busybox) takes `*`.
+        badge = paint(cls, sprintf("%s %-" sw "s %4s", glyph(cls), word, el))
         if (shown[wid] <= 1) {
           printf "%s\t%s\t%s\t%s%s  %-6s %s%s  (%s)\n", sid, wid, pid, ind, badge, pid, wname, suffix, path
         } else {

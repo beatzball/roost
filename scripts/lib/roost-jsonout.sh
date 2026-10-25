@@ -190,16 +190,40 @@ roost_jsonout_int() {
   esac
 }
 
-# roost_jsonout_background SINCE RECORD -> ROOST_JSONOUT_INT: the count in a
-# @roost-background record "<since> N" whose first word is SINCE, as a JSON
-# integer; null for anything else (no record, another stamp's record, a
+# roost_hold SINCE RECORD -> 0 when RECORD is a hold (#97) for the stamp
+# SINCE, with ROOST_HOLD_COUNT set to its count; 1 for anything else. A hold
+# is the WHOLE record "<SINCE> N", N a whole number above zero written with
+# no leading zero, or "<SINCE> ?" (a count the hook could not read). No
+# count, an empty count, two spaces, 0, 007, junk or a trailing space is no
+# hold at all: flock round 1 on #193 found a record with no count (#199's)
+# showing the background badge while `status --json` said null. The hook
+# never writes such a record (it writes `?` for any count it cannot use), so
+# one can only be damage, and damage must not hold a pane's badge or make a
+# reply read as this turn's. This is THE held test: `read`, wait-done,
+# `status --json`, the Stop hook's release (scripts/roost-agent-state) and
+# every badge (@roost-pane-border in tmux/roost.conf, spelled as a format)
+# apply this same rule, so no two of them can disagree.
+roost_hold() {
+  local LC_ALL=C c
+  ROOST_HOLD_COUNT=""
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  case "$2" in "$1 "*) c="${2#"$1 "}" ;; *) return 1 ;; esac
+  case "$c" in
+    '?') ;;
+    [1-9]*) case "$c" in *[!0-9]*) return 1 ;; esac ;;
+    *) return 1 ;;
+  esac
+  ROOST_HOLD_COUNT="$c"
+}
+
+# roost_jsonout_background SINCE RECORD -> ROOST_JSONOUT_INT: the count of a
+# hold (roost_hold above) for the stamp SINCE, as a JSON integer; null for
+# anything else (no record, another stamp's record, a malformed record, a
 # count of `?`). Shared by `status --json` and `wait-done --json`.
 roost_jsonout_background() {
-  local LC_ALL=C rec="$2"
   ROOST_JSONOUT_INT=null
-  case "$1" in ''|*[!0-9]*) return 0 ;; esac
-  case "$rec" in "$1 "*) ;; *) return 0 ;; esac
-  roost_jsonout_int "${rec#* }"
+  roost_hold "$1" "$2" || return 0
+  roost_jsonout_int "$ROOST_HOLD_COUNT"
 }
 
 # roost_jsonout_verified SINCE RECORD -> ROOST_JSONOUT_BOOL: what the report

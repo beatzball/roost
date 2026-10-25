@@ -865,7 +865,12 @@ sys.stdout.write(verdict + "\n" + sid + "\n" + reply)' 2>/dev/null || true)"
         read -r _w bg_count bg_types _ <<EOF || true
 $bg_verdict
 EOF
-        case "$bg_count" in ''|*[!0123456789]*) bg_count="?" ;; esac
+        # A count is written only in the one form every reader accepts (see
+        # roost_hold in scripts/lib/roost-jsonout.sh): a whole number above
+        # zero with no leading zero. A hold verdict with 0 items, or 007,
+        # cannot come from the parser; were one to, it is still a hold, so
+        # it is written as `?` rather than as a record no reader would take.
+        case "$bg_count" in ''|0*|*[!0123456789]*) bg_count="?" ;; esac
         [ "${#bg_count}" -le 9 ] || bg_count="?"
         case "$bg_types" in *[!A-Za-z0-9_.,?-]*) bg_types="?" ;; esac
         [ "${#bg_types}" -le 200 ] || bg_types="?"
@@ -922,7 +927,15 @@ EOF
       rel="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
       rel_since="${rel%%|*}"; rel_bg="${rel#*|}"
       case "$rel_since" in ''|*[!0123456789]*) rel_since="" ;; esac
-      if [ -n "$rel_since" ] && [ "${rel_bg%% *}" = "$rel_since" ] && [ "$rel_bg" != "$rel_since" ]; then
+      # The record must be a whole hold for this stamp -- "<stamp> N", N a
+      # whole number above zero, or "<stamp> ?" -- the test roost_hold in
+      # scripts/lib/roost-jsonout.sh applies for every reader, inlined so the
+      # hook reads no library on this path. A malformed record (#199's
+      # "<stamp> " was one) is no hold, so it can never make this Stop
+      # append an empty turn file.
+      rel_n="${rel_bg#"$rel_since "}"
+      case "$rel_n" in '?') ;; [123456789]*) case "$rel_n" in *[!0123456789]*) rel_n="" ;; esac ;; *) rel_n="" ;; esac
+      if [ -n "$rel_since" ] && [ "${rel_bg%% *}" = "$rel_since" ] && [ "$rel_bg" != "$rel_since" ] && [ -n "$rel_n" ]; then
         reply="$(tmux -S "$sock" show-options -pqv -t "$TMUX_PANE" @roost-reply 2>/dev/null || true)"
         [ -n "$reply" ] && reply_from_pane=1
         [ -n "$reply" ] || release_empty=1
@@ -963,9 +976,10 @@ EOF
         # release records (flock round 2, reproduced). Otherwise the stored
         # reply is an earlier turn's and goes, as before. Tested by tmux in
         # this same command, against the record as it stands before bg_wr
-        # rewrites it.
+        # rewrites it. "Held" is the whole-record test roost_hold names in
+        # scripts/lib/roost-jsonout.sh, spelled as a format.
         tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
-          "#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}" "" \
+          "#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}" "" \
           "set-option -pu -t $TMUX_PANE @roost-reply ; set-option -pu -t $TMUX_PANE @roost-reply-turn" \; \
           "${bg_wr[@]}" 2>/dev/null || true
       fi
@@ -1556,7 +1570,13 @@ fi
 # matching and `read` called the turn's own main reply stale and final
 # (flock round 1 on #95/#97, reproduced). tmux makes the comparison and the
 # rewrite inside the stamp's own command, so nothing can land between them;
-# a record from another stamp, or none, is left exactly as it is. The hold's
+# a record from another stamp, or none, is left exactly as it is -- and
+# "none" needs its own test: on a fresh pane, with no record and no stamp,
+# the first word of nothing equals the stamp nothing, and a `blocked` first
+# stamp "carried" a record that never existed, "<now> " with no count
+# (#199). That record then read as a hold to the Stop's release below and
+# showed the background badge. So the carry also asks that the record and
+# the stamp are both set. The hold's
 # owner (@roost-background-session, #188) is "<stamp> <session_id>" and moves
 # the same way, so a hold carried through a dialog keeps the session that the
 # SessionEnd block must match. Placed
@@ -1566,7 +1586,7 @@ hold_carry() {
   local opt
   HOLD_WR=()
   for opt in @roost-background @roost-background-types @roost-background-session; do
-    HOLD_WR+=(if-shell -F -t "$TMUX_PANE" "#{==:#{s/ .*//:#{$opt}},#{@agent_since}}"
+    HOLD_WR+=(if-shell -F -t "$TMUX_PANE" "#{&&:#{!=:#{$opt},},#{&&:#{!=:#{@agent_since},},#{==:#{s/ .*//:#{$opt}},#{@agent_since}}}}"
       "set-option -p -t $TMUX_PANE -F $opt '$1 #{s/^[^ ]* //:#{$opt}}'" ';')
   done
 }
@@ -2215,8 +2235,10 @@ if [ "$state" = "$prev" ] && [ "$stale_job" = 0 ]; then
       ''|*"'"*) ;;
       *) own_wr="$own_wr ; set-option -p -t $TMUX_PANE -F @roost-transcript '#{@agent_since} ${prompt_transcript//\#/##}'" ;;
     esac
+    # Held: working, and the whole-record test of roost_hold
+    # (scripts/lib/roost-jsonout.sh) spelled as a format.
     tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
-      "#{&&:#{==:#{@agent_state},working},#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}}" \
+      "#{&&:#{==:#{@agent_state},working},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}" \
       "$own_wr" 2>/dev/null || true
   fi
   exit 0
