@@ -73,6 +73,14 @@ until_count() {
   while [ "$(count)" -lt "$1" ] && [ "$i" -lt $(($2 * 10)) ]; do sleep 0.1; i=$((i + 1)); done
 }
 reset() { : > "$NOTES"; }
+# Sub-second timing for the cases that are ABOUT one second: the sink's stamp
+# is `date +%s`, so whether two dialogs share it depends on where in the
+# second they open. python3 rather than `date +%s.%N`, which BSD date lacks.
+# next_second -> the next whole second, after waiting until just past it.
+# at S+F -- sleep until that absolute time; at once if it has passed.
+next_second() { python3 -c 'import time; s = int(time.time()) + 1; time.sleep(max(0, s + 0.02 - time.time())); print(s)'; }
+at() { python3 -c 'import sys, time; time.sleep(max(0, eval(sys.argv[1]) - time.time()))' "$1"; }
+since() { tmux -S "$s" show-options -pqv -t "$pane" @agent_since; }
 
 FIX_DIR=/tmp/roost-codex-fixture
 UPS='{"session_id":"01a16fcc-0000-7000-8000-000000000001","turn_id":"t1","transcript_path":null,"cwd":"'"$FIX_DIR"'/work","hook_event_name":"UserPromptSubmit","model":"m","permission_mode":"default","prompt":"go"}'
@@ -85,7 +93,12 @@ hook UserPromptSubmit "$UPS"
 assert_eq "$(pstate)" "working" "setup: the codex pane is working"
 
 # --- 1. self-approved escalations inside the delay ping nothing ---------------
+# Started just past a second boundary, on purpose: the first two or three
+# dialogs open in the same second and share a stamp, so this holds only
+# because each entry into blocked has its own identity, not because each
+# dialog happens to land in a later second (review, #195).
 reset
+next_second > /dev/null
 for i in 1 2 3 4 5; do
   hook PermissionRequest "$(perm "a$i")"
   sleep 0.2
@@ -180,6 +193,86 @@ assert_eq "$out" "rc=0" "a bad @roost-notify-delay never breaks the hook"
 sleep 1.5
 assert_eq "$(count)" "0" "a bad @roost-notify-delay falls back to the default, not to 0"
 hook PostToolUse "$POST"
+
+# --- 9. two dialogs in one second: the first's child does not ping the second
+# A opens just past second S and is approved at once; B opens in the same
+# second, so on a whole-second stamp it reads as A. A's child wakes at about
+# S+2.1 with B open; B is answered at S+2.35, past A's deadline but before its
+# own (about S+2.7). B was never open for the full delay, so nothing pings.
+# The stamps are asserted equal, so a slow machine that pushed B into the next
+# second fails here instead of passing without testing the case.
+tmux -S "$s" set-option -g @roost-notify-delay 2
+sleep 1
+reset
+S="$(next_second)"
+hook PermissionRequest "$(perm g1)"; sa="$(since)"
+hook PostToolUse "$POST"
+at "$S + 0.6"
+hook PermissionRequest "$(perm g2)"; sb="$(since)"
+assert_eq "$sb" "$sa" "setup: the two dialogs share one whole-second stamp"
+at "$S + 2.35"
+assert_eq "$(count)" "0" "a dialog not yet open for the delay is not pinged by the one before it"
+hook PostToolUse "$POST"
+at "$S + 4.5"
+assert_eq "$(count)" "0" "two dialogs in one second, both answered inside their delay, ping nothing"
+
+# --- 10. the same, but the second dialog stays open: one ping, on ITS deadline
+sleep 1
+reset
+S="$(next_second)"
+hook PermissionRequest "$(perm h1)"; sa="$(since)"
+hook PostToolUse "$POST"
+at "$S + 0.6"
+hook PermissionRequest "$(perm h2)"; sb="$(since)"
+assert_eq "$sb" "$sa" "setup: the two dialogs share one whole-second stamp (open case)"
+at "$S + 2.35"
+assert_eq "$(count)" "0" "no ping before the open dialog's own deadline"
+until_count 1 3
+at "$S + 5"
+assert_eq "$(count)" "1" "the dialog left open past its own deadline pings exactly once"
+hook PostToolUse "$POST"
+
+# --- 11. a repeat blocked in the next second still ends in one ping -----------
+# The rest of a batch that spans a second boundary: A moves the pane to
+# blocked late in second S, and a second hook for a second dialog lands in S+1
+# while the pane still reads blocked and before A's child wakes. That repeat
+# moves @agent_since. The pane has been blocked for the full delay, so one
+# ping must come, and only one -- and it comes on A's deadline (about S+2.85),
+# not the repeat's (about S+3.3): the pane has been waiting on the human since
+# A, and a repeat that restarted the wait would push every batch's ping back.
+sleep 1
+reset
+S="$(next_second)"
+at "$S + 0.75"
+hook PermissionRequest "$(perm i1)"; sa="$(since)"
+at "$S + 1.2"
+hook PermissionRequest "$(perm i2)"; sb="$(since)"
+assert_eq "$(pstate)" "blocked" "setup: the repeat leaves the pane blocked"
+[ "$sb" != "$sa" ] && assert_eq ok ok "setup: the repeat moved the stamp to the next second" \
+  || assert_eq "$sb" "not $sa" "setup: the repeat moved the stamp to the next second"
+at "$S + 3.05"
+assert_eq "$(count)" "1" "the ping comes on the first entry's deadline, not the repeat's"
+until_count 1 3
+at "$S + 5.5"
+assert_eq "$(count)" "1" "a batch staggered across a second boundary pings exactly once"
+hook PostToolUse "$POST"
+
+# --- 12. a repeat off screen pings when the first dialog opened on screen -----
+# The first dialog opens while the human is looking at the window, so it
+# starts no child. They switch away, and a second dialog arrives on the pane
+# that still reads blocked. That repeat's own child is the only one, and it
+# must ping (see the repeat path in scripts/roost-agent-state).
+sleep 1
+reset
+tmux -S "$s" select-window -t s:agent
+hook PermissionRequest "$(perm j1)"
+tmux -S "$s" select-window -t s:other
+hook PermissionRequest "$(perm j2)"
+until_count 1 4
+sleep 1
+assert_eq "$(count)" "1" "a repeat off screen pings when the first dialog opened on screen"
+hook PostToolUse "$POST"
+tmux -S "$s" set-option -g @roost-notify-delay 1
 
 canary_leaks="$(find "$CANARY" -mindepth 1 2>/dev/null | sort)"
 assert_eq "$canary_leaks" "" "nothing wrote into a home this file did not redirect"

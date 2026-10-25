@@ -24,8 +24,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
   for each one: you followed the ping and found nothing to answer, three or
   four times for one parallel batch. Now a codex pane that becomes 🛑 blocked
   pings after `@roost-notify-delay` seconds (5 by default, `0` for the old
-  instant ping), only if the same dialog is still open on a window that is
-  still off screen, and one batch gives one ping. Claude Code, opencode,
+  instant ping), only if it has stayed 🛑 for that whole time on a window that
+  is still off screen, and one batch gives one ping. Claude Code, opencode,
   copilot and pi still ping at once, and `error` always does.
 
 ### Fixed

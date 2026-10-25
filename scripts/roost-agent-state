@@ -1533,17 +1533,38 @@ hold_carry() {
 # `#{?TEST,,1}` is "not TEST", the shape the subagent count above uses. The
 # record holds only hex, fixed words and a digit (checked where it is built),
 # so it can sit inside the command string unquoted by anything but '…'.
+#
+# @roost-block-entry (#195) names one ENTRY into blocked: "<stamp>-<pid>",
+# written only when the pane does not already read blocked, by the same test
+# and in the same command as the stamp, so it is the pane's state before this
+# call that decides. A repeat on a pane that still reads blocked keeps it,
+# which is what lets a parallel batch share one pending ping; leaving blocked
+# and coming back, by any writer and inside any second, gives a new one.
+# @agent_since cannot do this job: it is whole seconds, so a dialog answered
+# and a second one opened in the same second shared it, and the first one's
+# deferred child pinged for a second dialog that had been open for a fraction
+# of the delay (review round 1, reproduced). The pid makes two hooks that
+# start in one second differ; only the hook that wins the test writes, so
+# only one of them is ever stored. Written for every harness, because the
+# state it follows is every harness's, and it costs no extra tmux call.
+#
+# With ROOST_NOTIFY_DEFER the same command reads the entry back, so the hook
+# learns which entry its own write left, the winner's or one already there,
+# with no gap in which another hook could move it. STAMP_ENTRY holds it; it
+# is captured, never printed, because a codex hook's stdout is codex's to read.
 roost_stamp_blocked() {
   local wr
-  wr=()
+  wr=(if-shell -F -t "$TMUX_PANE" "#{==:#{@agent_state},blocked}" ""
+        "set-option -p -t $TMUX_PANE @roost-block-entry '$1-$$'"
+      ';')
   if [ "$permission_request_hook" = 1 ]; then
     if [ -n "$dialog" ]; then
-      wr=(if-shell -F -t "$TMUX_PANE" \
+      wr+=(if-shell -F -t "$TMUX_PANE" \
             "#{?#{&&:#{==:#{@agent_state},blocked},#{m:* $dialog_tail,#{@roost-dialog}}},,1}" \
             "set-option -p -t $TMUX_PANE @roost-dialog '$dialog' ; set-option -pu -t $TMUX_PANE @roost-answered ; set-option -pu -t $TMUX_PANE @roost-answer-nonce"
           ';')
     else
-      wr=(set-option -pu -t "$TMUX_PANE" @roost-dialog
+      wr+=(set-option -pu -t "$TMUX_PANE" @roost-dialog
           ';' set-option -pu -t "$TMUX_PANE" @roost-answered
           ';' set-option -pu -t "$TMUX_PANE" @roost-answer-nonce
           ';')
@@ -1573,7 +1594,13 @@ roost_stamp_blocked() {
       wr+=(';' set-option -pu -t "$TMUX_PANE" @roost-blocked-on)
     fi
   fi
-  tmux -S "$sock" "${wr[@]}" 2>/dev/null || true
+  STAMP_ENTRY=""
+  if [ "$notify_defer" = 1 ]; then
+    wr+=(';' display-message -p -t "$TMUX_PANE" '#{@roost-block-entry}')
+    STAMP_ENTRY="$(tmux -S "$sock" "${wr[@]}" 2>/dev/null || true)"
+  else
+    tmux -S "$sock" "${wr[@]}" 2>/dev/null || true
+  fi
 }
 
 # --- the deferred `blocked` ping (#195) ---------------------------------------
@@ -1639,27 +1666,40 @@ roost_defer_read() {
   DEFER_DELAY="$d"
 }
 
-# roost_defer_blocked_ping STAMP DELAY -- ping after DELAY seconds, and only if
-# the same dialog is still open on a window that is still off screen.
+# roost_defer_blocked_ping ENTRY DELAY -- ping after DELAY seconds, and only if
+# the pane has stayed blocked since ENTRY, on a window that is still off
+# screen.
 #
-# THE SAME DIALOG is "still blocked AND @agent_since still STAMP". Checking only
-# "still blocked" was tried first on a throwaway server and let 2 of 5
-# self-approved escalations through: the NEXT escalation had re-blocked the
-# pane inside the wait, and the old child pinged for a dialog that was already
-# answered. The window is checked again because a human who switched to it
-# during the wait can see the dialog and needs no ping.
+# STAYED BLOCKED is "still blocked AND @roost-block-entry still ENTRY" (see
+# roost_stamp_blocked for the entry). Checking only "still blocked" was tried
+# first on a throwaway server and let 2 of 5 self-approved escalations
+# through: the NEXT escalation had re-blocked the pane inside the wait, and
+# the old child pinged for a dialog that was already answered. Checking
+# "@agent_since still the stamp" was round 1's answer and was not enough: two
+# dialogs in one second share a stamp, and the first one's child pinged for
+# the second when it had been open for half a second (review, reproduced).
+# The entry changes whenever the pane leaves blocked and comes back, so a
+# ping always means one stretch of blocked as long as the delay. The window
+# is checked again because a human who switched to it during the wait can
+# see the dialog and needs no ping.
 #
-# ONE PING PER BURST. A parallel tool batch is N hooks in the same second, all
-# writing the same stamp, and each starts a child. The child CLAIMS the stamp:
-# it writes @roost-notified "<stamp> <token>" only if @roost-notified does not
-# already start with that stamp, in the same tmux command as the other three
-# checks, and pings only if the record then reads back as its own. tmux runs
-# one client's command list at a time, the property roost_stamp_blocked's
-# if-shell relies on, so of N children with one stamp exactly one finds the
+# A repeat on a pane that still reads blocked (the rest of a parallel batch,
+# or a second dialog while the first is up) keeps the entry, so it does not
+# make a pending child stand down. The pane has been waiting on the human
+# since the entry, and that is what the ping is for.
+#
+# ONE PING PER BURST. A parallel tool batch is N hooks, each of which starts
+# a child with the same entry. The child CLAIMS the entry: it writes
+# @roost-notified "<entry> <token>" only if @roost-notified does not already
+# start with that entry, in the same tmux command as the other three checks,
+# and pings only if the record then reads back as its own. tmux runs one
+# client's command list at a time, the property roost_stamp_blocked's
+# if-shell relies on, so of N children with one entry exactly one finds the
 # record not yet written. The token is this hook's $$: concurrent hooks are
-# separate processes, so no two share one. A later dialog has a later stamp
-# and a record that does not start with it, so it can claim again; the record
-# is never cleared, because nothing reads it but the next claim.
+# separate processes, so no two share one. A later entry does not start the
+# record, so it can claim again; the record is never cleared, because nothing
+# reads it but the next claim. An entry is "<digits>-<digits>", so it is
+# safe inside the format and inside '…' unescaped.
 #
 # DETACHED. All three standard streams are closed or redirected, so neither
 # codex nor a `$(...)` around this hook waits on a pipe the child holds open.
@@ -1670,16 +1710,19 @@ roost_defer_read() {
 # Every tmux call degrades as the rest of this file does: a server that died
 # during the wait means a child that pings nothing and exits.
 roost_defer_blocked_ping() {
-  local stamp="$1" delay="$2" token="$$"
+  local entry="$1" delay="$2" token="$$"
+  # No entry read back (a dead server, or a stamp that failed) is nothing to
+  # wait for: an empty one would match an empty option and claim nothing real.
+  [ -n "$entry" ] || return 0
   set -m
   (
     trap - EXIT
     sleep "$delay"
     got="$(tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
-      "#{&&:#{==:#{@agent_state},blocked},#{&&:#{==:#{@agent_since},$stamp},#{&&:#{?#{m:$stamp *,#{@roost-notified}},,1},#{?#{==:#{window_active},1},,1}}}}" \
-      "set-option -p -t $TMUX_PANE @roost-notified '$stamp $token'" \
+      "#{&&:#{==:#{@agent_state},blocked},#{&&:#{==:#{@roost-block-entry},$entry},#{&&:#{?#{m:$entry *,#{@roost-notified}},,1},#{?#{==:#{window_active},1},,1}}}}" \
+      "set-option -p -t $TMUX_PANE @roost-notified '$entry $token'" \
       ';' display-message -p -t "$TMUX_PANE" '#{@roost-notified}' 2>/dev/null || true)"
-    [ "$got" = "$stamp $token" ] && roost_notify_now "needs your input"
+    [ "$got" = "$entry $token" ] && roost_notify_now "needs your input"
     exit 0
   ) </dev/null >/dev/null 2>&1 &
   set +m
@@ -1798,18 +1841,20 @@ if [ "$state" = "$prev" ]; then
     restamp="$(date +%s)"
     roost_stamp_blocked "$restamp"
     # An opted-in harness (#195) still gets no IMMEDIATE ping here, but a
-    # pending one is scheduled for the new stamp. This is the rest of a
-    # parallel batch: one hook won the working -> blocked transition and the
-    # others land here, and when the batch spans a second boundary their later
-    # stamp is the one the pane ends up with, so the transition's own child
-    # finds the stamp moved and stands down. Without a child here that dialog
-    # would never ping at all. The claim in roost_defer_blocked_ping keeps the
-    # batch to one ping. With a delay of 0 nothing is scheduled: an instant
-    # ping is the old behaviour, and the old behaviour sends none on a repeat.
+    # pending one is scheduled for the entry the pane still carries. This is
+    # the rest of a parallel batch, or a second dialog while the first is up:
+    # one hook won the working -> blocked transition and the others land here
+    # with the same entry, so the claim in roost_defer_blocked_ping keeps them
+    # to one ping. The transition's own child no longer stands down when a
+    # repeat moves the stamp (the entry does not move), so this child is the
+    # belt: it is the one that pings when the transition's window was on screen
+    # and scheduled nothing, and the human has looked away since. With a delay
+    # of 0 nothing is scheduled: an instant ping is the old behaviour, and the
+    # old behaviour sends none on a repeat.
     if [ "$notify_defer" = 1 ]; then
       roost_defer_read
       if [ "$DEFER_ACTIVE" != 1 ] && [ "$DEFER_DELAY" != 0 ]; then
-        roost_defer_blocked_ping "$restamp" "$DEFER_DELAY"
+        roost_defer_blocked_ping "$STAMP_ENTRY" "$DEFER_DELAY"
       fi
     fi
   fi
@@ -2244,15 +2289,15 @@ esac
 # A `blocked` from an adapter that opted in (#195) waits instead: see
 # roost_defer_blocked_ping for why, and for what the wait checks. Its read
 # replaces the plain window_active read rather than adding to it, so the
-# opted-in path is still one tmux call before the child starts. $now is the
-# stamp roost_stamp_blocked wrote above.
+# opted-in path is still one tmux call before the child starts.
+# $STAMP_ENTRY is the entry roost_stamp_blocked read back above.
 if [ "$state" = "blocked" ] && [ "$notify_defer" = 1 ]; then
   roost_defer_read
   if [ "$DEFER_ACTIVE" != "1" ]; then
     if [ "$DEFER_DELAY" = 0 ]; then
       roost_notify_now "$msg"
     else
-      roost_defer_blocked_ping "$now" "$DEFER_DELAY"
+      roost_defer_blocked_ping "$STAMP_ENTRY" "$DEFER_DELAY"
     fi
   fi
 elif [ -n "$msg" ]; then
