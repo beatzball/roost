@@ -313,6 +313,105 @@ printf '%s' '{"session_id":"'"$SID_B"'","last_assistant_message":"B FINAL","back
 assert_eq "$(cat "$(recdir "$p")/replies/000002" 2>/dev/null)" "B FINAL" "B's release is turn 2, the number its prompt had"
 "$ROOST" wait-done --turn 2 "$p" 3 >/dev/null 2>&1; assert_eq "$?" "0" "...and wait-done --turn 2 calls it done"
 
+# --- 9. a new session inside the release-to-file gap (flock round 2) ------------
+# A's SessionEnd release LANDS; a respawned Claude B then prompts and finishes
+# before A has filed the ended turn. Three pauses, all after the release:
+#   before-confirm  at A's read-back of its own release
+#   after-confirm   at the turn file's temp file, after the read-back passed
+#   after-file      at the last tmux command, after the turn file landed
+# Each runs B to completion INSIDE the pause, synchronously, which is the
+# hardest schedule: A cannot move until B is done. In every one, turn 1 is
+# A's main reply with outcome died and B's answer is turn 2. Before the fix,
+# before-confirm lost A's turn (the read-back saw B's badge and filed
+# nothing) and after-confirm filed it as turn 2, under B's turn 1.
+cat > "$shim/tmux" <<SHIM
+#!/usr/bin/env bash
+case "\$GAP_MODE: \$* " in
+  "before-confirm:"*" display-message -p -t "*"#{@agent_state}|#{@roost-ended}|#{@roost-session-ended}"*|\
+  "after-file:"*" if-shell -F -t "*"#{==:#{@roost-session-ended},"*)
+    if [ ! -e "$work/gapped" ]; then
+      : > "$work/gapped"
+      PATH="$ORIG_PATH" bash "$work/gap.sh" >/dev/null 2>&1
+    fi ;;
+esac
+exec "$real_tmux" "\$@"
+SHIM
+cat > "$shim/mktemp" <<SHIM
+#!/usr/bin/env bash
+case "\$GAP_MODE:\$*" in
+  after-confirm:*/replies/.tmp.*)
+    if [ ! -e "$work/gapped" ]; then
+      : > "$work/gapped"
+      PATH="$ORIG_PATH" bash "$work/gap.sh" >/dev/null 2>&1
+    fi ;;
+esac
+PATH="$ORIG_PATH" exec mktemp "\$@"
+SHIM
+chmod +x "$shim/tmux" "$shim/mktemp"
+for mode in before-confirm after-confirm after-file; do
+  p="$(newpane)"; require_pane "$p" "gap-$mode"
+  held "$p" "A MAIN"
+  since="$(opt "$p" @agent_since)"
+  cat > "$work/gap.sh" <<GAP
+"$real_tmux" -S "$s" respawn-pane -k -t "$p" 'ENV= exec /bin/sh'
+sleep 1
+printf '%s' '$UPS_B' | env TMUX="$s,$spid,0" TMUX_PANE="$p" ROOST_RECORD_DIR="$ROOST_RECORD_DIR" "$HOOK" working --prompt-hook
+printf '%s' '{"session_id":"$SID_B","last_assistant_message":"B FINAL","background_tasks":[]}' \
+  | env TMUX="$s,$spid,0" TMUX_PANE="$p" ROOST_RECORD_DIR="$ROOST_RECORD_DIR" "$HOOK" done --stop-hook
+GAP
+  rm -f "$work/gapped"
+  GAP_MODE="$mode" PATH="$shim:$PATH" hook "$p" --session-end-hook <<< "$SEND_A"
+  [ -e "$work/gapped" ]; assert_true $? "[$mode] setup: the shim ran B inside A's SessionEnd"
+  assert_eq "$(opt "$p" @agent_state)|$(opt "$p" @roost-reply)" "done|B FINAL" "[$mode] setup: B's turn finished, and the pane is B's"
+  assert_eq "$(turns_in "$p")" "2" "[$mode] two turns: A's and B's"
+  assert_eq "$(cat "$(recdir "$p")/replies/000001" 2>/dev/null)" "A MAIN" "[$mode] turn 1 is A's main reply"
+  assert_eq "$(cat "$(recdir "$p")/replies/000001.outcome" 2>/dev/null)" "died" "[$mode] ...with outcome died"
+  assert_eq "$(cat "$(recdir "$p")/replies/000002" 2>/dev/null)" "B FINAL" "[$mode] turn 2 is B's answer"
+  [ ! -e "$(recdir "$p")/replies/000002.outcome" ]; assert_true $? "[$mode] ...with no outcome sidecar: done"
+  "$ROOST" wait-done --turn 1 "$p" 3 >/dev/null 2>&1; assert_eq "$?" "2" "[$mode] wait-done --turn 1 exits 2 (died), not B's 0"
+  "$ROOST" wait-done --turn 2 "$p" 3 >/dev/null 2>&1; assert_eq "$?" "0" "[$mode] wait-done --turn 2 exits 0"
+  assert_eq "$(opt "$p" @roost-reply-turn)" "2" "[$mode] the pane's pointer is B's turn, not A's"
+  pane_has "$p" @roost-turn-reserved; assert_eq "$?" "1" "[$mode] the reservation is gone"
+  assert_eq "$(ls -A "$(recdir "$p")/replies" | grep -c '^\.reserving\.')" "0" "[$mode] ...and so is its .reserving file"
+  "$ROOST" read --turn 1 "$p" >/dev/null 2>"$work/read.err"
+  assert_contains "$(cat "$work/read.err")" "turn 1 of '$p' died" "[$mode] read --turn 1 says A's turn died"
+done
+
+# A refused release reserves nothing: the pause lands BEFORE the release, the
+# new session takes the pane, and the next appender is not pushed past a
+# number nobody filed.
+p="$(newpane)"; require_pane "$p" refused-reserves-nothing
+held "$p" "A MAIN"
+X respawn-pane -k -t "$p" 'ENV= exec /bin/sh'
+hook "$p" working --prompt-hook <<< "$UPS_B"
+hook "$p" --session-end-hook <<< "$SEND_A"
+pane_has "$p" @roost-turn-reserved; assert_eq "$?" "1" "a refused release writes no reservation"
+assert_eq "$(ls -A "$(recdir "$p")/replies" 2>/dev/null | grep -c '^\.reserving\.')" "0" "...and leaves no .reserving file"
+printf '%s' '{"session_id":"'"$SID_B"'","last_assistant_message":"B FINAL","background_tasks":[]}' | hook "$p" done --stop-hook
+assert_eq "$(ls "$(recdir "$p")/replies" | grep '^[0-9]*$' | tr '\n' ' ')" "000001 " "...so B's answer is turn 1"
+
+# --- 10. a prompt on a held pane moves the transcript record with the owner ------
+# After a respawn the record still named A's transcript, so an Esc in B was
+# looked for in A's file (flock round 2, non-blocking).
+p="$(newpane)"; require_pane "$p" transcript-moves
+held "$p"
+since="$(opt "$p" @agent_since)"
+X respawn-pane -k -t "$p" 'ENV= exec /bin/sh'
+hook "$p" working --prompt-hook <<< "$UPS_B"
+assert_eq "$(opt "$p" @roost-transcript)" "$since $TR_B" "B's prompt on the held pane names B's transcript, on the hold's stamp"
+TR_H="/tmp/roost-fixture/a#b/$SID_B.jsonl"
+hook "$p" working --prompt-hook <<< "$(edit "$UPS_B" "d['transcript_path']='$TR_H'")"
+assert_eq "$(opt "$p" @roost-transcript)" "$since $TR_H" "...a '#' in the path is kept as it is"
+hook "$p" working --prompt-hook <<< "$(edit "$UPS_B" "d['transcript_path']=\"/tmp/it's.jsonl\"")"
+assert_eq "$(opt "$p" @roost-transcript)|$(opt "$p" @roost-background-session)" "$since $TR_H|$since $SID_B" "...a path with a quote is left out, and the owner is still written"
+hook "$p" working --prompt-hook <<< "$(edit "$UPS_B" 'del d["transcript_path"]')"
+assert_eq "$(opt "$p" @roost-transcript)" "$since $TR_H" "...a payload with no path leaves the record as it was"
+p="$(newpane)"; require_pane "$p" transcript-not-held
+hook "$p" working --prompt-hook <<< "$UPS"
+tr_before="$(opt "$p" @roost-transcript)"
+hook "$p" working --prompt-hook <<< "$UPS_B"
+assert_eq "$(opt "$p" @roost-transcript)" "$tr_before" "a repeat prompt on a pane that is not held leaves the transcript record alone"
+
 # --- 8. the reason: clear and resume are not exits ------------------------------
 for reason in clear resume logout prompt_input_exit other bogus none; do
   case "$reason" in clear|resume) want=interrupted wrc=5 ;; *) want=died wrc=2 ;; esac

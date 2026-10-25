@@ -263,7 +263,18 @@ stated; "not measured" means not measured.
     would call the turn done. A hook cancelled inside the gap leaves the
     badge released, `@roost-ended` saying why, and no turn file, so
     `wait-done --turn N` times out. The entry carries `"timeout": 10`,
-    since Claude's SessionEnd default is 1.5 s.
+    since Claude's SessionEnd default is 1.5 s. A new prompt inside the gap
+    cannot take turn N: the release reserves N in its own tmux command
+    (`@roost-turn-reserved`), every other writer starts above it, and
+    `roost send` predicts above it, so its printed number is right too
+    (flock round 2 found both wrong). A hook cancelled inside the gap leaves
+    the reservation and a `.reserving.*` file in the record's `replies/`;
+    each later turn end on that pane then pays one tmux read for it, and
+    numbering skips N, which is the number that turn would have had. A
+    second SessionEnd release on the same pane inside the same 70 ms
+    overwrites the first one's token, and the first turn is then not filed
+    (reasoned: it needs a new prompt, a held Stop and a second exit inside
+    the gap).
   - **A wiring from before #188 has no `SessionEnd` entry**, and such a pane
     stays ⏳ until #54 or #64 sees the agent go, as before. `roost doctor`
     names both the user's settings file and a server's wiring file.

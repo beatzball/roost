@@ -829,6 +829,29 @@ assert_eq "$both_err" "" "numbered send: nothing on stderr"
 wait_state "$ok" done
 T kill-pane -t "$ok" 2>/dev/null || true
 
+# --- 15. a reserved turn number is counted (#188) ---------------------------
+#
+# A SessionEnd release reserves the number of the turn it ended, in the same
+# tmux command as the release, and files it about 70 ms later. A send inside
+# that gap must predict the turn AFTER it, and the landing of the reserved
+# file must not be taken for this send's turn. The reservation is planted by
+# hand, with the `.reserving.*` file that makes the agent's own Stop start
+# above it, exactly as the SessionEnd block leaves them.
+rp="$(newagent 0 0.3)"
+"$ROOST" send "$rp" "turn one" >/dev/null 2>&1
+wait_state "$rp" done
+rrec="$ROOST_RECORD_DIR/$boot/${rp#%}"
+: > "$rrec/replies/.reserving.test"
+T set-option -p -t "$rp" @roost-turn-reserved 2
+send_into "$rp" "after the reserved one"
+assert_eq "$sent_turn" "3" "send predicts the turn after a reserved number, not the reserved number"
+wait_state "$rp" done
+assert_eq "$("$ROOST" read --turn 3 "$rp" 2>/dev/null)" "REPLY-TO[after the reserved one]" \
+  "...and that is the turn the reply is filed as"
+[ ! -e "$rrec/replies/000002" ]; assert_true $? "...leaving the reserved number to its owner"
+rm -f "$rrec/replies/.reserving.test"
+T kill-pane -t "$rp" 2>/dev/null || true
+
 # --- the canary -------------------------------------------------------------
 found="$(find "$work/canary" -mindepth 1 2>/dev/null | head -n 3)"
 assert_eq "$found" "" "nothing was written into HOME/XDG during this file"

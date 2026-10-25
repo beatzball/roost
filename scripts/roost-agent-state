@@ -368,7 +368,10 @@ fi
 # ANOTHER Claude can reach this pane: the old process after a
 # `respawn-pane -k`, whose SessionEnd lands about 4 s after the new one may
 # have started (measured, above), and -- reasoned, not measured -- a
-# `claude -p` run by a tool in this pane, which inherits TMUX_PANE.
+# `claude -p` run by a tool in this pane, which inherits TMUX_PANE. That
+# second case is closed at SessionEnd only: a Stop checks no session, so the
+# child's Stop could already release the hold as `done` with its own reply,
+# before #188 and after it.
 #
 # The rule: the payload's `session_id` must be the hold's OWNER,
 # @roost-background-session "<stamp> <session_id>". The session that holds
@@ -402,9 +405,13 @@ fi
 # the badge going and the turn file landing, the one the interrupt recovery
 # has: a `wait-done --turn N` polls through it, since it waits for the file
 # as well as the badge; a hook cancelled inside it leaves the badge released
-# and @roost-ended saying why, with no turn file. The pointer is written
-# last, again only while the release this call made is still the pane's.
-# The event log line (#98) is armed with the turn once it is filed.
+# and @roost-ended saying why, with no turn file. A NEW prompt inside that
+# window cannot take the turn's number: the release reserves it in the same
+# command (@roost-turn-reserved, below, says how and why), and a release
+# that a newer prompt superseded after it landed still files its turn. The
+# pointer is written last, again only while the release this call made is
+# still the pane's. The event log line (#98) is armed with the turn once it
+# is filed, unless a newer turn already owns the pane.
 #
 # Claude only: no other harness has been measured exiting with work held,
 # and only Claude's adapter can hold a pane at all.
@@ -414,8 +421,11 @@ if [ "${1:-}" = "--session-end-hook" ]; then
   payload="$(cat 2>/dev/null || true)"
   # The one read every SessionEnd pays. `|` between the fields: none of them
   # can hold one (the owner is a stamp and [A-Za-z0-9_-], checked below).
+  # The boot key rides along: the release below needs it to reserve a turn
+  # number, and here it costs no round trip of its own.
   cur="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" \
-    '#{@agent_state}|#{@agent_since}|#{@roost-background}|#{@roost-background-session}' 2>/dev/null || true)"
+    '#{start_time}-#{pid}|#{@agent_state}|#{@agent_since}|#{@roost-background}|#{@roost-background-session}' 2>/dev/null || true)"
+  se_boot="${cur%%|*}"; cur="${cur#*|}"
   se_state="${cur%%|*}"; cur="${cur#*|}"
   se_since="${cur%%|*}"; cur="${cur#*|}"
   se_bg="${cur%%|*}"; se_own="${cur#*|}"
@@ -470,36 +480,109 @@ sys.stdout.write(s + "\n" + r)' 2>/dev/null || true)"
   # SessionEnd for the same stamp reads the same "<stamp> died" back, and
   # must not file the turn twice. Digits and dots only.
   se_tok="$$.$RANDOM$RANDOM"
+  # THE TURN NUMBER IS RESERVED IN THE RELEASE (flock round 2 on #188,
+  # reproduced). The badge goes in the release; the turn file lands about
+  # 70 ms later. A new prompt can stamp the pane in between -- a respawned
+  # Claude, or this one after `/clear` -- and when its turn also ended in
+  # between, its Stop took turn N and this turn's died reply became N+1:
+  # `wait-done --turn N` then returned the NEW prompt's answer. So the number
+  # is decided here, before the release, and written as @roost-turn-reserved
+  # in the release's own command, which tmux runs whole: no prompt can stamp
+  # the pane before it, and every appender after it starts above it
+  # (roost_record_reserved). The `.reserving.<token>` file is what tells an
+  # appender to look; it is written first, so it is there before the
+  # reservation can be, and removed last.
+  #
+  # Reserved, not filed: a refused release writes no reservation, so it still
+  # appends nothing and takes no number -- the round-1 guarantee. The record
+  # is created here if the pane has none, which is not a turn.
+  #
+  # Records off, or a record this roost cannot write: no number to reserve,
+  # and the release is the same command without it.
+  . "$SELF_DIR/lib/roost-record.sh"
+  turn="" se_res="" se_hint="" se_res_wr=""
+  roost_record_root
+  if [ -n "$ROOST_RECORD_ROOT" ] && roost_record_pane_dir "$se_boot" "$TMUX_PANE" \
+     && roost_record_ensure "$ROOST_RECORD_PANE_DIR" "$sock"; then
+    se_created="$ROOST_RECORD_CREATED"
+    se_hint="$ROOST_RECORD_PANE_DIR/replies/.reserving.$se_tok"
+    if { : > "$se_hint"; } 2>/dev/null; then
+      # Above the newest turn, and above a reservation another SessionEnd
+      # holds on this pane: two reserve two numbers.
+      roost_record_scan "$ROOST_RECORD_PANE_DIR/replies"
+      se_res=$((ROOST_RECORD_MAX + 1))
+      roost_record_reserved "$ROOST_RECORD_PANE_DIR" "$sock"
+      if [ -n "$ROOST_RECORD_RESERVED" ] && [ "$ROOST_RECORD_RESERVED" -ge "$se_res" ]; then
+        se_res=$((ROOST_RECORD_RESERVED + 1))
+      fi
+      se_res_wr=" ; set-option -p -t $TMUX_PANE @roost-turn-reserved $se_res"
+    else
+      se_hint=""
+    fi
+  fi
   # The old pointer goes in the release: it names an earlier turn's file.
   tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
     "#{&&:#{==:#{@agent_state},working},#{&&:#{==:#{@agent_since},$se_since},#{&&:#{==:#{@roost-background},$se_bg},#{==:#{@roost-background-session},$se_own}}}}" \
-    "set-option -pu -t $TMUX_PANE @agent_state ; set-option -pu -t $TMUX_PANE @roost-reply-turn ; set-option -pu -t $TMUX_PANE @roost-background ; set-option -pu -t $TMUX_PANE @roost-background-types ; set-option -pu -t $TMUX_PANE @roost-background-session ; set-option -pu -t $TMUX_PANE @roost-transcript ; set-option -p -t $TMUX_PANE @roost-ended '$se_since $se_outcome' ; set-option -p -t $TMUX_PANE @roost-session-ended '$se_since by=$se_tok'" \
+    "set-option -pu -t $TMUX_PANE @agent_state ; set-option -pu -t $TMUX_PANE @roost-reply-turn ; set-option -pu -t $TMUX_PANE @roost-background ; set-option -pu -t $TMUX_PANE @roost-background-types ; set-option -pu -t $TMUX_PANE @roost-background-session ; set-option -pu -t $TMUX_PANE @roost-transcript ; set-option -p -t $TMUX_PANE @roost-ended '$se_since $se_outcome' ; set-option -p -t $TMUX_PANE @roost-session-ended '$se_since by=$se_tok'$se_res_wr" \
     2>/dev/null || true
-  # Seen to land, and landed by this call: the badge gone, the outcome and
-  # the token this call wrote. Anything else: nothing is recorded.
-  [ "$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}|#{@roost-ended}|#{@roost-session-ended}' 2>/dev/null || true)" \
-    = "|$se_since $se_outcome|$se_since by=$se_tok" ] || exit 0
-  . "$SELF_DIR/lib/roost-record.sh"
-  turn=""
-  roost_record_root
-  if [ -n "$ROOST_RECORD_ROOT" ]; then
-    boot="$(tmux -S "$sock" display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
-    if roost_record_pane_dir "$boot" "$TMUX_PANE" \
-       && roost_record_append_outcome "$ROOST_RECORD_PANE_DIR" "$sock" "$se_outcome" "$se_reply"; then
+  # Landed by this call: the token only this call wrote. That alone decides
+  # whether the turn is filed. The rest of the read says whether the release
+  # is still the pane's: a new prompt in between stamps working and clears
+  # @roost-ended, and then the release was SUPERSEDED, not refused -- the
+  # turn it ended is still filed, under the number it reserved, and only
+  # what belongs to the newer turn (the pointer, the event line) is left
+  # alone. (The first version read all three as one, so a prompt landing
+  # before the read-back made a successful release look refused and the
+  # ended turn was never filed: flock round 2, reproduced.)
+  se_now="$(tmux -S "$sock" display-message -p -t "$TMUX_PANE" '#{@agent_state}|#{@roost-ended}|#{@roost-session-ended}' 2>/dev/null || true)"
+  if [ "${se_now##*|}" != "$se_since by=$se_tok" ]; then
+    [ -z "$se_hint" ] || rm -f "$se_hint" 2>/dev/null || true
+    exit 0
+  fi
+  se_ours=0
+  [ "$se_now" != "|$se_since $se_outcome|$se_since by=$se_tok" ] || se_ours=1
+  if [ -n "$se_res" ]; then
+    # A plain assignment, never `ROOST_RECORD_AT=N roost_record_...`: bash
+    # exports a prefix assignment to a function's children for the length of
+    # the call, and a hook those children start would then file at N too.
+    ROOST_RECORD_AT="$se_res"
+    se_ok=0
+    roost_record_append_outcome "$ROOST_RECORD_PANE_DIR" "$sock" "$se_outcome" "$se_reply" && se_ok=1
+    ROOST_RECORD_AT=""
+    if [ "$se_ok" = 1 ]; then
       turn="$ROOST_RECORD_TURN"
       [ -z "$se_reply" ] || roost_record_put_pane "$ROOST_RECORD_PANE_DIR" "$turn" "$se_reply" || true
+      # The append ran with the record already made, so the once-per-pane
+      # sweep it ties to creation is run here instead.
+      [ "$se_created" != 1 ] || roost_record_sweep
     fi
   fi
-  # The pointer names the new turn file only when there is a reply for it to
-  # go with, and only while this call's release is still the pane's: a new
-  # prompt in between stamps working and owns the reply that comes next.
+  # One command, two tests. The pointer names the new turn file only when
+  # there is a reply for it to go with, and only while this call's release is
+  # still the pane's: a new prompt in between stamps working and owns the
+  # reply that comes next. The reservation goes once the turn is filed, or
+  # could not be, and only while it is still this call's.
+  se_fin=()
   if [ -n "$turn" ] && [ -n "$se_reply" ]; then
-    tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
+    se_fin=(if-shell -F -t "$TMUX_PANE" \
       "#{&&:#{==:#{@agent_state},},#{==:#{@roost-session-ended},$se_since by=$se_tok}}" \
-      "set-option -p -t $TMUX_PANE @roost-reply-turn $turn" 2>/dev/null || true
+      "set-option -p -t $TMUX_PANE @roost-reply-turn $turn")
   fi
-  . "$SELF_DIR/lib/roost-events.sh" || true
-  roost_events_arm "$sock" "$TMUX_PANE" working "" 0 0 "$turn" || true
+  if [ -n "$se_res" ]; then
+    [ "${#se_fin[@]}" = 0 ] || se_fin+=(';')
+    se_fin+=(if-shell -F -t "$TMUX_PANE" "#{==:#{@roost-turn-reserved},$se_res}" \
+      "set-option -pu -t $TMUX_PANE @roost-turn-reserved")
+  fi
+  [ "${#se_fin[@]}" = 0 ] || tmux -S "$sock" "${se_fin[@]}" 2>/dev/null || true
+  [ -z "$se_hint" ] || rm -f "$se_hint" 2>/dev/null || true
+  # The event line (#98) reads the pane at exit, which after a superseded
+  # release shows the NEWER turn's state: a line written then would pair
+  # this turn's number with that turn's state, so none is written. The newer
+  # turn's own hooks write its lines.
+  if [ "$se_ours" = 1 ]; then
+    . "$SELF_DIR/lib/roost-events.sh" || true
+    roost_events_arm "$sock" "$TMUX_PANE" working "" 0 0 "$turn" || true
+  fi
   tmux -S "$sock" refresh-client -S 2>/dev/null || true
   exit 0
 fi
@@ -1618,12 +1701,25 @@ if [ "$state" = "$prev" ]; then
   # payload had no usable id unsets the owner instead, and then no
   # SessionEnd can release the hold. A pane that is not held is left as it
   # is. $prompt_sid is [A-Za-z0-9_-], so it cannot break the format.
+  #
+  # The transcript record moves with the owner, in the same command, when
+  # the payload names one: after a respawn it still named the OLD session's
+  # file, and the interrupt recovery (scripts/lib/roost-unblock.sh) then
+  # read the wrong transcript for an Esc in the new one and left the pane
+  # working until the next Stop (flock round 2 on #188). The path goes
+  # through -F for the stamp, so each `#` in it is doubled to stay a `#`; a
+  # path with a `'` would end the quoted command early and is left out, the
+  # record then staying as it was.
   if [ "$prompt_hook" = 1 ] && [ "$prompt_payload" = 1 ]; then
     if [ -n "$prompt_sid" ]; then
       own_wr="set-option -p -t $TMUX_PANE -F @roost-background-session '#{@agent_since} $prompt_sid'"
     else
       own_wr="set-option -pu -t $TMUX_PANE @roost-background-session"
     fi
+    case "$prompt_transcript" in
+      ''|*"'"*) ;;
+      *) own_wr="$own_wr ; set-option -p -t $TMUX_PANE -F @roost-transcript '#{@agent_since} ${prompt_transcript//\#/##}'" ;;
+    esac
     tmux -S "$sock" if-shell -F -t "$TMUX_PANE" \
       "#{&&:#{==:#{@agent_state},working},#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}}}" \
       "$own_wr" 2>/dev/null || true

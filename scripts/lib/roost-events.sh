@@ -294,7 +294,9 @@ roost_events_line() {
 # long before that early exit: it releases a pane held by background work,
 # and arms this only once its one-command release is seen to have landed,
 # with STATE "" (the release UNSETS the badge, as the recoveries do) and
-# FILED, the turn it recorded just before the release.
+# FILED, the turn it recorded AFTER the release, under the number the
+# release reserved. A release a newer prompt superseded arms nothing: the
+# pane then shows the newer turn's state.
 
 # roost_events_arm SOCKET PANE PREV STATE PERMISSION_REQUEST_HOOK STOP_WHILE_BLOCKED [FILED]
 #

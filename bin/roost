@@ -1846,10 +1846,16 @@ JSON
     # one that never started — the caller then either re-sends a prompt that is
     # already running, or tells a human the agent is wedged when it is not.
     turn_watch=0 turn_base=0 turn_dir="" turn_num="" turn_started=0 turn_have_base=0
-    turn_pane="" turn_since="" turn_reply="" turn_errored=0 turn_rec_bad=0
-    turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+    turn_pane="" turn_since="" turn_reply="" turn_errored=0 turn_rec_bad=0 turn_reserved=""
+    # @roost-turn-reserved rides in the same read (#188): a number a SessionEnd
+    # release has reserved and not yet filed. It is digits or empty, and an
+    # empty middle field keeps its place, as the measurement below shows for
+    # @agent_since.
+    turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@roost-turn-reserved} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
     turn_pane="${turn_info%% *}"
     turn_rest="${turn_info#* }"
+    turn_reserved="${turn_rest%% *}"
+    turn_rest="${turn_rest#* }"
     turn_since="${turn_rest%% *}"
     turn_state="${turn_rest#* }"
     case "$turn_state" in
@@ -1881,6 +1887,19 @@ JSON
         # two "no base" causes this was (#177).
         *) turn_rec_bad=1 ;;
       esac
+      # A reserved number is a turn that is already over and not yet on disk
+      # (#188): the SessionEnd release that ended it files it about 70 ms
+      # later. Counted as the base, so the prediction is the turn after it,
+      # and that file landing is not taken for this send's turn (signal 2
+      # below). Flock round 2 on #188 found the prediction one short here.
+      if [ "$turn_have_base" = 1 ]; then
+        case "$turn_reserved" in
+          ''|*[!0-9]*) ;;
+          *) if [ "${#turn_reserved}" -le 15 ] && [ "$((10#$turn_reserved))" -gt "$turn_base" ]; then
+               turn_base=$((10#$turn_reserved))
+             fi ;;
+        esac
+      fi
     fi
 
     # This one's status is NOT discarded: unlike the Enters below (where
