@@ -202,6 +202,34 @@ roost_jsonout_background() {
   roost_jsonout_int "${rec#* }"
 }
 
+# roost_jsonout_verified SINCE RECORD -> ROOST_JSONOUT_BOOL: what the report
+# filter (#105) found for the stamp SINCE, from a @roost-verified record
+# "<stamp> 1|0" -- true when the reporter was walked into the pane's process
+# tree, false when the walk could not run (the human's Q4: accepted, and
+# marked) -- and null for anything else: no record (a stamp from before
+# #105, or a pane no report has stamped), or another stamp's record.
+roost_jsonout_verified() {
+  local LC_ALL=C
+  ROOST_JSONOUT_BOOL=null
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  case "$2" in
+    "$1 1") ROOST_JSONOUT_BOOL=true ;;
+    "$1 0") ROOST_JSONOUT_BOOL=false ;;
+  esac
+}
+
+# roost_jsonout_refused RECORD -> ROOST_JSONOUT_INT: the epoch of the last
+# report the filter refused (#105), from @roost-refused "<epoch> <state>
+# <pid>", or null when there is none or it is not of that shape.
+roost_jsonout_refused() {
+  local LC_ALL=C rest
+  ROOST_JSONOUT_INT=null
+  rest="${1#* }"
+  [ "$rest" != "$1" ] || return 0
+  case "${rest#* }" in ''|*[!0-9]*) return 0 ;; esac
+  roost_jsonout_int "${1%% *}"
+}
+
 # roost_jsonout_emit COMMAND KEY KIND VALUE [KEY KIND VALUE]...
 #
 # Prints ONE document on one line: "schema" and "command" first, then each key
@@ -213,6 +241,8 @@ roost_jsonout_background() {
 #   z  string, or null when VALUE is empty
 #   i  integer, or null when VALUE is not a plain non-negative integer
 #   b  true when VALUE is 1, else false
+#   n  true when VALUE is 1, false when it is 0, null for anything else -- a
+#      yes-or-no that can also be "not known" (`state --json`'s `verified`)
 #   t  string, then a "lossy" key saying whether invalid UTF-8 was replaced
 #   T  as t, with "lossy" true whatever the encoder found -- for text tmux may
 #      already have rewritten (roost_jsonout_looks_escaped)
@@ -250,6 +280,7 @@ roost_jsonout_emit() {
         if [ -n "${vals[i]}" ]; then part="${ROOST_JSONOUT_STR[j]}"; j=$((j + 1)); else part=null; fi ;;
       i) roost_jsonout_int "${vals[i]}"; part="$ROOST_JSONOUT_INT" ;;
       b) if [ "${vals[i]}" = 1 ]; then part=true; else part=false; fi ;;
+      n) case "${vals[i]}" in 1) part=true ;; 0) part=false ;; *) part=null ;; esac ;;
     esac
     doc="$doc,\"${keys[i]}\":$part"
     i=$((i + 1))
@@ -427,7 +458,7 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
-  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg
+  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg p_ver p_ref
   local ns=0 np=0 j
   # The dialog record's reader (#142). Sourced here, where it is used, so no
   # other roost command pays for it; it runs nothing at source time.
@@ -487,8 +518,13 @@ roost_jsonout_status() {
   # held at working by background work still running in it, written by its
   # Stop hook. Same call, same reason as the dialog: it means something only
   # beside the @agent_since read in the same instant.
+  #
+  # Then @roost-verified and @roost-refused (#105): what the report filter
+  # found for the stamp, and the last report it refused. The first is tied to
+  # @agent_since like the hold record, so it rides in the same call for the
+  # same reason; the second is not tied to a stamp and only comes along.
   trusted=0
-  roost_jsonout_list 18 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 20 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}\t#{@roost-verified}\t#{@roost-refused}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -514,6 +550,8 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[15]="$(t display-message -p -t "$id" '#{@roost-dialog}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[16]="$(t display-message -p -t "$id" '#{@roost-answered}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[17]="$(t display-message -p -t "$id" '#{@roost-background}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[18]="$(t display-message -p -t "$id" '#{@roost-verified}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[19]="$(t display-message -p -t "$id" '#{@roost-refused}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
@@ -524,6 +562,7 @@ roost_jsonout_status() {
     p_sub[np]="${ROOST_JSONOUT_F[14]}"
     p_dialog[np]="${ROOST_JSONOUT_F[15]}"; p_answered[np]="${ROOST_JSONOUT_F[16]}"
     p_bg[np]="${ROOST_JSONOUT_F[17]}"
+    p_ver[np]="${ROOST_JSONOUT_F[18]}"; p_ref[np]="${ROOST_JSONOUT_F[19]}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -587,6 +626,21 @@ roost_jsonout_status() {
     # caller can tell "none running" from "could not see" only because 0
     # is never made up here). Additive under the schema-1 rule.
     roost_jsonout_background "${p_since[k]}" "${p_bg[k]}"; doc="$doc,\"background\":$ROOST_JSONOUT_INT"
+    # Whether the report that made this stamp came from inside the pane's
+    # process tree (#105, step 4 of the turn-over design): true when the
+    # filter walked it there, false when the walk could not run and the
+    # report was accepted unverified (the human's Q4 -- a container, a
+    # failing `ps`), null before any report and for a stamp from before the
+    # filter. Then `refused`: the epoch of the last report the filter turned
+    # away, or null. Both are additive under the schema-1 rule.
+    #
+    # `verified` is null too on a pane with NO badge (fix round 1, found by
+    # review): a refused report that unsets a done badge leaves @agent_since,
+    # so the record still matched it and read `state: null, verified: true`,
+    # which a reader can take for a checked badge. The mark describes a
+    # badge, and there is none.
+    roost_jsonout_verified "${p_state[k]:+${p_since[k]}}" "${p_ver[k]}"; doc="$doc,\"verified\":$ROOST_JSONOUT_BOOL"
+    roost_jsonout_refused "${p_ref[k]}"; doc="$doc,\"refused\":$ROOST_JSONOUT_INT"
     # Which dialog a blocked pane shows, and whether it was answered (#142,
     # docs/airig/specs/2026-09-30-roost-answer-design.md §4.3): always present,
     # null unless the pane reads blocked AND carries a record whose every word

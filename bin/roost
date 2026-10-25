@@ -495,7 +495,7 @@ case "${1:-up}" in
       json_requested="${2-}"
       "$ROOST_HOME/scripts/roost-agent-state" "${2:-idle}"
       . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-      json_pane="" json_state="" json_recorded=0
+      json_pane="" json_state="" json_recorded=0 json_refused="" json_verified=""
       # The same three conditions roost-agent-state checks before it writes
       # anything, and the same server: it takes the socket from $TMUX, which is
       # what ROOST_SELF_SOCK holds, NOT from $SOCKET, which $ROOST_SOCKET can
@@ -510,14 +510,36 @@ case "${1:-up}" in
           blocked|working|done|error) json_want="$2" ;;
           *) json_want=idle ;;
         esac
+        # What the report filter made of this call (#105). The sink above was
+        # this process's CHILD, so its walk started here: the same walk, from
+        # this process, reaches the same answer, and that is asked again here
+        # rather than passed back, because the sink has no channel to say it
+        # and an unchanged state bails there before walking at all. Only
+        # under --json, so the plain path forks nothing new.
+        #
+        #   in       verified: true
+        #   unknown  verified: false -- accepted, and marked (the human's Q4)
+        #   out      refused, with the reason; nothing this report asked for
+        #            was recorded, so `recorded` is false and `state` null
+        #            even when the badge happens to read the state asked for
+        #            -- a coincidence, not this report's write
+        . "$ROOST_HOME/scripts/lib/roost-ancestry.sh"
+        roost_pid_in_pane "$$" "$(tmux -S "$ROOST_SELF_SOCK" display-message -p -t "$TMUX_PANE" '#{pane_pid}' 2>/dev/null || true)" || true
+        case "$ROOST_ANCESTRY" in
+          in) json_verified=1 ;;
+          out) json_refused="not in this pane's process tree" ;;
+          *) json_verified=0 ;;
+        esac
         # show-options -p: pane scope only. A format lookup would fall back to
         # a window or global @agent_state and report a badge that is not there.
-        if [ "$(tmux -S "$ROOST_SELF_SOCK" show-options -p -t "$TMUX_PANE" -qv @agent_state 2>/dev/null || true)" = "$json_want" ]; then
+        if [ -z "$json_refused" ] \
+           && [ "$(tmux -S "$ROOST_SELF_SOCK" show-options -p -t "$TMUX_PANE" -qv @agent_state 2>/dev/null || true)" = "$json_want" ]; then
           json_state="$json_want"; json_recorded=1
         fi
       fi
       roost_jsonout_emit state requested s "$json_requested" state z "$json_state" \
-        pane z "$json_pane" recorded b "$json_recorded" || roost_jsonout_fail state
+        pane z "$json_pane" recorded b "$json_recorded" refused z "$json_refused" \
+        verified n "$json_verified" || roost_jsonout_fail state
       exit 0
     fi
     # `roost state idle --interrupted` (#95): the turn ended because a human
@@ -1338,6 +1360,18 @@ JSON
           idle_waited=$(( idle_waited + now - held_from ))
           return 1
         fi
+        # A `working` badge is not always a turn (#105, fix round 1; found
+        # by review, reproduced): an agent killed at its shell prompt leaves
+        # it for ever, and the send sat out the whole bound and said the
+        # pane "still reads working" about an agent that was gone. So each
+        # poll offers the pane to the two checks wait-done makes once a
+        # second, roost_died_pane and then roost_interrupted_pane (#95, an
+        # Esc'd Claude turn, the same shape). Each only ever unsets, and only
+        # on its own evidence; a clear goes straight back to the poll, which
+        # now reads no badge and returns.
+        if roost_died_pane "$lock_pane" || roost_interrupted_pane "$lock_pane"; then
+          continue
+        fi
         sleep 1 2>/dev/null || true
       done
     }
@@ -1471,6 +1505,19 @@ JSON
     # the refusal stands. Still no screen: the evidence is the harness's own
     # record. It resolves $tgt the way send-keys will, so it judges the same
     # pane this guard protects.
+    #
+    # First, though, the pane whose agent DIED inside its shell (#105, step 5
+    # of the turn-over design): its badge reads working or blocked for ever,
+    # and a blocked one was refused here with exit 3 for a dialog that no
+    # longer exists. roost_died_pane is the check `wait-done` and `read` make
+    # too -- the recorded job has no process left and the shell has the
+    # terminal back -- and on a death it unsets the badge and records `died`.
+    # This send then goes on as to any pane with no badge: there is no agent
+    # behind it, and whatever is typed now reaches the shell at its prompt,
+    # as it did before the badge was cleared.
+    case "$state" in
+      working|blocked) roost_died_pane "$tgt" && state="" ;;
+    esac
     if [ "$state" = "blocked" ] && [ "$force" -eq 0 ] && ! roost_unblock_pane "$tgt"; then
       echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be pasted into it" >&2
       echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
@@ -3128,6 +3175,17 @@ EOF
           echo "roost read: turn $want of '$raw' died: the agent exited before its background work finished, and recorded no reply." >&2
         fi
       fi
+      # A turn whose agent exited inside its shell (#105, step 5): the
+      # dead-agent clear files it with its own word, because #188's sentence
+      # above is about background work, and this agent simply exited. Its
+      # text is the held main reply when the pane was held, else empty.
+      if [ "$ROOST_RECORD_FIELD" = died_in_shell ]; then
+        if [ -n "$ROOST_RECORD_TEXT" ]; then
+          echo "roost read: turn $want of '$raw' died: the agent exited inside its shell before the turn finished; this is the main reply it had given." >&2
+        else
+          echo "roost read: turn $want of '$raw' died: the agent exited inside its shell before the turn finished, and recorded no reply." >&2
+        fi
+      fi
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         json_state=""
@@ -3214,9 +3272,15 @@ EOF
     # And a `working` left by an interrupted turn (#95) is offered to
     # roost_interrupted_pane the same way: it clears the stale badge and the
     # previous turn's reply, and read falls back to the screen and says so.
+    #
+    # Both are asked only after roost_died_pane (#105), the check `send` and
+    # `wait-done` share: a busy badge whose agent died inside its shell is
+    # unset and recorded as `died`, and read then answers for a pane with no
+    # badge -- the previous turn's reply cleared with it, a held main reply
+    # kept and said to be a dead agent's.
     case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" in
-      blocked) roost_unblock_pane "$tgt" || true ;;
-      working) roost_interrupted_pane "$tgt" || true ;;
+      blocked) roost_died_pane "$tgt" || roost_unblock_pane "$tgt" || true ;;
+      working) roost_died_pane "$tgt" || roost_interrupted_pane "$tgt" || true ;;
     esac
     reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
     if [ -n "$reply" ]; then
@@ -4104,10 +4168,45 @@ EOF
               wd_exit 2 died "$_id" "$_st"
             fi
             if job_gone "${_pp#p}" "$_job"; then
+              # The same check `send` and `read` make (#105, step 5), and
+              # the same recovery: the badge is unset and `died` recorded,
+              # so the pane stops claiming a turn after this wait has told
+              # its caller. Its answer does not change the exit: job_gone
+              # has already said the agent is gone.
+              roost_died_pane "$_id" || true
               echo "roost: '$raw' died: the agent in pane $_id exited inside its shell while it read $_st — the job that held its terminal has no process left, and the shell has the terminal back" >&2
               wd_exit 2 died "$_id" "$_st"
             fi
             busy_seen="$busy_seen$_id $_st"$'\n'
+            ;;
+          '')
+            # A pane whose death is already RECORDED (#105): an earlier
+            # `send`, `read` or `wait-done` found its agent gone inside its
+            # shell and unset the badge with @roost-ended "<stamp> died", or
+            # the Claude SessionEnd hook released it so (#188). The job_gone
+            # test above cannot see it any more -- the badge and the job
+            # record went in the clear -- so the record answers instead, and
+            # at once, as a dead pane does: in a window whose sibling is
+            # still busy, waiting for the sibling would hide the death behind
+            # an unrelated agent's turn. Once a second, like the recoveries,
+            # and only for an unbadged pane, so a busy fleet pays nothing.
+            # Not with --turn N: the record describes the pane's NEWEST turn,
+            # and says nothing about turn N, whose own sidecar answers below
+            # (the rule the interrupted record keeps, flock round 1 on #95).
+            if [ "$wt_turn_given" = 0 ] && [ $((ticks % 4)) = 0 ]; then
+              _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-session-ended}|#{@roost-ended}' 2>/dev/null || true)"
+              _esince="${_ended%%|*}"; _ended="${_ended#*|}"
+              _sesend="${_ended%%|*}"; _ended="${_ended#*|}"
+              case "$_esince" in ''|*[!0-9]*) ;; *)
+                if [ "$_ended" = "$_esince died" ]; then
+                  case "$_sesend" in
+                    "$_esince by="*) echo "roost: '$raw' died: the agent in pane $_id exited while its background work still ran" >&2 ;;
+                    *) echo "roost: '$raw' died: the agent in pane $_id exited inside its shell before its turn finished" >&2 ;;
+                  esac
+                  wd_exit 2 died "$_id" ""
+                fi ;;
+              esac
+            fi
             ;;
         esac
       done <<< "$rows"
@@ -4166,6 +4265,14 @@ EOF
         echo "roost: turn $wt_turn of '$raw' died: the agent exited while its background work still ran" >&2
         wd_exit 2 died "$tgt" "$(wd_state_of "$tgt")"
       fi
+      # The dead-agent clear's own word (#105, step 5; fix round 1): the
+      # agent exited inside its shell. Same exit and outcome, its own
+      # sentence -- the first `wait-done --turn N` that saw the death said
+      # so from job_gone, and this is what every later one reads.
+      if [ "$ROOST_RECORD_FIELD" = died_in_shell ]; then
+        echo "roost: turn $wt_turn of '$raw' died: the agent exited inside its shell before the turn finished" >&2
+        wd_exit 2 died "$tgt" "$(wd_state_of "$tgt")"
+      fi
     fi
     # The pane's own record describes its NEWEST turn, so it answers only a
     # wait that asked about the newest turn. With --turn N the sidecar above
@@ -4175,15 +4282,24 @@ EOF
     if [ "$wt_turn_given" = 0 ]; then
       while read -r _id _dead _pp _job _st; do
         [ -n "$_id" ] || continue
-        _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-ended}' 2>/dev/null || true)"
+        # @roost-session-ended rides along: it says WHICH writer recorded a
+        # `died`. The SessionEnd hook (#188) writes it with its release; the
+        # dead-agent recovery (#105, roost_died_pane) does not, and its death
+        # is the agent's own, inside its shell, not background work cut off.
+        # The two get their own sentences; the exit is 2 for both.
+        _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-session-ended}|#{@roost-ended}' 2>/dev/null || true)"
         _esince="${_ended%%|*}"; _ended="${_ended#*|}"
+        _sesend="${_ended%%|*}"; _ended="${_ended#*|}"
         case "$_esince" in ''|*[!0-9]*) continue ;; esac
         if [ "$_ended" = "$_esince interrupted" ]; then
           echo "roost: '$raw' was interrupted, not done" >&2
           wd_exit 5 interrupted "$_id" "$_st"
         fi
         if [ "$_ended" = "$_esince died" ]; then
-          echo "roost: '$raw' died: the agent in pane $_id exited while its background work still ran" >&2
+          case "$_sesend" in
+            "$_esince by="*) echo "roost: '$raw' died: the agent in pane $_id exited while its background work still ran" >&2 ;;
+            *) echo "roost: '$raw' died: the agent in pane $_id exited inside its shell before its turn finished" >&2 ;;
+          esac
           wd_exit 2 died "$_id" "$_st"
         fi
       done <<< "$rows"

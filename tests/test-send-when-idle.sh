@@ -93,8 +93,12 @@ assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" 
 # The badge flips from a KNOWN POINT in the hold, not from a wall-clock
 # `sleep 2` (#190): on a loaded macOS runner the sleep, the one-second poll
 # and `date +%s` rounding added up to `waited` 4, outside a 2-or-3 window.
-# A wrapper `tmux`, on the PATH of this one send only, logs every read of
-# @agent_state; the flipper waits for the THIRD read. Poll 3 starting means
+# A wrapper `tmux`, on the PATH of this one send only, logs every poll -- the
+# hold's own read, `#{pane_id} #{pane_dead} #{@agent_state}`; the flipper
+# waits for the THIRD. Only that format, not every read naming @agent_state:
+# since #105 fix round 1 each poll also offers the pane to roost_died_pane
+# and roost_interrupted_pane, which read @agent_state too, and a looser match
+# counted three "polls" inside the first second (waited 1, reproduced). Poll 3 starting means
 # poll 2 read `working`, and two `sleep 1`s lie between the first poll's
 # clock read and any read after poll 3 starts, so `waited` is at least 2 on
 # every run however slow the runner. The upper bound is the send's own wall
@@ -102,7 +106,7 @@ assert_eq "$("$ROOST" read --turn 1 "$p" 2>/dev/null)" "REPLY-TO[first prompt]" 
 # never a symlink, so no `>` can reach the real binary.
 echo "1. a working target that finishes after the third poll"
 pollbin="$work/pollbin"; mkdir -p "$pollbin"
-printf '#!/bin/sh\ncase "$*" in *@agent_state*) echo poll >>"%s/polls" ;; esac\nexec '\''%s'\'' "$@"\n' \
+printf '#!/bin/sh\ncase "$*" in *"#{pane_id} #{pane_dead} #{@agent_state}"*) echo poll >>"%s/polls" ;; esac\nexec '\''%s'\'' "$@"\n' \
   "$work" "$(command -v tmux)" > "$pollbin/tmux"
 chmod +x "$pollbin/tmux"
 : >"$work/polls"
@@ -165,7 +169,7 @@ assert_eq "$(cat "$work/w2j.rc") [$(cat "$work/w2j.out")]" "6 []" "--json on a t
 T set-option -g @roost-send-idle-timeout 0000000
 # "At once" is counted in LOOKS, through case 1's wrapper, not only in whole
 # seconds: a 0-or-1-second window is the shape #190 found too tight on a
-# loaded runner. One read of @agent_state is a send that did not wait; a wait
+# loaded runner. One poll (the hold's own read, above) is a send that did not wait; a wait
 # of any length polls again after its `sleep 1`. The wall time keeps the same
 # loose bound as the other "at once" lines in this file.
 : >"$work/polls"

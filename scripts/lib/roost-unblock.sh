@@ -242,10 +242,11 @@ roost_unblock_token() {
   ROOST_UNBLOCK_TOKEN="$$.$RANDOM$RANDOM"
 }
 
-# roost_unblock_record_turn PANE -- after a recovery cleared PANE: append the
-# interrupted turn (the held main reply as its text, when there was one) to
-# the pane's record, only for a record this roost can write (state 0) or that
-# has none yet (1). Fails soft: the badge is already cleared and `wait-done`
+# roost_unblock_record_turn PANE [OUTCOME [OURS]] -- after a recovery cleared PANE:
+# append the ended turn (the held main reply as its text, when there was one)
+# to the pane's record, with OUTCOME in its sidecar -- `interrupted` when none
+# is given, `died_in_shell` from the dead-agent clear below -- only for a
+# record this roost can write (state 0) or that has none yet (1). Fails soft: the badge is already cleared and `wait-done`
 # reads @roost-ended, so a record that could not be written costs the turn
 # number, never the outcome.
 #
@@ -257,14 +258,19 @@ roost_unblock_token() {
 # hold record stay cleared. A reader between the clear and this write sees
 # no reply for that moment; the clear has to come first, because only the
 # caller whose clear landed may write.
+#
+# OURS is 0 from the dead-agent clear when a newer turn has stamped the pane
+# since its clear landed (roost_died_pane, THE NUMBER): the turn is still
+# filed, but the held reply is never put back, because the pane's reply
+# belongs to the newer turn now. Any other value, or none, is today's.
 roost_unblock_record_turn() {
   local saved=0
   if record_for "$1" "$1" && [ "$RF_LIVE" = 1 ]; then
     case "$RF_STATE" in
-      0|1) roost_record_append_interrupted "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
+      0|1) roost_record_append_outcome "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "${2:-interrupted}" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
     esac
   fi
-  if [ "$saved" = 0 ] && [ -n "${ROOST_UNBLOCK_HELD:-}" ]; then
+  if [ "$saved" = 0 ] && [ -n "${ROOST_UNBLOCK_HELD:-}" ] && [ "${3:-1}" != 0 ]; then
     . "${BASH_SOURCE[0]%/*}/roost-reply.sh" 2>/dev/null || return 0
     t set-option -p -t "$1" @roost-reply "$(roost_reply_escape "$ROOST_UNBLOCK_HELD")" 2>/dev/null || true
   fi
@@ -581,5 +587,216 @@ roost_interrupted_pane() {
   # and `wait-done` reads @roost-ended, so a record that could not be written
   # costs the turn number, never the outcome.
   roost_unblock_record_turn "$pane"
+  return 0
+}
+
+
+# --- the pane whose agent died (#105, part 2) ----------------------------------
+#
+# Step 5 of docs/airig/specs/2026-09-29-turn-over-design.md, §4.4. An agent
+# typed at a shell prompt and killed there leaves the pane alive at its
+# prompt, pane_dead 0 and the badge busy, and no hook ever says otherwise.
+# #64 taught `wait-done` to see it -- job_gone in bin/roost, from the job the
+# sink recorded in @roost-agent-job and two kernel facts about it -- but
+# `wait-done` only EXITED 2: the badge went on reading working, `read` called
+# the previous turn's reply stale for ever, and `send` refused a pane left
+# blocked with exit 3 for a dialog nobody will ever answer. This moves that
+# one check into one function the three share, as roost_unblock_pane is
+# shared above, and on a death it does what the recovery channel may do
+# (§4.1): UNSET, and record why.
+#
+# `status` does NOT call it. A read command stays a read command (the human's
+# Q6): `status` shows what is stored and changes nothing.
+#
+# The rules, each fail-closed, the shape of the two readers above:
+#
+#   1. The pane reads `working` or `blocked` at PANE scope. A done, idle or
+#      error pane finished first and keeps its answer.
+#   2. job_gone says the recorded job has no process left AND the pane's
+#      shell holds the terminal again. Both facts are the kernel's; there is
+#      still no process-tree walk here, as wait-done's comment requires ("both
+#      guess"). The report filter's walk (scripts/lib/roost-ancestry.sh)
+#      admits reports and never declares a death (§4.4).
+#   3. The clear is a compare-and-clear in one tmux command: the state, the
+#      stamp and the job record must still be the ones read, so a new agent
+#      typed at the same prompt that has stamped in between wins. A new agent
+#      that reports `working` onto the pane that already reads working is a
+#      repeat to the sink's unchanged-state bail, which used to write nothing,
+#      so all three still matched and its live badge was cleared (fix round 1,
+#      found by review, reproduced). The sink now treats a busy report over a
+#      job record with no process left as a transition: it re-records the job
+#      and restamps, and this compare fails (scripts/roost-agent-state, the
+#      stale-job check). tests/test-died-shared.sh forces the interleaving.
+#
+# What it writes: it UNSETS @agent_state (never a value), @roost-agent-job
+# (the job is gone; a later check must not judge a new agent by it), the
+# dialog records when the pane was blocked (no dialog is open in a shell),
+# @roost-transcript and the hold record with its types and owner (the turn is
+# over), and -- unless the pane was held by background work (#97) -- the reply
+# and its pointer, which are the previous turn's: no Stop replaced them, and a
+# reply left on an unbadged pane is served as current with nothing on stderr.
+# A HELD pane's reply is this turn's main answer, kept only on the pane, so it
+# stays, and `read` says the agent died (its #188 wording, which is the truth
+# for a held pane). It writes @roost-ended "<stamp> died" -- `wait-done` exits
+# 2 on it, as it does for every pane whose agent is gone -- and
+# @roost-unblocked "<now> since=<stamp> by=<token>", as the two readers above
+# do, so the event log (#98) can name the clear and a false one can be found.
+#
+# THE TURN FILE. The interrupt recovery appends an empty turn so the next
+# prompt cannot take the interrupted prompt's number (§5.4), and this does
+# the same, through the same function, with its own outcome word:
+# `died_in_shell`. The first cut filed nothing, on the ground that an empty
+# `died` turn would be read back in SessionEnd's words ("before its
+# background work finished"), which is not what happened here. But filing
+# nothing lost the outcome: the clear removes the badge and the job record
+# job_gone needs, so the FIRST `wait-done --turn N` exited 2 and the second
+# timed out -- or, with no bound, was answered by the next agent's turn N
+# (fix round 1, found by review, reproduced). A word of its own keeps both:
+# the turn has its number, and `read --turn` and `wait-done --turn` say the
+# agent exited inside its shell. A held pane's main reply is the turn's text,
+# as the interrupt recovery files it; it also stays on the pane (below).
+#
+# THE NUMBER IS RESERVED IN THE CLEAR (fix round 2, found by review,
+# reproduced both ways). The clear removes the badge and the turn file lands
+# after it, and a replacement agent typed at the prompt inside that gap is a
+# new turn on an unbadged pane. When the replacement also FINISHED inside
+# it, its Stop took turn N and the death was filed as N+1, so `wait-done
+# --turn N` answered the dead prompt with the replacement's reply. When it
+# reported before the clear was read back, the read-back saw its badge and
+# called the clear refused, and the death was never filed at all. #188's
+# SessionEnd release had both holes and closed them first; this is the same
+# mechanism (scripts/roost-agent-state, THE TURN NUMBER IS RESERVED IN THE
+# RELEASE; scripts/lib/roost-record.sh, roost_record_reserved):
+#
+#   - the number is decided before the clear and written as
+#     @roost-turn-reserved in the clear's own command, so no Stop can file
+#     before it, and every appender after it starts above it;
+#   - a clear that LANDED is told from one that was refused by the token
+#     alone, never by the badge, and files its turn at the reserved number
+#     even when a newer turn has superseded it;
+#   - only a clear that is still the pane's (OURS) logs its event line, puts
+#     a held reply back, or returns 0: after a superseded one the pane is the
+#     replacement's, and `send`, `read` and `wait-done` go on with it.
+#
+# A replacement that reported before the clear ran is the stale-job check's
+# (rule 3): it files the dead turn itself, before it restamps.
+#
+# The two known misses of job_gone stay as they are: Claude's `caffeinate`
+# helper keeps its job alive for up to ~300 s, and a wrapper that outlives
+# its agent keeps it for ever. Both are a badge that stays busy, never a
+# false `died`.
+
+# roost_died_pane TARGET -> 0 iff TARGET's pane read busy, its recorded agent
+# job is gone, and the pane was cleared here. Any other answer is 1, and a 1
+# changes nothing. Needs bin/roost's `t` and `job_gone`.
+roost_died_pane() {
+  local info pane since state ppid job now held_wr res res_wr hint created sockp ours
+  # `|` between the fields: none can hold one. The pane pid and the job keep
+  # a fixed letter in front, as wait-done's snapshot does (#165): either can
+  # be EMPTY, and the letter keeps the fields where they are.
+  info="$(t display-message -p -t "$1" '#{pane_id}|#{@agent_since}|#{@agent_state}|p#{pane_pid}|j#{@roost-agent-job}' 2>/dev/null || true)"
+  pane="${info%%|*}"; info="${info#*|}"
+  since="${info%%|*}"; info="${info#*|}"
+  state="${info%%|*}"; info="${info#*|}"
+  ppid="${info%%|*}"; job="${info#*|}"
+  case "$pane" in %[0-9]*) : ;; *) return 1 ;; esac
+  # Pane scope only, as everywhere: a window- or global-scope value is not
+  # this pane's badge.
+  state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  case "$state" in working|blocked) : ;; *) return 1 ;; esac
+  case "$since" in ''|*[!0-9]*) return 1 ;; esac
+  job_gone "${ppid#p}" "$job" || return 1
+  # job_gone accepted it, so it is "PGID:PANE_PID", digits and one colon:
+  # safe inside the format below.
+  job="${job#j}"
+  now="$(date +%s)"
+  roost_unblock_token
+  roost_unblock_held_reply "$pane" "$since"
+  if [ -n "$ROOST_UNBLOCK_HELD" ]; then
+    held_wr=""
+  else
+    held_wr="set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; "
+  fi
+  # The turn's number, reserved before the clear (THE NUMBER, above). Only
+  # for a record this roost can write (state 0) or that has none yet (1),
+  # the rule roost_unblock_record_turn keeps; the record is created here if
+  # the pane has none, which is not a turn. The `.reserving.<token>` hint is
+  # written first, so it is there before the reservation can be, and removed
+  # last. Records off, a record roost cannot write, a hint that cannot be
+  # written: no number, and the clear is the same command without it.
+  res="" res_wr="" hint="" created=0 sockp=""
+  if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
+    case "$RF_STATE" in
+      0|1)
+        sockp="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+        if roost_record_ensure "$RF_DIR" "$sockp"; then
+          created="$ROOST_RECORD_CREATED"
+          hint="$RF_DIR/replies/.reserving.$ROOST_UNBLOCK_TOKEN"
+          if { : > "$hint"; } 2>/dev/null; then
+            # Above the newest turn, and above a number a SessionEnd release
+            # or another clear holds on this pane: two reserve two numbers.
+            roost_record_scan "$RF_DIR/replies"
+            res=$((ROOST_RECORD_MAX + 1))
+            roost_record_reserved "$RF_DIR" "$sockp"
+            if [ -n "$ROOST_RECORD_RESERVED" ] && [ "$ROOST_RECORD_RESERVED" -ge "$res" ]; then
+              res=$((ROOST_RECORD_RESERVED + 1))
+            fi
+            res_wr=" ; set-option -p -t $pane @roost-turn-reserved $res"
+          else
+            hint=""
+          fi
+        fi ;;
+    esac
+  fi
+  t if-shell -F -t "$pane" \
+    "#{&&:#{==:#{@agent_state},$state},#{&&:#{==:#{@agent_since},$since},#{==:#{@roost-agent-job},$job}}}" \
+    "set-option -pu -t $pane @agent_state ; ${held_wr}set-option -pu -t $pane @roost-agent-job ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since died' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'$res_wr" \
+    2>/dev/null || true
+  # LANDED is this caller's token, not the second (see roost_unblock_token),
+  # and that alone decides whether the turn is filed. Nothing but a recovery
+  # writes @roost-unblocked, and a new stamp leaves it, so a token read back
+  # is a clear that landed. OURS is narrower: the pane still shows the clear.
+  # A replacement that stamped in between SUPERSEDED it; it did not refuse
+  # it, and the dead turn is still filed (THE NUMBER, above). The first fix
+  # read the badge as well, so a replacement that reported before this read
+  # made a landed clear look refused, and the death was never filed (fix
+  # round 2, found by review, reproduced).
+  info="$(t display-message -p -t "$pane" '#{@agent_state}|#{@roost-ended}|#{@roost-unblocked}' 2>/dev/null || true)"
+  if [ "${info##*|}" != "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ]; then
+    [ -z "$hint" ] || rm -f "$hint" 2>/dev/null || true
+    return 1
+  fi
+  ours=0
+  [ "$info" != "|$since died|$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] || ours=1
+  if [ "$ours" = 1 ]; then
+    . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
+    roost_events_unblocked "$pane" "$now" "$since" "$state" "the agent exited inside its shell" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
+  fi
+  # The turn file (above): only the caller whose clear landed, as the two
+  # recoveries above. Fails soft the same way: @roost-ended already says died.
+  # Filed at the reserved number. A plain assignment, never a prefix on the
+  # call: bash exports a prefix assignment to a function's children for the
+  # length of the call (the SessionEnd block says the same). A superseded
+  # clear with no number reserved files nothing: the replacement's turn may
+  # already sit at the next number, and filing after it would put the death
+  # under a number no prompt was sent as. Its held reply is not put back
+  # either: the pane's reply is the replacement's now.
+  if [ -n "$res" ]; then
+    ROOST_RECORD_AT="$res"
+    roost_unblock_record_turn "$pane" died_in_shell "$ours"
+    ROOST_RECORD_AT=""
+    [ "$created" != 1 ] || roost_record_sweep
+    # The reservation goes once the turn is filed, or could not be, and only
+    # while it is still this call's. No pointer (@roost-reply-turn) is
+    # written after the clear, here or in roost_unblock_record_turn: the
+    # clear unset the old one with the reply, and a newer turn's pointer is
+    # the one its own Stop set, left alone.
+    t if-shell -F -t "$pane" "#{==:#{@roost-turn-reserved},$res}" \
+      "set-option -pu -t $pane @roost-turn-reserved" 2>/dev/null || true
+  elif [ "$ours" = 1 ]; then
+    roost_unblock_record_turn "$pane" died_in_shell
+  fi
+  [ -z "$hint" ] || rm -f "$hint" 2>/dev/null || true
+  [ "$ours" = 1 ] || return 1
   return 0
 }

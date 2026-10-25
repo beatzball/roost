@@ -179,11 +179,11 @@ status_doc() {
   printf '{"schema":1,"command":"status","running":true,"socket":"%s","socket_kind":"path",' "$s"
   printf '"sessions":[{"name":"main","windows":2,"attached_clients":0},{"name":"side","windows":2,"attached_clients":0}],'
   printf '"panes":['
-  printf '{"id":"%%0","session":"main","window_id":"@0","window_index":0,"window_name":"api","pane_index":0,"name":null,"command":"sleep","state":"done","since":1789000000,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":0,"dialog":null,"background":null},'
-  printf '{"id":"%%1","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":0,"name":null,"command":"sleep","state":"working","since":1789000100,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":2,"dialog":null,"background":null},'
-  printf '{"id":"%%2","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":1,"name":%s,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null},' "$1"
-  printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null},'
-  printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null}'
+  printf '{"id":"%%0","session":"main","window_id":"@0","window_index":0,"window_name":"api","pane_index":0,"name":null,"command":"sleep","state":"done","since":1789000000,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":0,"dialog":null,"background":null,"verified":null,"refused":null},'
+  printf '{"id":"%%1","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":0,"name":null,"command":"sleep","state":"working","since":1789000100,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":2,"dialog":null,"background":null,"verified":null,"refused":null},'
+  printf '{"id":"%%2","session":"main","window_id":"@1","window_index":1,"window_name":"web","pane_index":1,"name":%s,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null,"verified":null,"refused":null},' "$1"
+  printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null,"verified":null,"refused":null},'
+  printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null,"verified":null,"refused":null}'
   printf ']}'
 }
 cap st "$ROOST" status --json
@@ -534,20 +534,25 @@ gold 'state done outside a pane' "$ROOST" state done
 
 as_pane %2 "$ROOST" state working
 cap sj as_pane %2 "$ROOST" state bogus --json
-doc_is sj '{"schema":1,"command":"state","requested":"bogus","state":"idle","pane":"%2","recorded":true}' \
+doc_is sj '{"schema":1,"command":"state","requested":"bogus","state":"idle","pane":"%2","recorded":true,"refused":null,"verified":false}' \
   "state STATE --json sets the badge and echoes what was recorded"
 assert_eq "$(T show -pqv -t %2 @agent_state)" idle "state bogus --json really set the badge"
 cap sjd as_pane %2 "$ROOST" state done --json
-doc_is sjd '{"schema":1,"command":"state","requested":"done","state":"done","pane":"%2","recorded":true}' \
+doc_is sjd '{"schema":1,"command":"state","requested":"done","state":"done","pane":"%2","recorded":true,"refused":null,"verified":false}' \
   "state done --json echoes done"
+# `verified` is false in these cases, not true: tests/lib.sh turns the report
+# filter's walk off for the suite (#105), which is the walk's "could not
+# check" answer -- accepted, and marked. tests/test-report-filter.sh has the
+# true and the refused cases.
+#
 # The case `recorded` exists for: a caller that looks like a roost pane, on
 # this server, whose badge still went nowhere -- here, a pane id that does not
 # exist. Nothing must claim it landed.
 cap s99 as_pane %99 "$ROOST" state done --json
-doc_is s99 '{"schema":1,"command":"state","requested":"done","state":null,"pane":"%99","recorded":false}' \
+doc_is s99 '{"schema":1,"command":"state","requested":"done","state":null,"pane":"%99","recorded":false,"refused":null,"verified":false}' \
   "state --json says recorded:false when the badge did not land"
 cap so "$ROOST" state done --json
-doc_is so '{"schema":1,"command":"state","requested":"done","state":null,"pane":null,"recorded":false}' \
+doc_is so '{"schema":1,"command":"state","requested":"done","state":null,"pane":null,"recorded":false,"refused":null,"verified":null}' \
   "state --json outside a roost pane says nothing was recorded"
 assert_eq "$(rc so)" 0 "state --json outside a roost pane exits 0, as the silent no-op always has"
 

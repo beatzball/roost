@@ -13,6 +13,17 @@
 # must not leak its real path into the suite.
 export ROOST_RECORD_DIR=""
 
+# The report filter (#105) is OFF for every test file unless it turns it on.
+# Nearly every file here runs the sink from the test's own shell with
+# TMUX_PANE set by hand: a process outside the pane's tree, which is exactly
+# what the filter refuses. With this set, scripts/lib/roost-ancestry.sh
+# answers "could not check" for every walk, so each report is accepted AND
+# marked `verified: false` -- the filter's own unverified path, never a
+# quiet pass. Exported, so a test server started from here hands it to its
+# panes as well. tests/test-report-filter.sh unsets it to test the filter
+# itself; nothing outside the suite sets it.
+export ROOST_TEST_SKIP_ANCESTRY=1
+
 roost_test_server() {
   # Short socket dir — the ~104-char unix socket limit silently corrupts long paths.
   ROOST_TEST_SOCKDIR="$(mktemp -d /tmp/amx.XXXX)"

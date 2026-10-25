@@ -140,6 +140,20 @@ assert_eq "$(turns_in "$p")" "2" "the next turn is recorded as turn 2"
 assert_eq "$("$ROOST" read --turn 2 "$p" 2>/dev/null)" "NEXT" "...and read --turn 2 is its reply"
 pane_has "$p" @roost-ended; assert_eq "$?" "1" "the next turn's working stamp clears @roost-ended: it described the interrupted turn"
 
+# send --when-idle offers the pane too (#105 fix round 1; found by review):
+# its hold polled only the badge, so an interrupted turn held the send for
+# the whole bound and exited 6. It now asks the same check once a second.
+p="$(newpane)"; require_pane "$p" send-when-idle/stream
+stamp "$p" "$work/interrupt-stream.jsonl" "$STREAM_SINCE"
+X set-option -g @roost-send-idle-timeout 5
+t0="$(date +%s)"
+"$ROOST" send --when-idle "$p" "true" >/dev/null 2>"$work/wi.err"; rc=$?
+took=$(( $(date +%s) - t0 ))
+X set-option -gu @roost-send-idle-timeout
+assert_eq "$rc" "0" "send --when-idle: an interrupted turn does not hold the send (stderr: $(cat "$work/wi.err"))"
+[ "$took" -lt 5 ]; assert_true $? "send --when-idle: ...it is sent before the bound (${took}s)"
+assert_eq "$(opt "$p" @roost-ended)" "$STREAM_SINCE interrupted" "send --when-idle: ...and the turn is recorded interrupted"
+
 # --- 3. read and wait-done recover too; status never does --------------------------
 p="$(newpane)"; require_pane "$p" read/tool
 stamp "$p" "$work/interrupt-tool.jsonl" "$TOOL_SINCE"
