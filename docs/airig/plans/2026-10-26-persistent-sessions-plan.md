@@ -43,14 +43,59 @@ does not exist through `close`. Two ways to read the spec:
 - **B:** `close` gains a mode that takes a session's last pane. That changes a
   shipped refusal and its documented reason.
 
-Task 4.8 and Task 5.4's test 8 (e) case are written for **A**. If the
+Task 4.8 and Task 5.6's test 8 (e) case are written for **A**. If the
 coordinator rules B, Task 4.8's step 2 becomes "`close` takes a session's
 last pane" (with its own red case) and test 8 (e) uses `roost close`. Until
 ruled, Part 4 runs every task but 4.8, and Part 5 runs every case but 8 (e).
 
+## Coordinator rulings R2–R5: additions beyond the spec
+
+Field reports from other tools' save, restore and autostart work were read
+after the spec was approved. The coordinator accepted four additions. Each
+extends the spec section named, does not change any rule the spec states, and
+has its own red test. Every other lesson from those reports is either already
+covered by a task below, added as a test case or probe inside the spec's
+rules, or left out.
+
+- **R2 — the second-server guard** (extends §4.4, §4.6 and `ensure_session`,
+  §1). One autostart tool, a reconnecting client and an over-eager start path
+  each started a second server under the same name while the first still ran
+  with its socket file gone (a temp cleaner, a crash of the socket's
+  directory), and the live fleet became unreachable. Rule: before roost starts
+  a server under a name — `ensure_session`, restore's **Server** step,
+  `--at-login` — it reads the `boot` of the newest save for that server
+  (`START-PID`); when that pid is alive, its command is `tmux` and its start
+  time is the boot's, roost starts nothing, prints `roost: the tmux server
+  (pid N) is still running but its socket is gone; kill -USR1 N recreates it`,
+  and exits 1 (`--at-login` logs it and exits 0). Part 5 gate: Task 5.4.
+- **R3 — the silent saver** (extends §3.5 and §4.5). Every timer-based saver
+  read shipped with a health line that said "saved" while nothing was
+  written, found by users months later. Rule: the saver writes `save.err`
+  (0600) in the shape directory with the stamp, the failing step and its exit
+  code whenever a round fails to list or to publish, and removes it on the
+  next published save; `doctor` prints it as a `warn`. `doctor` also warns,
+  **whatever `persist` says**, when a running server has no save whose `boot`
+  is its own (§4.5 limits that line to `persist` on). Same PR as the hooks:
+  Tasks 4.5 and 4.11.
+- **R4 — a nested same-harness agent writing over the pane's key** (extends
+  §3.2's agreement check, whose `nested` case sees only another harness). One
+  tool lost a pane's conversation when the pane's own Claude ran a headless
+  `claude -p` through its shell tool: the child's session start re-identified
+  the pane with a throwaway id. Rule, gated on Task 1.5's probe: the Claude
+  identity path ignores a report whose environment marks a non-interactive
+  child (the variables the probe finds). Task 1.15.
+- **R5 — a terminal quit that kills the server** (extends §4.4 and §8.2 item
+  1). A tmux maintainer recorded that on a newer macOS, quitting the terminal
+  app killed a tmux server started from it, with every process in it. A
+  server roost's launchd job starts is not the terminal's child; one
+  `ensure_session` starts from a terminal is. Part 5 probe with its "if
+  confirmed, do Y" table: Task 5.3; the build, only if confirmed: Task 5.10.
+
 ## Probes
 
-Each part's first tasks are its probes from §6. A probe task:
+Each part's first tasks are its probes: those §6 names, and in Part 1 also the
+five format probes the coordinator moved to the very start (Tasks 1.1–1.5),
+because the format cannot change once Part 1 ships it. A probe task:
 
 - runs on throwaway sockets only (`-S` under `mktemp -d /tmp/amx.XXXX`, or
   `-L` with the `TMUX_TMPDIR` guard of AGENTS.md §2), with every home
@@ -96,7 +141,7 @@ file is committed.
   `tests/test-install.sh` (copy its `CANARY` / `canary_leaks` shape) and fails
   if anything lands there. A file that takes over 12 s gets a `shard_weight`
   line in `tests/run.sh`.
-- **The shared test library** `tests/lib-shape.sh` (new in Task 1.3) holds the
+- **The shared test library** `tests/lib-shape.sh` (new in Task 1.8) holds the
   named-server setup, the canary, the stub harnesses and the
   `$HOME/shells.log` rc files; later parts add to it, never copy it.
 - **Comments are the product** (AGENTS.md §5): new code carries its why; a moved
@@ -160,10 +205,10 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 
 | seam | meaning | added in |
 |---|---|---|
-| `ROOST_TEST_NOW=EPOCH` | the clock for every stamp `save` and `close` write, and the offer's "ago" | 1.4 (`save`), 4.7 (`close`), 7.4 |
-| `ROOST_TEST_RESTORE_HOLD=FILE` | restore waits right after `new-session`, holding `restoring/`, until FILE exists | 1.7 |
-| `ROOST_TEST_PLACE_HOLD=FILE` | restore waits after a window's panes exist and its layout is applied, before the per-pane step | 1.8 |
-| `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` | restore waits after winning `F → F.used` (T2), before that pane's respawn | 1.8 |
+| `ROOST_TEST_NOW=EPOCH` | the clock for every stamp `save` and `close` write, and the offer's "ago" | 1.9 (`save`), 4.7 (`close`), 7.4 |
+| `ROOST_TEST_RESTORE_HOLD=FILE` | restore waits right after `new-session`, holding `restoring/`, until FILE exists | 1.12 |
+| `ROOST_TEST_PLACE_HOLD=FILE` | restore waits after a window's panes exist and its layout is applied, before the per-pane step | 1.13 |
+| `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` | restore waits after winning `F → F.used` (T2), before that pane's respawn | 1.13 |
 | `ROOST_TEST_REVIVE_HOLD=FILE` | `revive` waits after its rename to `%N.launching`, its `origin` line and its claim, before step 7 | 3.8 |
 | `ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN=FILE` | `revive` waits right after that rename, before its `origin` line | 3.8 |
 | `ROOST_TEST_LOOP_HOLD=FILE` | a hand restore waits after placement, before its resume loop (this plan's seam, not the spec's: it lets Task 3.3 read the placed state before Task 3.5's loop exists) | 3.3 |
@@ -173,7 +218,7 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_SAVE_HOLD_AFTER_DRAIN=FILE` | the saver waits after `mv want want.<pid>` | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_LIST=FILE` | the saver waits after listing, before publishing | 4.5 |
 | `ROOST_SHUTDOWN_AT=EPOCH` | a stub shutdown record; set and empty = no readable record | 4.9 |
-| `ROOST_PERSIST_WRITE_ONLY=1` | `persist on` writes the unit and does not load it | 5.3 |
+| `ROOST_PERSIST_WRITE_ONLY=1` | `persist on` writes the unit and does not load it | 5.5 |
 | `ROOST_TEST_OFFER_TIMEOUT=SECONDS` | the offer's 60 s no-answer bound | 7.4 |
 
 ---
@@ -184,8 +229,15 @@ Design:     §3.1–§3.3, §3.4a, §3.6 (`--from`, `--list` only), §4.2, §4.3
 Repository: the `persist-1` worktree of this checkout (`.claude/worktrees/persist-1`)
 Branch:     worktree-persist-1
 Base:       origin/main when the part starts (record the sha in the report)
-Oracle:     automated (`tests/test-shape.sh`, `tests/test-shape-place.sh`) + instrumented (two probes)
-Unattended: yes
+Oracle:     automated (`tests/test-shape.sh`, `tests/test-shape-place.sh`) + instrumented (seven probes)
+Unattended: yes (Task 1.5 needs the live Claude rig of `tests/live/claude-background-smoke.sh`)
+
+**The tmux versions.** Tasks 1.1–1.4 run on three tmux builds: 3.2a
+(`ubuntu:22.04`), 3.4 (`ubuntu:24.04`) and this Mac's (`tmux -V`). Each
+container runs `apt-get install -y -qq tmux procps` and a probe script copied
+in from a temp directory, never a mount of the worktree; the Mac run uses a
+throwaway `-S` server with a temp `HOME`. Every probe writes one result file
+with a column per version.
 
 In this part `restore` **places only**: no agent is launched, a keyed pane
 becomes a shell in its directory, and the shape's keys are kept for Part 3.
@@ -198,7 +250,150 @@ as a plain file; copy it, edit it, and `roost restore --from COPY` it on any
 server, getting the same sessions, windows, panes, names, directories and
 layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 
-### Task 1.1 — Probe: what `#{pane_current_command}` reads for pi, copilot and opencode
+### Task 1.1 — Format probe: a zoomed window's `#{window_layout}`
+
+**Files:** `docs/airig/probes/persist-1-zoom-layout.md` (new)
+**Depends on:** nothing
+
+**Do:** On each of the three tmux builds: a 200x50 detached session, one
+window split into three panes (one `-h`, one `-v`); read `#{window_layout}`
+and `#{window_visible_layout}`; `resize-pane -Z` on one pane; read both again
+and `#{window_zoomed_flag}`; unzoom; read again. Never unzoom to save — one
+tool that did so corrupted zoomed windows and made them flicker; this probe
+only reads.
+
+**If the probe says:**
+- `#{window_layout}` while zoomed equals the unzoomed string on all three:
+  Task 1.9 saves `#{window_layout}` as read and `zoomed 1` from the flag (§2.7,
+  §3.2), and Task 1.13's test unzooms after restore and compares the string.
+- on some version it is the one-pane view while zoomed, and
+  `#{window_visible_layout}` is the one that changes: Task 1.9 still saves
+  `#{window_layout}`; record it.
+- on some version `#{window_layout}` is the one-pane view while zoomed:
+  **stop** — §2.7's "the zoomed state is not in the string" would not hold,
+  and the only way round is the unzoom the field shows to be harmful.
+
+**Check:** `test -s docs/airig/probes/persist-1-zoom-layout.md`, with three version columns and one outcome named.
+**Commit:** `probe: a zoomed window's layout string on tmux 3.2, 3.4 and this Mac (#51)`
+
+### Task 1.2 — Format probe: how a session group lists
+
+**Files:** `docs/airig/probes/persist-1-session-group.md` (new)
+**Depends on:** nothing
+
+**Do:** On each build: a session `main` with two windows (the second split),
+then `new-session -d -t main -s view` (a grouped session). Read `list-sessions
+-F '#{session_name} #{session_group} #{session_grouped}'`, `list-windows -a
+-F '#{session_name} #{window_index} #{window_id} #{window_linked}'` and
+`list-panes -a -F '#{session_name} #{window_index}.#{pane_index} #{pane_id}'`.
+One tool restored a grouped session as two independent sessions, doubling
+every program in it; this probe tells what roost's listing would hold.
+
+**If the probe says:**
+- each member is listed under its own name with the same window and pane ids
+  (the linked-window shape): Task 1.9 writes both as §3.2 writes a linked
+  window, so the second copy comes back as its own windows and its agents
+  meet §5.1a's duplicate refusal (safe, doubled shells). Record it; the
+  coordinator has the recommendation (a group-aware block) as a spec question;
+  the plan stays on the spec.
+- one address (`SESSION:INDEX` or `SESSION:INDEX.PANE`) is listed twice:
+  **stop** — the saver would write a file §3.2 refuses whole.
+- anything else: **stop**.
+
+**Check:** `test -s docs/airig/probes/persist-1-session-group.md`, three version columns.
+**Commit:** `probe: what a grouped session looks like in the listings (#51)`
+
+### Task 1.3 — Format probe: control bytes in names and directories
+
+**Files:** `docs/airig/probes/persist-1-control-bytes.md` (new)
+**Depends on:** nothing
+
+**Do:** On each build, try to give each of these a tab, a newline, an ESC and
+a `\001`: a session name (`new-session -s`, `rename-session`), a window name
+(`rename-window`), a pane option (`set -p @roost-name`), and a directory a
+pane's shell `cd`s into (`mkdir "$(printf 'a\tb')"` etc.). Record which tmux
+accepts, which it rewrites (and to what), and what `#{q:session_name}`,
+`#{q:window_name}`, `#{q:@roost-name}` and `#{q:pane_current_path}` print.
+Then the ordinary names: a space, `$`, `'`, `"`, `#`, a trailing space and a
+UTF-8 glyph, the same reads. One tool wrote a `cwd` holding `$` that its own
+reader then refused; another refused its whole saved layout for one bad value.
+
+**If the probe says** (every row decides one writer rule in Task 1.9; §3.2
+already says the file holds no control byte, so the only question is what the
+writer does with one instead of writing a file restore refuses):
+- tmux refuses or rewrites control bytes in a session name: nothing to do for
+  sessions.
+- tmux accepts one in a session name: the writer leaves that session's blocks
+  out, with one stderr line naming it (by `#{q:}`), and counts it in `save`'s
+  summary as `K skipped`.
+- one in a window name or `@roost-name`: the writer drops that `name` key,
+  one stderr line (the key is optional).
+- one in `pane_current_path`: the writer writes that pane's `cwd` as `$HOME`,
+  one stderr line naming the pane; restore then gives a shell at home, and a
+  resume's directory still comes from §5.1, not from `cwd`.
+- any ordinary name above does not round-trip through `#{q:}` and an
+  unescape: **stop** (the writer cannot read its own values back).
+
+**Check:** `test -s docs/airig/probes/persist-1-control-bytes.md`, three version columns, one rule chosen per row.
+**Commit:** `probe: control bytes and odd characters in session, window and pane names (#51)`
+
+### Task 1.4 — Format probe: dotted and numeric names, and the exact-match target
+
+**Files:** `docs/airig/probes/persist-1-targets.md` (new)
+**Depends on:** nothing
+
+**Do:** On each build: sessions named `v3.69-x` and `1`, each with windows at
+index 1 and 5 and a window named `2`. Try `has-session -t v3.69-x` and `-t
+=v3.69-x`; `new-window -d -t '=v3.69-x:7'`; `split-window -d -t
+'=v3.69-x:5.0'`; `select-layout -t '=v3.69-x:5' tiled`; `display -p -t '=1:'
+'#{session_name}'`; `display -p -t '=1:2'` (index 2 versus the window named
+`2`). One tool tested a dotted session's existence with a bare target, failed
+to find it, made it again, and renamed the first window over.
+
+**If the probe says:**
+- every `=NAME:`, `=NAME:INDEX` and `=NAME:INDEX.PANE` form resolves exactly
+  on all three: Tasks 1.12 and 1.13 build every target from a saved name in
+  that form (as `bin/roost` already does with `=$sess:`), and test the dotted
+  and numeric sessions.
+- some form fails on some version: those tasks build the session target as
+  `=NAME:` and take every later target from the id the creating command prints
+  (`new-window -P -F '#{window_id}'`, `split-window -P -F '#{pane_id}'`);
+  record which.
+- `has-session -t =NAME` fails for a session that exists: existence is read
+  from `list-sessions -F '#{q:session_name}'` with an exact compare; record it.
+
+**Check:** `test -s docs/airig/probes/persist-1-targets.md`, three version columns.
+**Commit:** `probe: exact-match targets for dotted and numeric names (#51)`
+
+### Task 1.5 — Probe: a nested Claude in the pane's own shell writes over its key
+
+**Files:** `docs/airig/probes/persist-1-nested-claude.md` (new)
+**Depends on:** nothing
+
+**Do:** With `tests/live/claude-background-smoke.sh`'s rig (fake Messages API,
+redirected homes, the settings and `.claude.json` guard), roost's hooks
+installed on the throwaway server, and a logger hook on `SessionStart` that
+writes the **names** of every `CLAUDE*` variable and the values of
+`CLAUDE_CODE_ENTRYPOINT` and `CLAUDE_CODE_SESSION_ATTENDED` (no other value):
+one interactive pane; script a `Bash` tool call `claude -p hi --output-format
+json`, then one with `--resume <that id>`. Read `@roost-session` before and
+after each. Also do it for a background session if the version offers one
+(`claude --bg`), else record "not offered". Once.
+
+**If the probe says:**
+- `@roost-session` never moved: nothing to build; Task 1.15 is skipped and
+  says so in the report.
+- it moved, and the child's `SessionStart` environment carries a value the
+  interactive session's does not (for example `CLAUDE_CODE_ENTRYPOINT` other
+  than `cli`, or `CLAUDE_CODE_SESSION_ATTENDED=0`): Task 1.15 builds R4 on
+  exactly those names and values.
+- it moved and nothing in the environment tells the two apart: **stop** (a
+  rule would need more than an environment check, which R4 does not grant).
+
+**Check:** `test -s docs/airig/probes/persist-1-nested-claude.md` with the guard lines unchanged and one outcome named.
+**Commit:** `probe: does a headless Claude in the pane's shell re-identify the pane (#51)`
+
+### Task 1.6 — Probe: what `#{pane_current_command}` reads for pi, copilot and opencode
 
 **Files:** `docs/airig/probes/persist-1-command-names.md` (new)
 **Depends on:** nothing
@@ -216,19 +411,19 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 
 **If the probe says:**
 - a stable name that is not a shell and not another harness's (for example
-  `pi`, `copilot`, `node`): add it to `roost_shape_agree`'s table in Task 1.4
+  `pi`, `copilot`, `node`): add it to `roost_shape_agree`'s table in Task 1.9
   as that harness's command, and say in the file whether it is distinctive
   (`node` is not: two harnesses could read it — then the nested half stays
   "presence alone" for both, as the spec allows).
 - a shell name (`sh`, `bash`, `zsh`, `fish`, `dash`) while the harness runs:
   **stop** — §3.2's rule would mark every live pane of that harness `exited`.
 - not measured (it would not run): presence alone for that harness, as §3.2
-  says until measured; say so in the file and in Task 1.10's known-gaps entry.
+  says until measured; say so in the file and in Task 1.16's known-gaps entry.
 
 **Check:** `test -s docs/airig/probes/persist-1-command-names.md && grep -c 'not measured\|measured' docs/airig/probes/persist-1-command-names.md` prints ≥ 3; `grep -rn '/Users/[a-z]' docs/airig/probes/` prints nothing.
 **Commit:** `probe: what pane_current_command reads for pi, copilot and opencode (#191)`
 
-### Task 1.2 — Probe: the placeholder's 5-second wake and `remain-on-exit failed`
+### Task 1.7 — Probe: the placeholder's 5-second wake and `remain-on-exit failed`
 
 **Files:** `docs/airig/probes/persist-1-placeholder.md` (new)
 **Depends on:** nothing
@@ -246,7 +441,7 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 4. Write the result file.
 
 **If the probe says:**
-- `dd` returns about every 5 s with no byte, and at once on a key: Task 1.6
+- `dd` returns about every 5 s with no byte, and at once on a key: Task 1.11
   uses exactly `stty raw -echo min 0 time 50` + `dd bs=1 count=1`.
 - `dd` blocks until a byte (no wake): **stop** — §4.7 step 1's reprint of a
   failed reason without a respawn depends on the wake.
@@ -261,7 +456,7 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `test -s docs/airig/probes/persist-1-placeholder.md`; it states one row of the table above for the wake and one for each exit kind.
 **Commit:** `probe: the placeholder's 5 s wake and remain-on-exit failed on macOS (#191)`
 
-### Task 1.3 — Test library, and the one switch for saving
+### Task 1.8 — Test library, and the one switch for saving
 
 **Files:** `tests/lib-shape.sh` (new), `scripts/lib/roost-shape.sh` (new), `tests/test-shape.sh` (new), `tests/run.sh` (only a `shard_weight` line if needed)
 **Depends on:** nothing
@@ -289,7 +484,7 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    that path. Key: a `-L NAME` server is keyed `NAME`; a `-S PATH` server
    `path-<cksum of PATH>`; `/a/b-c` and `/a-b/c` give two keys.
    `roost_shape_dir` makes the directory 0700 (the §8.1 guard; the file half is
-   Task 1.4's).
+   Task 1.9's).
 3. `scripts/lib/roost-shape.sh`: `roost_shape_saving` (prints the directory or
    nothing: unset → `${XDG_STATE_HOME:-$HOME/.local/state}/roost/shapes`;
    empty or relative → nothing; reads nothing else, §3.4a), `roost_shape_key
@@ -299,10 +494,10 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape.sh` → all PASS, exit 0, canary empty.
 **Commit:** `shape: the one switch for saving, the directory key, the test library (#51)`
 
-### Task 1.4 — `roost save`: the writer
+### Task 1.9 — `roost save`: the writer
 
 **Files:** `scripts/lib/roost-shape.sh`, `bin/roost` (the `save` arm; `@roost-launch` in `spawn`, `split`, `view`), `tests/test-shape.sh`
-**Depends on:** 1.1, 1.3
+**Depends on:** 1.1, 1.2, 1.3, 1.6, 1.8
 
 **Do:**
 1. Red first, in `tests/test-shape.sh`: build 2 sessions, 3 windows, a zoomed
@@ -326,19 +521,27 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    (10a):** `ROOST_SHAPE_DIR=` and `ROOST_SHAPE_DIR=rel/dir` → `roost save`
    writes nothing, exits 0, one stderr line saying saving is off; a read-only
    shape directory → exit 1 naming it. `shape` and every `history/` file are
-   0600.
+   0600. **A failed listing never publishes:** `roost save` against a server
+   that is not running → exit 1, `shape`, `gen` and `history/` unchanged.
+   **Odd values (Task 1.3's rows):** each control-byte case Task 1.3 found
+   tmux to accept is saved by the row's rule (session left out and counted,
+   `name` dropped, `cwd` written as `$HOME`), each with its stderr line, and
+   the file then passes `roost_shape_check` (Task 1.10): the writer never
+   writes a file its own reader refuses.
 2. `bin/roost` `spawn`, `split`, `view`: set `@roost-launch` on the new pane
    to the command as handed (before `roost-pane-shell` wraps it), in the same
    `set-option` place as `@roost-name`. Redaction happens at save, not here.
 3. `roost_shape_agree HARNESS COMMAND` → `ok`, `exited`, `nested`, `other`:
    shell names → `exited`; another harness's command → `nested`; the
-   harness's own (Claude's version string, `codex`, and Task 1.1's answers) →
+   harness's own (Claude's version string, `codex`, and Task 1.6's answers) →
    `ok`; pi/copilot/opencode with no measured name → `ok` on presence (§3.2).
 4. The writer: one `list-sessions`, one `list-windows -a`, one `list-panes -a`
    with space-separated `#{q:}` fields (no tab); the consistency check of §3.5
    step 2 (every pane's window and session in the other listings, else list
-   again, at most 3 times); `printf` the blocks; redact `launch`; refuse to
-   write a value holding a control character (skip that key, one stderr line).
+   again, at most 3 times); `printf` the blocks; redact `launch`; a value
+   holding a control character is handled by Task 1.3's row for its key,
+   never written. A listing command that fails (the server gone, a client and
+   server of different tmux versions) ends the round with nothing published.
 5. Publish (Part 1 form): `mktemp` in the shape dir; body compare against
    `shape` (everything after the header's blank line); same → remove the temp,
    exit 0; else hard-link `shape` to `history/<stamp>-<gen>`, `mv` the temp
@@ -349,10 +552,10 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape.sh` → all PASS, exit 0; `bash tests/test-panes.sh` and `bash tests/test-view.sh` still exit 0.
 **Commit:** `roost save: write the server's shape, with stale keys and the launch hint (#51)`
 
-### Task 1.5 — The checker and parser, and every refusal
+### Task 1.10 — The checker and parser, and every refusal
 
-**Files:** `scripts/lib/roost-shape.sh`, `tests/test-shape.sh`
-**Depends on:** 1.4
+**Files:** `scripts/lib/roost-shape.sh`, `tests/test-shape.sh`, `tests/fixtures/shape-v1.txt` (new)
+**Depends on:** 1.9
 
 **Do:**
 1. Red first (§8.1 test 5, the parse half): each of `roost-shape 2`, no
@@ -364,6 +567,16 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    <fault>` with the right N. A block whose first word is unknown is skipped
    with one stderr line naming its line, and the file passes. Unknown keys are
    ignored. A name with leading and trailing spaces parses byte for byte.
+   A zero-byte file and a file cut off inside its header are named refusals
+   (exit 16 at restore), never "nothing to restore". **The kept shape:**
+   `tests/fixtures/shape-v1.txt` is a shape this task's own test writes with
+   `roost save` (two sessions, a zoomed window, a keyed pane, a stale pane, a
+   `launch` line), scrubbed to `/tmp/roost-fixture/...` paths and fake ids;
+   every run checks and parses it and asserts its block counts and five
+   values. The file is never edited: a later key gets a second fixture beside
+   it, so every later roost is proven to read what this one wrote (the header
+   comment of the test says so; one tool lost every saved session at each
+   upgrade because nothing pinned the old format).
 2. `roost_shape_check FILE`: one pass, `IFS= read -r line`, key `${line%%
    *}`, value `${line#* }`, blank line ends a block; the rules of §3.2 in
    that order. `roost_shape_parse FILE DIR`: after a passing check, one file
@@ -374,10 +587,10 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape.sh` → all PASS, exit 0.
 **Commit:** `shape: check the whole file before anything, and refuse by line (#51)`
 
-### Task 1.6 — `scripts/roost-placeholder`, placing mode
+### Task 1.11 — `scripts/roost-placeholder`, placing mode
 
 **Files:** `scripts/roost-placeholder` (new, executable), `tests/test-shape-place.sh` (new)
-**Depends on:** 1.2, 1.3
+**Depends on:** 1.7, 1.8
 
 **Do:**
 1. Red first, `tests/test-shape-place.sh` (named server from `lib-shape.sh`):
@@ -394,7 +607,7 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    hands over to `/bin/sh` (`ps -o args= -p #{pane_pid}`).
 2. The program (POSIX `sh`): args `FILE --placing` (Part 3 adds `FILE
    HARNESS`). Print the line for the file's current name; loop `stty raw -echo
-   min 0 time 50; dd bs=1 count=1` (Task 1.2's form); on a wake with no byte
+   min 0 time 50; dd bs=1 count=1` (Task 1.7's form); on a wake with no byte
    re-read the name and reprint on change; on a byte: drain (`stty -icanon min
    0 time 0`, one more `dd`), restore the terminal, `mv FILE FILE.taken`. Won:
    `tmux set -pu remain-on-exit`, then `exec` `#{default-shell} -c
@@ -406,10 +619,10 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-place.sh` → all PASS; `sh -n scripts/roost-placeholder` exits 0.
 **Commit:** `roost-placeholder: a pane roost can prove untouched, placing mode (#51)`
 
-### Task 1.7 — Restore's server, sessions and the replaceable bootstrap
+### Task 1.12 — Restore's server, sessions and the replaceable bootstrap
 
 **Files:** `scripts/lib/roost-restore.sh` (new), `scripts/lib/roost-shape.sh` (owner rule), `bin/roost` (the `restore` arm), `tests/test-shape-place.sh`
-**Depends on:** 1.5, 1.6
+**Depends on:** 1.4, 1.10, 1.11
 
 **Do:**
 1. Red first (§8.1 test 2, cases base, a, b, c, d, e, f, g, h): restore into a
@@ -428,7 +641,14 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    owner rule: `restoring/` with a live pid makes a second restore refuse
    (exit 1, naming the pid); a dead pid, or a live pid with another start time
    (`ps -o lstart=`), is taken over (and T2b settles the dead run's bootstrap
-   into a shell, its session then skipped, exit 12).
+   into a shell, its session then skipped, exit 12). **Dotted and numeric
+   names** (Task 1.4): a saved session `v3.69-x` that exists is skipped and
+   named, not made again; one that does not exist is placed with every window;
+   the same for a session named `1`. **The restored server survives a resize
+   storm:** with a real client attached at 80x20 to the 200x50 restored server,
+   20 resizes of the outer pane in one second leave the inner server running
+   (`tmux -S <inner> ls` exits 0) — the shape another tool's users crashed
+   tmux with on a server made by `new-session -x -y`.
 2. `roost_shape_owner_take DIR` (`mkdir`, then `pid` and `lstart` lines),
    `roost_shape_owner_live DIR`, `roost_shape_owner_drop DIR`; never by age.
 3. `roost-restore.sh` placement, server and sessions part (§4.3): write
@@ -441,14 +661,16 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    bootstrap.used`, still one pane). Other sessions: `restoring/place.<n>`
    written, then `new-session -d -s NAME -x W -y H <placeholder> place.<n>
    --placing`. Existing session → skip and name. `restoring/` dropped last.
+   Every target built from a saved name takes Task 1.4's form (`=NAME:` and
+   on), and existence is tested the way Task 1.4 found exact.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-place.sh` → all PASS, exit 0.
 **Commit:** `roost restore: sessions, the bootstrap that a key or a live session keeps (#51)`
 
-### Task 1.8 — Windows, splits, layout, and the per-pane step
+### Task 1.13 — Windows, splits, layout, and the per-pane step
 
 **Files:** `scripts/lib/roost-restore.sh`, `tests/test-shape-place.sh`
-**Depends on:** 1.7
+**Depends on:** 1.1, 1.3, 1.4, 1.12
 
 **Do:**
 1. Red first (§8.1 test 1 base, wide, wired; test 2 (i) unkeyed half, (j)):
@@ -457,8 +679,15 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    `base-index 1`, one zoomed; kill the server by its socket; restore;
    `status --json` before/after equal on `session`, `window_name`,
    `window_index`, `pane_index`, `name`, `cwd` (the first pane's too); layout
-   strings equal with checksum and pane ids stripped; zoomed is zoomed; first
-   window 200x50. **Wide:** six side-by-side panes at `-x 200 -y 10` → six panes,
+   strings equal with checksum and pane ids stripped; zoomed is zoomed, and
+   after `resize-pane -Z` unzooms it its layout string equals the saved one
+   (ids and checksum stripped), so a wrong layout under a right zoom flag is
+   red (Task 1.1); first window 200x50. The test's conf also sets
+   `pane-base-index 1` (pane indices come back as saved) and `renumber-windows
+   on` (the `--dry-run` tree carries the note §4.3 asks for). **Odd names round
+   trip:** a session `v3.69-x` and a session `1`, a window name and a `cwd`
+   each holding a space, `$`, `'`, `"`, `#`, a trailing space and a UTF-8
+   glyph: `window_name` and `pane_current_path` equal after restore. **Wide:** six side-by-side panes at `-x 200 -y 10` → six panes,
    layout equal. **Wired:** every shell pane, the first included, has
    `roost-pane-shell` in `#{pane_start_command}` and `ROOST_TMUX` in its
    environment (the stub `sh` writes it to a file). (i) unkeyed: a shape of two
@@ -470,7 +699,13 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    `place.<n>.taken`, sleep alive, exit 0. **Hand edits (test 5's restore
    half):** a copy with a deleted pane block does not restore it; a renamed
    session (addresses renamed) is created under the new name; a linked window
-   saved under two sessions comes back as two windows.
+   saved under two sessions comes back as two windows. **The K-pane
+   fallback:** a hand-edited copy whose window's root cell is `20x6` with six
+   saved panes, two of them keyed: restore places the panes that fit, the
+   window keeps tmux's default layout, exit 13, and stderr names every block
+   not placed with its key and `roost revive` guidance (§4.3) — a pane roost
+   could not place never vanishes in silence, which is how another tool
+   orphaned conversations when its splits failed.
 2. Per window: `restoring/place.<n>` then `new-window -d -t SESSION:INDEX -n
    NAME -c CWD <placeholder> place.<n> --placing`; split until the saved count,
    each time on the pane whose larger side is largest, `-h` when width ≥
@@ -488,10 +723,10 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-place.sh` → all PASS, exit 0.
 **Commit:** `roost restore: windows by the largest side, the saved layout, the per-pane rename (#51)`
 
-### Task 1.9 — `--dry-run`, `--list`, `--from`, `--only`, directories
+### Task 1.14 — `--dry-run`, `--list`, `--from`, `--only`, directories
 
 **Files:** `scripts/lib/roost-restore.sh`, `bin/roost` (the `restore` arm), `tests/test-shape-place.sh`
-**Depends on:** 1.8
+**Depends on:** 1.13
 
 **Do:**
 1. Red first: `--dry-run` prints §4.3's tree (first line naming the save and
@@ -514,10 +749,34 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-place.sh` and `bash tests/test-shape.sh` → all PASS, exit 0.
 **Commit:** `roost restore: --dry-run tree, --list, --from, --only, a gone directory (#51)`
 
-### Task 1.10 — Docs and changelog
+### Task 1.15 — R4: a non-interactive Claude child does not re-identify the pane
+
+**Files:** `scripts/roost-session-context`, `tests/test-session-context.sh`
+**Depends on:** 1.5 (skip this task, and say so in the report, when Task 1.5 found that `@roost-session` never moved)
+
+**Do:**
+1. Red first, in `tests/test-session-context.sh`: run the hook as `roost
+   hooks claude` wires it, with a `SessionStart` payload naming session B on a
+   pane already identified as session A, and the environment Task 1.5 found
+   for the headless child (exactly its variable names and values): `@roost-
+   session` still reads A, the pane record still names A, and the hook still
+   prints its context and exits 0. The same payload with the interactive
+   values Task 1.5 found: `@roost-session` reads B (a `/clear` or a resume must
+   still re-identify). Unset variables: B (an older Claude that sets neither
+   keeps today's behaviour).
+2. In `scripts/roost-session-context`, before it calls
+   `roost_identity_from_payload`: when the environment matches Task 1.5's
+   non-interactive markers, skip the identity stamp (and nothing else). The
+   comment names R4, the rule (§3.2's agreement check sees only another
+   harness), and the measurement it rests on.
+
+**Check:** `bash tests/test-session-context.sh` and `bash tests/test-identity.sh` exit 0.
+**Commit:** `identity: a headless Claude run from the pane's own shell does not take over its key (#51)`
+
+### Task 1.16 — Docs and changelog
 
 **Files:** `site/content/docs/persistent-sessions.md` (new; sidebar per `site/AGENTS.md`), `bin/roost` (help header lines for `save` and `restore`), `docs/known-gaps.md`, `CHANGELOG.md`, `site/content/docs/changelog.md`
-**Depends on:** 1.1–1.9
+**Depends on:** 1.1–1.15
 
 **Do:**
 1. The page: what `save` writes and where (§3.1), the format and how to edit a
@@ -529,17 +788,21 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    agents are not resumed yet.
 2. Help lines; `ROOST_SHAPE_DIR`, and that `rm -rf ~/.local/state/roost/shapes`
    forgets every shape and nothing else.
-3. known-gaps: Task 1.1's result and the presence-alone risk (§10); history
-   has no ring yet.
+3. known-gaps: Tasks 1.1–1.6's results (the zoom string, a session group
+   comes back doubled with its agents refused as duplicates, the writer's
+   rule for each odd value, the exact-match targets, the nested-Claude result
+   and R4), the presence-alone risk (§10); history has no ring yet. The page
+   says what the writer does with a name or directory holding a control
+   byte.
 4. Changelog (Added: `roost save`, `roost restore` placement).
 
 **Check:** `cd site && node scripts/build-llms-txt.mjs --check` exits 0; `git diff --stat` shows `site/content/docs/changelog.md` changed with `CHANGELOG.md`.
 **Commit:** `docs: roost save and roost restore (placement) (#51)`
 
-### Task 1.11 — Verify
+### Task 1.17 — Verify
 
 **Files:** none (report only)
-**Depends on:** 1.10
+**Depends on:** 1.16
 
 **Do:**
 1. `bash -n` every touched bash file under `/bin/bash` and bash 5; `sh -n
@@ -551,8 +814,14 @@ layouts back as shells; preview with `--dry-run` and list saves with `--list`.
    placeholder; start the placeholder through `default-command`'s value; start
    a shell after a lost rename; end bootstrap eligibility at an attach;
    classify stale keys only in a fixture (feed `restore` a hand-made file
-   instead of `save`'s).
-3. Suite, contrast, container (Global constraints).
+   instead of `save`'s); write a control byte as read (the writer's own
+   reader then refuses the file); target a saved session by its bare name
+   (the dotted session is made twice); save the visible layout of a zoomed
+   window; publish after a failed listing; drop the K-pane stderr names;
+   skip R4's check (when Task 1.15 ran).
+3. Suite, contrast, container (Global constraints); and `tests/test-shape.sh`
+   and `tests/test-shape-place.sh` once more in `ubuntu:22.04` (tmux 3.2a),
+   the same `git archive` recipe with that image.
 
 **Check:** suite exit 0, no FAIL; container exit 0; every mutant turns at least one test red.
 **Commit:** none
@@ -590,7 +859,14 @@ reason (exit 13/14/15) instead of a dead pane when the conversation is gone.
 redirected homes, settings hash guard), start `claude --model haiku
 --permission-mode plan`, one prompt, `/exit`, `claude --resume ID` with no
 flags; read the model in the next request the fake API receives and the mode
-shown on screen. Once; record the guard lines.
+shown on screen. Once; record the guard lines. Two more reads in the same run,
+each recorded only (they inform questions for the coordinator, and nothing in
+this plan is built on them): whether the `SessionStart` hook's environment
+carries `CLAUDE_CONFIG_DIR` when the pane's Claude was started with one
+(another tool resumed without it and found "No conversation found" for 7 of
+8 sessions); and whether this Claude keeps a live-session registry file per
+process (its path, what it holds, whether `/exit` and a `kill -9` each remove
+it) — the only way roost could see the same conversation open outside roost.
 
 **If the probe says:**
 - both kept: nothing to build; the file says so; `launch` stays a hint.
@@ -598,6 +874,7 @@ shown on screen. Once; record the guard lines.
   is a follow-up); the file says which, and Task 2.10 adds a known-gaps entry
   and a site line ("a resumed Claude starts with its default model / mode").
 - the run could not complete (the rig failed): **stop**.
+- the two extra reads: any answer is recorded; none changes a task.
 
 **Check:** `test -s docs/airig/probes/persist-2-resume-flags.md`, with the guard lines saying the real settings were unchanged.
 **Commit:** `probe: what claude --resume keeps of the launch flags (#57)`
@@ -611,6 +888,11 @@ shown on screen. Once; record the guard lines.
 `claude --resume ID` from trusted directory B (it re-files, §2.1), one prompt,
 `/exit`. Read the first `"cwd":"…"` of the file now under B's project folder
 (`grep -m1 -o '"cwd":"[^"]*"' | head -n 1`) and whether A's file still exists.
+**The worktree case** (one tool's users found a conversation unfindable once
+Claude had moved it into a worktree): start in a repository root R, script an
+`EnterWorktree` tool call so the session moves into `R/.claude/worktrees/w1`,
+one more prompt, `/exit`. Record the transcript's folder, its first `cwd`, and
+from which of R and the worktree `claude --resume ID` finds the conversation.
 
 **If the probe says:**
 - the first `cwd` is still A: §5.1's rule resumes in A, as written.
@@ -618,6 +900,15 @@ shown on screen. Once; record the guard lines.
   which §5.1 accepts; no code change; say so in known-gaps (Task 2.10).
 - no `cwd` line at all in the re-filed file: **stop** (the rule would refuse
   every re-filed conversation).
+- worktree case, the resume works from the first `cwd` (R, or the worktree if
+  that is what the first line names): §5.1 holds; Task 3.5 gains this fixture
+  (a transcript filed under the worktree's folder whose first `cwd` is R)
+  and asserts the stub runs in the first `cwd`.
+- worktree case, the resume works **only** from a directory other than the
+  first `cwd`: **stop** — §5.1's rule would resume such panes where Claude
+  cannot find them, and the directory rule is the spec's to change, before
+  Part 3 writes `cwd` into the pending record.
+- `EnterWorktree` is not offered by the rig's Claude: record "not measured".
 
 **Check:** `test -s docs/airig/probes/persist-2-refiled-cwd.md`.
 **Commit:** `probe: the first cwd of a re-filed Claude transcript (#57)`
@@ -925,7 +1216,9 @@ press a key in a waiting pane to keep it as a shell; `roost restore --resume
    two `--pace` intervals → the stub log still empty, the pane still that
    shell; `--only SESSION` → one session; directory rule cases (shell cwd,
    identity cwd, neither but existing, removed → not run, `\` refused, two on
-   one line → first) with dotted paths; exited/nested not launched and named;
+   one line → first) with dotted paths; when Task 2.2's worktree case held,
+   a transcript filed under the worktree's folder whose first `cwd` is the
+   repository root runs the stub in the root; exited/nested not launched and named;
    siblings each get their own `--resume`; duplicate → the first launched, the
    second `%N.failed duplicate of %M` showing it, exit 13; store miss → exit
    13, `%N.failed store miss`, still the placeholder; a gone `cwd` with a key
@@ -1230,7 +1523,7 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 ### Task 4.5 — The saver: one per server, a want per cause, a ring of 100
 
 **Files:** `scripts/lib/roost-shape.sh`, `tests/test-shape-save.sh` (new), `tests/run.sh` (`shard_weight`)
-**Depends on:** nothing
+**Depends on:** 4.2 (the shutdown-hook probe runs before any Part 4 code, by the coordinator's ruling; no VM means this part stops for the coordinator), 4.3, 4.4
 
 **Do:**
 1. Red first (§8.1 test 8, the saver's own half; the test calls `roost save
@@ -1243,10 +1536,24 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
    → `save --auto` exits 0 within 5 s, writes nothing; a read-only shape dir →
    `save --auto` silent, exit 0; a `restore --dry-run` loop while 20 saves land
    never sees a refusal. (The hooks' own "exit 0 within 5 s" is asserted in
-   Task 4.6 with the conf loaded.)
+   Task 4.6 with the conf loaded.) **A listing that fails mid-round:** hold
+   the saver with `ROOST_TEST_SAVE_HOLD_AFTER_DRAIN`, kill the server by its
+   socket, release → `shape`, `gen` and `history/` unchanged, `save --auto`
+   silent with exit 0. **R3, `save.err`:** that failed round, and a round
+   whose publish fails (the shape directory made read-only while held),
+   each leave `save.err` (0600) naming the stamp, the failing step and its
+   exit code; the next published save removes it. **The directory removed
+   under a held saver:** `rm -rf` the shape directory while
+   `ROOST_TEST_SAVE_HOLD_AFTER_LIST` holds the saver; release → the saver
+   publishes nothing into it and exits 0 (its lock went with the directory);
+   the next save makes a fresh directory whose `gen` starts at 1. (One tool
+   found a deleted session brought back by a late write from its own saver;
+   this pins the opposite.)
 2. Turn Part 1's publisher into §3.5: steps 1–4, the three seams, `gen` and
    `history/<stamp>-<gen>`, the ring prune after each publish. `--auto` never
-   prints and never fails loudly.
+   prints and never fails loudly. R3: write `save.err` on a failed list or
+   publish and remove it on the next publish. Before publishing, check that
+   `gen` and the lock this round made still exist; if not, publish nothing.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-save.sh` → all PASS.
 **Commit:** `save --auto: one saver per server, every cause kept, a ring of 100 (#51)`
@@ -1335,7 +1642,7 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
    `ROOST_TEST_NOW`. **(g) a save in flight** — `ROOST_TEST_SAVE_HOLD_AFTER_LIST`
    while A is listed; `roost close A`; release; B dies; restore → A not back.
    **The ends of a fleet** (R1-A; this plan's own case — §8.1 test 8 (e)
-   itself runs through `--at-login` in Task 5.4): `roost kill NAME` of a
+   itself runs through `--at-login` in Task 5.6): `roost kill NAME` of a
    session and `roost stop` each leave one `closed/<boot>/close.<N>` per pane
    they removed, written before the tmux command, and a plain `restore` then
    prints `nothing to restore: every saved pane was closed on purpose`, exit 0.
@@ -1375,13 +1682,18 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 ### Task 4.10 — The saver applies the hook-driven arrows
 
 **Files:** `scripts/lib/roost-shape.sh` (saver step 2), `scripts/lib/roost-pending.sh`, `tests/test-shape-resume.sh`
-**Depends on:** 4.6, 1.2's result
+**Depends on:** 4.6, 1.7's result
 
 **Do:**
 1. Red first (§8.1 test 11, worker-only where it says attach): **Released** —
    `claude-exit1` → `%N.failed died`, claim gone, `--retry` reaches it; **retry
    (B)** — good stub first on `PATH`, `--retry` → one more launch, `pane_dead`
-   0, same `%N`; **a crashed placeholder** (Task 1.2's form) → dead pane,
+   0, same `%N`; **the only pane of the only session** — the `claude-exit1`
+   case again with the restored fleet being one pane in one session, under
+   `remain-on-exit failed` and `pane-died[98]`: the server is still running
+   and lists one dead pane, the file `%N.failed died` (a tmux build once
+   exited the server in exactly this shape; run here on the Mac's tmux and
+   in both containers by Task 4.13); **a crashed placeholder** (Task 1.7's form) → dead pane,
    `%N.failed died`, `--retry` launches; **a resume that exits 0** →
    `%N.failed exited`, no claim, `--list` names it, `revive %N` → new window,
    file gone; **a dead pane retried while still broken** → count unchanged,
@@ -1404,20 +1716,31 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 
 ### Task 4.11 — Cost measurements and the doctor's saving lines
 
-**Files:** `scripts/roost-doctor`, `tests/test-doctor.sh`, `docs/airig/probes/persist-4-cost.md` (new)
-**Depends on:** 4.7
+**Files:** `scripts/roost-doctor`, `tests/test-doctor.sh`, `tests/test-shape-save.sh`, `docs/airig/probes/persist-4-cost.md` (new)
+**Depends on:** 4.5, 4.7
 
 **Do:**
 1. Measure (§3.4a cost), once each, ratio with the method: `roost save --auto`
    time at 47 panes; time and files written for ten spawns in one second; 50
    `roost state working` on a working pane write no shape (already a test;
-   record its time).
+   record its time). Red first in `tests/test-shape-save.sh`: **no process per
+   pane** — a recording stub `ps` first on `PATH`; `save --auto` on a
+   server of 4 panes and one of 40 calls it the same number of times (the
+   owner rule's own read, at most 2); other tools' per-pane `ps` saves
+   pinned whole machines after a sleep.
 2. Red first in `tests/test-doctor.sh`: `persist: saving on; login restore
    off (…)`; `ROOST_SHAPE_DIR=` → `persist: saving off (ROOST_SHAPE_DIR is
    empty); login restore off`; `warn` for a `lock/` or `restoring/` with one
    live owner over 60 s (planted, pid named); `warn` N panes run a harness with
-   no recorded conversation and M carry a disagreeing identity.
-3. Implement those doctor lines (the login-restore half is Part 5).
+   no recorded conversation and M carry a disagreeing identity. **R3:** a
+   planted `save.err` → a `warn` line quoting its step and exit code; a
+   running server with **no** save whose `boot` is its own → `warn: no save
+   since this server started (…)`, with `persist` off as well as on (a
+   read-only shape directory gives both lines); a server whose newest save is
+   its own → no such line.
+3. Implement those doctor lines (the login-restore half is Part 5). The
+   "no save since this server started" line is unconditional (R3 extends
+   §4.5, which tied it to `persist` on).
 
 **Check:** `bash tests/test-doctor.sh` exits 0; the cost file has three numbers with methods.
 **Commit:** `doctor: what saving does on this server; the cost of a save, measured (#51)`
@@ -1430,7 +1753,8 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 **Do:** The page: saving is automatic, what triggers it, what is saved late
 (swaps, a join that keeps its window, a drag resize, a `cd`), the ring, which
 save a restore picks, closed stays closed, `roost close`/`kill`/`stop` (per
-R1) as the way to end a fleet for good. known-gaps: Tasks 4.1–4.4 and 4.11
+R1) as the way to end a fleet for good, and R3: `doctor` says when no save
+has landed since the server started and quotes `save.err`. known-gaps: Tasks 4.1–4.4 and 4.11
 results; the user-hook global-queue risk. Changelog.
 
 **Check:** `cd site && node scripts/build-llms-txt.mjs --check` exits 0; changelog synced.
@@ -1449,7 +1773,8 @@ new listing to find kills; hook `after-kill-window`; let a kill file outvote a
 death note, or a death note outvote a `close.` file; no `pane-died[98]`; read
 a placeholder's exit as a cancel; read only `%N` pending files in the overlay;
 `mv -f` without `mktemp`. Suite, contrast, container on `ubuntu:24.04` **and**
-`ubuntu:22.04` (tmux 3.2a) for `tests/test-shape-*.sh`.
+`ubuntu:22.04` (tmux 3.2a) for `tests/test-shape-*.sh`. R3 mutants: no
+`save.err` on a failed listing; the "no save since" line gated on `persist`.
 
 **Check:** suite exit 0; both containers exit 0; every mutant red.
 **Commit:** none
@@ -1464,8 +1789,12 @@ Design:     §4.4, §4.5 (login half), §4.6 (trigger, `ensure_session`, cleanup
 Repository: the `persist-5` worktree of this checkout (`.claude/worktrees/persist-5`)
 Branch:     worktree-persist-5
 Base:       origin/main when the part starts (Parts 1–4 merged)
-Oracle:     automated (`tests/test-persist.sh`, `tests/test-shape-attach.sh`) + instrumented (two probes) + human-eye (§8.2 items 1–5)
-Unattended: no — Task 5.1 needs a Linux VM
+Oracle:     automated (`tests/test-persist.sh`, `tests/test-shape-attach.sh`, `tests/test-second-server.sh`) + instrumented (three probes) + human-eye (§8.2 items 1–5)
+Unattended: no — Task 5.1 needs a Linux VM; Task 5.3 needs a person to quit the terminal app
+
+**The gate.** Tasks 5.3 (R5's probe) and 5.4 (R2's guard) land before any
+task that starts a server at login or from a terminal: both failures leave a
+second server, or no server, where a live fleet was.
 
 **After this part merges, a user can:** run `roost persist on` once, reboot,
 log in, and find the fleet placed; type `roost` and watch the agents come back
@@ -1500,7 +1829,7 @@ and with `KillUserProcesses=yes` set in a drop-in, what survived.
 **Depends on:** nothing
 
 **Do:** In `ubuntu:24.04` from a `git archive` export, run
-`tests/test-shape-place.sh` and Task 1.2's wake probe with `/bin/sh` = `dash`.
+`tests/test-shape-place.sh` and Task 1.7's wake probe with `/bin/sh` = `dash`.
 
 **If the probe says:** passes → nothing. `stty`/`dd` behave differently (no
 wake, or no byte) → **stop**.
@@ -1508,10 +1837,70 @@ wake, or no byte) → **stop**.
 **Check:** `test -s docs/airig/probes/persist-5-placeholder-dash.md`.
 **Commit:** `probe: the placeholder under dash (#192)`
 
-### Task 5.3 — `roost persist on|off|status`
+### Task 5.3 — Probe (R5): does quitting the terminal app kill a server started from it?
+
+**Files:** `docs/airig/probes/persist-5-terminal-quit.md` (new)
+**Depends on:** nothing
+
+**Do:** On the newest macOS available (record `sw_vers`), with a temp `HOME`
+and a throwaway `-L` name under a temp `TMUX_TMPDIR`: open the system
+terminal app, start `tmux -L probe new-session -d 'sleep 600'` in it, note the
+server pid, quit the app (Cmd-Q), wait 5 s, read `ps -p PID`. Repeat with the
+two candidate remedies: (i) the server started by a throwaway LaunchAgent
+plist (label `dev.roosting.roost.probe`, loaded with `launchctl bootstrap
+gui/$(id -u)` and removed with `bootout` after) whose job runs the same `tmux
+new-session -d`; (ii) the server started from the terminal under `nohup` and
+a new session (`setsid` where present). Once each. Never the live server.
+
+**If the probe says:**
+- the server survives the quit: R5 is not confirmed on this macOS; record the
+  version; Task 5.10 is skipped and says so; §8.2 item 1's terminal-quit check
+  (deferred list) is what will see it on a newer macOS.
+- the server dies, and candidate (i) survives: Task 5.10 builds Y — with
+  `persist` on, on macOS, the server is started through roost's own launchd
+  job instead of as the terminal's child; with `persist` off, `doctor` warns
+  and the page says so.
+- the server dies, and only candidate (ii) survives: Task 5.10 builds Y with
+  (ii) as the start path on macOS, whatever `persist` says.
+- the server dies and neither candidate survives: **stop**.
+
+**Check:** `test -s docs/airig/probes/persist-5-terminal-quit.md` with `sw_vers`, the pids and one outcome named; `launchctl print gui/$(id -u)/dev.roosting.roost.probe` fails afterwards (the probe job is gone).
+**Commit:** `probe: a terminal quit and the tmux server it started, on macOS (#192)`
+
+### Task 5.4 — R2: never start a second server under a live one's name
+
+**Files:** `bin/roost` (`ensure_session`, new `server_lost_socket`), `scripts/lib/roost-restore.sh` (the **Server** step), `tests/test-second-server.sh` (new)
+**Depends on:** nothing (Parts 1–4 merged)
+
+**Do:**
+1. Red first, `tests/test-second-server.sh` (named server, `lib-shape.sh`):
+   start the inner server with `roost spawn a sh` (a save lands with its
+   `boot`); `rm` its socket file; then `roost spawn b sh` → exit 1, stderr
+   `roost: the tmux server (pid N) is still running but its socket is gone;
+   kill -USR1 N recreates it` with the real pid, and the only tmux server
+   process for that socket directory is still pid N (`ps -axo pid=,args=`);
+   `roost restore` → the same exit and line, nothing placed. `kill -USR1 N` →
+   the socket is back and `roost spawn b sh` works. Controls: a newest save
+   whose `boot` names a dead pid, and one whose pid is alive but is not tmux
+   (the test's own `sleep`), and one whose pid is a tmux with another start
+   time → each starts a server as today.
+2. `server_lost_socket`: called only when `server_running` is false and a
+   server is about to be started; reads the newest save's `boot START-PID`
+   (from `roost_shape_dir`'s `shape`, none → false); true when `kill -0 PID`
+   succeeds, `ps -o comm= -p PID` ends in `tmux`, and now minus `ps -o etime=
+   -p PID` (parsed `[[dd-]hh:]mm:ss`) is within 2 s of START. `ensure_session`
+   and restore's **Server** step then print the line and exit 1. Task 5.6
+   calls it from `--at-login` (log the line, exit 0). The comment names R2,
+   the field lesson, and why the start time is checked (a reused pid after a
+   reboot must not block).
+
+**Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-second-server.sh` → all PASS; `bash tests/test-panes.sh` exits 0.
+**Commit:** `never start a second server while the first still runs with its socket gone (#192)`
+
+### Task 5.5 — `roost persist on|off|status`
 
 **Files:** `scripts/lib/roost-persist.sh` (new), `bin/roost` (the `persist` arm, help), `tests/test-persist.sh` (new), `tests/lib-shape.sh` (the `launchctl`/`systemctl` recording stubs)
-**Depends on:** 5.1
+**Depends on:** 5.1, 5.3, 5.4
 
 **Do:**
 1. Red first (§8.1 test 9): `ROOST_PERSIST_WRITE_ONLY=1` under
@@ -1524,20 +1913,24 @@ wake, or no byte) → **stop**.
    first on `PATH` that record argv and fail on `stop`: `on` loads through the
    stub; `off` called `disable`/`bootout`, never `stop` or `--now`; a name with
    a space or `/` → exit 1; `status` reads it all back. (On with the server
-   stopped needs `--at-login`: Task 5.4.) **The publish wait:** a
+   stopped needs `--at-login`: Task 5.6.) **The publish wait:** a
    planted live `lock/` → `on` waits (no load call while the owner lives),
    then saves and loads. A failing save removes `persist` and `service.env`.
-   No launchd or systemd → exit 17.
+   No launchd or systemd → exit 17. **`service.env` is written by `on` and
+   only by `on`:** edit a line in it, then run `status`, `--at-login` (write-
+   only seam, server down, nothing to place) and `doctor` → the file is byte
+   for byte the edited one (another tool rewrote its unit on every start, lost
+   users' edits and raised a system notification each time).
 2. Implement §4.4 `on`/`off`/`status`; `on`'s save is not `--auto` (waits by
    the owner rule); `server_running` decided once.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-persist.sh` → all PASS.
 **Commit:** `roost persist on|off|status: one login unit per server, never stopped (#192)`
 
-### Task 5.4 — `--at-login`: place, stop, leave the pending record
+### Task 5.6 — `--at-login`: place, stop, leave the pending record
 
 **Files:** `scripts/lib/roost-persist.sh`, `scripts/lib/roost-restore.sh`, `tests/test-shape-attach.sh` (new)
-**Depends on:** 5.3
+**Depends on:** 5.5
 
 **Do:**
 1. Red first: **§8.1 test 1 "started at all"** — wired by the real
@@ -1559,23 +1952,32 @@ wake, or no byte) → **stop**.
    exits 0; the same with `ROOST_TEST_NOW` putting the last save and the close
    in one second; the same fleet torn down by stub exits only (no close),
    inside the window, is restored whole. **§8.1 test 9, on with the server
-   stopped:** a planted `main` + `work`, server down, Task 5.3's stubs that
+   stopped:** a planted `main` + `work`, server down, Task 5.5's stubs that
    start `restore --at-login <inner>` on the load call → `on` exits 0, the load
    logged, `shape` still the planted save until the job's `--trigger restore`
    save (no `persist-on` save in between), the job places both. `--at-login`
    writes `restoring/` first, waits up to 60 s for
    the socket directory, writes `login/<os-boot>` and `login.log` (0600,
    halved past 1 MB), removes other boots' `pending/`, `claims/` and
-   `closed/` after its own files, and always exits 0.
-2. Implement.
+   `closed/` after its own files, and always exits 0. **Idempotent at login:**
+   `--at-login` three times in a row against a running server whose fleet is
+   placed → session, window and pane counts unchanged after the first, three
+   `login.log` lines, exit 0 each time, no second bootstrap session (another
+   tool's boot unit added a session per restart). **Nothing to place starts
+   nothing:** in the 8 (e) case above, no inner server exists afterwards
+   (`tmux -L <inner> ls` fails). **R2 at login:** with Task 5.4's lost-socket
+   server planted, `--at-login` logs R2's line, starts nothing, exits 0.
+2. Implement. `--at-login` decides "nothing to place" after §3.6 step 4 and
+   before the **Server** step, and calls `server_lost_socket` (Task 5.4)
+   first.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-attach.sh` → all PASS.
 **Commit:** `persist --at-login: place the fleet at login and keep every key for the first attach (#192)`
 
-### Task 5.5 — The first attach: `client-attached[98]`
+### Task 5.7 — The first attach: `client-attached[98]`
 
 **Files:** `tmux/roost.conf`, `bin/roost` (`restore --resume --auto`), `tests/test-shape-attach.sh`
-**Depends on:** 5.4
+**Depends on:** 5.6
 
 **Do:**
 1. Red first (§8.1 test 11, the hook cases): **a real attach** from a pane of
@@ -1586,7 +1988,10 @@ wake, or no byte) → **stop**.
    once; **worker held past 10 s** (`--pace 6`, second attach at 12 s) →
    nothing extra, `resuming/` still names the first; **(d) must still launch** —
    rc files with banners, client at 80x20 against a 200x50 save → all three
-   launch, none `.taken`/`.failed`; a detach starts nothing. `restore --resume
+   launch, none `.taken`/`.failed`; the same with a `.bashrc` and `.zshrc` that
+   **block** (`read -r x` at the end) → all three still launch (neither the
+   placeholder nor the resume runs a shell rc; other tools typed their resume
+   into a shell whose rc file never returned); a detach starts nothing. `restore --resume
    --auto` waits for a live `restoring/` owner before it walks.
 2. `tmux/roost.conf`: `set-hook -g client-attached[98] 'run-shell -b
    "…/bin/roost restore --resume --auto … >/dev/null 2>&1 || :"'` (a Task 4.3
@@ -1595,10 +2000,10 @@ wake, or no byte) → **stop**.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-attach.sh` → all PASS.
 **Commit:** `the first attach resumes the agents, paced, and a detach never does (#192)`
 
-### Task 5.6 — `ensure_session` waits for, or runs, the login restore
+### Task 5.8 — `ensure_session` waits for, or runs, the login restore
 
 **Files:** `bin/roost` (`ensure_session`), `tests/test-shape-attach.sh`
-**Depends on:** 5.4
+**Depends on:** 5.6
 
 **Do:**
 1. Red first (§8.1 test 11's last cases): `persist` on, no server, a `shape`,
@@ -1611,45 +2016,79 @@ wake, or no byte) → **stop**.
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-attach.sh`; `bash tests/test-panes.sh` exits 0.
 **Commit:** `ensure_session waits for the login restore, or runs it when the service did not (#192)`
 
-### Task 5.7 — `roost upgrade` follows, and `doctor` says the login half
+### Task 5.9 — `roost upgrade` follows, and `doctor` says the login half
 
 **Files:** `scripts/roost-upgrade`, `scripts/roost-doctor`, `tests/test-upgrade.sh`, `tests/test-doctor.sh`
-**Depends on:** 5.3
+**Depends on:** 5.5
 
 **Do:** Red first: with `persist` on (write-only seam), an upgrade that moves
 the checkout rewrites the unit to the new path and says so; doctor's line
 `persist: saving on; login restore on for 'NAME' (launchd, unit names this
 checkout; roots match; last save …; last login restore: …; N pending)`; `warn`
 when the unit names another checkout, `service.env` names a root the caller
-lacks, its `PATH` lacks a harness the shape names, the newest save is older
-than the server's boot, or this boot's pending record has unlaunched or failed
-panes; and `resuming/` over 60 s. Then implement.
+lacks, its `PATH` lacks a harness the shape names, or this boot's pending
+record has unlaunched or failed panes; and `resuming/` over 60 s. (The "no
+save since this server started" line is Task 4.11's, unconditional by R3.)
+Then implement.
 
 **Check:** `bash tests/test-upgrade.sh` and `bash tests/test-doctor.sh` exit 0.
 **Commit:** `upgrade rewrites the login unit; doctor reports the login restore (#192)`
 
-### Task 5.8 — Docs and changelog
+### Task 5.10 — R5: start the server where a terminal quit cannot reach it (only if Task 5.3 confirmed the kill)
+
+**Files:** `bin/roost` (`ensure_session`'s server start), `scripts/lib/roost-persist.sh` (the start job), `scripts/roost-doctor`, `tests/test-persist.sh`, `tests/test-doctor.sh`
+**Depends on:** 5.3, 5.5, 5.8 (skip this task, and say so in the report, when Task 5.3 found the server survives)
+
+**Do:**
+1. Red first, with the recording `launchctl` stub of Task 5.5 and `uname`
+   reading `Darwin`: with Task 5.3's candidate (i) chosen and `persist` on,
+   `roost` with the server stopped and the login marker present (so no
+   restore) starts the server through the start job — the stub log holds the
+   job's load or kickstart call, and the server that answers is the one that
+   job started (its parent is not the test's shell: `ps -o ppid= -p <server
+   pid>`) — then attaches as today; with `persist` off, today's start, and
+   `doctor` prints `warn: a server started from a terminal ends when the
+   terminal app quits on this macOS (roost persist on starts it through
+   launchd)`. With candidate (ii) chosen instead: every macOS start goes
+   through it (the server's session id differs from the test shell's:
+   `ps -o sess=`). On a non-Darwin `uname`, nothing changes.
+2. Implement the chosen candidate: for (i), a second plist written by
+   `persist on` beside the login unit, label
+   `dev.roosting.roost.<server>.start`, whose job only starts the server the
+   way `ensure_session` does and places nothing; `ensure_session` loads or
+   kicks it and waits up to 10 s for `server_running`. `persist off` removes
+   it with the login unit. For (ii), the start wrapped as the probe proved.
+   The comment names R5 and the probe's file.
+
+**Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-persist.sh` and `bash tests/test-doctor.sh` exit 0.
+**Commit:** `macOS: start the server where quitting the terminal app cannot end it (#192)`
+
+### Task 5.11 — Docs and changelog
 
 **Files:** `site/content/docs/persistent-sessions.md`, `site/content/docs/getting-started.md` (a pointer only), `bin/roost` (help: `persist`), `docs/known-gaps.md`, `CHANGELOG.md`, `site/content/docs/changelog.md`
-**Depends on:** 5.1–5.7
+**Depends on:** 5.1–5.10
 
 **Do:** The persist section: `on`/`off`/`status`, what runs at login and at
 first attach, linger on Linux, `off` never stops an agent, the Keychain note,
-what `service.env` holds and never holds. known-gaps: Tasks 5.1 and 5.2.
+what `service.env` holds and never holds, that `service.env` is rewritten
+only by `persist on`, R2's line and `kill -USR1`, and Task 5.3's result (and
+Task 5.10's start path when built). known-gaps: Tasks 5.1–5.3.
 Changelog (Added: `roost persist`).
 
 **Check:** `cd site && node scripts/build-llms-txt.mjs --check` exits 0; changelog synced.
 **Commit:** `docs: roost persist and the login restore (#192)`
 
-### Task 5.9 — Verify
+### Task 5.12 — Verify
 
 **Files:** none
-**Depends on:** 5.8
+**Depends on:** 5.11
 
 **Do:** `bash -n`; mutants: load the unit in a test; `--now` on `off`;
 delete `client-attached[98]`; break `resuming/` by age; place a shell instead
 of a placeholder at login; start the placeholder through `default-command`'s
-value. Suite, contrast, container.
+value; drop R2's check (a second server starts); R2 without the start-time
+compare (a planted non-tmux or reused pid blocks); rewrite `service.env`
+outside `on`. Suite, contrast, container.
 
 **Check:** suite exit 0; container exit 0; every mutant red.
 **Commit:** none
@@ -1659,7 +2098,10 @@ value. Suite, contrast, container.
    waiting lines, agents 2 s apart after `roost`, a key keeps a shell, each
    Claude at its prompt with its conversation, `login.log` names the save and
    why, `restore --list` shows the pending record empty; count dialogs by
-   harness; repeat with `roost` typed before the service ran.
+   harness; repeat with `roost` typed before the service ran. Then quit the
+   terminal app (Cmd-Q), open it again, and `roost`: the fleet is still there
+   (R5; on a macOS where Task 5.3 did not see the kill, this is the check that
+   will).
 2. §8.2 item 2 — the same on a Linux VM; without linger the unit starts at
    login; `persist off` with forty stub agents ends none; a logout/login with
    the distribution's `KillUserProcesses`: say what survived.
@@ -1983,29 +2425,29 @@ A deferred check that fails is a new task in a new part, not a rewind.
 
 | §8.1 item | task |
 |---|---|
-| 1 base (placement, first cwd, layout ids stripped, zoom, 200x50) | 1.8 |
-| 1 body compare (save twice, one file) | 1.4 |
-| 1 wide layout | 1.8 |
-| 1 wired | 1.8 |
-| 1 started at all, and a user's own `default-command` | 5.4 |
-| 2 base (existing skipped; stopped server's bootstrap used) | 1.7 |
-| 2 (a) (b) (c) (d) (e) (f) (g) (h) | 1.7 |
-| 2 (i) unkeyed half | 1.8 |
+| 1 base (placement, first cwd, layout ids stripped, zoom, 200x50) | 1.13 |
+| 1 body compare (save twice, one file) | 1.9 |
+| 1 wide layout | 1.13 |
+| 1 wired | 1.13 |
+| 1 started at all, and a user's own `default-command` | 5.6 |
+| 2 base (existing skipped; stopped server's bootstrap used) | 1.12 |
+| 2 (a) (b) (c) (d) (e) (f) (g) (h) | 1.12 |
+| 2 (i) unkeyed half | 1.13 |
 | 2 (i) keyed half | 3.3 |
-| 2 (j) | 1.8 |
-| 3a a gone `cwd` → shell at `$HOME`, stderr line | 1.9 |
+| 2 (j) | 1.13 |
+| 3a a gone `cwd` → shell at `$HOME`, stderr line | 1.14 |
 | 3b exit 13 when it had a key | 3.5 |
 | 4 resume, pacing, `--no-resume`, `--recent` launch count, `--only` | 3.5 |
 | 4 `--recent` holds at the next attach (worker-only) | 3.5 |
 | 4 directory rule (all cases) | 3.5 |
-| 4 exited and nested — the saver classifies | 1.4 |
+| 4 exited and nested — the saver classifies | 1.9 |
 | 4 exited and nested — restore launches neither | 3.5 |
 | 4 siblings, duplicate, stale, store miss, mid-turn line | 3.5 |
-| 5 parse refusals, unknown block, whitespace | 1.5 |
-| 5 deleted block, renamed session, linked window | 1.8 |
-| 5 "create nothing" on a refusal | 1.9 |
+| 5 parse refusals, unknown block, whitespace | 1.10 |
+| 5 deleted block, renamed session, linked window | 1.13 |
+| 5 "create nothing" on a refusal | 1.14 |
 | 6 live pane, own key, exited, nested, other (revive), release only one's own | 2.6 |
-| 6 `other` — saved with `stale_reason other` | 1.4 |
+| 6 `other` — saved with `stale_reason other` | 1.9 |
 | 6 gone pane, no transcript in the record, two revives, `--new-window` own key | 2.7 |
 | 6 against a waiting pane, overlapping the worker, taken pane in use / idle / `--force`, interrupted revive, no origin line, inherited origin, `--new-window` from a pending file | 3.8 |
 | 7 addressing (all) | 3.9 |
@@ -2016,15 +2458,15 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 8 ten `spawn`s in parallel | 4.7 |
 | 8 (a) (c) (d) (f) reading rule | 4.9 |
 | 8 (b) planted race, same second, (g) in flight, the belt | 4.8 |
-| 8 (e) the last session (per R1) | 5.4 |
+| 8 (e) the last session (per R1) | 5.6 |
 | 8 (b2) overlap rewritten, death in the gap, (h) boot change, (i) kills by every route | 4.6 |
-| 9 persist (all but the next row) | 5.3 |
-| 9 `on` with the server stopped | 5.4 |
-| 10a `save` with empty/relative/read-only dir | 1.4 |
+| 9 persist (all but the next row) | 5.5 |
+| 9 `on` with the server stopped | 5.6 |
+| 10a `save` with empty/relative/read-only dir | 1.9 |
 | 10b `save --auto` degrade; reader loop | 4.5 |
 | 10b every hook exits 0 within 5 s with saving off | 4.6 |
-| 11 `--at-login` placement, structural save in the gap, second reboot | 5.4 |
-| 11 a real attach; hook deleted; two clients; worker held; (d) must still launch | 5.5 |
+| 11 `--at-login` placement, structural save in the gap, second reboot | 5.6 |
+| 11 a real attach; hook deleted; two clients; worker held; (d) must still launch | 5.7 |
 | 11 interrupted loop; interrupted after the claim; duplicate across workers | 3.6 |
 | 11 a pane taken (a) (b) (c) (e) | 3.5 |
 | 11 (f) `send` refuses a waiting pane | 3.4 |
@@ -2037,11 +2479,11 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 11 `close` on a waiting pane | 3.4 |
 | 11 taken, then an agent started in it | 3.7 |
 | 11 dialog keys survive — structural save half | 4.10 |
-| 11 dialog keys survive — `--at-login` half | 5.4 |
+| 11 dialog keys survive — `--at-login` half | 5.6 |
 | 11 `kill-pane` before attach; taken then `exit`ed | 4.10 |
 | 11 a `.failed` listed and retried only with `--retry` | 3.6 |
-| 11 `ensure_session` with persist on, with and without the marker | 5.6 |
-| 11 other host | 1.9 |
+| 11 `ensure_session` with persist on, with and without the marker | 5.8 |
+| 11 other host | 1.14 |
 | 11 two sockets | 3.9 |
 | 12 (a) (b) markers and switches (c) (d) (e) (j) | 7.3 |
 | 12 (b) no answer, (f) (h) (i), Ctrl-C | 7.4 |
@@ -2050,11 +2492,45 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | guard: `status --json` byte-identical but `was` | 3.9 |
 | guard: record tests pass with shapes on | 4.10 |
 | guard: canary empty | every test file (Global constraints) |
-| guard: 0700 directory | 1.3 |
-| guard: 0600 files | 1.4 |
-| mutations | each part's verify task (1.11, 2.11, 3.14, 4.13, 5.9, 6.6, 7.7) |
+| guard: 0700 directory | 1.8 |
+| guard: 0600 files | 1.9 |
+| mutations | each part's verify task (1.17, 2.11, 3.14, 4.13, 5.12, 6.6, 7.7) |
 | live: `revive-smoke.sh` | 2.8 |
 | live: codex, copilot, pi resume cases | 2.9 |
+
+## Coverage: plan additions beyond §8.1 → the task that lands each
+
+Field lessons from other tools, written as test cases inside the spec's rules,
+and the coordinator's rulings R2–R5. Each is red before its code.
+
+| addition | task |
+|---|---|
+| format probes: zoom string, session group, control bytes, exact targets, nested Claude | 1.1, 1.2, 1.3, 1.4, 1.5 |
+| `save` against a stopped server publishes nothing | 1.9 |
+| the writer never writes a file its own reader refuses (control bytes by Task 1.3's rules) | 1.9 |
+| zero-byte and cut-off shapes are named refusals | 1.10 |
+| the kept shape fixture, read on every run, never edited | 1.10 |
+| dotted and numeric session names skipped or placed exactly | 1.12 |
+| the restored server survives a resize storm from a real client | 1.12 |
+| unzoom after restore and compare the layout; `pane-base-index 1`; `renumber-windows` note | 1.13 |
+| odd names and directories round-trip (space, `$`, quotes, `#`, trailing space, UTF-8) | 1.13 |
+| the K-pane fallback names every unplaced block with its key | 1.13 |
+| R4: a headless Claude child does not re-identify the pane | 1.15 |
+| launch-flag, harness-home and live-registry reads (recorded only) | 2.1 |
+| the worktree-relocated transcript (probe, and its fixture) | 2.2, 3.5 |
+| a listing that fails mid-round publishes nothing | 4.5 |
+| R3: `save.err` written on a failed round, removed on the next publish | 4.5 |
+| the shape directory removed under a held saver is not recreated by it | 4.5 |
+| the only pane of the only session dies under `pane-died[98]`: the server lives | 4.10 |
+| no process per pane in a save | 4.11 |
+| R3: `doctor` quotes `save.err`; "no save since this server started" whatever `persist` says | 4.11 |
+| R5 probe: a terminal quit and the server it started | 5.3 |
+| R2: no second server under a live one's name; `kill -USR1` line | 5.4 (and its `--at-login` case in 5.6) |
+| `service.env` rewritten only by `persist on` | 5.5 |
+| `--at-login` three times is idempotent; nothing to place starts no server | 5.6 |
+| a blocking shell rc does not stop a resume | 5.7 |
+| R5 build, only if confirmed | 5.10 |
+| quit the terminal after the reboot restore (deferred, §8.2 item 1) | Part 5's deferred list |
 
 Split items: where one §8.1 item spans two parts (test 1, 2 (i), 3, 4, 6, 10,
 11), it is cut into the halves named above, each half in exactly one task. The
