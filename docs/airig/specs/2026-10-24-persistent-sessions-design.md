@@ -1,10 +1,13 @@
 # Persistent sessions: a roost fleet survives a reboot — design for #191 (#57, #51, #192, #105)
 
-Status: **revision 4, 2026-10-25. Nothing built.** The four questions in §9
+Status: **revision 6, 2026-10-25. Nothing built.** The four questions in §9
 were decided by the human (A, A, A, A) and stand; revision 1 answered the
 twelve blocking items of a three-reviewer read, revision 2 the fourteen of a
-second, two-reviewer read, revision 3 the five of a third, and revision 4 the
-six of a fourth (§0), without moving any decision.
+second, two-reviewer read, revision 3 the five of a third, revision 4 the
+six of a fourth, and revision 5 the final read's three (§0), without moving
+any decision. Revision 6 records the human's opt-in answer (only the login
+service is opt-in; saving is always on) and adds a feature the human asked
+for, the **restore offer** (§4.8).
 Where a fix changed what an A means in practice, that question's own text
 says so. Base: `main` at `83812b1`.
 
@@ -129,6 +132,15 @@ only, and no new mechanism. Each fix is an arrow of §4.7's table, with the
 | notes | `close` on a placeholder is `kill-pane` (F N1); `revive --new-window` from a pending file is refused (F N2); the `.failed` file's first line decides T14 or T16 (F N6); T2's changed-command fallback is **placing, taken** (C note) | §4.7 T19, T5, T14, T2; §4.1 step 5a; §4.6; §8.1 tests 2(j), 6, 11 |
 
 Every other note of the fifth read is triaged in Appendix E.
+
+### Revision 6: the opt-in answer, and the restore offer
+
+No review read; two decisions by the human on 2026-10-25.
+
+| # | item | answered in |
+|---|---|---|
+| 1 | the opt-in reading: **only the login service is opt-in; saving is always on** | §3.4, §3.4a and §9 now say decided, not flagged; nothing else moves, because the spec was already written to this reading |
+| 2 | the human's words: "if there is a roost session saved, a crash happens, and roost persist on never was triggered, we should ask the user if they want to restore their previous session, and even allow them to see what that session looks like before (along with maybe a checkbox to say 'turn roost persist on going forward')" | §4.8 (new): when it is asked and when never, the prompt and its keys, the preview (one format with `restore --dry-run`, now pinned in §4.3), start fresh and the `declined` record, the races, and docs; §3.1 (`offer/`, `declined`); §4.3 (`--dry-run` tree); §4.4 and §4.6 (no automatic path restores a declined save); §4.5 (the doctor line); §5.8; §6 step 7; §7; §8.1 test 12, §8.2 item 8; §9 Q1 |
 
 ---
 
@@ -631,6 +643,8 @@ ${ROOST_SHAPE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/roost/shapes}/<server>/
   service.env         the roots and homes the login service runs with              (§4.4)
   login/<os-boot>     present once the login restore has run on this OS boot        (§4.6)
   login.log           what each login restore did, 0600, truncated at 1 MB          (§4.4)
+  offer/              present while a restore offer waits at a prompt, same owner rule (§4.8)
+  declined            a hard link to the last save a person declined at the offer   (§4.8)
 ```
 
 `<server>` is the socket **name** for a `-L NAME` server (`roost` for the
@@ -877,12 +891,15 @@ event; accepted for the same reason, and said in the user page (§7).
 
 **Saving is always on** once step 4 lands, with `ROOST_SHAPE_DIR=` the way to
 turn it off. #191 decided that the **login service** is off until `roost
-persist on`; the shape itself costs under 50 ms per structural event and is
+persist on`, and the human confirmed on 2026-10-25 that this is the only
+opt-in: saving is not (§3.4a, §9). The shape itself costs under 50 ms per structural event and is
 what makes a hand `roost restore` after a crash possible with `persist` off,
 which is #51 on its own. `persist on` saves at once (the table), so a fleet
 enabled and then crashed needs no later event to be on disk. `doctor` says
 both halves in one line, `persist: saving on; login restore off (roost
 persist on …)`, so "off" is never read as "nothing is written" (§4.5).
+Saving with the service off is also what lets a bare `roost` **offer** the
+last fleet after a crash (§4.8).
 
 ### 3.4a The one switch for saving
 
@@ -893,9 +910,14 @@ or nothing. Today it reads only `ROOST_SHAPE_DIR` (unset: the default path;
 empty or relative: nothing). The hooks, the direct calls and `roost save`
 never test anything else.
 
-The human has not yet confirmed this reading (§9, the paragraph after Q4).
-If the answer is that **saving is opt-in too**, the function also requires
-the server's `persist` marker, and these sections change, and only these:
+**Decided by the human on 2026-10-25** (§9, the paragraph after Q4): only
+the login service is opt-in, and saving is always on, so this function
+reads `ROOST_SHAPE_DIR` and nothing else. The list below is kept as the
+record of the one-place switch: if that answer were ever reversed and
+**saving became opt-in too**, the function would also require the server's
+`persist` marker, and these sections would change, and only these (and
+§4.8, whose offer would then never appear, since it exists only for
+`persist` off):
 
 - §3.4 — this paragraph and the one above: saving starts at `persist on`.
 - §4.4 — `off` stops saving as well as the service (the shapes stay);
@@ -1146,7 +1168,8 @@ window would also drop a pane that had moved out of it before the kill):
 
 The reading rule's step 4 applies it to whatever save is picked. The
 directory is read only for the boot a picked save names, and the next
-`--at-login` removes directories for boots that no shape in the ring names.
+`--at-login` removes directories for boots that no shape in the ring, and
+not `declined` (§4.8), names.
 
 ---
 
@@ -1493,6 +1516,31 @@ the hidden form the service runs (§4.4).
 - **`--dry-run`** prints the plan with the same words and exits with the code
   the real run would give before any resume. `--list` prints the history
   (§3.6) and the pending record (§4.6) and exits 0.
+  **The plan is one tree** (revision 6, pinned so §4.8's preview reuses it
+  and no second format exists): a first line naming the save and why it was
+  picked, then each session, its windows indented under it, its panes under
+  those, one line per pane with its index, `name`, directory, harness, and
+  what restore would do with it:
+
+  ```
+  from 20261024T205102Z-4182 (the newest save; saved 2 h ago)
+  session roost
+    window 1 roost
+      pane 1 promo     /home/me/w/roost       claude  resume
+      pane 2 linkedin  /home/me/w/roost       -       shell
+      pane 3 nested    /home/me/w/roost       -       shell, not resumed: stale (nested codex)
+    window 2 build
+      pane 1 api       /home/me/w/gone        codex   shell in ~, not resumed: directory gone
+  session litro (exists - skipped, 9 panes not restored)
+  ```
+
+  The reasons are §5.6's and §5.1a's words: `stale (exited|nested|other
+  HARNESS)`, `store miss`, `directory gone`, `harness missing`, `no key`.
+  It reads files and the harness stores only: `--dry-run` **never starts a
+  server**, and with no server running it skips nothing as existing. A pane
+  removed by `closed/` (§3.6 step 4) is not shown; a window or session left
+  empty by it is not either. Plain text, no pager, no colour when stdout is
+  not a terminal.
 
 ### 4.4 `roost persist on|off|status [--name NAME]` (#192)
 
@@ -1555,7 +1603,11 @@ shared template, so `off` for one server touches nothing of another's.
     `restoring/` first, under §3.5's owner rule (so a `roost` typed
     meanwhile waits for a live owner however long it takes, §4.6), then
     waits up to 60 s for the socket directory to be writable, then does §4.3 for
-    NAME with the reading rule of §3.6 **up to placement** (the pending
+    NAME with the reading rule of §3.6 **up to placement** — unless the
+    save that rule picks is the one `declined` names (§4.8, revision 6):
+    then it places nothing and writes one `login.log` line saying so,
+    since a person said no to that fleet and no automatic path overrules
+    them — (the pending
     record is written pane by pane during placement, each file before its
     placeholder starts, §4.6), then writes the `login/<os-boot>` marker and
     what it did to `login.log`. It always exits 0 (a skipped session is a line in the log,
@@ -1588,9 +1640,12 @@ is):
   this checkout; roots match; last save 2026-10-24 20:51 gen 4182
   after-split-window, 13 sessions / 47 panes; last login restore:
   2026-10-20 …; 0 pending)`, or `persist: saving on; login restore off
-  (roost persist on to restore the fleet at login)`, or, with
-  `ROOST_SHAPE_DIR=`, `persist: saving off (ROOST_SHAPE_DIR is empty);
-  login restore off`.
+  (a new server asks before restoring; roost persist on to restore the
+  fleet at login)`, or, with `ROOST_SHAPE_DIR=`, `persist: saving off
+  (ROOST_SHAPE_DIR is empty); login restore off`. When `declined` exists
+  (§4.8, revision 6) the line ends `; declined at the restore offer:
+  20261024T205102Z-4182 (roost restore --from 20261024T205102Z-4182)`, so
+  a "no" pressed in a hurry can still be found.
 - `warn`: the unit names another checkout; or `service.env` names a root the
   caller does not have; or its `PATH` lacks a harness the newest shape names;
   or `persist` is on and the newest save is older than the server's boot
@@ -1760,7 +1815,10 @@ not have, and not in the shape, which §3.3 reads from live options. So:
   on Linux), `ensure_session` runs `--at-login` itself under the same lock
   before attaching — so a service that did not run, or has not run yet, is
   not a lost fleet. A server a person killed on purpose and restarted in the
-  same OS boot has the marker and is left alone.
+  same OS boot has the marker and is left alone. A save that `declined`
+  names is not restored here either (§4.4's `--at-login` rule, revision 6).
+  With `persist` **off**, `ensure_session` restores nothing by itself;
+  a bare `roost` **asks** instead (§4.8).
 - `pending/<boot>/` and `claims/<boot>/` for a boot that is gone are removed
   by the next `--at-login`, after its own pending files are written; `rm
   -rf` of the shape directory forgets them with the rest.
@@ -2006,6 +2064,187 @@ table's column says so, the way it refuses a blocked target (unless
 `--force`), so a coordinator's prompt is not thrown away as the "key" that
 takes a pane.
 
+### 4.8 The restore offer: a bare `roost` asks after a crash (revision 6)
+
+The human's request, 2026-10-25: when a fleet was saved, a crash happened,
+and `roost persist on` was never run, **ask** whether to bring it back,
+show what it held first, and offer to turn the login restore on from then
+on. Today such a person gets an empty `roost` session and has to know that
+`roost restore` exists. The offer adds no mechanism to restore itself: its
+`r` is §4.3's placement and §4.6's first-attach resume, and its preview is
+§4.3's `--dry-run` tree.
+
+**When it is asked.** All of these, checked in this order, cheapest first,
+before anything else `roost` does:
+
+1. The verb is an **attach**: a bare `roost`, or `roost session NAME`
+   (`attach_session`, `bin/roost:219`). The coordinator's shape said a bare
+   `roost`; `roost session NAME` is the same person at the same terminal
+   after the same crash, so it asks too. `roost spawn`, `new` and every
+   other verb that calls `ensure_session` without attaching never ask:
+   those are scripts and agents, not a person waiting to attach.
+2. **stdin and stdout are both terminals** (`[ -t 0 ] && [ -t 1 ]`). Not a
+   terminal is a script, a pipe, or an agent's shell: no offer, and
+   `roost` does exactly what it does today.
+3. The **server is not running** (`server_running` false). A running server
+   is not a crash to recover from.
+4. Saving is on: `roost_shape_saving` (§3.4a) prints a directory. With
+   `ROOST_SHAPE_DIR=` there is nothing to offer.
+5. The login service is **off**: no `persist` marker (§4.4). With it on,
+   §4.6's `ensure_session` path places the fleet by itself; asking as well
+   would ask a question that has already been answered.
+6. A `shape` exists for this server, passes §4.3's "refuse first" checks
+   (an unreadable shape gives one stderr line, `roost: the saved shape is
+   unreadable (line N: FAULT) - roost restore --list`, and no offer), and
+   its `host` is this machine (a shape from elsewhere resumes nothing,
+   §4.2).
+7. **The save §3.6's reading rule picks** (shutdown evidence and all) is
+   not the one `declined` names (by its header's `boot` and `gen`), and,
+   after §3.6 step 4 removes what `closed/` names, it holds **something
+   worth restoring**: at least one pane with a key (resumable or not), or
+   more than one pane. A fleet closed on purpose offers nothing (step 4
+   leaves no pane), and a save of one plain shell is what `roost` is about
+   to make anyway. "From an earlier boot" needs no test of its own: the
+   server is not running, so every save is from a boot that has ended.
+
+A crash and a normal reboot alike pass these. So does a `tmux kill-server`
+typed by hand, which runs no hook (§3.6a) and cannot be told from a crash;
+the offer is a question, so asking costs one key.
+
+**Where it runs: before the server starts** (against §4.3 and §4.7). The
+offer reads files only — the shape, `closed/`, `declined`, the harness
+stores for the preview — and starts nothing while it waits. So there is no
+bootstrap session, no placeholder and no `restoring/` while a person
+thinks, and §4.7's table gains **no row**: every pane that later exists is
+made by a path that table already covers. After the answer:
+
+- `r` runs §4.3 against a server that is not running, so §4.3's own
+  **Server** step makes the bootstrap placeholder, under `restoring/`, as
+  it does for a hand restore.
+- `n` runs today's `ensure_session`, unchanged.
+
+**The lock: `offer/`, under §3.5's owner rule** (pid and start time, never
+age). The offer takes `mkdir offer` after check 6 and before it prints
+anything, and removes it when the answer has been acted on, on Ctrl-C, and
+on any exit (a `trap`). Not `restoring/`: that would make every save, and
+`ensure_session` in §4.6's persist path, wait on a person who may have
+walked away; `offer/` is read only by another offer.
+
+- **Two terminals typing `roost` at once** (a terminal app that reopens its
+  tabs does this): the first takes `offer/` and asks. The second finds
+  `offer/` with a live owner and prints `waiting for the restore offer in
+  another terminal (pid N)` every 10 s, the wording of §4.6's wait; Ctrl-C
+  leaves. When `offer/` goes, the second starts its own checks again from
+  1: the server is now running (the first chose `r` or `n`), so it attaches
+  and is not asked. If the first was Ctrl-C'd, nothing was started and
+  nothing was declined, so the second asks. One offer, never two.
+- **A dead owner** (the terminal was closed mid-prompt): the next `roost`
+  takes `offer/` over by the owner rule and asks.
+- **A script starting the server while a person is at the prompt**
+  (`roost spawn` from an agent elsewhere): it does not read `offer/`, so it
+  starts the server. When the person answers, the offer checks
+  `server_running` once more. `r` then restores into the running server:
+  §4.3's **Sessions** rule skips a saved session whose name now exists
+  and names it, exit 12. `n` attaches. A script is never held waiting on a
+  person, and nothing is merged into a live session.
+
+**The prompt.** Plain lines on stdout, which check 2 proved is a terminal,
+and one key read from stdin with bash 3.2's `read -rsn1`; no TUI library
+and no new dependency. One summary line, the keys line, and the default:
+
+```
+roost: a saved fleet from 2 h ago (2026-10-24 20:51): 13 sessions, 21 windows, 47 panes; 31 of 35 agents would resume.
+  r restore it   p preview   n start fresh   l restore at login from now on: off
+  Enter starts fresh (nothing is restored without an r).
+```
+
+The counts are what §4.3 would place and resume from the picked save after
+step 4: "would resume" is the `resume` lines of the `--dry-run` tree, so
+the store check (§5.1a) and the stale rule (§3.2) are already in it; "of
+35" counts every pane with a key. "2 h ago" is `saved` against now in
+epoch seconds (§3.6), rounded to minutes, hours or days. The keys:
+
+- **`r` — restore.** §4.3 with no `--from` (the same pick the summary
+  described), **up to placement**, the `--at-login` stop point: the
+  pending record and its waiting placeholders are written, no agent is
+  launched by `r` itself. Its report goes to the terminal, not to
+  `login.log`, and no `login/<os-boot>` marker is written (that marker
+  belongs to the service). Then `roost` attaches as it always does, and
+  that attach fires `client-attached[98]` (§4.6), which starts the paced
+  resume. This is Q1's rule exactly: placement now, agents at first
+  attach, 2 s apart, with the person right there for any dialog. A
+  restore that exits 12 or 13 prints its report and still attaches; a
+  saved session of the attached name that is not in the fleet is created
+  by `ensure_session` as today.
+- **`p` — preview.** Prints `roost restore --dry-run` for the same save
+  (§4.3's tree: session, window, pane; each pane's name, directory,
+  harness, and `resume` or the reason it would not), then the summary and
+  keys again. One format, one code path: the preview **is** the dry run.
+  No pager; a long fleet scrolls, and the summary is printed again under
+  it so the keys are on screen.
+- **`n` — start fresh.** Writes `declined` (below), prints one line,
+  `not restored; roost restore --from 20261024T205102Z-4182 brings it back
+  (doctor names it too)`, then today's `ensure_session` and attach.
+  Nothing is deleted: the shape, its history, `closed/` and the harness
+  stores are untouched. That line names **`--from STAMP-GEN`**, not a bare
+  `roost restore`, on purpose: the fresh server saves at once (its
+  `after-new-session` hook), so from then on a bare `roost restore` picks
+  the fresh fleet, and the declined save is only reached by name. A saved
+  session whose name the fresh server now uses (usually `roost`) is
+  skipped by §4.3's rule when that restore is run, and named; the page
+  says so.
+- **`l` — toggle "restore at login from now on"**, shown `off` or `on`,
+  starting `off`. It decides nothing by itself and launches nothing; it
+  rides on the `r` or `n` that follows. When it is on, the offer runs
+  `roost persist on` (§4.4) **after** that choice has built its server —
+  after `r`'s placement and `restoring/` has gone, or after `n`'s
+  `ensure_session` — and before the attach. That order matters on macOS:
+  `RunAtLoad` runs `--at-login` at once (§4.4), and it must meet a live
+  fleet and skip every session, not race a placement. A failing `persist
+  on` prints its own message and `roost: persist on failed; the fleet is
+  restored this time only` (or `started fresh`), and the attach goes on:
+  it is never fatal.
+- **Enter — start fresh**, the same as `n`, `declined` included. The
+  coordinator's guess, kept: nothing is restored, and no agent is
+  launched, without a yes. A person who presses Enter through a familiar
+  start gets what `roost` has always done, and loses nothing, since the
+  save is kept and named on screen. The opposite default would let one
+  reflex keystroke bring back thirty-five agents and their dialogs.
+- **Ctrl-C, or end of input**: `offer/` is removed, nothing is started,
+  nothing is declined, `roost` exits 130. Leaving is not a decision, so
+  the next `roost` asks again.
+- **Any other key**: the keys line again.
+
+**`declined`.** A hard link to the declined save's file, in the shape
+directory, 0600 like every file there; the newest decline replaces it (`ln`
+to a `mktemp` name, then `mv`). A link, not a line holding `boot` and
+`gen`, because the fresh server's saves will push that save out of the
+100-entry ring within a busy day, and the line printed at `n` must keep
+working: `--from STAMP-GEN` looks in `history/` and then at `declined`,
+whose header carries the same stamp and `gen`. Check 7 reads `boot` and
+`gen` from its header. Its effects, and only these: the offer does not ask
+about that save again; `--at-login` and `ensure_session`'s self-restore
+(§4.4, §4.6) do not place it automatically, so ticking `l` later never
+brings back a fleet a person turned down; and `closed/` for its boot is
+kept (§3.6a). A hand `roost restore --from` it works as for any save, and
+step 4 still applies. `rm` of the file forgets the decline; the shape
+directory's `rm -rf` forgets it with the rest.
+
+**Docs** (§7): `getting-started.md` gains a short "If roost was not shut
+down cleanly" paragraph under "First run", showing the prompt and the four
+keys, and saying that `roost persist on` makes it automatic. The
+persistent-sessions page's persist section explains the offer beside the
+login restore: which one runs when (`persist` off asks; on restores), that
+a script never sees it, what `declined` is, and how `--from` brings a
+declined fleet back. `roost help` names the offer in one line under
+`roost`. `doctor`'s line (§4.5) names a decline.
+
+**What the offer does not change.** Q1 (agents at first attach), Q2 (a
+restore resumes by default; `r` is a restore), Q3 (the files' place) and
+Q4 (the printed listing, shown in the preview's reasons for a pane with no
+key) all hold. `roost restore` typed by hand is unchanged and is never
+asked about.
+
 ---
 
 ## 5. Restore rules
@@ -2206,7 +2445,9 @@ a pane whose rename it lost (§4.7); respawn a live shell without a person
 naming it (§4.7); launch a conversation without first taking its claim
 (§5.1a); derive a
 harness's folder name to decide a resume (§5.1); take a lock from a live
-owner (§3.5); start a service without `persist on`; stop a service, ever.
+owner (§3.5); start a service without `persist on`; stop a service, ever;
+restore from the offer without an `r`, ask it where no terminal is, or
+place a declined save by any automatic path (§4.8).
 
 ### 5.9 What survives what
 
@@ -2235,6 +2476,7 @@ probes a step must run before its code are listed with it.
 | 4 | save on change: the hooks in `tmux/roost.conf`, the direct calls in `spawn`/`split`/`view`/identify/`close`, the one switch of §3.4a, the one-saver protocol (`lock` with the owner rule, `want/` per trigger, `gen`, `restoring`), `trigger` lists, the `@roost-ids` refresh in every structural hook, the `closed/<boot>/` files (close, kill difference, death note) and the reading rule's step 4 by id, `pane-died[98]`, the 100-entry ring, the shutdown-record rule in epoch seconds, the three §3.4 cost measurements, the §4.5 doctor warnings about saving. Probes first: the Linux shutdown record (`last -x shutdown`, `journalctl --list-boots`); whether tmux runs `session-closed` hooks during a shutdown on a VM (a `SIGTERM` to the server ran none on macOS, §2.7); the kill-difference probe of §2.7 re-run on tmux 3.2 and 3.4 (Ubuntu CI); the revision 4 hook-name and move probes of §2.7 re-run on tmux 3.2 and 3.4 | S→M | nobody has to remember `roost save`; a crash loses one change at most; a shutdown does not restore what was closed on purpose |
 | 5 | `roost persist on/off/status`, per-server plist and unit, `service.env`, `--at-login`, the pending record (with `order`), the overlay of all four pending file kinds, `claims/` taken by the worker and a hand restore (step 2 ships the directory with `revive`), the `resuming/` lock, the placeholder handshake of §4.7 — the waiting, launching, launched, failed and taken rows and arrows T5–T19 — `restore --resume` with `--retry`, `send`'s refusal on a waiting pane, the `client-attached` hook, `ensure_session`'s wait and self-restore, `login/<os-boot>`, `login.log`, `roost upgrade` rewriting the unit, the §4.5 doctor line, and the §8.2 human-eye reboot on macOS then Linux. Probe first, on a Linux VM: the unit's behaviour at `--at-login` exit, at `disable`, at logout with and without linger; and the §2.10 placeholder probe under `dash` in the Ubuntu container | M→L | #192: the fleet is back after a reboot without being asked, and the agents when someone is there |
 | 6 | the printed store listings of §5.6 (Q4 = A) for Claude and codex. Probe first: what Claude's folder rule does with `_`, a space and a non-ASCII byte, and pi's folder rule for a path with a `.` (only the narrowing uses them; §5.6) | S | the 13 panes of §2.6 are not lost silently |
+| 7 | the restore offer (§4.8, revision 6): the seven checks in `attach_session`, `offer/` under the owner rule, the prompt and its keys, `p` as `restore --dry-run` (whose tree §4.3 pins, and which step 1 already ships), `r` as placement then attach, `n` and Enter writing `declined`, `l` running `persist on` after the choice, `--from` finding `declined`, `--at-login` and `ensure_session` skipping a declined save, the doctor line, the getting-started paragraph and the page's persist section. After step 5, because `r` leans on the pending record and `client-attached` for Q1, and `l` on `persist on` | S | a person whose machine crashed with `persist` off is asked instead of finding an empty session |
 
 The order did not change in revision 1; steps 4 and 5 grew (the saver
 protocol, the pending record) and step 2 gained the store check, which is
@@ -2249,7 +2491,8 @@ it; step 4's kill rule is the hook difference, and its last-session probe
 is answered (§2.7). Revision 4 keeps the order: the placing placeholders
 and the placing rows of §4.7 land in step 1 with placement, the rest of
 the table in step 5 with the worker; the hook list of step 4 shrinks to
-names measured to exist. #145 (codex identity under the app-server) is **not**
+names measured to exist. Revision 6 appends step 7, the restore offer;
+the first six are unchanged. #145 (codex identity under the app-server) is **not**
 in this list; it is the one thing that would make codex restore whole, and it
 is its own issue.
 
@@ -2277,7 +2520,10 @@ is its own issue.
   before the exit command and its removal when the close fails (§3.6a), a
   save with `--trigger close` after the pane is gone, and the pending
   cancel. `ensure_session`: §4.6's wait and self-restore when `persist` is
-  on, and no bootstrap marker (revision 3, §1). `revive`, and every resume
+  on, a declined save skipped (§4.8), and no bootstrap marker (revision 3,
+  §1). `attach_session` (a bare `roost`, `roost session NAME`): the
+  restore offer's checks and prompt **before** `ensure_session` (§4.8,
+  revision 6); no other caller of `ensure_session` changes. `revive`, and every resume
   launch: `save --auto --trigger respawn` after the respawn (§3.4).
 - `roost send` (and `answer`): a pane in a state whose `roost send`
   column in §4.7's table says refused — **placing**, **placing, claimed**,
@@ -2300,7 +2546,12 @@ is its own issue.
   next event), `was:%N` and why a bare `%N` after a restore may be a
   different pane, the dialogs a resume can open per harness (§2.8), that a
   linked window comes back as two windows (§3.2), and that a shape copied
-  to another machine resumes nothing without the harness stores.
+  to another machine resumes nothing without the harness stores. Its
+  persist section explains the restore offer beside the login restore
+  (§4.8's **Docs**).
+- `site/content/docs/getting-started.md`: an "If roost was not shut down
+  cleanly" paragraph under "First run" (§4.8). `roost restore --from`:
+  finds `declined` by its stamp and `gen` when the ring has dropped it.
 
 ---
 
@@ -2856,6 +3107,68 @@ Red tests:
     line and restores. **Two sockets:** a shape from server A restored into
     server B on the same machine, both with panes `%0`–`%3`, places into B
     only and B's map has A's ids.
+12. **The restore offer** (§4.8, revision 6). The terminal is real, not a
+    flag: `roost` runs in a pane of a second throwaway server, as `env -u
+    TMUX roost` (§8.1's opening, the way test 11 attaches a client), so
+    stdin and stdout are a pty; keys go in with `send-keys`, and the screen
+    is read with `capture-pane -p`. Every case plants an **earlier-boot
+    shape** for the inner server — two sessions, four panes, two of them
+    keyed to ids in the stub store, one with a gone directory — and leaves
+    the inner server not running. `persist on` is replaced by
+    `ROOST_PERSIST_WRITE_ONLY=1` (test 9's seam) and, for the failure case,
+    by a `launchctl`/`systemctl` stub that exits 1.
+    (a) **Shown**: the summary line names `2 sessions`, `4 panes` and `1 of
+    2 agents would resume` and an age from `ROOST_TEST_NOW`; no inner
+    server exists while it waits (`tmux -S <inner> ls` fails), and
+    `offer/` names the offer's pid.
+    (b) **Not shown without a terminal**: `roost < /dev/null`, and `roost |
+    cat`, each start the inner server with today's one session and print
+    no summary line; `declined` is not written.
+    (c) **Not shown when declined**: a `declined` linked to the planted
+    save: no summary line. A **new** save of the same fleet (another `gen`)
+    is asked about again.
+    (d) **Not shown when the service is on**: the `persist` marker present
+    and a `login/<os-boot>` marker absent: no prompt, and §4.6's
+    self-restore places the fleet.
+    (e) **Not shown when the fleet was closed on purpose**: `closed/<boot>/`
+    names every planted pane: no prompt. A save holding one unkeyed shell:
+    no prompt. `ROOST_SHAPE_DIR=`: no prompt. `roost spawn x sh` with the
+    server down: no prompt.
+    (f) **`p` previews, then asks again**: after `p` the screen holds the
+    exact text `roost restore --dry-run` prints for the same save (compared
+    line for line with a separate `--dry-run` run's output), the gone
+    directory's pane reads `directory gone`, and below it the summary and
+    keys line again; the inner server still does not exist.
+    (g) **`l` then `r`**: the keys line reads `on` after `l`; after `r` the
+    inner server holds both saved sessions, the two keyed panes' pending
+    files exist and the stub log shows them launched only **after** the
+    attach, 2 s apart (the `client-attached` hook, as test 11); the
+    `persist` marker and the unit file exist, and the unit file was written
+    after `restoring/` was removed (its mtime against the restore's
+    report). With the failing stub instead: `persist on failed` is on the
+    screen and the client is attached anyway.
+    (h) **`n` records the decline**: `declined` is a hard link to the
+    planted save (same inode), the screen names `roost restore --from
+    STAMP-GEN`, the inner server holds one fresh session. Kill the inner
+    server and copy `declined` back over `shape` (the fresh server dying
+    before its first save, so the decline, not the one-shell rule, is what
+    is tested); `roost` again: **no** prompt. `roost restore --from STAMP-GEN`
+    with `ROOST_SHAPE_KEEP=2` after five more saves (the ring has dropped
+    it) still restores the second saved session and skips `roost` as
+    existing, exit 12. With the `persist` marker set later and no
+    `login/` marker, `--at-login` places nothing and `login.log` names the
+    decline.
+    (i) **Enter is `n`**, with `declined` written; **Ctrl-C** exits 130,
+    starts no server and writes no `declined`, and the next `roost` asks.
+    (j) **Two terminals**: two panes run `roost` in the same second: one
+    shows the summary, the other `waiting for the restore offer in another
+    terminal`; `n` in the first; the second then attaches to the running
+    server with no prompt. Kill the first with `kill -9` mid-prompt
+    instead: the second takes `offer/` over and asks.
+    (k) **A script starts the server mid-prompt**: while (a) waits, `roost
+    spawn x sh` from outside starts the inner server; `r` then skips the
+    saved `roost` session as existing (exit 12 in the report), restores
+    the other, and attaches.
 
 Guards: byte-identical `status --json` for a server that was never restored
 except `"was":null`; the record tests still pass with shapes on; the canary
@@ -2910,6 +3223,17 @@ has no red test of its own: the two orders differ only in a race between
 a `revive` and the worker on one pane, which nothing here can plant on cue
 without a seam inside `revive`; it is a rule of the table, and a review
 item for the build.
+Revision 6 adds: ask without testing stdin or stdout (12b); start the
+server before the prompt (12a, the inner server exists); skip the
+`declined` check, or match it by `boot` alone (12c, 12h); offer while the
+`persist` marker is set (12d); offer before §3.6 step 4 (12e, closed on
+purpose); a preview in its own format (12f); `r` that launches agents
+itself instead of leaving them to the attach (12g, launched before the
+attach); `persist on` before the placement (12g, the unit's mtime); a
+fatal `persist on` failure (12g); Enter as `r` (12i); record a decline on
+Ctrl-C (12i); `restoring/` instead of `offer/`, or no lock (12j, and 12k:
+the script waits on the person); `--from` that reads only `history/`
+(12h, the ring dropped it).
 
 Live, by hand, not in the suite, under `tests/live/`: `revive-smoke.sh` runs
 `revive` against real Claude through the fake API rig and asserts the resumed
@@ -2948,6 +3272,14 @@ app-servers by environment, as the probe did.
 7. **Reading the file**: a person opens `shape` cold and can say what the
    fleet was; copies it, edits one `cwd`; `--dry-run --from COPY` says what
    they meant.
+8. **The restore offer after a real crash** (§4.8), `persist` off: on a
+   throwaway `-L` server built for the check (never the live one), with
+   its state redirected, `kill -9` the server's process (or ride item 1's
+   real reboot with `persist` off), open a new terminal, type `ROOST_SOCKET=NAME
+   roost`. Read the summary cold: can a person tell
+   what they would get? Press `p`, read the tree, press `r`; the agents
+   come up 2 s apart after the attach. Then once more with `n`, and
+   check the line it prints brings the fleet back.
 
 ---
 
@@ -2962,7 +3294,10 @@ id gets a printed, never-run resume line (Q4). Revision 1 keeps all four;
 Q1's A gained a mechanism, noted in its text. Revision 2 keeps all four;
 each question says in its own text what revision 2 changed in practice.
 Revision 3 keeps all four; Q1 and Q2 say what it changed. Revision 4
-keeps all four; Q1 says what it changed.
+keeps all four; Q1 says what it changed. Revision 5 keeps all four.
+Revision 6 keeps all four; Q1 says what the restore offer (§4.8) means
+for it, and the opt-in reading below is now **decided by the human
+(2026-10-25)**.
 
 **Q1. When do agents come back after a reboot?** Decided: A.
 - **A.** `persist` restores **placement** at login and resumes agents when a
@@ -3023,6 +3358,12 @@ keeps all four; Q1 says what it changed.
   instead of becoming a shell by itself; and `roost restore --resume
   --retry` now really brings such an agent back once its cause is fixed.
   A key never produces a shell that roost then replaces.
+- **What A means in practice after revision 6** (§4.8). With `persist`
+  **off**, a bare `roost` after a crash now asks first. Its `r` is A
+  exactly: placement now, then the attach that follows fires the paced
+  resume, with the person at the terminal for any dialog. Nothing is
+  restored without an `r`; Enter starts fresh. With `persist` on, nothing
+  is asked and A works as before.
 
 **Q2. Does a manual `roost restore` resume agents by default?** Decided: A.
 - **A.** Yes: every pane with a recorded conversation is resumed; `--no-resume`
@@ -3087,17 +3428,19 @@ Claude's own store?** Decided: A.
   (§2.1). An `exited` pane's own stale id is listed first. Still printed,
   never run.
 
-**Decided, not asked**, because #191 decided it: the login service is **off
-until a person runs `roost persist on`**, and `roost doctor` says which it
-is. Revision 1 reads that as the *service*; the shape is saved on change from
-step 4 on regardless, because a hand `roost restore` after a crash needs it
-and it is #51's own value (§3.4). Flagged for the human in the revision
-report in case the reading is wrong. Both second-round reviewers found the
-spec itself unambiguous here and placed the ambiguity in #191's own wording;
-the question still waits on the human. Revision 2 keeps the reading, makes
-`doctor` say both halves (`persist: saving on; login restore off`, §4.5),
-and puts saving behind one switch, so the other answer is a change to one
-function and the sections listed in §3.4a.
+**Decided by the human on 2026-10-25: only the login service is opt-in;
+saving is always on.** #191 said the login service is **off until a person
+runs `roost persist on`**, and `roost doctor` says which it is. Revision 1
+read that as the *service* only; the shape is saved on change from step 4
+on regardless, because a hand `roost restore` after a crash needs it, it is
+#51's own value (§3.4), and since revision 6 it is what the restore offer
+(§4.8) reads. Revisions 1 to 5 flagged the reading for the human; both
+second-round reviewers had found the spec itself unambiguous and placed the
+ambiguity in #191's wording. The human confirmed the reading on 2026-10-25,
+so it is no longer a flag. Revision 2's `doctor` wording (both halves,
+`persist: saving on; login restore off`, §4.5) and its one switch for
+saving (§3.4a) stay; §3.4a keeps its list of sections as the record of what
+a reversal would touch.
 
 ---
 
@@ -3178,6 +3521,12 @@ Risks, most serious first:
   resume** (§4.7). By design, and said on screen and in Q1; `revive %N`
   brings it back. A person who presses keys in every pane before its turn
   gets shells everywhere. Low.
+- **A "no" pressed in a hurry at the restore offer** (§4.8). Enter starts
+  fresh by design, and the declined fleet is then reached only by `roost
+  restore --from STAMP-GEN`, which the offer prints and `doctor` repeats;
+  a saved session whose name the fresh server took (usually `roost`) is
+  skipped by that restore. Low: nothing is deleted, and `declined` outlives
+  the ring.
 - **A resume into a dialog nobody sees** (§5.2). Q1 A puts a person at the
   first attach; a `restore` run from a script still has nobody. The report,
   `status` and the pending record's `.launching` files are the signals.
@@ -3309,7 +3658,7 @@ Each item from the three reports, with *taken* (and where) or *not taken*
 | assert the first pane's `cwd` in test 1 | one | **taken** (§8.1 test 1) |
 | add the two known-gaps identity items to §10 | one | **taken**: §1 names them, §3.2 answers them, §10 keeps the residual |
 | say in §5.8 why scrollback is not saved | one | **taken** (§5.8, §7) |
-| is auto saving gated by `persist on`? enable should save at once | one | **taken** as a clarification: saving is always on, the service is opt-in, `persist on` saves once (§3.4, §9); flagged for the human |
+| is auto saving gated by `persist on`? enable should save at once | one | **taken** as a clarification: saving is always on, the service is opt-in, `persist on` saves once (§3.4, §9); flagged for the human, and decided by the human on 2026-10-25 (revision 6) |
 | the `read key value` loop loses whitespace; define duplicate keys and blank lines | one | **taken** (§3.2, test 5) |
 | explicit window indices, `renumber-windows`, reuse the bootstrap window, restore active selections, test base-index holes | one | **taken** (§3.2, §4.3, test 1) |
 | slash-to-hyphen keying of `-S` servers is not injective | one | **taken**: `path-<cksum>` (§3.1) |
