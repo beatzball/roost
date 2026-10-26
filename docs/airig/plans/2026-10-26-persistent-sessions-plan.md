@@ -43,11 +43,16 @@ does not exist through `close`. Two ways to read the spec:
   **A's cost, plainly:** after `roost stop` (or `roost kill` of every
   session), the next login restore and a plain `roost restore` bring nothing
   back and print "nothing to restore: every saved pane was closed on
-  purpose". The fleet is still on disk: `roost restore --from STAMP-GEN` (the
-  stamp `roost restore --list` shows) restores it, because `--from STAMP-GEN`
-  ignores nothing but what `closed/` names for that save's own boot — so a
-  save taken before the stop is not filtered, only a save of the same boot is.
-  The page (Task 4.12) says this.
+  purpose". `roost restore --from STAMP-GEN` does **not** bring it back
+  either: every save taken before the stop is of the same boot as the
+  `close.<N>` files the stop wrote, and §3.6 step 4 filters a `--from
+  STAMP-GEN` save by its own boot with no time comparison. The fleet is still
+  on disk, and the way back is `--from FILE`, which skips step 4 by design:
+  restore a file **by path** — `shape` itself, or a `history/` file —
+  for example `roost restore --from
+  ~/.local/state/roost/shapes/roost/history/20261026T101500Z-412` (the name
+  `roost restore --list` shows for the save before the stop). No save-time
+  exemption is added. Task 4.8's message and Task 4.12's page say this.
 - **B:** `close` gains a mode that takes a session's last pane. That changes a
   shipped refusal and its documented reason.
 
@@ -239,7 +244,7 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_SAVE_HOLD_AFTER_DRAIN=FILE` | the saver waits after `mv want want.<pid>` | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_LIST=FILE` | the saver waits after listing, before publishing | 4.5 |
 | `ROOST_TEST_PUBLISH_FAIL=1` | the saver's publish step fails as a refused `mv` would, in a writable directory (this plan's seam, for R3's `save.err` case) | 4.5 |
-| `ROOST_SHUTDOWN_AT=EPOCH` | a stub shutdown record; set and empty = no readable record | 4.9 |
+| `ROOST_SHUTDOWN_AT=EPOCH` | a stub shutdown record; set and empty = no readable record | 4.9b |
 | `ROOST_PERSIST_WRITE_ONLY=1` | `persist on` writes the unit and does not load it | 5.5 |
 | `ROOST_TEST_OFFER_TIMEOUT=SECONDS` | the offer's 60 s no-answer bound | 7.4 |
 
@@ -561,7 +566,7 @@ after each. Also do it for a background session if the version offers one
 
 ### Task 1.9 — `roost save`: the writer
 
-**Files:** `scripts/lib/roost-shape.sh`, `bin/roost` (the `save` arm; `@roost-launch` in `spawn`, `split`, `view`), `tests/test-shape.sh`
+**Files:** `scripts/lib/roost-shape.sh`, `scripts/lib/roost-close.sh` (`roost_close_harness`'s `case`, Task 1.6's names), `bin/roost` (the `save` arm; `@roost-launch` in `spawn`, `split`, `view`), `tests/test-shape.sh`
 **Depends on:** 1.1, 1.2, 1.3, 1.6, 1.8
 
 **Do:**
@@ -611,7 +616,9 @@ after each. Also do it for a background session if the version offers one
    command name" (Claude's version string, the five names), and adds only:
    shell names (`sh`, `bash`, `zsh`, `fish`, `dash`) → `exited`; Task 1.6's
    measured names, added to `roost_close_harness`'s own `case` so the two
-   never drift; a harness that names a different one → `nested`; the same →
+   never drift — **only a distinctive name** (Task 1.6's exception: a generic
+   name such as `node`, which two harnesses could read, is not added, and
+   those harnesses stay on presence alone); a harness that names a different one → `nested`; the same →
    `ok`; no harness from the command, and HARNESS is pi/copilot/opencode with
    no measured name → `ok` on presence (§3.2); anything else → `other`.
 4. The writer: one `list-sessions`, one `list-windows -a`, one `list-panes -a`
@@ -750,13 +757,17 @@ because the bootstrap cases need it, and Task 1.13 reuses it for every pane.
    --placing`. Existing session → skip and name. `restoring/` dropped last.
    Every target built from a saved name takes Task 1.4's form (`=NAME:` and
    on), and existence is tested the way Task 1.4 found exact.
-4. The per-pane step, `roost_restore_place_pane PANE FILE CWD`: `mv FILE
-   FILE.used`; lost → leave the pane; won but its start command is not the
-   placing line → `mv FILE.used FILE.taken`, leave it (T2); won →
-   `ROOST_TEST_PLACE_HOLD_AFTER_USED` wait, then `respawn-pane -k -c CWD
+4. The per-pane step, `roost_restore_place_pane PANE FILE CWD`, in this
+   order: (i) `mv FILE FILE.used`; lost → leave the pane; (ii) won →
+   `ROOST_TEST_PLACE_HOLD_AFTER_USED` wait, **right after the rename and
+   before any check**, so a test can change the pane in the gap; (iii) read
+   the pane's start command and `pane_dead` **now**; not the placing line
+   (a person respawned it) → `mv FILE.used FILE.taken`, **no respawn**, leave
+   it (T2); (iv) still the placing line → `respawn-pane -k -c CWD
    "<default-command value>"` as one string (read once after `wiring apply`;
-   empty → `#{default-shell}` and `-l` as argv). Run it on each session's
-   first pane.
+   empty → `#{default-shell}` and `-l` as argv). The bootstrap's first pane
+   takes exactly these steps with `restoring/bootstrap`; Task 1.13 runs the
+   same function on every other pane. Run it on each session's first pane.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-place.sh` → all PASS, exit 0.
 **Commit:** `roost restore: sessions, the bootstrap that a key or a live session keeps (#51)`
@@ -1298,7 +1309,11 @@ press a key in a waiting pane to keep it as a shell; `roost restore --resume
 **Do:**
 **The policy**, the `roost send` column of §4.7's table, one function for
 `send` and `answer` alike. "Refused" is the blocked-target refusal (same exit
-code, a message naming the state), and `--force` sends anyway, as §7 says.
+code, a message naming the state). `--force` bypasses **only this new
+refusal**, as §7 says; each verb then keeps every check it has today —
+`answer` still refuses a dead pane, a pane that is not `blocked` and one with
+no dialog record (bin/roost's `answer` arm, steps 1 and 4–5), and `send`
+keeps its own dead-pane and readiness checks.
 
 | state (file, then pane) | `send` / `answer` |
 |---|---|
@@ -1314,19 +1329,37 @@ code, a message naming the state), and `--force` sends anyway, as §7 says.
 | **taken** — `%N.taken` | as for any pane |
 | no file | as for any pane |
 
-1. Red first, one case per row above, each with `send` and with `answer`
-   (`answer` is refused before it looks for a dialog), and each refused row
-   once more with `--force` (sent; the file unchanged by the send itself).
+1. Red first, at two levels. **The policy, per row:** `roost_send_policy
+   STATE 0` and `STATE 1` for every row above → refuse/allow exactly as the
+   table says (a function-level case; no delivery asserted). **The verbs:**
+   `send` to each refused row (planted) → the ownership refusal and the file
+   unchanged, and `send --force` to the waiting row → delivered (the file
+   still `%N`); `answer` to each refused row → the ownership refusal before
+   any dialog lookup; `answer --force` to the waiting row → today's "is not
+   blocked … nothing to answer" (exit 6), and to a failed, dead pane →
+   today's dead-pane refusal (exit 2), proving `--force` bypassed only the
+   new check. **Forced delivery into a real dialog:** a **launched** pane —
+   its file `%N.launching`, the pane running the dialog script of
+   `tests/test-answer.sh` (which stamps 🛑 through the real sink and leaves a
+   real dialog record) — `answer --approve` without `--force` → the ownership
+   refusal and no key logged; with `--force` (and `--expect` the fingerprint)
+   → the key is delivered and logged, as in `tests/test-answer.sh`.
    The placing rows are planted under `ROOST_TEST_PLACE_HOLD` and
    `ROOST_TEST_PLACE_HOLD_AFTER_USED` (Part 1's seams); **§8.1 test 11 (f)**
-   is the waiting row, the file still `%N` afterwards. **§8.1 test 11, close
+   is the waiting row, the file still `%N` afterwards. A shell taken during a
+   placement that has since finished (placing line, no `restoring/` file in
+   any name) → `send` delivers as to any pane. **§8.1 test 11, close
    on a waiting pane:** `roost close %N` on a waiting placeholder → pane gone,
    no `shells.log` line, file removed, exit 0. `close` on `.failed` and on a
    dead failed pane likewise uses `kill-pane`.
 2. `roost_pane_owner_state %N` in `scripts/lib/roost-pending.sh`: reads
    `#{pane_start_command}` and `#{pane_dead}` once; a placing line names its
-   `restoring/` file, whose current name gives the placing rows; else the
-   pane's file under `pending/<boot>/` gives the rest. It prints the row
+   `restoring/` file, whose current name gives the placing rows; a placing
+   line whose `restoring/` file is gone in every name (`F`, `F.used`,
+   `F.taken` — restore has finished and removed `restoring/`, and the start
+   command survived the `exec` that gave a person the shell, §2.10) is the
+   **no file** row; else the pane's file under `pending/<boot>/` gives the
+   rest. It prints the row
    name. `roost_send_policy STATE FORCE` returns refuse or allow from the
    table. `send` and `answer` call both where they test `blocked`; `close`
    calls the state first and, for the placeholder states, removes the file,
@@ -1386,7 +1419,8 @@ code, a message naming the state), and `--force` sends anyway, as §7 says.
    after a failure is marked:** `ROOST_TEST_RESUME_HOLD_AFTER_FAILED` → reason
    on screen within 6 s, same `pane_pid`, no `shells.log` line; one key →
    `.taken`, a shell; `sleep 60`; release → sleep alive. **A `.failed` file is
-   listed by `--list` and retried only with `--retry`.** **Interrupted** (test
+   retried only with `--retry`** (that `--list` names it is Task 3.11's
+   case, where the pending listing lands). **Interrupted** (test
    11): kill the loop after the first launch → one file gone, two claimable,
    the next `restore --resume` takes the dead worker's `resuming/` and
    launches exactly those two. **Interrupted after the claim:** kill the
@@ -1503,7 +1537,8 @@ whoami` for the pane id and calls `roost_identity_from_payload`), so add one
    resumed; until #145 their badges all land on the first (…)`); exit 0 / 12 /
    13, 12 winning; `--json` `{"restored":[…],"skipped":[…],"from":…}`;
    `--list` shows the pending record and `.launching`/`.failed`/`.taken`
-   files.
+   files; **§8.1 test 11:** a `.failed` file (store miss) is listed by
+   `--list`.
 2. Implement.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-resume.sh` → all PASS.
@@ -1592,9 +1627,9 @@ shutdown`, `last -x reboot`, `journalctl --list-boots` and
 
 **If the probe says:**
 - `last -x shutdown` prints a shutdown time with minute or better resolution:
-  Task 4.9 reads it on Linux (the window: that minute and the one before).
+  Task 4.9b reads it on Linux (the window: that minute and the one before).
 - no wtmp, but `journalctl --list-boots` gives the previous boot's last entry
-  time: Task 4.9 reads that.
+  time: Task 4.9b reads that.
 - neither readable: Linux takes rule 3 (§3.6), as the spec allows.
 
 **Check:** `test -s docs/airig/probes/persist-4-linux-shutdown.md` with one outcome named.
@@ -1664,7 +1699,11 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 ### Task 4.5 — The saver: one per server, a want per cause, a ring of 100
 
 **Files:** `scripts/lib/roost-shape.sh`, `tests/test-shape-save.sh` (new), `tests/run.sh` (`shard_weight`)
-**Depends on:** 4.3, 4.4 (Task 4.2, the shutdown-hook probe, gates Tasks 4.9 and 4.13, where its answer is used; not this one)
+**Depends on:** 4.3, 4.4
+
+The shutdown-hook probe (Task 4.2) is not a prerequisite here: its answer is
+used by the reading rule's steps 1–3 and the part's verify task, which wait
+for it.
 
 **Do:**
 1. Red first (§8.1 test 8, the saver's own half; the test calls `roost save
@@ -1775,21 +1814,30 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 ### Task 4.8 — `roost close` records its intent (and ruling R1)
 
 **Files:** `bin/roost` (`close`, and per R1-A `kill|down|stop`), `tests/test-shape-closed.sh`
-**Depends on:** 4.6, 4.7, 4.9 (its restores filter by `closed/`, which is the reading rule's step 4), ruling R1
+**Depends on:** 4.6, 4.7, 4.9a (its restores filter by `closed/`, the reading rule's step 4), ruling R1
 
 **Do:**
 1. Red first: **(8b) the planted race** — A and B run the stub; `roost close
    A` with `ROOST_TEST_SAVE_HOLD` keeping `close`'s save until the
    `pane-exited` save for A is published; assert the newest `shape` is that
-   save without A and `close`'s save wrote nothing; restore inside the window
-   → A not back (`closed/<boot>/close.<A>`). **Same second** under
-   `ROOST_TEST_NOW`. **(g) a save in flight** — `ROOST_TEST_SAVE_HOLD_AFTER_LIST`
-   while A is listed; `roost close A`; release; B dies; restore → A not back.
+   save without A and `close`'s save wrote nothing; then `roost restore
+   --from <STAMP-GEN of the newest save that still holds A>` → A not back
+   (`closed/<boot>/close.<A>`; step 4 applies to `--from STAMP-GEN`, so this
+   needs no shutdown record — the walk back to that save by the reading rule
+   is Task 4.9b's chain case). **Same second** under `ROOST_TEST_NOW`. **(g)
+   a save in flight** — `ROOST_TEST_SAVE_HOLD_AFTER_LIST` while A is listed;
+   `roost close A`; release; B dies; `restore --from <STAMP-GEN of the save
+   published after the close, which holds A>` → A not back.
    **The ends of a fleet** (R1-A; this plan's own case — §8.1 test 8 (e)
    itself runs through `--at-login` in Task 5.6): `roost kill NAME` of a
    session and `roost stop` each leave one `closed/<boot>/close.<N>` per pane
    they removed, written before the tmux command, and a plain `restore` then
-   prints `nothing to restore: every saved pane was closed on purpose`, exit 0.
+   prints `nothing to restore: every saved pane was closed on purpose` and a
+   second line naming the way back, `to bring back a fleet you stopped:
+   roost restore --from <a file from roost restore --list>` (the full path of
+   the newest `history/` file, or of `shape`, printed), exit 0; `restore
+   --from <that STAMP-GEN>` prints the same two lines (step 4 filters it);
+   `restore --from <that file's path>` places the whole fleet.
    **The belt:** a planted kill file plus a death note → the pane is restored; a
    `close.` file plus a death note → not. A failed close (the harness does not
    leave) removes its `close.<N>`.
@@ -1800,31 +1848,57 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-closed.sh` → all PASS; `bash tests/test-close.sh` exits 0.
 **Commit:** `close records its intent, so a closed pane stays closed after a reboot (#51)`
 
-### Task 4.9 — The reading rule
+### Task 4.9a — The `closed/` filter by pane id (reading rule step 4)
 
 **Files:** `scripts/lib/roost-restore.sh`, `tests/test-shape-closed.sh`
-**Depends on:** 4.2, 4.6 (and 4.1's result when there is one)
+**Depends on:** 4.6
+
+Ungated: step 4 reads only `closed/<boot>/` and the picked save's own `boot`,
+no OS record. Without shutdown evidence restore picks `shape` (Part 1), so
+every case here names its save with `--from`.
+
+**Do:**
+1. Red first: step 4 removes from the picked save every pane a `closed/` file
+   of **that save's boot** names — for a plain `restore` (`shape`) and for
+   `--from STAMP-GEN`, not for `--from FILE`; files of another boot are never
+   read. A pane named by a kill file and a death note is kept; by a `close.`
+   file and a death note, removed. A window that lost panes to step 4 → tmux's
+   default layout and one stderr line; an emptied window or session → not
+   created; nothing left → `nothing to restore: every saved pane was closed
+   on purpose`, exit 0. **8 (i), the restore half:** after a `kill -TERM` of
+   the server (no hook, no kill file), a plain `restore` brings the whole
+   fleet back.
+2. Implement step 4 as `roost_restore_drop_closed PARSEDIR BOOT`, called on
+   whichever save was picked (Task 4.9b adds the picking).
+
+**Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-closed.sh` → all PASS.
+**Commit:** `restore drops every pane its boot's closed record names (#51)`
+
+### Task 4.9b — Shutdown evidence: which save a restore picks (steps 1–3)
+
+**Files:** `scripts/lib/roost-restore.sh`, `tests/test-shape-closed.sh`
+**Depends on:** 4.2, 4.9a (and 4.1's result when there is one)
 
 **Do:**
 1. Red first (§8.1 test 8 a, c, d, f): with `ROOST_SHUTDOWN_AT`, (a) a chain of
    `pane-exited` saves inside the window → the save before it is picked and
-   `--list` names it; (c) `ROOST_SHUTDOWN_AT=` empty → the newest save and the
-   stderr line, `closed/` still applied; (d) 60 death saves → still
-   recoverable; (f) a stub `last` printing `shutdown time … Dec 31 23:59` and a
-   stub boot second on 1 January → the window is in the year before. Step 4
-   for `--from STAMP-GEN`, not for `--from FILE`. A window that lost panes to
-   step 4 → default layout and one stderr line; an emptied window or session →
-   not created. **The restore halves of Task 4.6's cases** (they need this
-   rule): 8 (b2) — restore inside the window brings back C, its window and its
-   session, and not B; 8 (i) — after a `kill -TERM` of the server, the next
-   restore brings the whole fleet back.
-2. Implement §3.6 rules 1–4 in epoch seconds; macOS `last reboot` +
-   `sysctl kern.boottime`; Linux per Task 4.1's outcome. If Task 4.1 is
-   blocked for want of a VM, Linux takes rule 3 (the spec's "until it lands")
-   and the report says so; this task does not wait.
+   `--list` names it (this is also the reading-rule form of 8 (b): with the
+   planted race of Task 4.8 inside the window, a plain `restore` walks back
+   to the save holding A and A still does not come back); (c)
+   `ROOST_SHUTDOWN_AT=` empty → the newest save and the stderr line,
+   `closed/` still applied; (d) 60 death saves → still recoverable; (f) a stub
+   `last` printing `shutdown time … Dec 31 23:59` and a stub boot second on 1
+   January → the window is in the year before. **8 (b2), the restore half:**
+   restore inside the window brings back C, its window and its session, and
+   not B.
+2. Implement §3.6 rules 1–3 in epoch seconds, then Task 4.9a's step 4 on the
+   pick; macOS `last reboot` + `sysctl kern.boottime`; Linux per Task 4.1's
+   outcome. If Task 4.1 is blocked for want of a VM, Linux takes rule 3 (the
+   spec's "until it lands") and the report says so; this task does not wait
+   for 4.1.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-closed.sh` → all PASS.
-**Commit:** `restore picks the save before a shutdown's teardown, and drops what was closed (#51)`
+**Commit:** `restore picks the save before a shutdown's teardown (#51)`
 
 ### Task 4.10 — The saver applies the hook-driven arrows
 
@@ -1838,9 +1912,12 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
    0, same `%N`; **a kill releases a revive's claim at once** (§8.1 test 6,
    the release half of "two revives of one gone record"): a gone-pane `revive`
    whose stub never identifies leaves a new pane holding
-   `claims/<boot>/claude-<id>` and **no** pending file; `kill-pane` it → the
-   claim directory is gone before any further `revive` runs (the saver
-   releases a claim whose pane died or was killed, §4.1 step 5a);
+   `claims/<boot>/claude-<id>` and **no** pending file; `kill-pane` it → wait,
+   bounded (50 × 0.1 s, the suite's usual loop: the release comes from the
+   `-b` hook's saver), until the claim directory is gone, and assert it went
+   before any further `revive` runs; the same when the pane **dies** (the stub
+   exits 1 under `remain-on-exit failed`) — the claim is released by
+   `pane-died`;
    **the only pane of the only session** — the `claude-exit1`
    case again with the restored fleet being one pane in one session, under
    `remain-on-exit failed` and `pane-died[98]`: the server is still running
@@ -1861,7 +1938,10 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
    on (`bash tests/test-reply-record.sh`).
 2. In saver step 2: `pane-died.<%N>` → T13/T13a; `pane-exited.<%N>` on
    `.launching` → T13b, on any other file → T19; a pane in a kill difference →
-   T19; the overlay (all four file kinds) when writing a pane with no
+   T19; and, **with or without a pending file**, a claim under
+   `claims/<boot>/` whose `pane` line names a pane in the kill difference, or
+   one that died or exited, is released (§4.1 step 5a: a launch keeps its
+   claim until identity lands or the pane dies); the overlay (all four file kinds) when writing a pane with no
    `@roost-session`.
 
 **Check:** `XDG_STATE_HOME=$(mktemp -d) bash tests/test-shape-resume.sh` and `bash tests/test-reply-record.sh` → exit 0.
@@ -1908,7 +1988,11 @@ written. A death appears in a kill's difference, or a kill does not → **stop**
 **Do:** The page: saving is automatic, what triggers it, what is saved late
 (swaps, a join that keeps its window, a drag resize, a `cd`), the ring, which
 save a restore picks, closed stays closed, `roost close`/`kill`/`stop` (per
-R1) as the way to end a fleet for good, and R3: `doctor` says when no save
+R1) as the way to end a fleet for good — and, under R1-A, how to undo it:
+a fleet ended with `roost stop` or `roost kill` comes back only with
+`roost restore --from <path of a saved file>`, with the worked example of
+R1's paragraph (`--list`, then `--from` the `history/` file by path), and a
+sentence that `--from STAMP-GEN` honours the close and restores nothing; and R3: `doctor` says when no save
 has landed since the server started and quotes `save.err`. known-gaps: Tasks 4.1–4.4 and 4.11
 results; the user-hook global-queue risk. Changelog.
 
@@ -2631,11 +2715,13 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 8 owner rule (live `restoring/`, dead pid, reused pid), owner held past 10 s, ring | 4.5 |
 | 8 coalescing on cue | 4.6 |
 | 8 ten `spawn`s in parallel | 4.7 |
-| 8 (a) (c) (d) (f) reading rule | 4.9 |
+| 8 (a) (c) (d) (f) reading rule | 4.9b |
 | 8 (b) planted race, same second, (g) in flight, the belt | 4.8 |
 | 8 (e) the last session (per R1) | 5.6 |
 | 8 (b2) overlap rewritten, death in the gap, (h) boot change, (i) kills by every route — the `closed/` files | 4.6 |
-| 8 (b2) and (i) — the restore halves (C back and not B; the whole fleet back after `kill -TERM`) | 4.9 |
+| 8 (b2) — the restore half (C back and not B, inside the window) | 4.9b |
+| 8 (i) — the restore half (the whole fleet back after `kill -TERM`) | 4.9a |
+| 8 step 4 for `--from STAMP-GEN` not `--from FILE`; emptied window/session | 4.9a |
 | 9 persist (all but the next row) | 5.5 |
 | 9 `on` with the server stopped | 5.6 |
 | 10a `save` with empty/relative/read-only dir | 1.9 |
@@ -2690,12 +2776,13 @@ and the coordinator's rulings R2–R5. Each is red before its code.
 | the send / answer policy, one case per §4.7 row, `--force` | 3.4 |
 | `closed/` kept while any save, `declined` or pin names its boot; swept after | 5.6 |
 | `save` against a stopped server publishes nothing | 1.9 |
-| the writer never writes a file its own reader refuses (control bytes by Task 1.3's rules) | 1.9 |
+| no control byte written (control bytes by Task 1.3's rules) | 1.9 |
+| the writer's files pass the reader | 1.10 |
 | zero-byte and cut-off shapes are named refusals | 1.10 |
 | the kept shape fixture, read on every run, never edited | 1.10 |
 | dotted and numeric session names skipped or placed exactly | 1.12 |
 | the restored server survives a resize storm from a real client | 1.12 |
-| unzoom after restore and compare the layout; `pane-base-index 1`; `renumber-windows` note | 1.13 |
+| unzoom after restore and compare the layout; `pane-base-index 1` | 1.13 |
 | odd names and directories round-trip (space, `$`, quotes, `#`, trailing space, UTF-8) | 1.13 |
 | the K-pane fallback names every unplaced block with its key | 1.13 |
 | R4: a headless Claude child does not re-identify the pane | 1.15 |
