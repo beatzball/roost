@@ -175,26 +175,31 @@ assert_eq "$(pstate)" "working" "setup: the codex pane is working"
 # its hook was called; one that lands later leaves a dialog open for the full
 # delay, and its ping is right. So a late answer is a missed setup, retried
 # once, not a FAIL (#202).
+#
+# The batch stops at the first late answer. Every dialog before it was
+# answered in time, so none of their children may ping at all, and the late
+# one's child cannot wake before its own t + 2: no ping before that is right.
+# Opening more dialogs after a miss would add deadlines that a ping carries
+# no id to tell apart, and a wrong ping from one of them could pass a check
+# on the first and be erased by the retry (review, #202).
 case_1() {
   reset
   next_second > /dev/null
-  late=""; t1=""
+  late=""; tl=""
   for i in 1 2 3 4 5; do
     t="$(now)"; hook PermissionRequest "$(perm "a$i")"
-    [ -n "$t1" ] || t1="$t"
     sleep 0.2
     hook PostToolUse "$POST"
-    before "$t + 2" || late="$late a$i"
+    before "$t + 2" || { late="a$i"; tl="$t"; break; }
   done
   assert_eq "$(pstate)" "working" "five auto-approved escalations leave the pane working"
   sleep 3.5
   if [ -n "$late" ]; then
-    # A late answer can make a later ping right, but no ping is right before
-    # the first child woke, however late the answers were. Count that first:
-    # the retry empties the log, and must not erase a wrong ping (#202).
-    assert_eq "$(pings_before "$t1 + 2")" "0" "an escalation does not ping before its delay, even in a missed setup"
+    # Counted after the wait, which outlasts the late dialog's child, and
+    # before the retry's reset empties the log (#202).
+    assert_eq "$(pings_before "$tl + 2")" "0" "an escalation does not ping before its delay, even in a missed setup"
     MISS_WHAT="setup: each escalation answered before its child woke"
-    MISS_WANT="none late"; MISS_GOT="late:$late"
+    MISS_WANT="none late"; MISS_GOT="late: $late"
     return 1
   fi
   assert_eq "$(count)" "0" "five escalations approved inside the delay send no ping"
@@ -369,8 +374,8 @@ notified() { tmux -S "$s" show-options -pqv -t "$pane" @roost-notified; }
 delay_p() { tmux -S "$s" set-option -p -t "$pane" @roost-notify-delay "$1"; }
 # two_dialogs TAG WHAT -- the setup cases 9 and 10 share. Sets sa sb ea eb tb
 # r0 (r0: the claim record before the case) and pins FAKE_S, which the case
-# clears when it is done; on a miss, clears the pane, waits out both children
-# and returns 1.
+# clears when it is done; on a miss, clears the pane, waits out both children,
+# counts any ping too early for either, and returns 1.
 two_dialogs() {
   MISS_WHAT="$2"
   r0="$(notified)"
@@ -379,7 +384,7 @@ two_dialogs() {
   # ever compared for equality, never as numbers, so a past one is safe.
   FAKE_S=$(($(date +%s) - 3600))
   delay_p 2
-  hook PermissionRequest "$(perm "${1}1")"; sa="$(since)"; ea="$(entry)"
+  ta="$(now)"; hook PermissionRequest "$(perm "${1}1")"; sa="$(since)"; ea="$(entry)"
   hook PostToolUse "$POST"
   delay_p 5
   tb="$(now)"; hook PermissionRequest "$(perm "${1}2")"; sb="$(since)"; eb="$(entry)"
@@ -388,6 +393,10 @@ two_dialogs() {
   hook PostToolUse "$POST"
   FAKE_S=""
   at "$tb + 6"
+  # A's child cannot wake before ta + 2 and B's before tb + 5, so a ping
+  # before ta + 2 is wrong whatever the stamps did. Counted after both
+  # children woke, before the retry's reset erases it (#202).
+  assert_eq "$(pings_before "$ta + 2")" "0" "a dialog does not ping before its delay, even in a missed setup (two dialogs)"
   return 1
 }
 case_9() {
@@ -486,6 +495,10 @@ case_11() {
     hook PostToolUse "$POST"
     FAKE_S=""
     at "$tr1 + 7"
+    # A's child cannot wake before ta0 + 3 and the repeat's before tr + 6,
+    # so a ping before ta0 + 3 is wrong however the setup missed. Counted
+    # after both children woke, before the retry's reset erases it (#202).
+    assert_eq "$(pings_before "$ta0 + 3")" "0" "a repeat does not ping before the first delay, even in a missed setup"
     return 1
   fi
   assert_eq "$st" "blocked" "setup: the repeat leaves the pane blocked"
