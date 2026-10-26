@@ -115,6 +115,21 @@ were measured (§2.7, §2.10).
 
 Every non-blocking note of the fourth read is triaged in Appendix D.
 
+### Revision 5: the final read, three fixes and four notes
+
+The fifth read was the last. The coordinator ruled the smallest fixes
+only, and no new mechanism. Each fix is an arrow of §4.7's table, with the
+§4.1, §4.6 and §3.5 text that points at it, and a red test in §8.1.
+
+| # | item | answered in |
+|---|---|---|
+| 1 | a resume that exits 0 before identity lands (a declined first-start dialog) leaves no pane, and T19 read that as a person closing it and dropped the key | §4.7 T13b: `pane-exited` on a `.launching` file is `%N.failed exited` (row **failed, exited**), the claim released, the key kept for `revive %N`; T19 limited; §4.6 Release and Cancel, §4.1 steps 1 and 7, §3.5 step 2; §8.1 test 11 "a resume that exits 0" |
+| 2 | an interrupted `revive` of a taken shell came back as **waiting**, and the worker replaced the shell | §4.7 T5 (an `origin` line appended after every winning claim), T8b (put back by origin; only `origin waiting` is **waiting**; no line is **failed, interrupted**, never automatic), T8c; §4.6 step 1 and "Interrupted halfway", §4.1 step 5a; §8.1 test 6 "interrupted" |
+| 3 | a failed, dead retry that fails a read-only check, and a placeholder that crashes in failed, waiting, landed in no row | §4.7 T7 (stays **failed, dead**, the reason as extra text), T13a (failed, waiting added); §4.6 step 2, §3.5 step 2; §8.1 test 11 "retried while still broken" and "crashes while failed" |
+| notes | `close` on a placeholder is `kill-pane` (F N1); `revive --new-window` from a pending file is refused (F N2); the `.failed` file's first line decides T14 or T16 (F N6); T2's changed-command fallback is **placing, taken** (C note) | §4.7 T19, T5, T14, T2; §4.1 step 5a; §4.6; §8.1 tests 2(j), 6, 11 |
+
+Every other note of the fifth read is triaged in Appendix E.
+
 ---
 
 ## The 2026-10-20 incident, and where each lesson is answered
@@ -947,9 +962,11 @@ rest only say that a save is wanted:
    (every pane's window and session appear in the other two listings, else
    list again — the three listings can straddle a split or a kill); build
    the file; apply the pending changes this round's wants name (§4.7's
-   table: a `pane-died.<%N>` renames that pane's `%N` or `%N.launching`
-   file to `%N.failed died` and releases the claim its launch held —
-   arrows T13 and T13a); compare its body to `shape`'s body (§3.2:
+   table: a `pane-died.<%N>` renames that pane's `%N`, `%N.launching` or
+   `%N.failed` (failed, waiting) file to `%N.failed died` and releases the
+   claim its launch held — arrows T13 and T13a; a `pane-exited.<%N>` on a
+   `%N.launching` file renames it to `%N.failed exited` and releases the
+   claim, keeping the key — arrow T13b, not a cancel (revision 5)); compare its body to `shape`'s body (§3.2:
    everything after the header); if the same, write nothing; else `mktemp`
    in the shape directory, write with every trigger of the round in the
    header, hard-link the current `shape` into `history/<stamp>-<gen>`, `mv`
@@ -1150,7 +1167,9 @@ Bring back the conversation of one pane.
    §5.4). A live pane: read its `@roost-harness`, `@roost-session`,
    `@roost-cwd`, `@roost-transcript-path`, and `#{pane_current_path}`; a pane
    placed by a restore and not yet resumed: its pending record (§4.6), which
-   step 5a claims like the worker does; a gone
+   step 5a claims like the worker does; a gone `%N` whose file is
+   `%N.failed exited` (§4.7 **failed, exited**, revision 5): that file's
+   resume block, the pane being gone, so step 7's gone-pane path; a gone
    `%N` on this boot: the record's `harness`, `session_id`, `cwd` and, since
    revision 2, `transcript` (§1, §3.3). A record written before revision 2
    has no `transcript`; then the adapter's **exact-id lookup** supplies it —
@@ -1197,8 +1216,14 @@ Bring back the conversation of one pane.
      conversation, the one order every launcher uses (revision 4, F N2).
      The pane is claimed by the `revive` arrow of §4.7's table for the
      state its file is in: **waiting** (`%N`, arrow T5), **failed,
-     waiting** or **failed, dead** (`%N.failed`, T14, T16) and **taken**
-     (`%N.taken`, T17) are each renamed to `%N.launching`; the rename
+     waiting** or **failed, dead** (`%N.failed`, T14, T16), **failed,
+     interrupted** (`%N.failed`, T8c) and **taken** (`%N.taken`, T17) are
+     each renamed to `%N.launching`, and the winner at once appends its
+     `origin` line (§4.7 T5, revision 5). With `--new-window`, any of
+     these is refused first, exit 13, `'%N' has a pending resume; revive
+     it in place`, nothing renamed (revision 5, F N2). **failed,
+     exited** has no pane to claim: its file is removed once the new
+     window is launched (§4.7). The rename
      failing means the worker or a key got there first: exit **13**, `'%N'
      is already being resumed` or `'%N' was taken by a key; roost revive it
      again to resume`, nothing launched. **launching** and **launched**:
@@ -1246,20 +1271,23 @@ Bring back the conversation of one pane.
    and **failed, waiting** — the start command is still the placeholder
    line written for the file and `pane_dead` is 0, and no shell check,
    because the rename proved no key arrived; **failed, dead** —
-   `pane_dead` is 1; **taken**, and a pane with no pending file whose
-   command is a shell — the shell checks above. The start command is
+   `pane_dead` is 1; **taken**, **failed, interrupted** (revision 5),
+   and a pane with no pending file whose command is a shell — the shell
+   checks above. The start command is
    never the test for **taken**: it survives the `exec` that gave the
    person the shell (§2.10), so it reads the same as a placeholder's. A
    check that fails is arrow T9 (`%N.failed pane changed`, exit 1), except
-   from **taken**, where it is T8: the file goes back to `%N.taken`, the
+   from **taken** and **failed, interrupted**, where it is T8: the file
+   goes back to `%N.taken` (or `%N.failed interrupted`), the
    claim is released, and `revive` exits 1 (`--force` skips the shell
    checks, as for any shell pane). A gone pane, or
    `--new-window`: `new-window -d` in the pane's old session (from the
    record's reserved `session` when written, else the caller's), and
    `@roost-was %OLD` on the new pane. Then `@roost-name` re-stamped.
-   `remain-on-exit failed` means a resume that still exits at once (a store
-   that lied, a harness that changed its message) leaves a dead pane whose
-   last screen says why, not a hole in the layout; the next `revive` or
+   `remain-on-exit failed` means a resume that still exits non-zero at
+   once (a store that lied, a harness that changed its message) leaves a
+   dead pane whose last screen says why, not a hole in the layout (a zero
+   exit before identity leaves no pane: §4.7 T13b, revision 5); the next `revive` or
    `respawn-pane` on it clears it. Then `save --auto --trigger respawn`:
    `respawn-pane` fires no hook (§2.7, §3.4).
 8. Print `%NEW` on stdout (the new or kept id), one line on stderr with the
@@ -1589,7 +1617,10 @@ not have, and not in the shape, which §3.3 reads from live options. So:
   and **`order N`** (its place in the shape's pane order, which the loop
   walks). Revision 2's `pid` and `cursor` lines are gone (item 1): the
   file's own name is now the proof (§4.7), and a file rewritten after the
-  placeholder started could race its rename.
+  placeholder started could race its rename. The one line added later is
+  `origin STATE`, appended only by the launcher whose rename to
+  `%N.launching` has already won (§4.7 T5, revision 5), so no placeholder
+  races it.
 - **Overlay.** `save --auto` (§3.5 step 2) writes a pane that has no
   `@roost-session` but has a pending file — **`%N`, `%N.launching`,
   `%N.failed` or `%N.taken`, all four alike** — with that file's keys, plus
@@ -1622,21 +1653,27 @@ not have, and not in the shape, which §3.3 reads from live options. So:
 - **`restore --resume`** walks `pending/<this boot>/` by `order`, taking
   only plain `%N` files — and, with `--retry`, the `%N.failed` files whose
   state has a retry arrow in §4.7's table: **failed, waiting** and
-  **failed, dead**. The placeholders are already there, so straight to
+  **failed, dead**, told apart by the file's first line (`died`, or a
+  waiting reason; §4.7 T14, revision 5, F N6). The placeholders are already there, so straight to
   agents, `--pace` apart (§5.5 applies here too). For each pane, in this
   order, which is `revive`'s order too: **the pane first, then the
   conversation** (revision 4, F N2; revision 3 had the worker take them the
   other way round, and a `revive` meeting the worker on one pane could
   leave both backing off):
   1. **Claim the pane**: `mv` its file from the name it has to
-     `%N.launching` (§4.7 arrows T5, T14, T16). This is the rename the
+     `%N.launching` (§4.7 arrows T5, T14, T16), then append `origin
+     waiting` or `origin failed REASON` (revision 5; T8b reads it if this
+     run dies). This is the rename the
      placeholder races on a key; if the worker loses, the pane is the
      person's (or another launcher's): move on, nothing touched.
   2. **Check, touching nothing else**: §4.1 steps 3 to 5 — the harness on
      `PATH`, the directory by §5.1, the key in the store, no live pane
      carrying it. A failure is arrow T7: `mv %N.launching %N.failed` with
      the reason written in, and **the pane is not touched** — it is still
-     the placeholder, which shows the reason itself (§4.7 step 1).
+     the placeholder, which shows the reason itself (§4.7 step 1). A
+     retried **failed, dead** pane is still dead: its file keeps `died`
+     as the first line and gains the reason as extra text, so it stays
+     **failed, dead** (§4.7 T7, revision 5).
      Revision 3 renamed the file and then respawned the placeholder into a
      plain shell that printed the reason; a key in the gap between the two
      got a shell from the losing placeholder, and the respawn killed it
@@ -1682,19 +1719,30 @@ not have, and not in the shape, which §3.3 reads from live options. So:
   claim is released; when the resume **dies** — `remain-on-exit failed`
   leaves a dead pane, and `pane-died[98]` (§3.4, measured to fire with
   `#{hook_pane}` by a reviewer on tmux 3.6) passes `%N` — the file becomes
-  `%N.failed died` and the claim is released, so `--retry` can reach it.
+  `%N.failed died` and the claim is released, so `--retry` can reach it;
+  when the resume exits **0** before identity lands, no pane is left and
+  `pane-exited` is arrow T13b, not a cancel: the file becomes `%N.failed
+  exited`, the claim is released and the key kept, for `revive %N`
+  (revision 5, F B1).
 - **Cancel** — arrow T19. `pane-exited`, a kill by any route
   (`after-kill-pane`, or a pane in a `window-unlinked` or `session-closed`
   difference, §3.6a) and `roost close` on a pane with a pending file, in
   any state, remove it and release any claim it holds: a person who closed
-  the pane did not want the agent. **Taking** a pane is not a cancel: a
+  the pane did not want the agent. Except (revision 5): `pane-exited` on a
+  `.launching` file is T13b, since identity has not landed and no person
+  closed anything; and `roost close` on a **waiting**, **launching** or
+  **failed** placeholder (or a failed, dead pane) is `kill-pane`, not the
+  harness's exit keys, which the placeholder would read as a key (F N1).
+  **Taking** a pane is not a cancel: a
   **taken** pane is a shell the person is using, and §4.6's overlay keeps
   its key until that pane goes.
 - **Interrupted halfway** (the person detached and the server died, or the
   loop was killed): unclaimed files are still there for the next attach. A
   **launching** file whose launcher is gone is arrow T8b of §4.7: only the
-  worker that holds `resuming/` puts it back to `%N` and releases that
-  claim — no other process renames a `.launching` file it did not make, so
+  worker that holds `resuming/` puts it back, by its `origin` line —
+  `%N` only for `origin waiting`; `%N.taken`, `%N.failed REASON`, or
+  `%N.failed interrupted` when there is no line (revision 5, C B1) — and
+  releases that claim — no other process renames a `.launching` file it did not make, so
   a recovery can never take a file a new, live launcher has just claimed.
   `.launching`, `.failed` and `.taken` files are listed by `restore
   --list`, `status` and `doctor`; `roost restore --resume --retry` retries
@@ -1812,10 +1860,12 @@ file.
 | **placing, claimed** | `F.used`; the placeholder line | restore, the live owner of `restoring/` (T3); after it dies, the restore that takes `restoring/` over (T2b) | rename lost: `roost restore is placing this pane`, keeps waiting, **no shell** | refused | — (no arrow leaves it by rename) |
 | **placing, taken** | `F.taken`; any command | **nobody**: the person's shell; restore leaves it (§4.3), and when `restoring/` goes, the pane has no file (or `P` as `%N.taken`, §4.3) | the shell's | as for any pane | — |
 | **waiting** | `P` as `%N`; the placeholder line, `pane_dead` 0 | nobody until a launcher wins `%N → %N.launching` (T5) | the placeholder wins `%N → %N.taken` (T6): a shell | refused | the placeholder line, `pane_dead` 0 |
-| **launching** | `%N.launching`; the placeholder line | the launcher whose claim (or `resuming/`) is live (T7, T9, T10); when it is dead, only the worker holding `resuming/` (T8b) | rename lost: `resuming <harness> now`, keeps waiting, **no shell** | refused | — (the launcher checks by the state it came from, §4.6 step 4) |
-| **launched** | `%N.launching`; the resume command | **nobody**: the harness runs, perhaps in a dialog; the claim is held until T11–T13 | the harness's | refused unless `--force` (a dialog) | — |
-| **failed, waiting** | `%N.failed` with a reason: `harness missing`, `directory gone`, `store miss`, `duplicate of %M`; the placeholder line, `pane_dead` 0 | nobody automatically; `--retry` or `revive` by `%N.failed → %N.launching` (T14) | the placeholder wins `%N.failed → %N.taken` (T15): the reason, then a shell | refused | the placeholder line, `pane_dead` 0 |
-| **failed, dead** | `%N.failed died`; `pane_dead` 1 (a resume that exited non-zero, or a crashed placeholder) | nobody automatically; `--retry` or `revive` by `%N.failed → %N.launching` (T16) | none: tmux gives a dead pane no input | refused | `pane_dead` 1 |
+| **launching** | `%N.launching`, with an `origin` line once the winner has written it (revision 5); the placeholder line | the launcher whose claim (or `resuming/`) is live (T7, T9, T10); when it is dead, only the worker holding `resuming/` (T8b), by the `origin` line | rename lost: `resuming <harness> now`, keeps waiting, **no shell** | refused | — (the launcher checks by the state it came from, §4.6 step 4) |
+| **launched** | `%N.launching`; the resume command | **nobody**: the harness runs, perhaps in a dialog; the claim is held until T11–T13b | the harness's | refused unless `--force` (a dialog) | — |
+| **failed, waiting** | `%N.failed`, its first line a reason: `harness missing`, `directory gone`, `store miss`, `duplicate of %M`; the placeholder line, `pane_dead` 0 | nobody automatically; `--retry` or `revive` by `%N.failed → %N.launching` (T14) | the placeholder wins `%N.failed → %N.taken` (T15): the reason, then a shell | refused | the placeholder line, `pane_dead` 0 |
+| **failed, dead** | `%N.failed`, its first line `died` (any later line is extra text, such as a retry's failed check, T7); `pane_dead` 1 (a resume that exited non-zero, or a crashed placeholder, T13a) | nobody automatically; `--retry` or `revive` by `%N.failed → %N.launching` (T16) | none: tmux gives a dead pane no input | refused | `pane_dead` 1 |
+| **failed, exited** | `%N.failed exited`; **no pane**: a resume exited 0 before identity landed, and `remain-on-exit failed` keeps only a non-zero exit (T13b, revision 5) | nobody: there is no pane; never retried; `revive %N` reads the file's key and launches in a new window, as for a gone pane (§4.1 steps 1 and 7), and removes the file once launched | — | — | — |
+| **failed, interrupted** | `%N.failed interrupted`; the placeholder line, `pane_dead` 0 — a placeholder **or** a shell a key took, which the start command cannot tell apart (§2.10) | **nobody automatically**; never retried; only `revive`, a person naming the pane, by `%N.failed → %N.launching` (T8c, revision 5) | the placeholder, if it is one, wins `%N.failed → %N.taken` (T15) | refused | §4.1 step 7's shell checks, as from **taken** (a placeholder's own wait has a child, so it is refused unless `--force`; a key first makes it **taken**) |
 | **failed, changed** | `%N.failed pane changed`; a command a person respawned | **nobody**; never retried; `revive` treats the pane as one with no file (last row) | that command's | as for any pane | — |
 | **failed, replaced** | `%N.failed replaced`; another conversation, its own `@roost-session` | **nobody**; never retried; the file is a record until the pane goes | that harness's | as for any pane | — |
 | **taken** | `%N.taken`; the person's shell (start command still the placeholder line) | **nobody automatically**; only `revive`, a person naming the pane, by `%N.taken → %N.launching` (T17) | the shell's | as for any pane | §4.1 step 7's shell checks: no child process, else exit 1 unless `--force` |
@@ -1829,7 +1879,8 @@ rename that fails changes nothing and the actor does what its row says.
 - **T2** restore's per-pane step wins `F → F.used`: → **placing,
   claimed**. Lost: the pane is **placing, taken**; restore leaves it.
   Won, but the pane no longer runs its placing line (a person respawned
-  it by hand): restore leaves it the same way.
+  it by hand): restore renames `F.used → F.taken` and leaves it the same
+  way → **placing, taken**, the person-owned row (revision 5, C note).
 - **T2b** a restore that takes over a dead `restoring/` (§3.5) also takes
   the dead run's files: each `F.used`, and each `F` it wins, whose pane
   still runs its placing line, it respawns into a plain shell in that
@@ -1843,22 +1894,49 @@ rename that fails changes nothing and the actor does what its row says.
 - **T4** a key in **placing**: the placeholder wins `F → F.taken` →
   **placing, taken**.
 - **T5** a launcher (the worker, a hand restore, `revive`) wins `%N →
-  %N.launching` → **launching**.
+  %N.launching` → **launching**. Every winning rename to `%N.launching`
+  (T5, T14, T16, T17, T8c) is followed at once by the winner appending
+  `origin STATE` to the file: `origin waiting`, `origin failed REASON`
+  (the old first line) or `origin taken` — the one record of whose pane it
+  was that outlives the launcher (revision 5, C B1). `revive --new-window`
+  is refused, exit 13, `'%N' has a pending resume; revive it in place`,
+  from every state with a pending file and a live pane (**waiting**,
+  **failed, waiting**, **failed, dead**, **failed, interrupted**,
+  **taken**), before any rename: the agent would land elsewhere, and
+  `%N.launching` would wait for an identity that never lands on `%N`
+  (revision 5, F N2).
 - **T6** a key in **waiting**: `%N → %N.taken` → **taken**.
 - **T7** the worker or a hand restore, in **launching**, finds a
   read-only check failing or the conversation claimed for another pane
   (`revive` makes its read-only checks before it renames anything, §4.1): `%N.launching → %N.failed`
   with the reason, its own claim (if taken) released, the pane untouched →
-  **failed, waiting**.
+  **failed, waiting**. From an `origin failed died` claim (T16, a dead
+  pane) it stays **failed, dead**: the first line stays `died` and the new
+  reason is added as extra text on a later line; it is never relabelled
+  **failed, waiting**, whose row needs a live placeholder (revision 5, C
+  B2(a)).
 - **T8** a `revive` whose conversation claim is refused (from any state),
-  or whose step 7 shell checks fail from **taken**: the file goes back to
-  the name it came from (**waiting**, **failed, waiting**, **failed,
-  dead** or **taken**), its own claim released. (The worker's claim
+  or whose step 7 shell checks fail from **taken** or **failed,
+  interrupted**: the file goes back to the name it came from
+  (**waiting**, **failed, waiting**, **failed, dead**, **failed,
+  interrupted** or **taken**), its own claim released. (The worker's claim
   refusal is T7, `duplicate of %M`, since no person is asking.)
 - **T8b** the worker holding `resuming/` finds **launching** with the
-  placeholder line and a dead launcher: `%N.launching → %N`, the dead
-  claim released → **waiting**. No other process renames a `.launching`
-  file it did not make.
+  placeholder line and a dead launcher: it puts the file back by its
+  `origin` line and releases the dead claim. Only `origin waiting` goes
+  back to `%N` → **waiting**. `origin taken` goes back to `%N.taken` →
+  **taken**; `origin failed REASON` goes back to `%N.failed` with REASON
+  as its first line → **failed, waiting**, **failed, dead** or **failed,
+  interrupted**, by that line. No `origin` line (the launcher died
+  between its rename and its append) proves nothing: `%N.failed
+  interrupted` → **failed, interrupted**, never automatic. Revision 4
+  sent every interrupted claim back to `%N`, so a `revive` of a taken
+  shell killed after T17 became a waiting pane that the worker replaced
+  without the shell checks (revision 5, C B1). No other process renames a
+  `.launching` file it did not make.
+- **T8c** `revive` wins `%N.failed → %N.launching` from **failed,
+  interrupted**; §4.1 step 7's shell checks then decide, as for T17:
+  pass → T10, fail → T8 back to **failed, interrupted**.
 - **T9** the launcher's check before `-k` fails: `%N.launching →
   %N.failed pane changed`, its claim released, the pane untouched →
   **failed, changed**. (From **taken**, `revive` takes T8 instead and
@@ -1871,11 +1949,25 @@ rename that fails changes nothing and the actor does what its row says.
   claim released.
 - **T13** `pane-died` on **launched** (the saver, §3.5 step 2) → **failed,
   dead**, the claim released.
-- **T13a** `pane-died` on **waiting** or **launching** with the placeholder
-  line (the placeholder itself crashed) → **failed, dead**, a claim
-  released if one was held.
+- **T13a** `pane-died` on **waiting**, on **launching** with the
+  placeholder line, or on **failed, waiting** (the placeholder itself
+  crashed, perhaps while it showed its reason) → **failed, dead**: the
+  file is `%N.failed died` (the old reason kept as extra text), a claim
+  released if one was held (revision 5, C B2(b) and F N4).
+- **T13b** `pane-exited` on a `.launching` file (revision 5, F B1). A
+  `.launching` file at that moment means identity has not landed (T11
+  would have removed it, T12 renamed it): the harness quit, perhaps from
+  a first-start dialog, with status 0, and `remain-on-exit failed` keeps
+  only a non-zero exit, so the pane is gone. That is not a person closing
+  the pane: `%N.launching → %N.failed exited`, the claim released, the key
+  kept → **failed, exited**.
 - **T14** `--retry` or `revive` wins `%N.failed → %N.launching` from
   **failed, waiting** → **launching**; the loop then runs every check again.
+  The `.failed` file's **first line** decides T14 or T16: `died` is
+  **failed, dead** (T16); `harness missing`, `directory gone`, `store
+  miss` or `duplicate of %M` is **failed, waiting** (T14); any other
+  (`pane changed`, `replaced`, `exited`, `interrupted`) has no retry
+  arrow (revision 5, F N6).
 - **T15** a key in **failed, waiting**: `%N.failed → %N.taken` →
   **taken**.
 - **T16** `--retry` or `revive` wins `%N.failed → %N.launching` from
@@ -1886,7 +1978,14 @@ rename that fails changes nothing and the actor does what its row says.
   in it): the file is removed → **no file** (revision 4, F N7).
 - **T19** the pane exits, is killed by any route, or is closed with `roost
   close`, in any state: the file is removed and any claim it holds
-  released (§4.6 Cancel).
+  released (§4.6 Cancel). Two limits (revision 5): `pane-exited` on a
+  `.launching` file is T13b, never T19, so in **launched** T19 is a kill
+  or a `close`, not the harness quitting before identity; and `roost
+  close` on a pane whose file is `%N`, `%N.launching` with the
+  placeholder line, or `%N.failed` (**waiting**, **launching**, **failed,
+  waiting**, **failed, dead**, **failed, interrupted**) is `kill-pane`,
+  never the harness's exit keys, whose first byte would be a key that
+  takes the pane (F N1).
 
 Two rules fall out of the table and are what the reviewers' four ownership
 items broke. **A placeholder starts a shell only when its own rename
@@ -1895,7 +1994,8 @@ state it reached by its own rename, after the check in that state's
 row** (items 1 and 4): the worker and a hand restore touch only
 **waiting**, and with `--retry` **failed, waiting** and **failed, dead**;
 placement touches only **placing** it has claimed; only `revive`, a person
-naming the pane, reaches **taken**, and then with the shell checks.
+naming the pane, reaches **taken** and **failed, interrupted**, and then
+with the shell checks.
 
 The cost, said in Q1 and on the site page: until its turn, each agent pane
 shows the waiting line instead of a prompt, and a person who wants a shell
@@ -2218,7 +2318,9 @@ a stub on `PATH` named `claude` that records its argv and `cwd` to a file
 and sleeps — so the resume **command** is asserted, not a model. The stub's
 "store" is a directory of files named by id under the redirected
 `CLAUDE_CONFIG_DIR`, so the store check has something to hit and miss; a
-second stub `claude-exit1` exits 1 at once for the `remain-on-exit` case.
+second stub `claude-exit1` exits 1 at once for the `remain-on-exit` case,
+and a third, `claude-exit0` (revision 5), exits 0 at once without
+identifying.
 Every server in this file is **detached** — there is no client — which is the
 production shape of a login restore, **except** where a test attaches a real
 client: from a pane of a second throwaway server, `env -u TMUX tmux -S
@@ -2242,6 +2344,9 @@ are created and its layout applied, before the per-pane step),
 `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` (restore waits after winning `F →
 F.used`, T2, before that pane's respawn), `ROOST_TEST_RESUME_HOLD_AFTER_FAILED=FILE`
 (the worker waits after T7, `%N.launching → %N.failed`); and the
+revision 5 hold `ROOST_TEST_REVIVE_HOLD=FILE` (`revive` waits after its
+rename to `%N.launching`, the `origin` line and its conversation claim,
+before step 7); and the
 redirected `HOME`'s `.bash_profile` and `.bashrc` each append
 `$TMUX_PANE $$` to `$HOME/shells.log`, so "a shell started in this pane"
 is read from a file, never guessed from `#{pane_current_command}`, which
@@ -2339,6 +2444,13 @@ Red tests:
    as login shells and respawned every pane unconditionally, so the
    `sleep` dies; red against it. The held bootstrap of (f) protected only
    the one pane revision 3 already guarded, so it could not catch this.
+   Revision 5 adds one (C note): (j) **won, then changed**: restore held
+   by `ROOST_TEST_PLACE_HOLD_AFTER_USED` after it wins `place.<n> →
+   place.<n>.used` for an unkeyed pane; a person's `respawn-pane -k -t
+   %N 'sleep 60'`; release: the file is `place.<n>.taken` (the
+   person-owned row, T2), the `sleep` alive and its pane untouched, exit
+   0. A build that leaves the file `place.<n>.used` puts the pane in no
+   row; the file name is the assertion.
 3. **Directories.** A pane whose `cwd` was removed: a shell at `$HOME`, the
    stderr line, not resumed, exit 13 when it had a key.
 4. **Resume.** The stub `claude` is run with `--resume <id>` in the saved
@@ -2446,6 +2558,25 @@ Red tests:
    placeholder line — so a build that told the two apart by it would
    revive the busy pane; that is the measured fact (§2.10) the case rests
    on.
+   Revision 5 cases (C B1, F N2): **A revive of a taken shell,
+   interrupted** — the taken pane above with `sleep 60 &` and Enter (a
+   job, the shell at its prompt); `roost revive %P` held by
+   `ROOST_TEST_REVIVE_HOLD` right after T17 and its conversation claim
+   (the file `%P.launching` with `origin taken`); `kill -9` the revive;
+   attach a real client so the worker runs: the file is `%P.taken` again,
+   the claim gone, the `sleep`'s pid and the shell's `pane_pid` the same
+   and alive, and nothing in the stub log. Revision 4's T8b renamed the
+   file to `%P` and the worker's waiting-row check (the placeholder line,
+   `pane_dead` 0) passed the shell and replaced it, so this is red against
+   it. **No origin line**: the same pane with its file planted as
+   `%P.launching` without an `origin` line and a claim naming a dead pid:
+   after the attach the file is `%P.failed interrupted`, the `sleep`
+   alive, nothing launched, and `restore --resume --retry` launches
+   nothing either. **`--new-window` from a pending file**: `roost revive
+   --new-window %P` on a waiting placeholder exits 13 with `revive it in
+   place`, the file still `%P`, no new window, nothing in the stub log; a
+   build without the refusal leaves `%P.launching` saying "resuming now"
+   for ever.
 7. **Addressing.** After a restore, `roost send was:%OLD "x"` reaches the new
    pane and prints the stderr line; `read was:%OLD` reads the **old** boot's
    record; a bare `%OLD` that names a live pane delivers to **that** pane and
@@ -2671,6 +2802,36 @@ Red tests:
     probe; if it does not, the case uses a placeholder that exits 1); the
     file is `%N.failed died`; `--retry` with a good store launches it. Revision
     3 read the exit as a cancel and dropped the key.
+    Revision 5 cases, each a composed path ending in a real recovery:
+    **A resume that exits 0** (F B1): the `claude-exit0` stub as the
+    harness: the pane is gone, the file is `%N.failed exited`, no claim
+    left in `claims/<boot>/`, and `restore --list` names it; put the good
+    stub first on `PATH`; `roost revive %N` opens a new window whose stub
+    argv names `--resume <id>`, and the file is gone once it is launched.
+    Revision 4's T19 removed the file and the claim on that `pane-exited`,
+    leaving nothing to revive; red against it. **A dead pane retried while
+    still broken** (C B2(a)): the `claude-exit1` stub gives `%N.failed
+    died`; remove the key's file from the stub store; `--retry` → the
+    launch count unchanged, the pane still dead, the file's first line
+    still `died` with `store miss` on a later line; restore the key's file
+    and put the good stub first; `--retry` again → the count one higher,
+    `pane_dead` 0, the same `%N`. Revision 4 relabelled it **failed,
+    waiting**, and the second retry's placeholder check then marked it
+    `pane changed`; red against it. **A placeholder that crashes while
+    failed** (C B2(b), F N4): a keyed pane whose key is missing gives
+    `%N.failed store miss`, the placeholder showing it; `kill -9` the
+    placeholder: the pane is dead, the file `%N.failed died`; restore the
+    key's file; `--retry` → the count one higher, `pane_dead` 0. Revision
+    4's T13a skipped **failed, waiting**, so the file kept `store miss`
+    with a dead pane and the retry marked it `pane changed`; red against
+    it. **The first line decides** (F N6): in each case above, `--retry`
+    takes T16 where the first line is `died` and T14 where it is `store
+    miss`, read from the stub log's argv and the file name after each
+    step. **`close` on a waiting pane** (F N1): `roost close %N` on a
+    placeholder whose file is `%N`: the pane is gone, `shells.log` has no
+    line for it (a key would have started a shell), the file is removed,
+    and `close` exits 0. A build that sent the exit keys made the pane a
+    taken shell and `close` exited 1.
     **Taken, then an agent started in it** (F N7): a taken pane in which
     the stub is run by hand and identifies with a new id: the `%N.taken`
     file is removed.
@@ -3242,3 +3403,16 @@ are the six items of §0.
 | C N1 — test 8(b2) asserts on every file under `closed/` | **taken**: the assertion is on the kill and close files after the death-note rule, plus a separate check that `died.<C>` exists (test 8(b2)) |
 | C N2 — test 8(h) forbids overlapping numeric ids | **taken**: the oracle is by boot (test 8(h)) |
 | the open question: what "off until `roost persist on`" covers | **unchanged**, still waiting on the human: saving on, login service opt-in (§3.4a, §9) |
+
+## Appendix E. Triage of the fifth read's notes
+
+Revision 5. "F" is the Fable reviewer, "C" the codex reviewer. F's B1 and
+C's B1–B2 are the three fixes of §0; F N1, N2, N4 (with C B2(b)), N6 and
+C's note are taken there. The coordinator ruled the rest not taken, as
+round 5 was the last.
+
+| note | decision |
+|---|---|
+| F N3 — **placing, claimed** with a dead owner has no exit by key | **not taken**: T2b already settles it in the next restore, and `ensure_session`'s self-restore runs one; a key-side takeover would be a new mechanism |
+| F N5 — no `revive --new-window` arrow from **failed, changed**, **failed, replaced** or **taken** | **not taken**: a new arrow; the key is offered on the next boot (§4.6 overlay), and `revive` in place still works with step 7's checks |
+| F N7 — the 5 s wake (`stty … time 50`, `dd`) is not measured | **not taken** as a text change: it is already named for the build step 1 probe (§4.7 step 1, §6), which must find a wake that returns before step 1 is done |
