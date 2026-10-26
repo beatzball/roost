@@ -97,13 +97,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
   one, and never takes its turn number either: its first reply is the next
   turn, whether it starts before anything looked at the pane or while `send`,
   `read` or `wait-done` is clearing it. `status` still changes nothing.
-- **The codex ping-delay test no longer fails on a busy machine (tests
-  flake, #202).** `tests/test-codex-notify-delay.sh` answered a dialog a few
-  tenths of a second before its deadline, so under a full `tests/run.sh` it
-  sometimes saw a ping the code was right to send. Its two-dialog cases now
-  give each dialog its own delay, seconds apart, pin the clock the hooks
-  stamp with, and check which child claimed the ping. Nothing changes for
-  users; the test is about ten seconds longer.
+- **The codex ping-delay test has wider timing margins and no longer races
+  the real clock in its setup (tests flake, #202).**
+  `tests/test-codex-notify-delay.sh` answered a dialog a few tenths of a
+  second before its deadline, so under a full `tests/run.sh` it sometimes
+  saw a ping the code was right to send. Its two-dialog cases now give each
+  dialog its own delay, seconds apart, pin the clock the hooks stamp with,
+  and check which child claimed the ping. Its "no ping yet" checks count
+  only pings stamped before the deadline, and an answer that lands after
+  its deadline is a missed setup, retried once, not a failure. Delay 1 has
+  its own check again. Nothing changes for users; the test takes about 60
+  seconds where it took 44.
 
 ## [0.10.0]
 

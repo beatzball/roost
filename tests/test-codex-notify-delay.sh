@@ -18,7 +18,8 @@
 #
 # The notifier is a logger: @roost-notify-cmd appends one line per delivery to
 # $NOTES, with the OSC backend off so nothing reaches the terminal running the
-# suite. That is the real roost-notify running a fake delivery command, so the
+# suite. Each line starts with the time the delivery ran, to the microsecond,
+# so a case can ask how many pings came before a deadline (pings_before). That is the real roost-notify running a fake delivery command, so the
 # count is of calls that would have reached the desktop. Every wait is bounded:
 # a deferred ping that never arrives fails the case after a few seconds, it
 # does not hang the suite.
@@ -57,13 +58,20 @@ tmux -S "$s" select-window -t s:other
 NOTES="$T0/notes"; : > "$NOTES"
 tmux -S "$s" set-option -g @roost-notify-backend auto
 tmux -S "$s" set-option -g @roost-notify-osc off
-tmux -S "$s" set-option -g @roost-notify-cmd "echo \"%t|%s\" >> $NOTES"
+# A script, not an inline command: roost-notify turns every %s in the command
+# into the message, so a printf format cannot live in it.
+cat > "$T0/note" <<EOF
+#!/bin/sh
+printf '%s|%s|%s\\n' "\$(python3 -c 'import time; print(repr(time.time()))')" "\$1" "\$2" >> "$NOTES"
+EOF
+chmod +x "$T0/note"
+tmux -S "$s" set-option -g @roost-notify-cmd "$T0/note \"%t\" \"%s\""
 # 2 s, so the suite stays fast. The default is 5 and is checked below without
 # waiting for it. Not 1: cases 1 and 7 answer a dialog (or bring the window on
 # screen) a few tenths of a second after the hook, and the deferred child
 # wakes one delay after the hook. With 1 s that left the answer about 0.6 s to
 # land, which a hook slowed by a loaded machine can spend; 2 s gives it more
-# than a second and a half (#202).
+# than a second and a half (#202). Delay 1 itself has its own check, in case 2.
 tmux -S "$s" set-option -g @roost-notify-delay 2
 
 # The date shim (#202): with FAKE_S set, `date +%s` in a hook prints it, so
@@ -116,6 +124,21 @@ n, end, f = int(sys.argv[1]), eval(sys.argv[2]), sys.argv[3]
 while time.time() < end and sum(1 for _ in open(f)) < n:
     time.sleep(0.05)' "$1" "$2" "$NOTES"
 }
+# pings_before T -- how many pings the notifier stamped before the absolute
+# time T. The "no ping yet" checks use this, not count (#202): a deferred
+# child cannot ping before its hook started plus its delay, so with T that
+# deadline, a ping that the code was right to send is never counted, however
+# long this file is paused before it reads. A ping too early is counted.
+pings_before() {
+  python3 -c '
+import sys
+end = eval(sys.argv[1])
+print(sum(1 for l in open(sys.argv[2]) if float(l.split("|", 1)[0]) < end))' "$1" "$NOTES"
+}
+# before T -- true if the time is still before T. Called just after a dialog
+# is answered, with T its child's earliest wake: then the answer landed
+# first, and a ping would be wrong. If not, the setup missed (#202).
+before() { python3 -c 'import sys, time; sys.exit(0 if time.time() < eval(sys.argv[1]) else 1)' "$1"; }
 # retry_once CASE -- run CASE; if its setup missed (it returns 1 and sets
 # MISS_WHAT / MISS_WANT / MISS_GOT), say so and run it once more in a fresh
 # second. Only a second miss fails. The setup is two hooks landing in chosen
@@ -144,28 +167,56 @@ assert_eq "$(pstate)" "working" "setup: the codex pane is working"
 # dialogs open in the same second and share a stamp, so this holds only
 # because each entry into blocked has its own identity, not because each
 # dialog happens to land in a later second (review, #195).
-reset
-next_second > /dev/null
-for i in 1 2 3 4 5; do
-  hook PermissionRequest "$(perm "a$i")"
-  sleep 0.2
-  hook PostToolUse "$POST"
-done
-assert_eq "$(pstate)" "working" "five auto-approved escalations leave the pane working"
-sleep 3.5
-assert_eq "$(count)" "0" "five escalations approved inside the delay send no ping"
+#
+# Each answer must land before that dialog's child wakes, two seconds after
+# its hook was called; one that lands later leaves a dialog open for the full
+# delay, and its ping is right. So a late answer is a missed setup, retried
+# once, not a FAIL (#202).
+case_1() {
+  reset
+  next_second > /dev/null
+  late=""
+  for i in 1 2 3 4 5; do
+    t="$(now)"; hook PermissionRequest "$(perm "a$i")"
+    sleep 0.2
+    hook PostToolUse "$POST"
+    before "$t + 2" || late="$late a$i"
+  done
+  assert_eq "$(pstate)" "working" "five auto-approved escalations leave the pane working"
+  sleep 3.5
+  if [ -n "$late" ]; then
+    MISS_WHAT="setup: each escalation answered before its child woke"
+    MISS_WANT="none late"; MISS_GOT="late:$late"
+    return 1
+  fi
+  assert_eq "$(count)" "0" "five escalations approved inside the delay send no ping"
+}
+retry_once case_1
 
 # --- 2. a dialog still open after the delay pings once ------------------------
 # A fresh second, so this dialog's stamp is not the one before it.
 sleep 1
 reset
-hook PermissionRequest "$(perm b1)"
-assert_eq "$(count)" "0" "a codex dialog does not ping at once"
+t="$(now)"; hook PermissionRequest "$(perm b1)"
+assert_eq "$(pings_before "$t + 2")" "0" "a codex dialog does not ping at once"
 until_count 1 4
 sleep 1.5
 assert_eq "$(count)" "1" "a codex dialog still open after the delay pings exactly once"
 assert_contains "$(cat "$NOTES")" "needs your input" "...with the blocked message"
 hook PostToolUse "$POST"
+# The smallest delay there is, 1 s (#202). The global delay was 1 until it
+# went to 2 for cases 1 and 7, and a sink that treated 1 as 0 would then
+# pass every other case here.
+sleep 1
+reset
+tmux -S "$s" set-option -g @roost-notify-delay 1
+t="$(now)"; hook PermissionRequest "$(perm b2)"
+assert_eq "$(pings_before "$t + 1")" "0" "@roost-notify-delay 1 does not ping at once"
+until_count 1 4
+sleep 1
+assert_eq "$(count)" "1" "...and pings exactly once after its one second"
+hook PostToolUse "$POST"
+tmux -S "$s" set-option -g @roost-notify-delay 2
 
 # --- 3. a parallel batch of four is one ping ----------------------------------
 sleep 1
@@ -214,14 +265,27 @@ hook PostToolUse "$POST"
 tmux -S "$s" set-option -pu -t "$pane" @roost-notify-delay
 
 # --- 7. the window came on screen during the wait: no ping ---------------------
+# The window must come on screen before the child wakes, two seconds after
+# the hook was called; later is a missed setup, as in case 1 (#202).
+case_7() {
+  reset
+  t="$(now)"; hook PermissionRequest "$(perm e1)"
+  tmux -S "$s" select-window -t s:agent
+  if ! before "$t + 2"; then
+    MISS_WHAT="setup: the window came on screen before the child woke"
+    MISS_WANT="before"; MISS_GOT="late"
+    sleep 3.5
+    hook PostToolUse "$POST"
+    tmux -S "$s" select-window -t s:other
+    return 1
+  fi
+  sleep 3.5
+  assert_eq "$(count)" "0" "a window brought on screen during the delay gets no ping"
+  hook PostToolUse "$POST"
+  tmux -S "$s" select-window -t s:other
+}
 sleep 1
-reset
-hook PermissionRequest "$(perm e1)"
-tmux -S "$s" select-window -t s:agent
-sleep 3.5
-assert_eq "$(count)" "0" "a window brought on screen during the delay gets no ping"
-hook PostToolUse "$POST"
-tmux -S "$s" select-window -t s:other
+retry_once case_7
 
 # --- 8. a bad delay degrades to the default, and the hook never waits ---------
 # The child is detached: codex waits on this hook's exit, and the hook's
@@ -231,14 +295,14 @@ tmux -S "$s" select-window -t s:other
 tmux -S "$s" set-option -g @roost-notify-delay abc
 sleep 1
 reset
-t0="$(date +%s)"
+t8="$(now)"; t0="$(date +%s)"
 out="$(hook PermissionRequest "$(perm f1)"; echo "rc=$?")"
 t1="$(date +%s)"
 assert_eq "$out" "rc=0" "a bad @roost-notify-delay never breaks the hook"
 [ $((t1 - t0)) -le 2 ] && assert_eq ok ok "the hook returns before the deferred ping, not after it" \
   || assert_eq "$((t1 - t0)) s" "under 3 s" "the hook returns before the deferred ping, not after it"
 sleep 1.5
-assert_eq "$(count)" "0" "a bad @roost-notify-delay falls back to the default, not to 0"
+assert_eq "$(pings_before "$t8 + 5")" "0" "a bad @roost-notify-delay falls back to the default, not to 0"
 hook PostToolUse "$POST"
 
 # --- 9. two dialogs in one second: the first's child does not ping the second
@@ -319,8 +383,18 @@ case_9() {
   [ "$eb" != "$ea" ] && assert_eq ok ok "the second dialog is a new entry into blocked" \
     || assert_eq "$eb" "not $ea" "the second dialog is a new entry into blocked"
   at "$tb + 3"
-  assert_eq "$(count)" "0" "a dialog not yet open for the delay is not pinged by the one before it"
+  assert_eq "$(pings_before "$tb + 5")" "0" "a dialog not yet open for the delay is not pinged by the one before it"
   hook PostToolUse "$POST"
+  # The answer must land before B's child wakes, at tb + 5 or later. A hook
+  # held past that left B open for its full delay, and its ping is right: a
+  # missed setup, not a FAIL (#202).
+  if ! before "$tb + 5"; then
+    MISS_WHAT="setup: the second dialog answered before its own child woke"
+    MISS_WANT="before"; MISS_GOT="late"
+    FAKE_S=""
+    at "$tb + 6.5"
+    return 1
+  fi
   FAKE_S=""
   # B's child has woken by now (B's hook returned well before tb + 1).
   at "$tb + 6.5"
@@ -333,16 +407,18 @@ sleep 1
 retry_once case_9
 
 # --- 10. the same, but the second dialog stays open: one ping, on ITS deadline
-# The count is read by polling up to tb + 4.5: A's child woke by tb + 2 with B
-# open and has had two and a half seconds to ping, and B's own cannot wake
-# before tb + 5. The ping that follows must be B's own child's claim on B's
-# entry.
+# The count is polled up to tb + 4.5: A's child woke by tb + 2 with B open
+# and has had two and a half seconds to ping, and B's own cannot wake before
+# tb + 5. Then only the pings stamped before tb + 5 are counted, so a pause
+# here between the poll and the read cannot count B's own (#202; a `sleep 1`
+# after the poll once did). The ping that follows must be B's own child's
+# claim on B's entry.
 case_10() {
   reset
   two_dialogs h "setup: the two dialogs share one whole-second stamp (open case)" || return 1
   assert_eq "$sb" "$sa" "$MISS_WHAT"
   count_by 1 "$tb + 4.5"
-  assert_eq "$(count)" "0" "no ping before the open dialog's own deadline"
+  assert_eq "$(pings_before "$tb + 5")" "0" "no ping before the open dialog's own deadline"
   until_count 1 5
   at "$tb + 6.5"
   assert_eq "$(count)" "1" "the dialog left open past its own deadline pings exactly once"
