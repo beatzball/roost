@@ -44,8 +44,9 @@ does not exist through `close`. Two ways to read the spec:
   session), the next login restore and a plain `roost restore` bring nothing
   back and print "nothing to restore: every saved pane was closed on
   purpose". `roost restore --from STAMP-GEN` does **not** bring it back
-  either: every save taken before the stop is of the same boot as the
-  `close.<N>` files the stop wrote, and §3.6 step 4 filters a `--from
+  either: every save since this server started is of the same boot as the
+  `close.<N>` files the stop wrote (an older save in `history/` is filtered
+  by its own boot's record instead), and §3.6 step 4 filters a `--from
   STAMP-GEN` save by its own boot with no time comparison. The fleet is still
   on disk, and the way back is `--from FILE`, which skips step 4 by design:
   restore a file **by path** — `shape` itself, or a `history/` file —
@@ -1333,17 +1334,23 @@ keeps its own dead-pane and readiness checks.
    STATE 0` and `STATE 1` for every row above → refuse/allow exactly as the
    table says (a function-level case; no delivery asserted). **The verbs:**
    `send` to each refused row (planted) → the ownership refusal and the file
-   unchanged, and `send --force` to the waiting row → delivered (the file
-   still `%N`); `answer` to each refused row → the ownership refusal before
+   unchanged (the unforced waiting case: the file is still `%N`); `send
+   --force` to the waiting row → the ownership refusal is bypassed and the
+   text is typed into the placeholder, which takes it as a key (T6): after a
+   bounded wait (50 × 0.1 s) the file is `%N.taken` and `$HOME/shells.log`
+   has a line for the pane. Nothing is asserted about the text itself — the
+   placeholder drains the rest of the input on purpose (§4.7 step 2); `answer` to each refused row → the ownership refusal before
    any dialog lookup; `answer --force` to the waiting row → today's "is not
    blocked … nothing to answer" (exit 6), and to a failed, dead pane →
    today's dead-pane refusal (exit 2), proving `--force` bypassed only the
    new check. **Forced delivery into a real dialog:** a **launched** pane —
    its file `%N.launching`, the pane running the dialog script of
    `tests/test-answer.sh` (which stamps 🛑 through the real sink and leaves a
-   real dialog record) — `answer --approve` without `--force` → the ownership
-   refusal and no key logged; with `--force` (and `--expect` the fingerprint)
-   → the key is delivered and logged, as in `tests/test-answer.sh`.
+   real dialog record) — both calls carry the same valid `--expect`
+   fingerprint read from `status --json` (an approval without one is refused
+   before any target check): `answer --expect FP --approve` without `--force`
+   → the ownership refusal and no key logged; `answer --force --expect FP
+   --approve` → the key is delivered and logged, as in `tests/test-answer.sh`.
    The placing rows are planted under `ROOST_TEST_PLACE_HOLD` and
    `ROOST_TEST_PLACE_HOLD_AFTER_USED` (Part 1's seams); **§8.1 test 11 (f)**
    is the waiting row, the file still `%N` afterwards. A shell taken during a
@@ -1838,9 +1845,9 @@ for it.
    the newest `history/` file, or of `shape`, printed), exit 0; `restore
    --from <that STAMP-GEN>` prints the same two lines (step 4 filters it);
    `restore --from <that file's path>` places the whole fleet.
-   **The belt:** a planted kill file plus a death note → the pane is restored; a
-   `close.` file plus a death note → not. A failed close (the harness does not
-   leave) removes its `close.<N>`.
+   A failed close (the harness does not leave) removes its `close.<N>`. (The
+   belt — a kill file and a death note keep a pane, a `close.` file and a
+   death note do not — is Task 4.9a's case, which owns step 4.)
 2. `close`: write `closed/<boot>/close.<N>` before the exit command; remove it
    on exit 1 or 2 with the pane still there. R1-A: `kill NAME` and `stop` write
    one `close.<N>` per pane they will remove, before the tmux command.
@@ -1877,7 +1884,7 @@ every case here names its save with `--from`.
 ### Task 4.9b — Shutdown evidence: which save a restore picks (steps 1–3)
 
 **Files:** `scripts/lib/roost-restore.sh`, `tests/test-shape-closed.sh`
-**Depends on:** 4.2, 4.9a (and 4.1's result when there is one)
+**Depends on:** 4.2, 4.8 (its chain case runs Task 4.8's planted `roost close` race, which needs `close`'s intent file), 4.9a (and 4.1's result when there is one)
 
 **Do:**
 1. Red first (§8.1 test 8 a, c, d, f): with `ROOST_SHUTDOWN_AT`, (a) a chain of
@@ -2716,7 +2723,8 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 8 coalescing on cue | 4.6 |
 | 8 ten `spawn`s in parallel | 4.7 |
 | 8 (a) (c) (d) (f) reading rule | 4.9b |
-| 8 (b) planted race, same second, (g) in flight, the belt | 4.8 |
+| 8 (b) planted race, same second, (g) in flight | 4.8 |
+| 8 the belt (kill file + death note kept; `close.` file + death note removed) | 4.9a |
 | 8 (e) the last session (per R1) | 5.6 |
 | 8 (b2) overlap rewritten, death in the gap, (h) boot change, (i) kills by every route — the `closed/` files | 4.6 |
 | 8 (b2) — the restore half (C back and not B, inside the window) | 4.9b |
@@ -2743,7 +2751,8 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 11 dialog keys survive — structural save half | 4.10 |
 | 11 dialog keys survive — `--at-login` half | 5.6 |
 | 11 `kill-pane` before attach; taken then `exit`ed | 4.10 |
-| 11 a `.failed` listed and retried only with `--retry` | 3.6 |
+| 11 a `.failed` file listed by `--list` | 3.11 |
+| 11 a `.failed` file retried only with `--retry` | 3.6 |
 | 11 `ensure_session` with persist on, with and without the marker | 5.8 |
 | 11 other host | 1.14 |
 | 11 two sockets | 3.9 |
