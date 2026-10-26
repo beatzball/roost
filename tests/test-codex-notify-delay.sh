@@ -19,7 +19,8 @@
 # The notifier is a logger: @roost-notify-cmd appends one line per delivery to
 # $NOTES, with the OSC backend off so nothing reaches the terminal running the
 # suite. Each line starts with the time the delivery ran, to the microsecond,
-# so a case can ask how many pings came before a deadline (pings_before). That is the real roost-notify running a fake delivery command, so the
+# so a case can ask how many pings came before a deadline (pings_before).
+# That is the real roost-notify running a fake delivery command, so the
 # count is of calls that would have reached the desktop. Every wait is bounded:
 # a deferred ping that never arrives fails the case after a few seconds, it
 # does not hang the suite.
@@ -141,9 +142,11 @@ print(sum(1 for l in open(sys.argv[2]) if float(l.split("|", 1)[0]) < end))' "$1
 before() { python3 -c 'import sys, time; sys.exit(0 if time.time() < eval(sys.argv[1]) else 1)' "$1"; }
 # retry_once CASE -- run CASE; if its setup missed (it returns 1 and sets
 # MISS_WHAT / MISS_WANT / MISS_GOT), say so and run it once more in a fresh
-# second. Only a second miss fails. The setup is two hooks landing in chosen
-# seconds, which a loaded runner can push across a boundary however wide the
-# margin; a miss is not a wrong tree, so one is forgiven and reported.
+# second. Only a second miss fails. The setup is hooks landing in chosen
+# seconds, or an answer landing before a child wakes, and a loaded runner can
+# push either one late however wide the margin; a miss is not a wrong tree, so
+# one is forgiven and reported. A case checks for a ping that no timing could
+# make right BEFORE it returns 1, because the retry's reset erases the log.
 retry_once() {
   "$1" && return 0
   printf '  note: %s missed (%s: got [%s]), retrying once in a fresh second\n' "$1" "$MISS_WHAT" "$MISS_GOT"
@@ -175,9 +178,10 @@ assert_eq "$(pstate)" "working" "setup: the codex pane is working"
 case_1() {
   reset
   next_second > /dev/null
-  late=""
+  late=""; t1=""
   for i in 1 2 3 4 5; do
     t="$(now)"; hook PermissionRequest "$(perm "a$i")"
+    [ -n "$t1" ] || t1="$t"
     sleep 0.2
     hook PostToolUse "$POST"
     before "$t + 2" || late="$late a$i"
@@ -185,6 +189,10 @@ case_1() {
   assert_eq "$(pstate)" "working" "five auto-approved escalations leave the pane working"
   sleep 3.5
   if [ -n "$late" ]; then
+    # A late answer can make a later ping right, but no ping is right before
+    # the first child woke, however late the answers were. Count that first:
+    # the retry empties the log, and must not erase a wrong ping (#202).
+    assert_eq "$(pings_before "$t1 + 2")" "0" "an escalation does not ping before its delay, even in a missed setup"
     MISS_WHAT="setup: each escalation answered before its child woke"
     MISS_WANT="none late"; MISS_GOT="late:$late"
     return 1
@@ -198,9 +206,13 @@ retry_once case_1
 sleep 1
 reset
 t="$(now)"; hook PermissionRequest "$(perm b1)"
-assert_eq "$(pings_before "$t + 2")" "0" "a codex dialog does not ping at once"
 until_count 1 4
 sleep 1.5
+# Counted after the wait, not as the hook returns: an early ping from the
+# detached child takes a moment to reach the notifier, and read at once it
+# would not be in the log yet. A right ping is stamped after t + 2, so the
+# wait never counts it (#202).
+assert_eq "$(pings_before "$t + 2")" "0" "a codex dialog does not ping at once"
 assert_eq "$(count)" "1" "a codex dialog still open after the delay pings exactly once"
 assert_contains "$(cat "$NOTES")" "needs your input" "...with the blocked message"
 hook PostToolUse "$POST"
@@ -211,9 +223,10 @@ sleep 1
 reset
 tmux -S "$s" set-option -g @roost-notify-delay 1
 t="$(now)"; hook PermissionRequest "$(perm b2)"
-assert_eq "$(pings_before "$t + 1")" "0" "@roost-notify-delay 1 does not ping at once"
 until_count 1 4
 sleep 1
+# After the wait, as above.
+assert_eq "$(pings_before "$t + 1")" "0" "@roost-notify-delay 1 does not ping at once"
 assert_eq "$(count)" "1" "...and pings exactly once after its one second"
 hook PostToolUse "$POST"
 tmux -S "$s" set-option -g @roost-notify-delay 2
@@ -275,6 +288,10 @@ case_7() {
     MISS_WHAT="setup: the window came on screen before the child woke"
     MISS_WANT="before"; MISS_GOT="late"
     sleep 3.5
+    # As in case 1: a ping before the child woke is wrong whatever the
+    # setup did, so it is counted here, after the wait, before the retry's
+    # reset erases it (#202).
+    assert_eq "$(pings_before "$t + 2")" "0" "a dialog does not ping before its delay, even in a missed setup"
     hook PostToolUse "$POST"
     tmux -S "$s" select-window -t s:other
     return 1
