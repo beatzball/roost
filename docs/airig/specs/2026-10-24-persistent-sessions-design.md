@@ -172,7 +172,7 @@ The seventh read covered §4.8 and test 12 only. Each fix has a red test in
 | 3 | 12(k2) wanted one preview across two target states | test 12(k2): the same pin identity, the expected `main` collision, `%3` still out |
 | 4 | the h3 Linux stub waited for `enable --now`, which §4.4 never sends | test 12(h3): the stub triggers on the real `enable UNIT` argv and records it; the write-only seam is off for this case |
 | 5 | h2 forgot the bootstrap window | test 12(h2): compared with the ordinary fresh `spawn x sh` shape |
-| notes | the 60 s bound ends at the first key (F N1); re-read the pin's header after `ln -f` (F N2); `--from STAMP-GEN` also looks at `offer/save` (F N3); `l` with No answer (F N4); plant the `persist` marker in 12(h2) (F N5); the `n`, Enter and timeout lines before the `exec` (F N6); Enter's retry needs a re-plant (C); the pin's lifetime (C, nothing to change) | §4.8 throughout; §3.6; §4.3; Appendix G |
+| notes | the 60 s bound ends at the first key (F N1); re-read the pin's header after `ln -f` (F N2); `--from STAMP-GEN` also looks at `offer/save` (F N3); `l` with No answer (F N4, reversed in revision 9); plant the `persist` marker in 12(h2) (F N5); the `n`, Enter and timeout lines before the `exec` (F N6); Enter's retry needs a re-plant (C); the pin's lifetime (C, nothing to change) | §4.8 throughout; §3.6; §4.3; Appendix G |
 
 Every note is triaged in Appendix G.
 
@@ -894,7 +894,7 @@ them.
 | `roost identify` writes (`ROOST_IDENTITY_WROTE=1`) | a direct call in `roost_identity_stamp`'s caller, only when it wrote | the resume key changed; when nothing changed the one-read-then-bail path is untouched |
 | `roost close` has seen the pane go | a direct call at the end of `close`, `--trigger close`; **before** it sends the exit command, `close` writes `closed/<boot>/close.<N>` (§3.6a) | the removal was deliberate, and `pane-exited` cannot say so (§2.7); the `closed/` file, not this save, is what carries it (§3.6a) |
 | `roost restore` has finished building | one call, `--trigger restore`, after the `restoring` marker is removed (§3.5) | one coherent save for the whole restore instead of sixty |
-| `roost persist on` | one call, `--trigger persist-on`, **not** `--auto`: it waits for a live owner of `lock/` and returns only once its save is published (§4.4, revision 8) | a fleet that is already running is saved the moment persistence is wanted, and the unit is loaded only after that save is on disk |
+| `roost persist on` against a running server | one call, `--trigger persist-on`, **not** `--auto`: it waits for a live owner of `lock/` and returns only once its save is published (§4.4, revision 8); with the server stopped when `on` starts, no call, and the saved shape is kept (§4.4, revision 9) | a fleet that is already running is saved the moment persistence is wanted, and the unit is loaded only after that save is on disk |
 | the user's own `roost save` | the verb, `--trigger save` | a person asked |
 
 **The pane list, kept by tmux** (revision 3, items 3 and 5). Every hook in
@@ -1589,9 +1589,10 @@ Bring the fleet back at login, opt in. One unit **per server**, never a
 shared template, so `off` for one server touches nothing of another's.
 
 - **`on`**: write the `persist` marker in the server's shape directory; write
-  `service.env` (below); save once (`--trigger persist-on`); install the user
-  service and load it. **The save is published before the unit is
-  loaded** (revision 8, F B1): it is not `--auto`, so when `lock/` has a
+  `service.env` (below); save once (`--trigger persist-on`) **when the
+  server is running** (below); install the user service and load it.
+  **With the server running when `on` starts, the save is published before
+  the unit is loaded** (revision 8, F B1): it is not `--auto`, so when `lock/` has a
   live owner (an `after-new-session` hook's saver, which runs `-b` and
   can still hold it after `new-session` has returned) it does not leave a
   want and go on; it waits for that owner by §3.5's owner rule, then
@@ -1599,7 +1600,17 @@ shared template, so `off` for one server touches nothing of another's.
   published. Otherwise `RunAtLoad` (below) could run `--at-login` while
   `shape` is still the crashed save, skip the live `main`, and place every
   other saved session. This holds for `roost persist on` typed by hand as
-  well as for the offer's `l` (§4.8):
+  well as for the offer's `l` (§4.8), which always meets a running server.
+  **With the server stopped when `on` starts** (revision 9, C B2), there is
+  no live fleet to snapshot (§4.2), so the publish wait does not apply:
+  `on` saves nothing, keeps the saved shape as it is, enables the service,
+  and takes the existing `--at-login` path below (macOS: the loaded
+  `RunAtLoad` job; Linux: `on` runs `--at-login` itself), with no live
+  snapshot, so §3.6 picks the saved fleet. Which case applies is decided
+  once, by `server_running` when `on` starts. A server that was running
+  then and dies during the required save is not the stopped case: the save
+  fails (§4.2, exit 1), and `on` fails before the load step, with the unit
+  not loaded:
   - **`service.env`** holds, one `NAME=value` per line, 0600: `HOME`, `PATH`,
     `LANG`/`LC_ALL`, the **resolved** `XDG_STATE_HOME`, `XDG_CONFIG_HOME` and
     `ROOST_SHAPE_DIR` (so the service reads the same roots the saves were
@@ -2358,9 +2369,10 @@ every pane with a key. "2 h ago" is `saved` against now in epoch seconds
   kills nothing; the client stays attached to it. The page says so.
 - **`l` — toggle "restore at login from now on"**, shown `off` or `on`,
   starting `off`. It decides nothing by itself and launches nothing; it
-  rides on the `r`, `n` or Enter that follows, **and on No answer** too
-  (revision 8, F N4): a person who ticks `l` and walks away comes back to
-  a fresh fleet with `persist on` enabled, which is what they ticked. When it is on, the offer
+  rides on the `r`, `n` or Enter that follows. `l` is a key, so it ends
+  the 60 s bound (check 2d): **after `l`, the person must press `r`, `n`
+  or Enter to finish** (revision 9, C B1), and until then the offer waits,
+  with no server started and no service enabled. When it is on, the offer
   runs `roost persist on` (§4.4) **after** that choice has built its
   server — after `r`'s placement and `restoring/` has gone, or after
   `ensure_session` and, for `n`, after `declined` is written — and before
@@ -2372,7 +2384,7 @@ every pane with a key. "2 h ago" is `saved` against now in epoch seconds
   `persist on`'s own save waits for that saver and is published before
   the unit is loaded (§4.4, revision 8, F B1), and `--at-login` then
   picks a save whose sessions all exist. Without that wait, Enter + `l`
-  or No answer + `l` (nothing declined) would place the crashed fleet's
+  (nothing declined) would place the crashed fleet's
   other sessions, which §5.8 forbids. A
   failing `persist on` prints its own message and `roost: persist on
   failed; the fleet is restored this time only` (or `started fresh`), and
@@ -3167,7 +3179,17 @@ Red tests:
    first on `PATH` that records its argv and fails loudly on `stop`: `on`
    loads through the stub, and `off` called `disable` and **never** `stop`
    or `--now`; a server name with a space or `/` refuses, exit 1;
-   `status` reads it all back.
+   `status` reads it all back. **`on` with the server stopped** (revision
+   9, C B2): plant a saved fleet of `main` and `work`, server down, and
+   run `persist on` with the same recording stubs, which start `roost
+   restore --at-login <inner>` on the load call as `RunAtLoad` does
+   (test 12(h3)'s stubs; on Linux `on` runs it itself): `on` exits 0, the
+   load call is logged, `shape` is still the planted save until the
+   job's own `--trigger restore` save (no `persist-on` save in `history/`
+   or in `shape`'s header between them), and the job places the planted
+   `main` and `work`. A build that applies the publish wait here hangs or
+   fails, and one that starts a fresh server to save first places only a
+   fresh `main`: red.
 10. **Degrade.** `ROOST_SHAPE_DIR` relative or empty saves nothing and every
     hook still exits 0 within 5 s; a read-only shape directory makes `save
     --auto` silent and `save` exit 1; a reader running `restore --dry-run` in
@@ -3407,7 +3429,12 @@ Red tests:
     and is never launched. **Which session** (F N2): a save whose sessions
     are `work` and `ops`, `active 1` on `ops`: after `r` from a bare
     `roost` the client is attached to `ops`, the screen names it, and no
-    `main` exists.
+    `main` exists. **`l` then silence** (revision 9, C B1): with
+    `ROOST_TEST_OFFER_TIMEOUT=2`, `l` at once, then no key for 5 s: the
+    offer still waits, the keys line reads `on`, no no-answer line is on
+    the screen, no inner server exists, and no service is enabled (no
+    `persist` marker, no unit file, no load call in the stub log). A build
+    that times out after `l`, or that enables the service on it, is red.
     (h) **`n` records the decline**: `declined` is a hard link to the pin
     (the planted save's inode); the screen names `roost restore --from
     STAMP-GEN` and, since the save holds `main`, the rename hint; the inner
@@ -3443,18 +3470,27 @@ Red tests:
     — the real argv of §4.4, with no `--now` — each start `roost restore
     --at-login <inner>` at once in the background, as `RunAtLoad` does;
     the test asserts the recorded argv, and on Linux that it holds no
-    `--now`. The fresh server's hook saver is held with
-    `ROOST_TEST_SAVE_HOLD=FILE`. **`l` then `n`**: while FILE is absent,
-    `declined` exists, the stub log shows no load call (the unit is not
-    loaded while the save is held), and `shape` is still the planted
-    save; create FILE; then the load call is logged, `login.log` shows the
-    job ran and skipped every session, no pending file exists, and the
-    inner server holds one fresh `main` only. **`l` then Enter**, under
-    the same hold: the same assertions, except that `declined` does not
-    exist; this is the case that has no decline to fall back on. Against
-    a build whose `persist on` save is `--auto`, or that loads the unit
-    without waiting for it, the job runs while `shape` is the crashed
-    save and places `work` with pending files: red every time, not only
+    `--now`. **The lock is planted** (revision 9, F B1), so no saver
+    race decides the case: before sending the choice, the test starts a
+    `sleep` it owns and writes the inner server's `lock/` with that
+    `sleep`'s pid and start time, the format §3.5 step 1 reads. Every
+    saver then meets a live owner, whichever starts first: the hook's
+    `save --auto` leaves a want and exits, and a correct `persist on`
+    waits. **`l` then `n`**: while the `sleep` lives, `declined` exists,
+    the stub log shows no load call, no unit file exists, and `shape` is
+    still the planted save. Kill the `sleep`; then `persist on` takes
+    `lock/` over by the owner rule and saves the fresh fleet, the load
+    call is logged, `login.log` shows the job ran and skipped every
+    session, no pending file exists, and the inner server holds one fresh
+    `main` only. **`l` then Enter**, with the same planted lock: the same
+    assertions, except that `declined` does not exist; this is the case
+    that has no decline to fall back on. Against a build whose `persist
+    on` save is `--auto`, or that loads the unit without waiting for it,
+    the unit loads while the `sleep` lives and `shape` is the crashed
+    save, and the no-load assertion is red in both branches. Only the
+    Enter branch can then place `work` with pending files: with `n`, the
+    planted save is also `declined`, and §4.4's decline guard stops the
+    job from placing it (revision 9, C note). Red every time, not only
     when the race is lost.
     (i) **Enter starts fresh without declining** (revision 7, F N1): the
     inner server holds one fresh `main`, the screen line says `not
@@ -4165,7 +4201,7 @@ there. Every note was taken but one, which asked for no change.
 | F N1 — the 60 s bound restarts at every read | **taken**: it ends at the first key; later reads have no timeout (§4.8 check 2d, the prompt, No answer; test 12(f)) |
 | F N2 — `ln -f` takes a path, so a save renamed over `shape` can be pinned instead | **taken**: re-read `offer/save`'s header after the link; on a `boot` or `gen` mismatch pick and pin again, once (§4.8 check 6); no red test, a review item (§8.1 mutation list) |
 | F N3 — `--from STAMP-GEN` cannot see a pin that left the ring | **taken**: the lookup is `shape`, `history/`, `offer/save`, `declined`; `r`, `p` and a second terminal's dry run are one path (§3.6, §4.3, §4.8 `p` and `declined`; test 12(k2)) |
-| F N4 — does `l` ride on No answer | **taken**: yes, said plainly (§4.8 `l`) |
+| F N4 — does `l` ride on No answer | **reversed in revision 9** (C B1): it cannot, because `l` is a key and ends the 60 s bound; after `l` the person presses `r`, `n` or Enter (§4.8 `l`, test 12(g)) |
 | F N5 — 12(h2)'s write-only seam runs the guard early on Linux | **taken**: the `persist` marker file is planted directly (test 12(h2)) |
 | F N6 — the `n` line is printed after the attach | **taken**: the `n`, Enter and No answer lines are printed before the `exec` (§4.8) |
 | F N7 — the suite's `env -u` list | **taken** with the ruling: the smoke tests' full list, plus `CODEX_THREAD_ID` (§8.1 test 12); the nested-shell check joins build step 7's probe (§6) |
