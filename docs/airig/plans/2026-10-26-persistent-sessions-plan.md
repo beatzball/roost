@@ -321,6 +321,8 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_LOOP_HOLD=FILE` | a hand restore waits after placement, before its resume loop (this plan's seam, not the spec's: it lets Task 3.3 read the placed state before Task 3.5's loop exists) | 3.3 |
 | `ROOST_TEST_RESUME_HOLD=FILE` | the engine waits after its rename to `.launching` and its claim, before the respawn | 3.5 |
 | `ROOST_TEST_RESUME_HOLD_AFTER_FAILED=FILE` | the engine waits right after T7 | 3.5 |
+| `ROOST_TEST_OWNER_PAUSE_DEAD=FILE` | the owner rule waits right after it sees a dead owner's record, before its takeover claim (marks `FILE.at.<pid>`) | review round 1 of Part 1 (B2) |
+| `ROOST_TEST_OWNER_PAUSE_FRESH=FILE` | the owner rule waits right before its first claim (marks `FILE.at.<pid>`) | review round 1 of Part 1 (B2) |
 | `ROOST_TEST_SAVE_HOLD=FILE` | the saver holds `lock/` until FILE exists | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_DRAIN=FILE` | the saver waits after `mv want want.<pid>` | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_LIST=FILE` | the saver waits after listing, before publishing | 4.5 |

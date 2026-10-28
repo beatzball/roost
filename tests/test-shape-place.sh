@@ -240,11 +240,13 @@ detach_client
 
 echo "== the owner rule (§3.5): restoring/ held by a live restore =="
 mkshape "first:$SHAPE_TMP/d1"
-mkdir -p "$SD/restoring"; printf 'pid %s\nlstart %s\n' "$$" "$(ps -o lstart= -p $$)" > "$SD/restoring/owner"
+# The owner record is a symbolic link whose target is "PID LSTART"
+# (scripts/lib/roost-shape.sh, the owner rule).
+mkdir -p "$SD/restoring"; ln -s "$$ $(ps -o lstart= -p $$ | sed 's/^ *//;s/ *$//')" "$SD/restoring/owner"
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "1" "a live owner: a second restore refuses, exit 1"
 assert_contains "$(cat "$SHAPE_TMP/err")" "pid $$" "...naming the pid"
-printf 'pid %s\nlstart %s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$SD/restoring/owner"
+rm -f "$SD/restoring/owner"; ln -s "$$ Thu Jan  1 00:00:00 1970" "$SD/restoring/owner"
 R restore >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "12" "a live pid with another start time is a reused pid: taken over (first exists: exit 12)"
 [ ! -e "$SD/restoring" ]; assert_true $? "...and restoring/ is removed at the end"
@@ -252,7 +254,7 @@ echo "== T2b: a dead run's bootstrap is settled into a shell =="
 stop_server; mkshape "first:$SHAPE_TMP/d1" "second:$SHAPE_TMP/d2"
 mkdir -p "$SD/restoring"; : > "$SD/restoring/bootstrap"
 sh -c 'exit 0' & dead=$!; wait "$dead"
-printf 'pid %s\nlstart %s\n' "$dead" "Thu Jan  1 00:00:00 1970" > "$SD/restoring/owner"
+ln -s "$dead Thu Jan  1 00:00:00 1970" "$SD/restoring/owner"
 TL -f /dev/null new-session -d -s first -c "$SHAPE_TMP/d3" -x 200 -y 50 "$PH" "$SD/restoring/bootstrap" --placing
 TL set -g default-shell "$BASH_BIN"
 bp="$(first_pane first)"; wait_screen "$bp" "$PLACING" 30

@@ -838,53 +838,92 @@ roost_shape_get() {
 }
 
 # THE OWNER RULE (§3.5 step 1, revision 2 item 3), for `restoring/` now and
-# for the saver's `lock/` in Part 4. A directory made with mkdir is held by
-# one process; it records that process's pid and start time
-# (`ps -o lstart=`). It is taken over ONLY when that pid is not running, or is
-# running with another start time (the pid was reused). Never by age: a slow
-# or stopped owner keeps it, and whoever waits keeps waiting.
+# for the saver's `lock/` in Part 4. A directory is held by one process,
+# which records its pid and start time (`ps -o lstart=`). It is taken over
+# ONLY when that pid is not running, or is running with another start time
+# (the pid was reused). Never by age: a slow or stopped owner keeps it, and
+# whoever waits keeps waiting.
+#
+# HOW IT IS EXCLUSIVE (review round 1, B2: two processes that both saw one
+# dead owner both took it over, measured). The record is a SYMBOLIC LINK,
+# DIR/owner, whose target is "PID LSTART". `ln -s` makes it with its content
+# in one step and fails when it exists, so there is no moment when DIR is held
+# but its owner is unwritten — the first version's mkdir-then-write left one,
+# and a reader there saw "no owner" and took over. Taking over a DEAD record
+# is itself a claim, made the same way on a name derived from exactly that
+# record (roost_shape__claim on DIR/owner.x.<that record>): only one process
+# can win the takeover of one dead record, and only its winner removes it.
+# A takeover whose taker died is taken over the same way, one level down.
 
 # roost_shape__lstart PID -> prints the process's start time, or nothing.
 roost_shape__lstart() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
 
-# roost_shape__owner_write DIR -> records this process as DIR's owner, by a
-# rename so a reader never sees half a file.
-roost_shape__owner_write() {
-  local tmp
-  tmp="$( (umask 077; mktemp "$1/.owner.XXXXXX") 2>/dev/null)" || return 1
-  printf 'pid %s\nlstart %s\n' "$$" "$(roost_shape__lstart "$$")" > "$tmp" && mv -f "$tmp" "$1/owner"
+# roost_shape__alive RECORD -> exit 0 when "PID LSTART" names a running
+# process with that start time; ROOST_SHAPE_OWNER_PID is the pid.
+roost_shape__alive() {
+  local pid="${1%% *}" lst="${1#* }"
+  ROOST_SHAPE_OWNER_PID="$pid"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  lst="$(printf '%s' "$lst" | sed 's/^ *//;s/ *$//')"
+  [ -n "$lst" ] && [ "$(roost_shape__lstart "$pid")" = "$lst" ]
+}
+
+# roost_shape__seam VAR — a test seam: when the variable names a file, mark
+# FILE.at.<pid> and wait (bounded) until FILE exists. Read only when set.
+roost_shape__seam() {
+  local f i=0
+  eval "f=\${$1:-}"
+  [ -n "$f" ] || return 0
+  : > "$f.at.$$"
+  while [ ! -e "$f" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
+}
+
+# roost_shape__claim PATH ME -> 0 claimed (PATH was free), 2 claimed from a
+# dead holder, 1 a live process holds it (ROOST_SHAPE_OWNER_PID).
+roost_shape__claim() {
+  local path="$1" me="$2" cur sub took=0 i=0 r first=1
+  while [ "$i" -lt 100 ]; do
+    i=$((i + 1))
+    [ "$first" = 1 ] && roost_shape__seam ROOST_TEST_OWNER_PAUSE_FRESH
+    first=0
+    if ln -s "$me" "$path" 2>/dev/null; then return "$took"; fi
+    cur="$(readlink "$path" 2>/dev/null)" || continue
+    roost_shape__alive "$cur" && return 1
+    roost_shape__seam ROOST_TEST_OWNER_PAUSE_DEAD
+    # The takeover of THIS dead record: one name per record, so two takers of
+    # the same dead owner race on one `ln -s`, and a later owner who dies has
+    # a record of its own and a takeover name of its own.
+    sub="$path.x.$(printf '%s' "$cur" | tr -c 'A-Za-z0-9' '_')"
+    r=0; roost_shape__claim "$sub" "$me" || r=$?
+    if [ "$r" = 1 ]; then sleep 0.05; continue; fi
+    # Held. The record is still the dead one (only this takeover's holder may
+    # remove it, a dead owner releases nothing, and a fresh `ln -s` fails
+    # while it exists), so remove it and claim; whoever links first owns it.
+    [ "$(readlink "$path" 2>/dev/null)" = "$cur" ] && rm -f "$path"
+    took=2
+    if ln -s "$me" "$path" 2>/dev/null; then rm -f "$sub"; return 2; fi
+    rm -f "$sub"
+  done
+  ROOST_SHAPE_OWNER_PID="${cur%% *}"
+  return 1
+}
+
+# roost_shape_owner_take DIR -> 0 when DIR is made and owned by this process;
+# 2 when taken over from an owner that is gone (the caller then settles what
+# that owner left, §4.7 arrow T2b); 1 when a live owner holds it
+# (ROOST_SHAPE_OWNER_PID names it). DIR itself is made by anyone (mkdir -p):
+# what is exclusive is the owner record in it.
+roost_shape_owner_take() {
+  ( umask 077; mkdir -p "$1" ) 2>/dev/null || return 1
+  roost_shape__claim "$1/owner" "$$ $(roost_shape__lstart "$$")"
 }
 
 # roost_shape_owner_live DIR -> exit 0 when DIR's recorded owner is running
 # with the recorded start time; ROOST_SHAPE_OWNER_PID is its pid.
 roost_shape_owner_live() {
-  local pid lst
-  pid="$(sed -n 's/^pid //p' "$1/owner" 2>/dev/null)"
-  # Trimmed: `ps -o lstart=` pads its column with spaces, and a record written
-  # by hand or by another tool may keep them.
-  lst="$(sed -n 's/^lstart //p' "$1/owner" 2>/dev/null | sed 's/^ *//;s/ *$//')"
-  ROOST_SHAPE_OWNER_PID="$pid"
-  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  [ -n "$lst" ] && [ "$(roost_shape__lstart "$pid")" = "$lst" ]
-}
-
-# roost_shape_owner_take DIR -> 0 when made and owned by this process; 2 when
-# taken over from an owner that is gone (the caller then settles what that
-# owner left, §4.7 arrow T2b); 1 when a live owner holds it
-# (ROOST_SHAPE_OWNER_PID names it).
-#
-# A directory with no readable owner file is a dead owner's: a process killed
-# between its mkdir and its write left it, and nothing else writes one.
-roost_shape_owner_take() {
-  if ( umask 077; mkdir "$1" ) 2>/dev/null; then
-    roost_shape__owner_write "$1" || return 1
-    return 0
-  fi
-  roost_shape_owner_live "$1" && return 1
-  roost_shape__owner_write "$1" || return 1
-  # Two takers of one dead lock both write; the one whose record is left won.
-  [ "$(sed -n 's/^pid //p' "$1/owner" 2>/dev/null)" = "$$" ] || { ROOST_SHAPE_OWNER_PID="$(sed -n 's/^pid //p' "$1/owner")"; return 1; }
-  return 2
+  local cur
+  cur="$(readlink "$1/owner" 2>/dev/null)" || return 1
+  roost_shape__alive "$cur"
 }
 
 # roost_shape_owner_drop DIR -> removes DIR, with everything in it, the

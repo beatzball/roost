@@ -297,6 +297,38 @@ assert_eq "$(grep -c "pane $cbn:" "$SHAPE_TMP/cb.err")" "2" "the newline pane ge
 w="$(blk "$SHAPE_TMP/cb.shape" "$(TL display -p -t "$cbe" '#{window_id}')")"
 assert_eq "$(val "$w" name)" 'w\033x' "a window name: tmux itself stores the ESC as text on every build (probe 1.3)"
 
+echo "== the owner rule holds under a race (review round 1, B2) =="
+# Two separate processes (each its own $$ and start time, as two restores
+# are) call the real roost_shape_owner_take on one directory. The seams pause
+# each at the point the reviewer found racy, so the race is planted on cue:
+# ROOST_TEST_OWNER_PAUSE_DEAD right after a dead owner's record is seen,
+# ROOST_TEST_OWNER_PAUSE_FRESH right before the first claim. Each waits for
+# its FILE and marks FILE.at.<pid> when it arrives.
+OD="$SHAPE_TMP/own"; mkdir -p "$OD"
+taker() { # NAME DIR SEAM -> a process that takes DIR's owner and then stays alive until $OD/stop
+  env "$3=$OD/go.$1" bash -c '. scripts/lib/roost-shape.sh; echo $$ > "$1/$2.pid"
+    roost_shape_owner_take "$3"; echo $? > "$1/$2.rc"
+    while [ ! -e "$1/stop" ]; do sleep 0.1; done' _ "$OD" "$1" "$2" &
+}
+arrived() { local i=0; while [ "$i" -lt 50 ] && ! ls "$OD/go.$1.at."* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done; }
+done_rc() { local i=0; while [ "$i" -lt 50 ] && [ ! -s "$OD/$1.rc" ]; do sleep 0.1; i=$((i+1)); done; cat "$OD/$1.rc" 2>/dev/null; }
+sh -c 'exit 0' & deadpid=$!; wait "$deadpid"
+D1="$OD/dead"; mkdir -p "$D1"; ln -s "$deadpid Thu Jan  1 00:00:00 1970" "$D1/owner"
+taker A "$D1" ROOST_TEST_OWNER_PAUSE_DEAD; taker B "$D1" ROOST_TEST_OWNER_PAUSE_DEAD
+arrived A; arrived B
+: > "$OD/go.A"; ra="$(done_rc A)"
+: > "$OD/go.B"; rb="$(done_rc B)"
+assert_eq "$ra|$rb" "2|1" "both saw the same dead owner: A takes it over, B is refused while A lives"
+assert_eq "$(readlink "$D1/owner" | cut -d' ' -f1)" "$(cat "$OD/A.pid")" "...and the record names A"
+D2="$OD/fresh"; mkdir -p "$D2"
+taker C "$D2" ROOST_TEST_OWNER_PAUSE_FRESH; taker E "$D2" ROOST_TEST_OWNER_PAUSE_FRESH
+arrived C; arrived E
+: > "$OD/go.C"; : > "$OD/go.E"
+rc_c="$(done_rc C)"; rc_e="$(done_rc E)"
+assert_eq "$(printf '%s\n%s\n' "$rc_c" "$rc_e" | sort | tr '\n' ' ')" "0 1 " \
+  "a directory with no owner yet, two claims at once: exactly one owns it"
+: > "$OD/stop"; wait 2>/dev/null
+
 echo "== the caller's locale changes nothing (review round 1, B4) =="
 # tmux's CLIENT decides how to print a value: under LC_ALL=C or no locale at
 # all it turns a control byte and every non-ASCII byte into `_` (measured on
