@@ -271,6 +271,19 @@ bpid="$(TL display -p -t "$bp" '#{pane_pid}')"
 assert_eq "$(TL display -p -t "$bp" '#{pane_pid}:#{pane_current_command}')" "$bpid:sleep" "the person's process survives: same pane_pid, still sleep"
 assert_contains "$(cat "$SHAPE_TMP/err")" "pane first:1.0 ($bp) was changed by hand during placement; left as it is" "...and restore says it left the pane"
 
+echo "== a bootstrap split by a person during placement is not left stuck (review round 1, Fable N1) =="
+stop_server; rm -rf "$SD/restoring"; rm -f "$H"; : > "$HOME/shells.log"
+mkshape "first:$SHAPE_TMP/d1"
+ROOST_TEST_PLACE_HOLD_AFTER_USED="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+wait_file "$SD/restoring/bootstrap.used" 50
+bp="$(first_pane first)"
+TL split-window -d -t "$bp" "$BASH_BIN"; sleep 0.3
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane restore made"
+shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...and the bootstrap pane is a shell, not a placeholder no key can free"
+TL display -p -t "$bp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" "...no longer running the placeholder"
+
 echo "== the owner rule (§3.5): restoring/ held by a live restore =="
 mkshape "first:$SHAPE_TMP/d1"
 # The owner record is a symbolic link whose target is "PID LSTART"

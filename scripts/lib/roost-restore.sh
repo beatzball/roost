@@ -466,7 +466,13 @@ roost_restore__make_session() {
     # is the person's, and the saved session is skipped by name.
     r=0; roost_restore__claim "$pane" "$f" || r=$?
     if [ "$r" = 0 ] && [ "$(t -u list-panes -s -t "$sid" -F x 2>/dev/null | grep -c .)" != 1 ]; then
-      mv "$f.used" "$f.taken" 2>/dev/null || true; r=2
+      # Won, but a person split the session meanwhile: it is not
+      # replaceable, and the saved session is skipped. The bootstrap pane is
+      # still restore's — it won the rename, so no key reached it — and it
+      # becomes a shell now: a placeholder left with its file gone could
+      # never be freed by a key (review round 1, Fable N1).
+      roost_restore__respawn "$pane" "$cwd"
+      r=2
     fi
     if [ "$r" != 0 ]; then
       printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --only NAME)\n" "$name" "$npanes" >&2
@@ -602,6 +608,11 @@ roost_restore_run() {
     [ "$r" = 12 ] && rc=12
     roost_restore__names
   done
+  # The safety net before restoring/ goes: a pane of this run still running
+  # its placing line (a step that stopped early) would be left with no file
+  # its key could win. Each is settled into a shell, the T2b rule for a dead
+  # run's panes, applied to this run's own.
+  server_running && roost_restore__settle_dead
   roost_shape_owner_drop "$ROOST_RESTORE_RD"
   rm -rf "$ROOST_RESTORE_PD"
   return "$rc"
