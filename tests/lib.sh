@@ -13,6 +13,17 @@
 # must not leak its real path into the suite.
 export ROOST_RECORD_DIR=""
 
+# Saved shapes (#191) are OFF for every test file unless it turns them on, by
+# the same rule and for the same reason. Saving is always on for a real user
+# (docs/airig/specs/2026-10-24-persistent-sessions-design.md §3.4a), and once
+# every spawn and split saves, every test that runs a roost verb would write
+# a shape into the developer's real ${XDG_STATE_HOME:-~/.local/state}/roost/
+# shapes. Empty is the documented "save nothing" value (scripts/lib/
+# roost-shape.sh, roost_shape_saving). tests/lib-shape.sh sets its own temp
+# root after sourcing this; tests/test-shape-isolation.sh pins this line.
+# Assigned, not defaulted, so an exported real path cannot leak in.
+export ROOST_SHAPE_DIR=""
+
 # The report filter (#105) is OFF for every test file unless it turns it on.
 # Nearly every file here runs the sink from the test's own shell with
 # TMUX_PANE set by hand: a process outside the pane's tree, which is exactly

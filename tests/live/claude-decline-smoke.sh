@@ -50,6 +50,11 @@ if [ ! -d "$PROJ/.git" ]; then
 fi
 
 D="$(mktemp -d /tmp/amx.XXXX)"
+# Saved shapes (#191) go under this run's temp dir: saving is always on for a
+# real user, so a roost verb here would otherwise write the fleet shape into
+# the real ~/.local/state/roost/shapes. Exported before the server starts, so
+# its panes inherit it too.
+export ROOST_SHAPE_DIR="$D/shapes"
 S="$D/roost"
 L="$(mktemp -d /tmp/amx-claude.XXXX)"
 trap 'tmux -S "$S" kill-server 2>/dev/null; rm -rf "$D"; [ "$fail" -eq 0 ] && rm -rf "$L" || printf "  logs kept in %s\n" "$L"' EXIT

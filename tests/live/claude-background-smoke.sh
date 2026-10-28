@@ -231,7 +231,10 @@ screen() { X capture-pane -p -t "$1" 2>/dev/null; }
 # bin/roost from a person's shell, aimed at the throwaway server AND at the
 # throwaway state directory the pane's hook files its turns in: a `read` that
 # looked in the real one would find no record and print `turn` null.
-R()      { env -u ROOST_RECORD_DIR XDG_STATE_HOME="$D/xdgstate" ROOST_SOCKET="$S" "$HERE/bin/roost" "$@"; }
+# ROOST_SHAPE_DIR is cleared with it, here and in the pane's environment, so
+# a saved shape (#191) defaults under that same throwaway state directory and
+# never under the real ~/.local/state/roost/shapes.
+R()      { env -u ROOST_RECORD_DIR -u ROOST_SHAPE_DIR XDG_STATE_HOME="$D/xdgstate" ROOST_SOCKET="$S" "$HERE/bin/roost" "$@"; }
 wait_screen() { # PANE REGEX SECONDS
   local i=0
   while [ "$i" -lt "$3" ]; do screen "$1" | grep -qE "$2" && return 0; sleep 1; i=$((i+1)); done
@@ -253,7 +256,7 @@ PANE="$(X new-window -d -P -F '#{pane_id}' -t smoke -n claude -c "$PROJR" \
   "env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION \
    -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_EXECPATH -u CLAUDE_PID -u CLAUDE_EFFORT \
    -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ATTENDED \
-   -u ROOST_SOCKET -u ROOST_HOME -u CLAUDE_CONFIG_DIR -u ROOST_RECORD_DIR \
+   -u ROOST_SOCKET -u ROOST_HOME -u CLAUDE_CONFIG_DIR -u ROOST_RECORD_DIR -u ROOST_SHAPE_DIR \
    HOME=$D/home XDG_CONFIG_HOME=$D/xdg XDG_STATE_HOME=$D/xdgstate ROOST_NO_SHIM=1 \
    ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT ANTHROPIC_API_KEY=$KEY CLAUDE_CODE_MAX_RETRIES=0 \
    DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
