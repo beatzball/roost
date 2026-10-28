@@ -255,6 +255,22 @@ sleep 0.5
 TL ls >/dev/null 2>&1; assert_true $? "20 resizes in one second: the restored server is still running"
 detach_client
 
+echo "== the claimed bootstrap, changed by hand before its respawn, is left alone (review round 1, Codex B1) =="
+# The bootstrap is claimed BEFORE its window is built (its session's
+# replaceability rests on that rename), so a person can respawn it in the gap;
+# the respawn must look again.
+stop_server; rm -rf "$SD/restoring"; rm -f "$H"
+mkshape "first:$SHAPE_TMP/d1"
+ROOST_TEST_PLACE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+wait_file "$SD/restoring/bootstrap.used" 50; sleep 1
+bp="$(first_pane first)"
+TL respawn-pane -k -t "$bp" 'sleep 600'; sleep 0.3
+bpid="$(TL display -p -t "$bp" '#{pane_pid}')"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$(TL display -p -t "$bp" '#{pane_pid}:#{pane_current_command}')" "$bpid:sleep" "the person's process survives: same pane_pid, still sleep"
+assert_contains "$(cat "$SHAPE_TMP/err")" "pane first:1.0 ($bp) was changed by hand during placement; left as it is" "...and restore says it left the pane"
+
 echo "== the owner rule (§3.5): restoring/ held by a live restore =="
 mkshape "first:$SHAPE_TMP/d1"
 # The owner record is a symbolic link whose target is "PID LSTART"

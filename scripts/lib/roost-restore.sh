@@ -371,7 +371,17 @@ roost_restore__build_window() {
     f="${map#*$'\n'"$id "}"; f="${f%%$'\n'*}"
     out="$(roost_restore__cwd "${blocks[$i]}")"
     if [ "$id" = "$5" ]; then
-      roost_restore__respawn "$id" "$out"; zp=0
+      # The bootstrap was claimed before this window was built, so a person
+      # had all of that time to respawn it by hand: look again, right before
+      # the respawn, exactly as roost_restore__claim does (review round 1,
+      # Codex B1 — without this, restore killed the person's process).
+      zp=0
+      if roost_restore__placing "$(t -u display-message -p -t "$id" '#{pane_start_command}' 2>/dev/null || true)" "${f##*/}"; then
+        roost_restore__respawn "$id" "$out"
+      else
+        mv "$f.used" "$f.taken" 2>/dev/null || true
+        zp=2
+      fi
     else
       zp=0; roost_restore_place_pane "$id" "$f" "$out" || zp=$?
     fi
