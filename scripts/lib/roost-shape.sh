@@ -162,7 +162,17 @@ roost_shape_agree() {
 
 # roost_shape__t ARGS... — tmux on the server being saved. The flag and socket
 # are bin/roost's own pair, set by roost_shape_save.
-roost_shape__t() { tmux "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$@"; }
+#
+# `-u`, always: the tmux CLIENT decides how a value is printed, and under
+# LC_ALL=C or no locale at all it prints a control byte and every non-ASCII
+# byte as `_` — a directory holding a newline came out as `n_l`, which the
+# writer then saved as if it existed, and a UTF-8 glyph was lost (review round
+# 1, B4; measured on tmux 3.2a, 3.4 and 3.6). `-u` tells the client it may
+# print UTF-8, and gave the same bytes as a UTF-8 locale on all three builds,
+# under C and with no locale set, so no locale has to be found or set. (A
+# client started inside tmux assumes UTF-8 anyway, which is why this hid in
+# every run from a roost pane.)
+roost_shape__t() { tmux -u "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$@"; }
 
 # roost_shape__read_rules -> sets ROOST_SHAPE_DOLLAR and ROOST_SHAPE_OCTAL.
 #

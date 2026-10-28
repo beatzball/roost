@@ -8,6 +8,12 @@
 # (placement), §4.7 (the placeholder and who owns a pane), §3.5 (the owner
 # rule); every rule below names its section.
 #
+# Every tmux READ here passes `-u` (`t -u display-message`, `t -u list-*`,
+# `t -u show-options`): the client otherwise prints control and non-ASCII
+# bytes as `_` under a C or unset locale, and a session name, a start command
+# or default-command would compare wrong (scripts/lib/roost-shape.sh,
+# roost_shape__t, says what was measured).
+#
 # In Part 1 restore PLACES ONLY: every pane comes back as a shell in its saved
 # directory, and a pane's agent key stays in the shape for Part 3.
 #
@@ -78,7 +84,7 @@ roost_restore__names() {
   while IFS= read -r n; do
     roost_shape__clean "$n" || true
     ROOST_RESTORE_NAMES="$ROOST_RESTORE_NAMES$ROOST_SHAPE_V"$'\n'
-  done <<< "$(t list-sessions -F '#{session_name}' 2>/dev/null || true)"
+  done <<< "$(t -u list-sessions -F '#{session_name}' 2>/dev/null || true)"
 }
 
 # roost_restore__exists NAME -> exit 0 when a session of that saved name is on
@@ -102,7 +108,7 @@ roost_restore__sid() {
   while IFS=' ' read -r id n; do
     roost_shape__clean "$n" || true
     if [ "$ROOST_SHAPE_V" = "$1" ] || [ "$ROOST_SHAPE_V" = "$m" ]; then printf '%s\n' "$id"; return 0; fi
-  done <<< "$(t list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || true)"
+  done <<< "$(t -u list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || true)"
   return 1
 }
 
@@ -179,9 +185,9 @@ roost_restore__new_file() {
 # default-shell and `-l` as argv, what tmux runs for an empty default-command.
 roost_restore__shell_cmd() {
   local dc ds
-  dc="$(t show-options -gqv default-command 2>/dev/null || true)"
+  dc="$(t -u show-options -gqv default-command 2>/dev/null || true)"
   if [ -n "$dc" ]; then ROOST_RESTORE_SHELL_ARGS=("$dc"); return 0; fi
-  ds="$(t show-options -gqv default-shell 2>/dev/null || true)"
+  ds="$(t -u show-options -gqv default-shell 2>/dev/null || true)"
   ROOST_RESTORE_SHELL_ARGS=("${ds:-${SHELL:-/bin/sh}}" -l)
 }
 
@@ -223,7 +229,7 @@ roost_restore__claim() {
   local sc
   mv "$2" "$2.used" 2>/dev/null || return 1
   roost_restore__hold ROOST_TEST_PLACE_HOLD_AFTER_USED
-  sc="$(t display-message -p -t "$1" '#{pane_start_command}' 2>/dev/null || true)"
+  sc="$(t -u display-message -p -t "$1" '#{pane_start_command}' 2>/dev/null || true)"
   if ! roost_restore__placing "$sc" "${2##*/}"; then
     mv "$2.used" "$2.taken" 2>/dev/null || true
     return 2
@@ -259,10 +265,10 @@ roost_restore__settle_dead() {
     while IFS=' ' read -r id sc; do
       [ -n "$id" ] || continue
       roost_restore__placing "$sc" "$base" || continue
-      dir="$(t display-message -p -t "$id" '#{pane_current_path}' 2>/dev/null || true)"
+      dir="$(t -u display-message -p -t "$id" '#{pane_current_path}' 2>/dev/null || true)"
       t set-option -pu -t "$id" remain-on-exit 2>/dev/null || true
       t respawn-pane -k -t "$id" -c "${dir:-${HOME:-/}}" "${ROOST_RESTORE_SHELL_ARGS[@]}" 2>/dev/null || true
-    done <<< "$(t list-panes -a -F '#{pane_id} #{pane_start_command}' 2>/dev/null || true)"
+    done <<< "$(t -u list-panes -a -F '#{pane_id} #{pane_start_command}' 2>/dev/null || true)"
   done
   find "$ROOST_RESTORE_RD" -mindepth 1 ! -name owner -exec rm -f {} + 2>/dev/null || true
 }
@@ -273,7 +279,7 @@ roost_restore__settle_dead() {
 # (§4.3 Windows).
 roost_restore__window_first() {
   local cur
-  cur="$(t display-message -p -t "$2" '#{window_index}' 2>/dev/null || true)"
+  cur="$(t -u display-message -p -t "$2" '#{window_index}' 2>/dev/null || true)"
   [ "$cur" = "$3" ] && return 0
   t move-window -s "$2" -t "$1:$3" 2>/dev/null || true
 }
@@ -325,7 +331,7 @@ roost_restore__build_window() {
       [ -n "$id" ] || continue
       if [ "$pw" -ge "$ph" ]; then bh="$pw"; else bh="$ph"; fi
       if [ "$bh" -gt "$bw" ]; then bw="$bh"; best="$id"; tgt="$pw $ph"; fi
-    done <<< "$(t list-panes -t "$wid" -F '#{pane_id} #{pane_width} #{pane_height}' 2>/dev/null || true)"
+    done <<< "$(t -u list-panes -t "$wid" -F '#{pane_id} #{pane_width} #{pane_height}' 2>/dev/null || true)"
     if [ "${tgt% *}" -ge "${tgt#* }" ]; then dir=-h; else dir=-v; fi
     roost_restore__new_file; f="$ROOST_RESTORE_F"
     out="$(t split-window -d "$dir" -P -F '#{pane_id}' -t "$best" -c "$(roost_restore__cwd "${blocks[$count]}" 2>/dev/null)" \
@@ -347,7 +353,7 @@ roost_restore__build_window() {
   elif [ -n "$layout" ] && ! t select-layout -t "$wid" "$layout" >/dev/null 2>&1; then
     printf "roost restore: window %s: the saved layout did not apply; tmux's default layout instead\n" "$waddr" >&2
   fi
-  while IFS= read -r id; do [ -n "$id" ] && panes+=("$id"); done <<< "$(t list-panes -t "$wid" -F '#{pane_id}' 2>/dev/null || true)"
+  while IFS= read -r id; do [ -n "$id" ] && panes+=("$id"); done <<< "$(t -u list-panes -t "$wid" -F '#{pane_id}' 2>/dev/null || true)"
   act="" zp=""
   i=0
   while [ "$i" -lt "${#panes[@]}" ] && [ "$i" -lt "$k" ]; do
@@ -433,7 +439,7 @@ roost_restore__make_session() {
     # holds the one pane restore made (§4.3). Lost: a key took it, the pane
     # is the person's, and the saved session is skipped by name.
     r=0; roost_restore__claim "$pane" "$f" || r=$?
-    if [ "$r" = 0 ] && [ "$(t list-panes -s -t "$sid" -F x 2>/dev/null | grep -c .)" != 1 ]; then
+    if [ "$r" = 0 ] && [ "$(t -u list-panes -s -t "$sid" -F x 2>/dev/null | grep -c .)" != 1 ]; then
       mv "$f.used" "$f.taken" 2>/dev/null || true; r=2
     fi
     if [ "$r" != 0 ]; then
@@ -749,7 +755,7 @@ roost_restore__action() {
 # running server when there is one, else from the user's roost conf.
 roost_restore__renumbers() {
   if server_running; then
-    [ "$(t show-options -gqv renumber-windows 2>/dev/null || true)" = on ]
+    [ "$(t -u show-options -gqv renumber-windows 2>/dev/null || true)" = on ]
     return
   fi
   grep -qs '^[[:space:]]*set[a-z-]*[[:space:]].*renumber-windows[[:space:]]*on' \

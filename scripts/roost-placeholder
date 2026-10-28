@@ -96,8 +96,10 @@ while :; do
       # bootstrap started before `roost wiring apply` hands over a wired
       # shell, and a user's own default-command is what that user gets (both
       # measured, §2.10).
-      dshell="$(tmux show-options -gv default-shell 2>/dev/null)"
-      dcmd="$(tmux show-options -gv default-command 2>/dev/null)"
+      # -u: under a C or unset locale the client prints non-ASCII bytes as
+      # `_`, which would hand over a different command (review round 1, B4).
+      dshell="$(tmux -u show-options -gv default-shell 2>/dev/null)"
+      dcmd="$(tmux -u show-options -gv default-command 2>/dev/null)"
       [ -n "$dshell" ] || dshell="${SHELL:-/bin/sh}"
       if [ -n "$dcmd" ]; then
         exec "$dshell" -c "$dcmd"

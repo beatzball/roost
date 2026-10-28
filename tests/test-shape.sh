@@ -297,6 +297,26 @@ assert_eq "$(grep -c "pane $cbn:" "$SHAPE_TMP/cb.err")" "2" "the newline pane ge
 w="$(blk "$SHAPE_TMP/cb.shape" "$(TL display -p -t "$cbe" '#{window_id}')")"
 assert_eq "$(val "$w" name)" 'w\033x' "a window name: tmux itself stores the ESC as text on every build (probe 1.3)"
 
+echo "== the caller's locale changes nothing (review round 1, B4) =="
+# tmux's CLIENT decides how to print a value: under LC_ALL=C or no locale at
+# all it turns a control byte and every non-ASCII byte into `_` (measured on
+# 3.2a, 3.4 and 3.6), so a writer reading under the caller's locale would save
+# `n_l` for a directory holding a newline and a mangled glyph. The writer must
+# read the real bytes whatever locale it was started in: three saves of the
+# same fleet — UTF-8, C, none — have the same body. $TMUX is unset for the
+# two: a tmux client started inside tmux assumes UTF-8 whatever the locale
+# says (measured: inside a pane these passed before the fix), and a person
+# runs `roost save` from any shell.
+gl="$(cbpane "g🐓l")"; TL set -p -t "$gl" @roost-name "g🐓l"
+sleep 0.3
+R save --to "$SHAPE_TMP/loc-utf8.shape" >/dev/null 2>&1
+env -u TMUX -u TMUX_PANE LC_ALL=C LANG=C ROOST_SOCKET=roost "$ROOST" save --to "$SHAPE_TMP/loc-c.shape" >/dev/null 2>&1
+env -u TMUX -u TMUX_PANE -u LC_ALL -u LANG -u LC_CTYPE ROOST_SOCKET=roost "$ROOST" save --to "$SHAPE_TMP/loc-none.shape" >/dev/null 2>&1
+body() { sed '1,/^$/d' "$1"; }
+assert_eq "$(body "$SHAPE_TMP/loc-c.shape")" "$(body "$SHAPE_TMP/loc-utf8.shape")" "a save under LC_ALL=C writes the same body as one under UTF-8"
+assert_eq "$(body "$SHAPE_TMP/loc-none.shape")" "$(body "$SHAPE_TMP/loc-utf8.shape")" "a save with no locale set writes the same body"
+grep -q '🐓' "$SHAPE_TMP/loc-c.shape"; assert_true $? "...the UTF-8 glyph survives a C-locale save"
+
 echo "== a session group (R7) =="
 TL new-session -d -s gmain -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
 TL new-window -d -t '=gmain:' 'ENV= exec /bin/sh'

@@ -353,7 +353,13 @@ sleep 1
 F2="$(fleet)"
 assert_eq "$(printf '%s\n' "$F2" | grep -v '^gamma|9|')" "$(printf '%s\n' "$F1" | grep -v '^gamma|9|')" \
   "every pane is back: session, window index and name, pane index, name, directory (the first pane's included)"
-assert_eq "$(json5 | grep -v '^gamma .* 9 ')" "$(printf '%s\n' "$J1" | grep -v '^gamma .* 9 ')" "status --json agrees on session, window_name, window_index, pane_index, name"
+# The linked window (alpha:1, linked as gamma:9) is left out of THIS compare
+# under both names: before restore its panes are listed twice, and status
+# --json files each pane once, under whichever context it read — under a C
+# locale tmux 3.4 prints a tab as `_` (docs/known-gaps.md), status falls back
+# to reading each pane by id, and the two copies land under gamma:9. The tmux
+# listing compare above covers those panes byte for byte.
+assert_eq "$(json5 | grep -v ' left-right ')" "$(printf '%s\n' "$J1" | grep -v ' left-right ')" "status --json agrees on session, window_name, window_index, pane_index, name"
 L2="$(layouts)"
 assert_eq "$(printf '%s\n' "$L2" | grep -v '^gamma:9 ')" "$(printf '%s\n' "$L1" | grep -v '^gamma:9 ')" \
   "every layout is the saved one (checksum and pane ids stripped); the zoomed window is zoomed"
