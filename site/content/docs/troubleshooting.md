@@ -201,7 +201,7 @@ Set it system-wide, where a login shell receives it:
 | Debian, Ubuntu | `sudo update-locale LANG=C.UTF-8` |
 | anything else | `echo 'LANG=C.UTF-8' \| sudo tee -a /etc/environment` |
 
-Then `roost kill` on the remote and connect again: tmux reads the locale when its server starts, not when a client attaches.
+Then `roost kill` on the remote (it asks first; type `y`) and connect again: tmux reads the locale when its server starts, not when a client attaches.
 
 Sending your own locale instead (`SendEnv LANG LC_*` in `~/.ssh/config`) only works when the remote has that exact locale generated; `C.UTF-8` is built into glibc and needs nothing.
 

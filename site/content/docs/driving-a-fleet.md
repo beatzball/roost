@@ -766,7 +766,7 @@ A hook call that changes nothing writes nothing. A `Stop` that roost holds back 
 
 What it does not report:
 
-- **A server that stops.** `roost kill` with no session, closing the last session, or a server that dies: tmux runs no hook for its panes, so they get no `closed` line. `--follow` ends when its server stops, which is the signal.
+- **A server that stops.** `roost kill` with no session (it asks first on a terminal, and needs `--yes` off one), closing the last session, or a server that dies: tmux runs no hook for its panes, so they get no `closed` line. `--follow` ends when its server stops, which is the signal.
 - **A pane the log no longer has a line for.** A plain shell has no lines, and gets no `closed` line either. Neither does an agent pane whose lines have all rotated out — one that sat still while the fleet wrote more than `ROOST_EVENTS_KEEP` lines. A reader that keeps a pane list should check it against `roost status --json` now and then.
 
 ## The agent skill
@@ -804,6 +804,6 @@ roost ssh devbox read %3
 
   Every name that prints nothing is one the remote roost will not find either. Link it into `/usr/local/bin` on the remote, or set `PATH` in a file the login shell reads.
 
-- **The remote needs a UTF-8 locale**, or every badge glyph renders as `_`. If `locale` above shows `LANG=` empty, `C` or `POSIX`: `sudo localectl set-locale LANG=C.UTF-8` on a systemd distribution, `sudo update-locale LANG=C.UTF-8` on Debian or Ubuntu. tmux reads the locale only when its server starts, so `roost kill` on the remote and reconnect afterwards.
+- **The remote needs a UTF-8 locale**, or every badge glyph renders as `_`. If `locale` above shows `LANG=` empty, `C` or `POSIX`: `sudo localectl set-locale LANG=C.UTF-8` on a systemd distribution, `sudo update-locale LANG=C.UTF-8` on Debian or Ubuntu. tmux reads the locale only when its server starts, so `roost kill` on the remote (it asks first; type `y`) and reconnect afterwards.
 
 Each of these has an entry in [Troubleshooting](/docs/troubleshooting#roost-ssh-says-roost-command-not-found).

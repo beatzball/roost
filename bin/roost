@@ -48,7 +48,8 @@
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
-#   roost kill [SESSION]     kill one session, or the whole server if none given
+#   roost kill [--yes] [SESSION]
+#                            end one session, or with no SESSION stop the whole server: every session and every agent on it. The bare form asks first on a terminal (only y stops it) and, off a terminal, refuses unless --yes (or -y). `roost stop` and `roost down` are the same command
 #   roost help               show this text
 #   roost --version          print roost's version (-V, or `roost version`)
 set -euo pipefail
@@ -4500,11 +4501,71 @@ EOF
     else echo "roost: not running"; fi
     ;;
   kill|down|stop)
-    if [ -n "${2:-}" ]; then
-      t kill-session -t "=$2" 2>/dev/null && echo "roost: session '$2' killed." || echo "roost: no session '$2'."
-    else
-      t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
+    # roost kill|down|stop [--yes|-y] [SESSION] (#207). With a SESSION it ends
+    # that one session, exactly as it always has, with no question: the name
+    # is the caller saying which. --yes is accepted there and ignored, so a
+    # script can pass it to every form without caring which one it runs.
+    #
+    # With no SESSION it is `kill-server`: every session and every agent on
+    # the server ends. "stop" reads like a fix for one stuck pane, and a
+    # person who typed it for that reason lost the whole fleet with no count
+    # and no question. So the bare form now asks on a terminal, and off a
+    # terminal it refuses unless --yes says the caller means it.
+    kl_verb="$1"; shift
+    kl_yes=0; kl_name=""
+    for kl_a in "$@"; do
+      case "$kl_a" in
+        --yes|-y) kl_yes=1 ;;
+        # The first other word is the session, as before; later ones were
+        # ignored before and still are.
+        *) [ -z "$kl_name" ] && kl_name="$kl_a" ;;
+      esac
+    done
+    if [ -n "$kl_name" ]; then
+      t kill-session -t "=$kl_name" 2>/dev/null && echo "roost: session '$kl_name' killed." || echo "roost: no session '$kl_name'."
+      exit 0
     fi
+    # Not running: today's message and exit 0, before any question. There is
+    # nothing to ask about, and a script stopping an already-stopped server
+    # has always been a no-op.
+    if ! server_running; then echo "roost: not running."; exit 0; fi
+    if [ "$kl_yes" = 0 ]; then
+      # What will end, counted from the server itself. An agent pane is one
+      # with @agent_state set, the same test the `roost status` listing uses
+      # for its [state] column; a plain shell pane is not counted, because
+      # nothing of value ends with it. One character per line, so no tmux
+      # field separator is involved (docs/known-gaps.md: tmux 3.4 prints a
+      # tab as `_` under a C locale).
+      kl_agents="$(t list-panes -a -F '#{?@agent_state,a,-}' 2>/dev/null | grep -c a || true)"
+      kl_sess="$(t list-sessions -F x 2>/dev/null | grep -c x || true)"
+      kl_aw=agents; [ "$kl_agents" = 1 ] && kl_aw=agent
+      kl_sw=sessions; [ "$kl_sess" = 1 ] && kl_sw=session
+      kl_what="This ends $kl_agents $kl_aw in $kl_sess $kl_sw."
+      # #191 Part 4 adds a line here once persistence lands: a bare stop
+      # records the fleet as closed on purpose, so say it will not come back
+      # at login and how to restore it by hand (`roost restore --from FILE`).
+      # Not before: there is no login restore to warn about yet.
+      #
+      # Both stdin AND stderr must be a terminal. stdin is where the answer
+      # comes from; stderr is where the question goes, and a caller that
+      # captured it (`out=$(roost stop 2>&1)`) would never see what it was
+      # agreeing to.
+      if [ -t 0 ] && [ -t 2 ]; then
+        printf '%s\nType y to stop the roost server: ' "$kl_what" >&2
+        kl_ans=""
+        # EOF fails the read and leaves kl_ans empty: "not stopped", as
+        # anything but y is. `|| true` keeps set -e from ending the run here.
+        IFS= read -r kl_ans || true
+        case "$kl_ans" in
+          y|Y) ;;
+          *) echo "roost: not stopped." >&2; exit 1 ;;
+        esac
+      else
+        echo "roost: $kl_what Not on a terminal, so roost will not ask. To stop the roost server: roost $kl_verb --yes" >&2
+        exit 1
+      fi
+    fi
+    t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     ;;
   close)
     # roost close [--force] [--json] TGT [TIMEOUT_SEC] (#143): end ONE agent the
