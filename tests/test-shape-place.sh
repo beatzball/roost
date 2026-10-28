@@ -140,7 +140,7 @@ assert_eq "$(TL list-panes -s -t '=keep:' -F x | wc -l | tr -d ' '):$(TL show -p
 s2p="$(first_pane s2)"
 assert_eq "$(TL display -p -t "$s2p" '#{pane_current_path}')" "$SHAPE_TMP/d2" "the other session is placed, its pane in the saved directory"
 shells_wait "$s2p"; assert_eq "$(shells_for "$s2p" | wc -l | tr -d ' ')" "1" "...as a shell (one shells.log line)"
-[ ! -e "$SD/restoring/owner" ]; assert_true $? "restoring/ is held by nobody once restore is done (its owner record is gone)"
+[ ! -e "$SD/restoring" ]; assert_true $? "restoring/ is removed once restore is done (§3.5 step 4)"
 TL kill-session -t '=s2'
 
 echo "== sessions a person made are never replaced (§8.1 test 2 a-e) =="
@@ -173,7 +173,9 @@ assert_eq "$(TL display -p -t "$fp" '#{pane_current_path}')" "$SHAPE_TMP/d1" "th
 assert_eq "$(TL list-sessions -F '#{session_name}' | sort | tr '\n' ' ')" "first second " "every saved session exists, none twice"
 assert_eq "$(TL display -p -t "$fp" '#{window_width}x#{window_height}')" "200x50" "the server was made at the saved size, not 80x24"
 assert_eq "$(TL show -gqv @roost-home)" "$HERE" "the server got ensure_session's globals"
-[ -e "$SD/restoring/bootstrap.used" ]; assert_true $? "restoring/bootstrap.used is what is left"
+# bootstrap.used is asserted while restore is held, in case (h) below: §3.5
+# step 4 removes restoring/ with its files when restore ends.
+[ ! -e "$SD/restoring" ]; assert_true $? "...and restoring/ is gone afterwards"
 
 echo "== (f) a key in the held bootstrap: taken, the saved session skipped =="
 # Pane ids restart at %0 with every server, so a line an earlier server's %0
@@ -245,7 +247,7 @@ assert_contains "$(cat "$SHAPE_TMP/err")" "pid $$" "...naming the pid"
 printf 'pid %s\nlstart %s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$SD/restoring/owner"
 R restore >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "12" "a live pid with another start time is a reused pid: taken over (first exists: exit 12)"
-[ ! -e "$SD/restoring/owner" ]; assert_true $? "...and its owner record is dropped at the end"
+[ ! -e "$SD/restoring" ]; assert_true $? "...and restoring/ is removed at the end"
 echo "== T2b: a dead run's bootstrap is settled into a shell =="
 stop_server; mkshape "first:$SHAPE_TMP/d1" "second:$SHAPE_TMP/d2"
 mkdir -p "$SD/restoring"; : > "$SD/restoring/bootstrap"
@@ -425,6 +427,7 @@ tpid="$(TL display -p -t "$tp" '#{pane_pid}')"; spid="$(pgrep -P "$tpid" sleep |
 assert_eq "$rc" "0" "released: exit 0"
 assert_eq "$(TL display -p -t "$tp" '#{pane_pid}')" "$tpid" "the used pane is the person's: its pane_pid unchanged"
 kill -0 "$spid" 2>/dev/null; assert_true $? "...and the sleep started in it still runs"
+assert_contains "$(cat "$SHAPE_TMP/err")" "($tp) was taken by a key during placement; left as it is" "...and restore says it left that pane to the person"
 assert_eq "$(TL display -p -t "$(TL list-panes -t '=two:' -F '#{pane_id}' | head -1)" '#{pane_current_path}')" "$SHAPE_TMP/d1" "every other pane is placed as saved"
 
 echo "== (j) won, then changed by hand: the person's (§8.1 test 2 j) =="
@@ -438,10 +441,12 @@ i=0; while [ "$i" -lt 50 ] && ! ls "$SD/restoring/"place.*.used >/dev/null 2>&1;
 jp="$(first_pane solo)"; used="$(ls "$SD/restoring/"place.*.used)"
 TL respawn-pane -k -t "$jp" 'sleep 60'; sleep 0.3
 jpid="$(TL display -p -t "$jp" '#{pane_pid}')"
-used="${used%.used}"
 : > "$H"; wait "$rpid"; rc=$?
 assert_eq "$rc" "0" "released: exit 0"
-[ -e "$used.taken" ] && [ ! -e "$used.used" ]; assert_true $? "the file is ${used##*/}.taken (the person-owned row), not left .used"
+# The file's own .taken rename is gone with restoring/ (§3.5 step 4), so the
+# person-owned row is read from what restore says it did.
+assert_contains "$(cat "$SHAPE_TMP/err")" "pane solo:1.0 ($jp) was changed by hand during placement; left as it is" \
+  "restore names the pane it left to the person (T2: the person-owned row)"
 assert_eq "$(TL display -p -t "$jp" '#{pane_pid}:#{pane_current_command}')" "$jpid:sleep" "...and the sleep is alive, the pane untouched"
 
 echo "== hand-edited copies (§8.1 test 5, the restore half) =="

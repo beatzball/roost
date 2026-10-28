@@ -375,6 +375,15 @@ roost_restore__build_window() {
     else
       zp=0; roost_restore_place_pane "$id" "$f" "$out" || zp=$?
     fi
+    # A pane restore leaves to a person is named: restoring/, with each
+    # file's .taken rename, is removed when restore ends (§3.5 step 4), so
+    # this line is the record of which saved pane went where.
+    case "$zp" in
+      1) printf 'roost restore: pane %s (%s) was taken by a key during placement; left as it is\n' \
+           "$(roost_restore__addr "${blocks[$i]}")" "$id" >&2 ;;
+      2) printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is\n' \
+           "$(roost_restore__addr "${blocks[$i]}")" "$id" >&2 ;;
+    esac
     if [ "$zp" = 0 ]; then
       ROOST_RESTORE_PANES=$((ROOST_RESTORE_PANES + 1))
       if f="$(roost_shape_get "${blocks[$i]}" name)"; then

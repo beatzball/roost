@@ -62,10 +62,6 @@ that changes one of these breaks the rule quietly.
 - **History has no ring yet.** Every changed save adds a file to `history/`
   until Part 4 adds `ROOST_SHAPE_KEEP`; nothing saves automatically yet, so it
   grows only with each `roost save`.
-- **`restoring/` keeps a finished run's files.** After a restore, its
-  `place.<n>.used` / `.taken` files stay as the record of what happened to
-  each pane, with no owner record; the next restore takes it over and clears
-  it. The saver Part 4 adds must treat an ownerless `restoring/` as not held.
 
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
