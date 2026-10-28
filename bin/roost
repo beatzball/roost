@@ -662,16 +662,38 @@ case "${1:-up}" in
     # scripts/lib/roost-restore.sh; this arm finds the save and maps the
     # result to the exit codes of spec §4.3 (0, 2, 12, 16, 1).
     shift
+    restore_from="" restore_mode=run
+    ROOST_RESTORE_ONLY=()
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --from) [ "$#" -ge 2 ] || { echo "roost restore: --from needs a file or a STAMP-GEN" >&2; exit 2; }
+                restore_from="$2"; shift 2 ;;
+        --only) [ "$#" -ge 2 ] || { echo "roost restore: --only needs a session, SESSION:WINDOW or %N" >&2; exit 2; }
+                ROOST_RESTORE_ONLY+=("$2"); shift 2 ;;
+        --dry-run) restore_mode=dry; shift ;;
+        --list) restore_mode=list; shift ;;
+        *) echo "usage: roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--only SEL ...]" >&2; exit 2 ;;
+      esac
+    done
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
     . "$ROOST_HOME/scripts/lib/roost-restore.sh"
     restore_dir="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null || true)"
-    restore_file="${restore_dir:+$restore_dir/shape}"
-    if [ -z "$restore_file" ] || [ ! -f "$restore_file" ]; then
-      echo "roost restore: no saved shape for this server; nothing to restore" >&2
-      exit 2
+    if [ "$restore_mode" = list ]; then
+      roost_restore_list "$restore_dir"
+      exit 0
     fi
     restore_rc=0
-    roost_restore_run "$restore_file" "$restore_dir" || restore_rc=$?
+    roost_restore_pick "$restore_dir" "$restore_from" || exit $?
+    [ "$ROOST_RESTORE_BYFILE" = 1 ] && roost_restore__host_line "$ROOST_RESTORE_FILE"
+    roost_restore_prepare "$ROOST_RESTORE_FILE" || restore_rc=$?
+    if [ "$restore_rc" = 0 ]; then
+      if [ "$restore_mode" = dry ]; then
+        roost_restore_dry_run || restore_rc=$?
+      else
+        roost_restore_run "$ROOST_RESTORE_FILE" "$restore_dir" || restore_rc=$?
+      fi
+    fi
+    rm -rf "${ROOST_RESTORE_PD:-}"
     exit "$restore_rc"
     ;;
   help|--help|-h)

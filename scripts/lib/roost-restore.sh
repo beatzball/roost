@@ -497,16 +497,27 @@ roost_restore__make_member() {
 }
 
 # roost_restore_run FILE SHAPEDIR -> the exit code (§4.3): 0 placed; 12 a
-# saved session skipped as existing; 16 the file refused (nothing done); 1 a
-# live restore holds `restoring/`.
-roost_restore_run() {
-  local file="$1" sdir="$2" rc=0 r blk boot=0 own
-  if ! roost_shape_check "$file"; then
-    printf 'roost restore: %s: %s; nothing done\n' "$file" "$ROOST_SHAPE_FAULT" >&2
+# saved session skipped as existing; 13 a window could not hold every saved
+# pane; 1 a live restore holds `restoring/`. Call roost_restore_prepare first.
+# roost_restore_prepare FILE -> checks the WHOLE file, parses it into
+# $ROOST_RESTORE_PD and applies --only; 0, or the exit code to stop with (16 a
+# refused file or selection, 2 a selector that matches nothing). Nothing here
+# touches the server but to read it (§4.3 Refuse first: the file is checked
+# before the first tmux command).
+roost_restore_prepare() {
+  local r=0
+  if ! roost_shape_check "$1"; then
+    printf 'roost restore: %s: %s; nothing done\n' "$1" "$ROOST_SHAPE_FAULT" >&2
     return 16
   fi
   ROOST_RESTORE_PD="$(mktemp -d)"
-  roost_shape_parse "$file" "$ROOST_RESTORE_PD" || { rm -rf "$ROOST_RESTORE_PD"; return 1; }
+  roost_shape_parse "$1" "$ROOST_RESTORE_PD" || return 1
+  roost_restore__select || r=$?
+  return "$r"
+}
+
+roost_restore_run() {
+  local file="$1" sdir="$2" rc=0 r blk boot=0 own
   # restoring/ lives in the server's shape directory, where the saver (Part 4)
   # looks for it; with saving off there is no saver to hold off, and the run's
   # files go to a directory of its own.
@@ -555,4 +566,265 @@ roost_restore_run() {
   roost_shape_owner_drop "$ROOST_RESTORE_RD"
   rm -rf "$ROOST_RESTORE_PD"
   return "$rc"
+}
+
+# roost_restore__epoch UTC-STAMP -> prints the epoch seconds of a `saved`
+# value (2026-10-24T20:51:02Z). BSD date's form first, then GNU's.
+roost_restore__epoch() {
+  date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null
+}
+
+# roost_restore__ago UTC-STAMP -> "saved 2 h ago" and the like. The clock is
+# ROOST_TEST_NOW when set (the plan's seam).
+roost_restore__ago() {
+  local then now d
+  then="$(roost_restore__epoch "$1")" || { printf 'saved %s' "$1"; return 0; }
+  now="${ROOST_TEST_NOW:-$(date +%s)}"
+  d=$((now - then)); [ "$d" -lt 0 ] && d=0
+  if [ "$d" -lt 120 ]; then printf 'saved %s s ago' "$d"
+  elif [ "$d" -lt 7200 ]; then printf 'saved %s min ago' $((d / 60))
+  elif [ "$d" -lt 172800 ]; then printf 'saved %s h ago' $((d / 3600))
+  else printf 'saved %s days ago' $((d / 86400)); fi
+}
+
+# roost_restore__hdr FILE KEY -> a header value.
+roost_restore__hdr() { sed -n "s/^$2 //p;/^\$/q" "$1" 2>/dev/null | head -1; }
+
+# roost_restore__stampgen FILE -> STAMP-GEN, the name a save has in history/
+# and in --list: the `saved` stamp without its `-` and `:`, then `gen`.
+roost_restore__stampgen() {
+  local sv
+  sv="$(roost_restore__hdr "$1" saved)"
+  printf '%s-%s\n' "${sv//[-:]/}" "$(roost_restore__hdr "$1" gen)"
+}
+
+# roost_restore_pick SHAPEDIR FROM -> ROOST_RESTORE_FILE and
+# ROOST_RESTORE_WHY; exit 2 when there is nothing to restore.
+#
+# Which save (§4.3, §3.6). No --from: this server's `shape` (Part 4 adds the
+# reading rule). --from STAMP-GEN: `shape` when it is that save, else
+# `history/STAMP-GEN` (Part 7 adds the offer's pin and `declined`). --from
+# FILE: that file, the caller's own choice. The SERVER is always the caller's
+# (`-L`/`-S`, ROOST_SOCKET), never the file's `socket` line.
+roost_restore_pick() {
+  local sdir="$1" from="$2"
+  ROOST_RESTORE_FILE="" ROOST_RESTORE_WHY="" ROOST_RESTORE_BYFILE=0
+  if [ -z "$from" ]; then
+    if [ -n "$sdir" ] && [ -f "$sdir/shape" ]; then
+      ROOST_RESTORE_FILE="$sdir/shape" ROOST_RESTORE_WHY="the newest save"; return 0
+    fi
+    printf 'roost restore: no saved shape for this server; nothing to restore\n' >&2
+    return 2
+  fi
+  case "$from" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z-[0-9]*)
+      if [ -n "$sdir" ] && [ -f "$sdir/shape" ] && [ "$(roost_restore__stampgen "$sdir/shape")" = "$from" ]; then
+        ROOST_RESTORE_FILE="$sdir/shape"
+      elif [ -n "$sdir" ] && [ -f "$sdir/history/$from" ]; then
+        ROOST_RESTORE_FILE="$sdir/history/$from"
+      else
+        printf 'roost restore: no save %s for this server (roost restore --list shows them)\n' "$from" >&2
+        return 2
+      fi
+      ROOST_RESTORE_WHY="chosen with --from" ;;
+    *)
+      [ -f "$from" ] || { printf 'roost restore: --from %s: no such file\n' "$from" >&2; return 2; }
+      ROOST_RESTORE_FILE="$from" ROOST_RESTORE_WHY="the file given with --from" ROOST_RESTORE_BYFILE=1 ;;
+  esac
+  return 0
+}
+
+# roost_restore__host_line FILE -> one stderr line when a --from FILE was
+# saved on another machine (§4.3), then the restore carries on: the file is
+# the caller's choice, and it places what it can; it resumes nothing whose
+# store was not moved with it (§4.2).
+roost_restore__host_line() {
+  local h
+  h="$(roost_restore__hdr "$1" host)"
+  [ -n "$h" ] && [ "$h" != "$(uname -n)" ] || return 0
+  printf 'roost restore: %s was saved on %s, not this machine; placing it here (a conversation comes back only where its harness store is)\n' "$1" "$h" >&2
+}
+
+# roost_restore__select -> prunes $ROOST_RESTORE_PD to the blocks the
+# ROOST_RESTORE_ONLY selectors name (§4.3 --only: SESSION, SESSION:WINDOW, an
+# old %N); 0, 2 when a selector matches nothing, 16 when a later member of a
+# group is selected without its first member and that member is not on the
+# server (ruling R7: an address with no parent, nothing done).
+roost_restore__select() {
+  local sel f a keep=$'\n' hit g i
+  [ "${#ROOST_RESTORE_ONLY[@]}" -gt 0 ] || return 0
+  for sel in "${ROOST_RESTORE_ONLY[@]}"; do
+    hit=0
+    for f in "$ROOST_RESTORE_PD"/*.session "$ROOST_RESTORE_PD"/*.window "$ROOST_RESTORE_PD"/*.pane; do
+      [ -e "$f" ] || continue
+      a="$(roost_restore__addr "$f")"
+      case "$sel" in
+        %*)
+          [ "${f##*.}" = pane ] && [ "$(roost_shape_get "$f" id)" = "$sel" ] || continue
+          keep="$keep$f"$'\n'
+          keep="$keep$(roost_restore__block window "${a%.*}")"$'\n'
+          keep="$keep$(roost_restore__block session "${a%:*}")"$'\n' ;;
+        *:*)
+          case "${f##*.}" in
+            window) [ "$a" = "$sel" ] || continue ;;
+            pane) [ "${a%.*}" = "$sel" ] || continue ;;
+            *) continue ;;
+          esac
+          keep="$keep$f"$'\n'
+          keep="$keep$(roost_restore__block session "${sel%:*}")"$'\n' ;;
+        *)
+          case "${f##*.}" in
+            session)
+              if [ "$a" != "$sel" ]; then
+                # A later member comes with its first member.
+                [ "$(roost_shape_get "$f" group 2>/dev/null)" = "$sel" ] || continue
+              fi ;;
+            *) [ "${a%%:*}" = "$sel" ] || continue ;;
+          esac
+          keep="$keep$f"$'\n' ;;
+      esac
+      hit=1
+    done
+    if [ "$hit" = 0 ]; then
+      printf 'roost restore: --only %s matches nothing in the save; nothing done\n' "$sel" >&2
+      return 2
+    fi
+  done
+  # A later member kept without its first member joins one already on the
+  # server, or the selection is refused whole.
+  for f in "$ROOST_RESTORE_PD"/*.session; do
+    [ -e "$f" ] || continue
+    case "$keep" in *$'\n'"$f"$'\n'*) ;; *) continue ;; esac
+    g="$(roost_shape_get "$f" group 2>/dev/null)" || continue
+    i="$(roost_restore__block session "$g")"
+    case "$keep" in *$'\n'"$i"$'\n'*) continue ;; esac
+    if server_running; then
+      ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
+      roost_shape__read_rules || true
+      roost_restore__names
+      roost_restore__exists "$g" && continue
+    fi
+    printf "roost restore: --only %s: it joins %s's group, and %s is neither selected nor on the server; nothing done\n" \
+      "$(roost_restore__addr "$f")" "$g" "$g" >&2
+    return 16
+  done
+  for f in "$ROOST_RESTORE_PD"/*; do
+    case "$f" in *.header) continue ;; esac
+    case "$keep" in *$'\n'"$f"$'\n'*) ;; *) rm -f "$f" ;; esac
+  done
+  return 0
+}
+
+# roost_restore__block KIND ADDRESS -> the block file of that kind and address.
+roost_restore__block() {
+  local f
+  for f in "$ROOST_RESTORE_PD"/*."$1"; do
+    [ -e "$f" ] || continue
+    [ "$(roost_restore__addr "$f")" = "$2" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
+# roost_restore__action BLOCK -> "HARNESS|ACTION", the tree's last two columns
+# for a pane (§4.3 --dry-run; §5.6's and §5.1a's words for a reason). In
+# Part 1 every pane is placed as a shell; a key is kept for a later roost
+# that resumes.
+roost_restore__action() {
+  local h r sh gone=0 d
+  d="$(roost_shape_get "$1" cwd)"
+  [ -d "$d" ] || gone=1
+  if h="$(roost_shape_get "$1" harness)"; then
+    if [ "$gone" = 1 ]; then printf '%s|shell in ~, not resumed: directory gone\n' "$h"
+    else printf '%s|shell, not resumed: this roost places panes only\n' "$h"; fi
+  elif r="$(roost_shape_get "$1" stale_reason)"; then
+    sh="$(roost_shape_get "$1" stale_harness)"
+    if [ "$gone" = 1 ]; then printf -- '-|shell in ~, not resumed: directory gone\n'
+    else printf -- '-|shell, not resumed: stale (%s %s)\n' "$r" "$sh"; fi
+  elif [ "$gone" = 1 ]; then printf -- '-|shell in ~: directory gone\n'
+  else printf -- '-|shell\n'; fi
+}
+
+# roost_restore__renumbers -> exit 0 when the tmux conf renumbers windows,
+# which moves them off their saved indices (§4.3 Windows). Read from the
+# running server when there is one, else from the user's roost conf.
+roost_restore__renumbers() {
+  if server_running; then
+    [ "$(t show-options -gqv renumber-windows 2>/dev/null || true)" = on ]
+    return
+  fi
+  grep -qs '^[[:space:]]*set[a-z-]*[[:space:]].*renumber-windows[[:space:]]*on' \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf" "$CONF"
+}
+
+# roost_restore_dry_run -> prints the plan as one tree (§4.3 --dry-run,
+# revision 6: the one format, so the restore offer reuses it) and returns the
+# exit code the real run would give. Reads files only: it never starts a
+# server, and with no server running it skips nothing as existing.
+roost_restore_dry_run() {
+  local f a rc=0 name g wf pf idx wn n pn h act running=0
+  server_running && running=1
+  if [ "$running" = 1 ]; then
+    ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
+    roost_shape__read_rules || true
+    roost_restore__names
+  else
+    ROOST_RESTORE_NAMES=$'\n'
+  fi
+  printf 'from %s (%s; %s)\n' "$(roost_restore__stampgen "$ROOST_RESTORE_FILE")" "$ROOST_RESTORE_WHY" \
+    "$(roost_restore__ago "$(roost_restore__hdr "$ROOST_RESTORE_FILE" saved)")"
+  for f in "$ROOST_RESTORE_PD"/*.session; do
+    [ -e "$f" ] || continue
+    name="$(roost_restore__addr "$f")"
+    if g="$(roost_shape_get "$f" group)"; then
+      if roost_restore__exists "$name"; then printf 'session %s (exists - skipped)\n' "$name"; rc=12
+      else printf "session %s (joins %s's group)\n" "$name" "$g"; fi
+      continue
+    fi
+    n=0
+    while IFS= read -r wf; do
+      [ -n "$wf" ] && n=$((n + $(roost_restore__panes "$(roost_restore__addr "$wf")" | grep -c .)))
+    done <<< "$(roost_restore__windows "$name")"
+    if roost_restore__exists "$name"; then
+      printf 'session %s (exists - skipped, %s panes not restored)\n' "$name" "$n"; rc=12; continue
+    fi
+    printf 'session %s\n' "$name"
+    while IFS= read -r wf; do
+      [ -n "$wf" ] || continue
+      a="$(roost_restore__addr "$wf")"; idx="${a##*:}"
+      wn="$(roost_shape_get "$wf" name)" || wn="-"
+      printf '  window %s %s\n' "$idx" "$wn"
+      while IFS= read -r pf; do
+        [ -n "$pf" ] || continue
+        pn="$(roost_shape_get "$pf" name)" || pn="-"
+        act="$(roost_restore__action "$pf")"; h="${act%%|*}" act="${act#*|}"
+        printf '    pane %s %-12s %-30s %-8s %s\n' "$(roost_restore__addr "$pf" | sed 's/.*\.//')" \
+          "$pn" "$(roost_shape_get "$pf" cwd)" "$h" "$act"
+      done <<< "$(roost_restore__panes "$a")"
+    done <<< "$(roost_restore__windows "$name")"
+  done
+  if roost_restore__renumbers; then
+    printf 'note: renumber-windows is on in your tmux conf, so windows will not keep their saved indices\n'
+  fi
+  return "$rc"
+}
+
+# roost_restore_list SHAPEDIR -> prints every save (§3.6 --list): `shape`,
+# then `history/` newest first, one line each with its STAMP-GEN, trigger
+# and counts; `*` marks the one a restore with no --from picks.
+roost_restore_list() {
+  local sdir="$1" f mark where
+  if [ -z "$sdir" ] || { [ ! -f "$sdir/shape" ] && [ ! -d "$sdir/history" ]; }; then
+    printf 'roost restore: no saves for this server\n'
+    return 0
+  fi
+  { [ -f "$sdir/shape" ] && printf '%s\n' "$sdir/shape"
+    ls -1 "$sdir/history" 2>/dev/null | sort -r | while IFS= read -r f; do printf '%s\n' "$sdir/history/$f"; done
+  } | while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    if [ "$f" = "$sdir/shape" ]; then mark="*" where="shape (restore picks this)"; else mark=" " where="history"; fi
+    printf '%s %s  %s  %s sessions, %s windows, %s panes  %s\n' "$mark" "$(roost_restore__stampgen "$f")" \
+      "$(roost_restore__hdr "$f" trigger)" "$(grep -c '^session ' "$f")" "$(grep -c '^window ' "$f")" \
+      "$(grep -c '^pane ' "$f")" "$where"
+  done
+  return 0
 }

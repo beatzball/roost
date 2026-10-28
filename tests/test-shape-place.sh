@@ -475,6 +475,127 @@ assert_contains "$(cat "$SHAPE_TMP/err")" "codex 0b5e1c2a-7d4f-4e61-9a3b-5c2d1e0
 assert_contains "$(cat "$SHAPE_TMP/err")" "roost revive" "...and how to bring it back"
 stop_server
 
+# --- restore: --dry-run, --list, --from, --only, directories (Task 1.14) -------
+echo "== --dry-run: the plan as one tree, nothing started (§4.3) =="
+fresh_server
+TL new-session -d -s alpha -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL kill-session -t '=scratch'
+TL rename-window -t '=alpha:1' main
+ap="$(first_pane alpha)"; TL set -p -t "$ap" @roost-name promo
+mkdir -p "$SHAPE_TMP/gone"
+kp="$(TL split-window -d -P -F '#{pane_id}' -t "$ap" -c "$SHAPE_TMP/gone" -e STUB_IDENTIFY=1 "claude --resume 3fa32375-68cd-43c9-8bcf-fbb876b2db1e")"
+xp="$(TL split-window -d -P -F '#{pane_id}' -t "$ap" -c "$SHAPE_TMP/d2" \
+  "$ROOST identify --session 6a7b8c9d-1e2f-4a3b-8c4d-5e6f7a8b9c0d --cwd $SHAPE_TMP/d2 --harness codex; exec $BASH_BIN")"
+TL new-session -d -s beta -x 200 -y 50 -c "$SHAPE_TMP/d3" "$BASH_BIN"
+sleep 1.5
+R save >/dev/null 2>&1
+rmdir "$SHAPE_TMP/gone"
+stamp="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
+stop_server
+out="$(R restore --dry-run 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc" "0" "--dry-run with no server: exit 0, what the real run would give"
+assert_prefix "$out" "from $stamp (the newest save; saved " "the first line names the save and why it was picked"
+assert_contains "$out" $'\nsession alpha\n  window 1 main\n    pane 1 promo' "sessions, two-space windows, four-space panes"
+assert_contains "$(printf '%s\n' "$out" | grep "$SHAPE_TMP/gone")" "claude" "a keyed pane shows its harness"
+assert_contains "$(printf '%s\n' "$out" | grep "$SHAPE_TMP/gone")" "shell in ~, not resumed: directory gone" "...and a gone directory"
+assert_contains "$(printf '%s\n' "$out" | grep "$SHAPE_TMP/d2")" "not resumed: stale (exited codex)" "a stale pane says why"
+assert_contains "$out" $'\nsession beta\n' "every session is in the tree"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "--dry-run never starts a server"
+printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"; assert_eq "$?" "1" "no colour when stdout is a pipe"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "0" "the real run gives the same exit code"
+assert_contains "$(cat "$SHAPE_TMP/err")" "directory $SHAPE_TMP/gone is gone; a shell in the home directory" "a gone directory: one stderr line (§8.1 test 3a)"
+assert_eq "$(TL list-panes -t '=alpha:1' -F '#{pane_current_path}' | grep -cx "$HOME")" "1" "...and that pane is a shell in the home directory"
+out="$(R restore --dry-run 2>/dev/null)"; rc=$?
+assert_eq "$rc" "12" "--dry-run against a running server where the sessions exist: exit 12"
+assert_contains "$out" "session alpha (exists - skipped, 3 panes not restored)" "...naming each skipped session"
+
+echo "== --list: every save, the one restore would pick marked (§3.6) =="
+TL rename-window -t '=beta:1' changed; R save >/dev/null 2>&1
+lst="$(R restore --list 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--list exits 0"
+assert_eq "$(printf '%s\n' "$lst" | grep -c '^[* ] [0-9]\{8\}T[0-9]\{6\}Z-[0-9]')" "$((1 + $(ls "$SD/history" | wc -l)))" "shape and every history save, one line each"
+assert_contains "$(printf '%s\n' "$lst" | grep '^\*')" "shape" "the newest, shape, is marked as the one restore picks"
+assert_contains "$(printf '%s\n' "$lst" | grep "$stamp")" "save  2 sessions, 2 windows, 4 panes" "a line holds its trigger and counts"
+
+echo "== --from STAMP-GEN, --from FILE, another host =="
+stop_server
+R restore --from "$stamp" >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(TL list-windows -t '=beta:' -F '#{window_name}')" "0:d3" "--from STAMP-GEN restores that save from history/"
+stop_server
+sed 's/^host .*/host elsewhere.example/' "$SD/shape" > "$SHAPE_TMP/copy.shape"
+R restore --from "$SHAPE_TMP/copy.shape" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc:$(TL list-windows -t '=beta:' -F '#{window_name}')" "0:changed" "--from FILE restores a copy"
+assert_contains "$(cat "$SHAPE_TMP/err")" "elsewhere.example" "...and a copy from another host says so in one line, then restores"
+stop_server
+R restore --from 20000101T000000Z-1 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "2" "--from a STAMP-GEN that is not there: exit 2"
+
+echo "== --only (§4.3) =="
+R restore --only beta >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(TL list-sessions -F '#{session_name}' | tr '\n' ' ')" "0:beta " "--only SESSION places that session alone"
+stop_server
+R restore --only alpha:1 >/dev/null 2>&1
+assert_eq "$(TL list-sessions -F '#{session_name}' | tr '\n' ' ')" "alpha " "--only SESSION:WINDOW places that window's session with it"
+stop_server
+# The pane's id in THIS save: the newest save was made on a restored
+# server, whose pane ids are not the fixture's.
+oldxp="$(awk -v RS= -v d="cwd $SHAPE_TMP/d2" 'index($0 "\n", "\n" d "\n") && /^pane / { sub(/.*\nid /, ""); sub(/\n.*/, ""); print }' "$SD/shape")"
+R restore --only "$oldxp" >/dev/null 2>"$SHAPE_TMP/err"
+assert_eq "$(TL list-panes -a -F '#{pane_current_path}')" "$SHAPE_TMP/d2" "--only %OLD places that one pane"
+stop_server
+out="$(R restore --only nosuch 2>&1)"; rc=$?
+assert_eq "$rc" "2" "--only that matches nothing: exit 2"
+assert_contains "$out" "nosuch" "...naming the selector"
+
+echo "== a group in --only, --dry-run and --list (R7) =="
+fresh_server
+TL new-session -d -s gm -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL kill-session -t '=scratch'
+TL new-session -d -t '=gm' -s gv
+R save >/dev/null 2>&1
+stop_server
+out="$(R restore --dry-run 2>/dev/null)"
+assert_contains "$out" "session gv (joins gm's group)" "--dry-run names a later member once, as joining its group"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^session ')" "2" "...each session one line"
+TL -f /dev/null new-session -d -s other 'sleep 600'
+before="$(TL list-sessions -F '#{session_name}')"
+R restore --only gv >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "16" "--only a later member whose first member is not on the server: exit 16"
+assert_eq "$(TL list-sessions -F '#{session_name}')" "$before" "...nothing done"
+assert_contains "$(cat "$SHAPE_TMP/err")" "gm" "...naming the first member it needs"
+R restore --only gm >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(TL list-sessions -F '#{session_name} #{session_group}' | grep -c ' gm$')" "0:2" "--only the first member brings its later members"
+TL kill-session -t '=gv'
+R restore --only gv >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(TL display -p -t '=gv:' '#{session_group}')" "0:gm" "--only a later member alone joins a first member already on the server"
+
+echo "== no save, and a malformed one =="
+stop_server
+mv "$SD/shape" "$SHAPE_TMP/kept.shape"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "2" "no shape for this server: exit 2"
+TL -f /dev/null new-session -d -s live 'sleep 600'
+before="$(TL list-sessions -F '#{session_name}'; TL list-panes -a -F '#{pane_id}')"
+{ head -11 "$SHAPE_TMP/kept.shape"; printf '%s\n' 'session broken' 'id $0' '' 'pane broken:1.0' 'id %0' 'cwd /tmp'; } > "$SD/shape"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "16" "a malformed shape: exit 16"
+assert_eq "$(TL list-sessions -F '#{session_name}'; TL list-panes -a -F '#{pane_id}')" "$before" "...and a listing before and after is identical (create nothing)"
+assert_contains "$(cat "$SHAPE_TMP/err")" "line 15" "...naming the line"
+mv "$SHAPE_TMP/kept.shape" "$SD/shape"
+stop_server
+
+echo "== renumber-windows on: the --dry-run tree says so =="
+RN="$SHAPE_TMP/rn/roost"; mkdir -p "$SHAPE_TMP/rn"
+R2() { ROOST_SOCKET="$RN" "$ROOST" "$@"; }
+tmux -S "$RN" -f /dev/null new-session -d -s numbered -x 200 -y 50 'sleep 600'
+tmux -S "$RN" set -g renumber-windows on
+tmux -S "$RN" new-window -d -t '=numbered:5' 'sleep 600'
+R2 save >/dev/null 2>&1
+out="$(R2 restore --dry-run 2>/dev/null)"
+assert_contains "$out" "renumber-windows" "the tree carries a note that the conf renumbers windows"
+tmux -S "$RN" kill-server
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
