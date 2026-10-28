@@ -619,9 +619,14 @@ roost_shape_save() {
   fi
   boot="${info%% *}"; info="${info#* }"; ver="${info%% *}"; spath="${info#* }"
   roost_shape__clean "$spath" octal && spath="$ROOST_SHAPE_V" || spath="-"
-  body="$(roost_shape__body)" || return 1
-  # roost_shape__body ran in that $( ): count again here, cheaply, for the line.
-  roost_shape__body >/dev/null 2>&1
+  # The body is built ONCE, into a temp file in this shell, so its counts
+  # (ROOST_SHAPE_COUNTS) are this shell's too: built inside a $(...) they
+  # were lost, and the first version built it twice to get them back (review
+  # round 1, Fable N6), a cost Part 4 would pay at every structural event.
+  local bodyf
+  bodyf="$(mktemp)" || return 1
+  roost_shape__body > "$bodyf" || { rm -f "$bodyf"; return 1; }
+  body="$(cat "$bodyf")"; rm -f "$bodyf"
   if [ -n "$dir" ] && [ -f "$dir/shape" ] && [ "$(sed '1,/^$/d' "$dir/shape")" = "$body" ]; then
     printf '%s\n' "$dir/shape"
     printf '%s\n' "$ROOST_SHAPE_COUNTS" >&2

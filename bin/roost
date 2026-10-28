@@ -680,7 +680,15 @@ case "${1:-up}" in
     done
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
     . "$ROOST_HOME/scripts/lib/roost-restore.sh"
-    restore_dir="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null || true)"
+    # --dry-run and --list only look: they name the shape directory without
+    # making it. A real run makes it, for restoring/.
+    if [ "$restore_mode" = run ]; then
+      restore_dir="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null || true)"
+    elif restore_root="$(roost_shape_saving)"; then
+      restore_dir="$restore_root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+    else
+      restore_dir=""
+    fi
     if [ "$restore_mode" = list ]; then
       roost_restore_list "$restore_dir"
       exit 0

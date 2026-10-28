@@ -606,6 +606,12 @@ out="$(R restore --dry-run 2>/dev/null)"; rc=$?
 assert_eq "$rc" "12" "--dry-run against a running server where the sessions exist: exit 12"
 assert_contains "$out" "session alpha (exists - skipped, 3 panes not restored)" "...naming each skipped session"
 
+echo "== --dry-run and --list only look: they make no shape directory (review round 1, Fable N6) =="
+nd="$SHAPE_TMP/never-made"
+ROOST_SHAPE_DIR="$nd" ROOST_SOCKET=roost "$ROOST" restore --dry-run >/dev/null 2>&1
+ROOST_SHAPE_DIR="$nd" ROOST_SOCKET=roost "$ROOST" restore --list >/dev/null 2>&1
+[ ! -e "$nd" ]; assert_true $? "neither makes the shape directory of a server with no save"
+
 echo "== --list: every save, the one restore would pick marked (§3.6) =="
 TL rename-window -t '=beta:1' changed; R save >/dev/null 2>&1
 lst="$(R restore --list 2>&1)"; rc=$?

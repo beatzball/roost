@@ -59,6 +59,10 @@ that changes one of these breaks the rule quietly.
   distinctive) and opencode was not measured (its 2.x service could not be
   stopped on the dev machine), so for those two a key is trusted on presence
   alone: an exited pi under a Node dev server would be saved as live.
+- **The owner rule needs `ps`.** A restore records its pid and start time
+  (`ps -o lstart=`) in `restoring/owner`; with no `ps` every recorded owner
+  reads as gone, so two restores could run at once. Every machine roost runs
+  on has it; a minimal container image needs `procps`.
 - **History has no ring yet.** Every changed save adds a file to `history/`
   until Part 4 adds `ROOST_SHAPE_KEEP`; nothing saves automatically yet, so it
   grows only with each `roost save`.
