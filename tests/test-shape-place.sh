@@ -284,7 +284,21 @@ assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane re
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...and the bootstrap pane is a shell, not a placeholder no key can free"
 TL display -p -t "$bp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" "...no longer running the placeholder"
 
+echo "== a group whose first member has spaces round its name (review round 1, Codex B6) =="
+stop_server; rm -rf "$SD/restoring"
+TL -f /dev/null new-session -d -s ' lead ' -x 200 -y 50 -c "$SHAPE_TMP/d1" 'ENV= exec /bin/sh'
+TL new-session -d -t '= lead ' -s view
+R save >/dev/null 2>&1; stop_server
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "0" "restore exits 0"
+assert_eq "$(TL list-sessions -F '[#{session_name}] [#{session_group}]' | sort | tr '\n' ',')" "[ lead ] [ lead ],[view] [ lead ]," \
+  "...the member joins ' lead ', its name kept byte for byte"
+
 echo "== the owner rule (§3.5): restoring/ held by a live restore =="
+# A running server with the saved session in it, so a run that is let through
+# skips it (exit 12) and one that is refused says so (exit 1).
+stop_server; rm -rf "$SD/restoring"
+TL -f /dev/null new-session -d -s first -c "$SHAPE_TMP/d1" 'sleep 600'
 mkshape "first:$SHAPE_TMP/d1"
 # The owner record is a symbolic link whose target is "PID LSTART"
 # (scripts/lib/roost-shape.sh, the owner rule).

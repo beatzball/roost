@@ -105,7 +105,12 @@ roost_restore__exists() {
 roost_restore__sid() {
   local id n m="${1//./_}"
   m="${m//:/_}"
-  while IFS=' ' read -r id n; do
+  # Split at the FIRST space by hand: `read id n` would trim a name's own
+  # leading and trailing spaces, and a group's first member named ` lead `
+  # was then never found (review round 1, Codex B6).
+  local line
+  while IFS= read -r line; do
+    id="${line%% *}" n="${line#* }"
     roost_shape__clean "$n" || true
     if [ "$ROOST_SHAPE_V" = "$1" ] || [ "$ROOST_SHAPE_V" = "$m" ]; then printf '%s\n' "$id"; return 0; fi
   done <<< "$(t -u list-sessions -F '#{session_id} #{session_name}' 2>/dev/null || true)"
