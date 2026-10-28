@@ -305,8 +305,16 @@ roost_shape__suspect() {
   return 1
 }
 
-# roost_shape__d ID FORMAT -> prints one value of one object, raw.
-roost_shape__d() { roost_shape__t display-message -p -t "$1" "$2" 2>/dev/null; }
+# roost_shape__d ID FORMAT -> ROOST_SHAPE_D, one value of one object, raw,
+# byte for byte. SETS rather than prints, with a sentinel: a $(...) drops every
+# trailing newline, the value's own with tmux's, so a name or directory that
+# ENDS in a newline lost it and was saved as clean text (review round 1, Codex
+# B5). tmux adds exactly one newline after the value; only that one is taken.
+roost_shape__d() {
+  ROOST_SHAPE_D="$(roost_shape__t display-message -p -t "$1" "$2" 2>/dev/null; printf .)"
+  ROOST_SHAPE_D="${ROOST_SHAPE_D%.}"
+  ROOST_SHAPE_D="${ROOST_SHAPE_D%$'\n'}"
+}
 
 # roost_shape__list -> fills the S_*, W_* and P_* arrays; exit 1 when the
 # server cannot be listed. Three listings, then the consistency check of §3.5
@@ -337,8 +345,8 @@ roost_shape__parse_sessions() {
     if [ "$end" != ".$sid" ] || roost_shape__suspect "$line"; then
       # Only the FREE TEXT is read again: the fields before it are the
       # line's own and a newline cannot reach them (review round 1, Codex B3).
-      xg="x$(roost_shape__d "$sid" '#{session_group}')"
-      xn="x$(roost_shape__d "$sid" '#{session_name}')"
+      roost_shape__d "$sid" '#{session_group}'; xg="x$ROOST_SHAPE_D"
+      roost_shape__d "$sid" '#{session_name}'; xn="x$ROOST_SHAPE_D"
     fi
     S_ID+=("$sid"); S_ATT+=("$att"); S_GRP+=("$grp"); S_AWIN+=("$awin")
     S_GROUP+=("${xg#x}"); S_NAME+=("${xn#x}")
@@ -357,7 +365,7 @@ roost_shape__parse_windows() {
       # once per session, and asked by @N alone tmux answers one of them, so
       # every copy would take that one's address (review round 1, Codex B3:
       # a save then published a repeated address its own checker refused).
-      xn="x$(roost_shape__d "$wid" '#{window_name}')"
+      roost_shape__d "$wid" '#{window_name}'; xn="x$ROOST_SHAPE_D"
     fi
     W_ID+=("$wid"); W_SID+=("$sid"); W_IDX+=("$idx"); W_ACT+=("$act"); W_ZOOM+=("$zoom")
     W_AUTO+=("$auto"); W_LAYOUT+=("$layout"); W_NAME+=("${xn#x}")
@@ -374,15 +382,15 @@ roost_shape__parse_panes() {
     if [ "$end" != ".$pid" ] || roost_shape__suspect "$line"; then
       # The free text only; session, window, index and active are this line's
       # own context (see the window case above, and Codex B3).
-      xc="x$(roost_shape__d "$pid" '#{pane_current_command}')"
-      xs="x$(roost_shape__d "$pid" '#{@agent_state}')"
-      xh="x$(roost_shape__d "$pid" '#{@roost-harness}')"
-      xi="x$(roost_shape__d "$pid" '#{@roost-session}')"
-      xt="x$(roost_shape__d "$pid" '#{@roost-transcript-path}')"
-      xl="x$(roost_shape__d "$pid" '#{@roost-launch}')"
-      xr="x$(roost_shape__d "$pid" '#{@roost-cwd}')"
-      xn="x$(roost_shape__d "$pid" '#{@roost-name}')"
-      xp="x$(roost_shape__d "$pid" '#{pane_current_path}')"
+      roost_shape__d "$pid" '#{pane_current_command}'; xc="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@agent_state}'; xs="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-harness}'; xh="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-session}'; xi="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-transcript-path}'; xt="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-launch}'; xl="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-cwd}'; xr="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-name}'; xn="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{pane_current_path}'; xp="x$ROOST_SHAPE_D"
     fi
     P_ID+=("$pid"); P_SID+=("$sid"); P_WID+=("$wid"); P_IDX+=("$idx"); P_ACT+=("$act")
     P_CMD+=("${xc#x}"); P_STATE+=("${xs#x}"); P_HARNESS+=("${xh#x}"); P_SESSION+=("${xi#x}")

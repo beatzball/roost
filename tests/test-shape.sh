@@ -349,6 +349,20 @@ assert_eq "$(body "$SHAPE_TMP/loc-c.shape")" "$(body "$SHAPE_TMP/loc-utf8.shape"
 assert_eq "$(body "$SHAPE_TMP/loc-none.shape")" "$(body "$SHAPE_TMP/loc-utf8.shape")" "a save with no locale set writes the same body"
 grep -q '🐓' "$SHAPE_TMP/loc-c.shape"; assert_true $? "...the UTF-8 glyph survives a C-locale save"
 
+echo "== a value that ENDS in a newline is still a control byte (review round 1, Codex B5) =="
+# A $(...) drops every trailing newline, the value's own included, so a
+# reread by id must keep them (a sentinel) before the control-byte rule runs.
+d="$O/end"$'\n'; mkdir -p "$d"
+en="$(TL new-window -d -P -F '#{pane_id}' -t '=odd:' -e "PD=$d" 'cd "$PD" && exec sleep 600')"
+TL set -p -t "$en" @roost-name "label"$'\n'
+sleep 0.5
+R save --to "$SHAPE_TMP/end.shape" >/dev/null 2>"$SHAPE_TMP/end.err"
+b="$(blk "$SHAPE_TMP/end.shape" "$en")"
+has "$b" name; assert_eq "$?" "1" "a name ending in a newline is dropped, not saved as 'label'"
+assert_eq "$(val "$b" cwd)" "$HOME" "a directory ending in a newline is saved as the home directory"
+assert_eq "$(grep -c "pane $en:" "$SHAPE_TMP/end.err")" "2" "...one stderr line for each"
+TL kill-pane -t "$en"
+
 echo "== a cut line in a linked window keeps its own address (review round 1, Codex B3) =="
 # A linked pane is listed once per session/window it is in. When its line is
 # cut by a newline, the reread must keep that line's own context: asked by
