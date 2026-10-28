@@ -173,23 +173,7 @@ ensure_session() {
     t new-session -d -s "$s" -c "$PWD"
   else
     t -f "$CONF" new-session -d -s "$s" -c "$PWD"
-    t set-environment -g ROOST_HOME "$ROOST_HOME"
-    t set-option -g @roost-home "$ROOST_HOME"
-    t set-environment -g PATH "$ROOST_HOME/scripts:$PATH"
-    # User config: sourced AFTER the base conf so it overrides. -q: silent if absent.
-    ROOST_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf"
-    t set-option -g @roost-user-conf "$ROOST_USER_CONF"
-    t source-file -qF "#{@roost-user-conf}"
-    # Roost-owned wiring (#58): the claude shim through default-command, and
-    # OPENCODE_CONFIG_DIR. AFTER the user's conf, because
-    # `set -g @roost-wiring-enabled off` there must stop it before anything is
-    # generated, and a default-command the user set there must be seen and
-    # kept. Only here, when a server starts, so no other roost command — and
-    # least of all `roost state` on every tool call — pays for it.
-    #
-    # Never fatal: a server that cannot be wired still has to start, and the
-    # global install (if any) still badges. `roost doctor` reports the state.
-    ROOST_SOCKET="$SOCKET" "$ROOST_HOME/scripts/roost-wiring" apply >/dev/null 2>&1 || true
+    server_init
     # The first pane was created by the `new-session` above, BEFORE apply set
     # default-command, ROOST_TMUX and ROOST_WIRING_DIR — and it is the pane
     # `roost up` attaches a human to, where they type `claude`. Found in review:
@@ -209,6 +193,31 @@ ensure_session() {
       fi
     fi
   fi
+}
+
+# server_init — what a server roost just started gets, once, after its first
+# `new-session`: roost's globals, the user's conf, and roost's wiring. Shared
+# by ensure_session and `roost restore` (#51), which starts a server the same
+# way but with a placeholder as its first pane (spec §4.3), so the two cannot
+# drift. It does not touch the first pane: each caller decides that.
+server_init() {
+  t set-environment -g ROOST_HOME "$ROOST_HOME"
+  t set-option -g @roost-home "$ROOST_HOME"
+  t set-environment -g PATH "$ROOST_HOME/scripts:$PATH"
+  # User config: sourced AFTER the base conf so it overrides. -q: silent if absent.
+  ROOST_USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf"
+  t set-option -g @roost-user-conf "$ROOST_USER_CONF"
+  t source-file -qF "#{@roost-user-conf}"
+  # Roost-owned wiring (#58): the claude shim through default-command, and
+  # OPENCODE_CONFIG_DIR. AFTER the user's conf, because
+  # `set -g @roost-wiring-enabled off` there must stop it before anything is
+  # generated, and a default-command the user set there must be seen and
+  # kept. Only here, when a server starts, so no other roost command — and
+  # least of all `roost state` on every tool call — pays for it.
+  #
+  # Never fatal: a server that cannot be wired still has to start, and the
+  # global install (if any) still badges. `roost doctor` reports the state.
+  ROOST_SOCKET="$SOCKET" "$ROOST_HOME/scripts/roost-wiring" apply >/dev/null 2>&1 || true
 }
 
 # pane_cmd_wired — true when this server is wired, which is when a command
@@ -645,6 +654,25 @@ case "${1:-up}" in
     fi
     roost_shape_save "$_SOCKET_FLAG" "$SOCKET" "$save_to" "$save_trigger" || exit 1
     exit 0
+    ;;
+  restore)
+    # `roost restore` (#51): put this server's saved shape back — its
+    # sessions, windows, panes, names, directories and layouts — as shells.
+    # Agents are not resumed in this part. The work is in
+    # scripts/lib/roost-restore.sh; this arm finds the save and maps the
+    # result to the exit codes of spec §4.3 (0, 2, 12, 16, 1).
+    shift
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    . "$ROOST_HOME/scripts/lib/roost-restore.sh"
+    restore_dir="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null || true)"
+    restore_file="${restore_dir:+$restore_dir/shape}"
+    if [ -z "$restore_file" ] || [ ! -f "$restore_file" ]; then
+      echo "roost restore: no saved shape for this server; nothing to restore" >&2
+      exit 2
+    fi
+    restore_rc=0
+    roost_restore_run "$restore_file" "$restore_dir" || restore_rc=$?
+    exit "$restore_rc"
     ;;
   help|--help|-h)
     # The command list is read back out of this file's own header comment

@@ -826,3 +826,56 @@ roost_shape_get() {
   done < "$1"
   return 1
 }
+
+# THE OWNER RULE (§3.5 step 1, revision 2 item 3), for `restoring/` now and
+# for the saver's `lock/` in Part 4. A directory made with mkdir is held by
+# one process; it records that process's pid and start time
+# (`ps -o lstart=`). It is taken over ONLY when that pid is not running, or is
+# running with another start time (the pid was reused). Never by age: a slow
+# or stopped owner keeps it, and whoever waits keeps waiting.
+
+# roost_shape__lstart PID -> prints the process's start time, or nothing.
+roost_shape__lstart() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
+
+# roost_shape__owner_write DIR -> records this process as DIR's owner, by a
+# rename so a reader never sees half a file.
+roost_shape__owner_write() {
+  local tmp
+  tmp="$( (umask 077; mktemp "$1/.owner.XXXXXX") 2>/dev/null)" || return 1
+  printf 'pid %s\nlstart %s\n' "$$" "$(roost_shape__lstart "$$")" > "$tmp" && mv -f "$tmp" "$1/owner"
+}
+
+# roost_shape_owner_live DIR -> exit 0 when DIR's recorded owner is running
+# with the recorded start time; ROOST_SHAPE_OWNER_PID is its pid.
+roost_shape_owner_live() {
+  local pid lst
+  pid="$(sed -n 's/^pid //p' "$1/owner" 2>/dev/null)"
+  # Trimmed: `ps -o lstart=` pads its column with spaces, and a record written
+  # by hand or by another tool may keep them.
+  lst="$(sed -n 's/^lstart //p' "$1/owner" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+  ROOST_SHAPE_OWNER_PID="$pid"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$lst" ] && [ "$(roost_shape__lstart "$pid")" = "$lst" ]
+}
+
+# roost_shape_owner_take DIR -> 0 when made and owned by this process; 2 when
+# taken over from an owner that is gone (the caller then settles what that
+# owner left, §4.7 arrow T2b); 1 when a live owner holds it
+# (ROOST_SHAPE_OWNER_PID names it).
+#
+# A directory with no readable owner file is a dead owner's: a process killed
+# between its mkdir and its write left it, and nothing else writes one.
+roost_shape_owner_take() {
+  if ( umask 077; mkdir "$1" ) 2>/dev/null; then
+    roost_shape__owner_write "$1" || return 1
+    return 0
+  fi
+  roost_shape_owner_live "$1" && return 1
+  roost_shape__owner_write "$1" || return 1
+  # Two takers of one dead lock both write; the one whose record is left won.
+  [ "$(sed -n 's/^pid //p' "$1/owner" 2>/dev/null)" = "$$" ] || { ROOST_SHAPE_OWNER_PID="$(sed -n 's/^pid //p' "$1/owner")"; return 1; }
+  return 2
+}
+
+# roost_shape_owner_drop DIR -> removes DIR, the owner's last act.
+roost_shape_owner_drop() { rm -rf "$1"; }
