@@ -294,6 +294,27 @@ assert_eq "$rc" "0" "restore exits 0"
 assert_eq "$(TL list-sessions -F '[#{session_name}] [#{session_group}]' | sort | tr '\n' ',')" "[ lead ] [ lead ],[view] [ lead ]," \
   "...the member joins ' lead ', its name kept byte for byte"
 
+echo "== a default-command with \$ in it runs as the person wrote it (review round 1, Codex B7) =="
+# tmux 3.4 prints `$` as `\$` (R6), in default-command too: read back raw, a
+# person's `"$HOME/x"` became `"\$HOME/x"` and stopped expanding. Red on 3.4
+# only; 3.2a and 3.6 print `$` bare.
+stop_server; rm -rf "$SD/restoring"; rm -f "$HOME/landed-restore" "$HOME/landed-key"
+TL -f /dev/null new-session -d -s other -c "$SHAPE_TMP/d1" 'sleep 600'
+TL new-session -d -s shp 'sleep 600'      # where the placeholder helper opens its window
+TL set -g default-shell "$BASH_BIN"
+TL new-session -d -s victim -c "$SHAPE_TMP/d1" 'sleep 600'
+R save >/dev/null 2>&1; TL kill-session -t '=victim'
+TL set -g default-command 'printf landed > "$HOME/landed-restore"; exec '"$BASH_BIN"' -l'
+R restore --only victim >/dev/null 2>&1
+i=0; while [ "$i" -lt 30 ] && [ ! -e "$HOME/landed-restore" ]; do sleep 0.1; i=$((i+1)); done
+[ -e "$HOME/landed-restore" ]; assert_true $? "restore's shell runs the person's default-command with its \$HOME ($(TL display -p '#{version}'))"
+TL set -g default-command 'printf landed > "$HOME/landed-key"; exec '"$BASH_BIN"' -l'
+F="$RD/place.dollar"; : > "$F"
+p="$(placeholder "$F")"; wait_screen "$p" "$PLACING"; TL send-keys -t "$p" x
+i=0; while [ "$i" -lt 30 ] && [ ! -e "$HOME/landed-key" ]; do sleep 0.1; i=$((i+1)); done
+[ -e "$HOME/landed-key" ]; assert_true $? "...and so does the shell a placeholder hands over at a key"
+TL set -gu default-command
+
 echo "== the owner rule (§3.5): restoring/ held by a live restore =="
 # A running server with the saved session in it, so a run that is let through
 # skips it (exit 12) and one that is refused says so (exit 1).

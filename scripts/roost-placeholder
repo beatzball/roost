@@ -100,6 +100,19 @@ while :; do
       # `_`, which would hand over a different command (review round 1, B4).
       dshell="$(tmux -u show-options -gv default-shell 2>/dev/null)"
       dcmd="$(tmux -u show-options -gv default-command 2>/dev/null)"
+      # tmux 3.4 prints every `$` in a value as `\$` (R6, probe 1.3), so a
+      # person's `"$HOME/x"` would come back as `"\$HOME/x"` and stop
+      # expanding (review round 1, Codex B7). Learn it the way the writer
+      # does — set one pane option holding `$`, read it back, unset it — and
+      # take exactly one backslash off each `$` when this server adds one.
+      probe="$(tmux -u set-option -p -t "$TMUX_PANE" @roost-shape-probe 'a$b' \; \
+        show-options -pv -t "$TMUX_PANE" @roost-shape-probe \; \
+        set-option -pu -t "$TMUX_PANE" @roost-shape-probe 2>/dev/null)"
+      case "$probe" in
+        *'\$'*)
+          dcmd="$(printf '%s' "$dcmd" | sed 's/\\\$/$/g')"
+          dshell="$(printf '%s' "$dshell" | sed 's/\\\$/$/g')" ;;
+      esac
       [ -n "$dshell" ] || dshell="${SHELL:-/bin/sh}"
       if [ -n "$dcmd" ]; then
         exec "$dshell" -c "$dcmd"

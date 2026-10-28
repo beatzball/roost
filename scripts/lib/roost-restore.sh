@@ -191,6 +191,13 @@ roost_restore__new_file() {
 roost_restore__shell_cmd() {
   local dc ds
   dc="$(t -u show-options -gqv default-command 2>/dev/null || true)"
+  # R6 for the person's own command too: tmux 3.4 prints `$` as `\$`, and a
+  # `"$HOME/x"` read back raw stopped expanding (review round 1, Codex B7).
+  # Needs this server's read rules (roost_shape__read_rules), which every
+  # caller has learned by now. A control byte in it is kept: it is run, not
+  # written to a file.
+  roost_shape__clean "$dc" || true
+  dc="$ROOST_SHAPE_V"
   if [ -n "$dc" ]; then ROOST_RESTORE_SHELL_ARGS=("$dc"); return 0; fi
   ds="$(t -u show-options -gqv default-shell 2>/dev/null || true)"
   ROOST_RESTORE_SHELL_ARGS=("${ds:-${SHELL:-/bin/sh}}" -l)
@@ -465,6 +472,7 @@ roost_restore__make_session() {
   if [ "$boot" = 1 ]; then
     roost_restore__hold ROOST_TEST_RESTORE_HOLD
     server_init
+    roost_shape__read_rules || true
     roost_restore__shell_cmd
     # Replaceable only when this run made it, wins the rename, and it still
     # holds the one pane restore made (§4.3). Lost: a key took it, the pane
