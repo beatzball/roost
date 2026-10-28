@@ -281,10 +281,11 @@ roost_shape__stamp() {
 # value is printed raw — #{q:} does not escape it — so it cuts the line in
 # two (probe 1.3, every build). Ruling R8.1: a line that does not start with
 # its id, or does not end with `.<the same id>`, is a fault of that round, not
-# data. The part that starts with a valid id is read again field by field
-# with `display -p -t ID` (roost_shape__reread_*), which returns the whole
-# value, newline and all, so the control-byte rule sees it; the stray part
-# after the cut is skipped.
+# data. The part that starts with a valid id keeps its own context fields —
+# they come before any free text, so a cut never reaches them — and its FREE
+# TEXT is read again field by field with `display -p -t ID`, which returns the
+# whole value, newline and all, so the control-byte rule sees it; the stray
+# part after the cut is skipped.
 ROOST_SHAPE_FS='#{session_id} #{session_attached} #{session_grouped} #{window_index} x#{q:session_group} x#{q:session_name} .#{session_id}'
 ROOST_SHAPE_FW='#{window_id} #{session_id} #{window_index} #{window_active} #{window_zoomed_flag} #{automatic-rename} #{window_layout} x#{q:window_name} .#{window_id}'
 ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} .#{pane_id}'
@@ -334,9 +335,8 @@ roost_shape__parse_sessions() {
     case "$line" in \$[0-9]*) ;; *) continue ;; esac
     IFS=' ' read sid att grp awin xg xn end <<< "$line"
     if [ "$end" != ".$sid" ] || roost_shape__suspect "$line"; then
-      att="$(roost_shape__d "$sid" '#{session_attached}')"
-      grp="$(roost_shape__d "$sid" '#{session_grouped}')"
-      awin="$(roost_shape__d "$sid" '#{window_index}')"
+      # Only the FREE TEXT is read again: the fields before it are the
+      # line's own and a newline cannot reach them (review round 1, Codex B3).
       xg="x$(roost_shape__d "$sid" '#{session_group}')"
       xn="x$(roost_shape__d "$sid" '#{session_name}')"
     fi
@@ -352,15 +352,11 @@ roost_shape__parse_windows() {
     case "$line" in @[0-9]*) ;; *) continue ;; esac
     IFS=' ' read wid sid idx act zoom auto layout xn end <<< "$line"
     if [ "$end" != ".$wid" ] || roost_shape__suspect "$line"; then
-      # A window line can name its session wrongly only by being cut; the
-      # session id comes back from the window itself (in a linked window's
-      # case, the first session tmux finds — the consistency check catches it).
-      sid="$(roost_shape__d "$wid" '#{session_id}')"
-      idx="$(roost_shape__d "$wid" '#{window_index}')"
-      act="$(roost_shape__d "$wid" '#{window_active}')"
-      zoom="$(roost_shape__d "$wid" '#{window_zoomed_flag}')"
-      auto="$(roost_shape__d "$wid" '#{automatic-rename}')"
-      layout="$(roost_shape__d "$wid" '#{window_layout}')"
+      # Only the name is read again. The fields before it — the session, the
+      # index, the layout — are this LINE's own: a linked window is listed
+      # once per session, and asked by @N alone tmux answers one of them, so
+      # every copy would take that one's address (review round 1, Codex B3:
+      # a save then published a repeated address its own checker refused).
       xn="x$(roost_shape__d "$wid" '#{window_name}')"
     fi
     W_ID+=("$wid"); W_SID+=("$sid"); W_IDX+=("$idx"); W_ACT+=("$act"); W_ZOOM+=("$zoom")
@@ -376,10 +372,8 @@ roost_shape__parse_panes() {
     case "$line" in %[0-9]*) ;; *) continue ;; esac
     IFS=' ' read pid sid wid idx act xc xs xh xi xt xl xr xn xp end <<< "$line"
     if [ "$end" != ".$pid" ] || roost_shape__suspect "$line"; then
-      sid="$(roost_shape__d "$pid" '#{session_id}')"
-      wid="$(roost_shape__d "$pid" '#{window_id}')"
-      idx="$(roost_shape__d "$pid" '#{pane_index}')"
-      act="$(roost_shape__d "$pid" '#{pane_active}')"
+      # The free text only; session, window, index and active are this line's
+      # own context (see the window case above, and Codex B3).
       xc="x$(roost_shape__d "$pid" '#{pane_current_command}')"
       xs="x$(roost_shape__d "$pid" '#{@agent_state}')"
       xh="x$(roost_shape__d "$pid" '#{@roost-harness}')"
@@ -563,6 +557,18 @@ roost_shape__pane() {
   printf '\n'
 }
 
+# roost_shape__publishable TMPFILE -> exit 0 when the new file passes the
+# reader; else removes it, says why on stderr, and exits 1. A save never
+# replaces the last good shape with one restore would refuse (review round 1,
+# Codex B3: one did, through a repeated address): the writer and the reader
+# are checked against each other at every save, not only by the tests.
+roost_shape__publishable() {
+  roost_shape_check "$1" 2>/dev/null && return 0
+  printf 'roost save: the new shape would be refused by restore (%s); nothing written\n' "$ROOST_SHAPE_FAULT" >&2
+  rm -f "$1"
+  return 1
+}
+
 # roost_shape_save FLAG SOCKET TO TRIGGER -> exit 0 or 1.
 #
 # `roost save` (§4.2). Prints the shape's path (or TO) on stdout and `S
@@ -622,8 +628,9 @@ roost_shape_save() {
   if [ -n "$to" ]; then
     tmp="$( (umask 077; mktemp "$to.XXXXXX") 2>/dev/null)" || {
       printf 'roost save: cannot write next to %s; nothing written\n' "$to" >&2; return 1; }
-    printf '%s\n\n%s\n' "$hdr" "$body" > "$tmp" && mv -f "$tmp" "$to" || {
-      rm -f "$tmp"; printf 'roost save: cannot write %s\n' "$to" >&2; return 1; }
+    printf '%s\n\n%s\n' "$hdr" "$body" > "$tmp" || { rm -f "$tmp"; printf 'roost save: cannot write %s\n' "$to" >&2; return 1; }
+    roost_shape__publishable "$tmp" || return 1
+    mv -f "$tmp" "$to" || { rm -f "$tmp"; printf 'roost save: cannot write %s\n' "$to" >&2; return 1; }
     printf '%s\n' "$to"
     printf '%s\n' "$ROOST_SHAPE_COUNTS" >&2
     return 0
@@ -633,6 +640,7 @@ roost_shape_save() {
   if ! printf '%s\n\n%s\n' "$hdr" "$body" > "$tmp"; then
     rm -f "$tmp"; printf 'roost save: cannot write in %s; nothing written\n' "$dir" >&2; return 1
   fi
+  roost_shape__publishable "$tmp" || return 1
   if [ -f "$dir/shape" ]; then
     oldsaved="$(sed -n 's/^saved //p;/^$/q' "$dir/shape")"
     oldgen="$(sed -n 's/^gen //p;/^$/q' "$dir/shape")"

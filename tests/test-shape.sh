@@ -349,6 +349,23 @@ assert_eq "$(body "$SHAPE_TMP/loc-c.shape")" "$(body "$SHAPE_TMP/loc-utf8.shape"
 assert_eq "$(body "$SHAPE_TMP/loc-none.shape")" "$(body "$SHAPE_TMP/loc-utf8.shape")" "a save with no locale set writes the same body"
 grep -q '🐓' "$SHAPE_TMP/loc-c.shape"; assert_true $? "...the UTF-8 glyph survives a C-locale save"
 
+echo "== a cut line in a linked window keeps its own address (review round 1, Codex B3) =="
+# A linked pane is listed once per session/window it is in. When its line is
+# cut by a newline, the reread must keep that line's own context: asked by
+# %N alone, tmux answers one context, both copies got the same address, and
+# the save published a file its own checker refused.
+TL new-session -d -s lka -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
+TL new-session -d -s lkb -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
+TL link-window -s '=lka:1' -t '=lkb:7'
+lp="$(TL list-panes -t '=lka:1' -F '#{pane_id}')"
+TL set -p -t "$lp" @roost-name "$(printf 'a\nb')"
+R save --to "$SHAPE_TMP/lk.shape" >/dev/null 2>&1; rc=$?
+roost_shape_check "$SHAPE_TMP/lk.shape" 2>/dev/null; ckrc=$?
+assert_eq "$rc:$ckrc:${ROOST_SHAPE_FAULT:-}" "0:0:" "save exits 0 and its file passes its own checker"
+assert_eq "$(grep -c '^pane lka:1\.0$' "$SHAPE_TMP/lk.shape"):$(grep -c '^pane lkb:7\.0$' "$SHAPE_TMP/lk.shape")" "1:1" \
+  "...the pane is written once under each of its two windows"
+TL kill-session -t '=lka'; TL kill-session -t '=lkb'
+
 echo "== a session group (R7) =="
 TL new-session -d -s gmain -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
 TL new-window -d -t '=gmain:' 'ENV= exec /bin/sh'
