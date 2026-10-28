@@ -434,6 +434,10 @@ assert_eq "$(wc -l < "$SHAPE_TMP/ck.err" | tr -d ' ')" "1" "...exactly one"
 good 'futurekey whatever' > "$C/unknownkey"
 assert_eq "$(ck "$C/unknownkey")" "0|" "an unknown key is ignored"
 
+{ good; printf '%s\n' '' 'session empty' 'id $5'; } > "$C/nowin"
+assert_eq "$(ck "$C/nowin")" "1|line 24: session empty has no window block" \
+  "a full session block with no window block is refused (review round 1, Fable B1: it could not start a server the roost way)"
+
 echo "== session groups in the checker (R7) =="
 { good; printf '%s\n' '' 'session view' 'id $1' 'group main' 'active_window 1'; } > "$C/grp"
 assert_eq "$(ck "$C/grp")" "0|" "a later member naming a full session passes"

@@ -427,9 +427,16 @@ roost_restore__make_session() {
     # The server's first session, started the way ensure_session starts one
     # (-f CONF), at the saved size, with the placing placeholder by its own
     # path as its one pane (§4.3 Server, §2.10).
-    out="$(t -f "$CONF" new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
+    # A failure here returns 1, which stops the WHOLE run (roost_restore_run):
+    # no later session may be made on a server that was not started the roost
+    # way (review round 1, Fable B1).
+    if ! out="$(t -f "$CONF" new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
       -s "$(roost_restore__unvis "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
-      "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || return 1
+      "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>&1)"; then
+      printf "roost restore: could not start the tmux server with session '%s' (%s); nothing restored\n" \
+        "$name" "$(printf '%s' "$out" | head -1)" >&2
+      return 1
+    fi
   else
     roost_restore__new_file; f="$ROOST_RESTORE_F"
     out="$(t new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
@@ -553,18 +560,25 @@ roost_restore_run() {
     [ "$own" = 2 ] && roost_restore__settle_dead
   else
     ROOST_SHAPE_DOLLAR=0 ROOST_SHAPE_OCTAL=0
-    find "$ROOST_RESTORE_RD" -mindepth 1 ! -name owner -exec rm -f {} + 2>/dev/null || true
-    boot=1
+    find "$ROOST_RESTORE_RD" -mindepth 1 ! -name 'owner*' -exec rm -f {} + 2>/dev/null || true
   fi
   roost_restore__names
-  # Full sessions first, in file order; the first one starts the server when
-  # it is not running. Then the later members of groups, which join them.
+  # Full sessions first, in file order. Whether a session is the BOOTSTRAP is
+  # asked of the server each time, never "the first block seen": a block that
+  # placed nothing must not let the next one be made on a server nobody
+  # started (review round 1, Fable B1). A bootstrap that fails stops the run.
+  # Then the later members of groups, which join them.
   for blk in "$ROOST_RESTORE_PD"/*.session; do
     [ -e "$blk" ] || continue
     roost_shape_get "$blk" group >/dev/null && continue
+    if server_running; then boot=0; else boot=1; fi
     r=0; roost_restore__make_session "$blk" "$boot" || r=$?
     if [ "$boot" = 1 ]; then
-      boot=0
+      if [ "$r" = 1 ]; then
+        roost_shape_owner_drop "$ROOST_RESTORE_RD"
+        rm -rf "$ROOST_RESTORE_PD"
+        return 1
+      fi
       roost_shape__read_rules || true
     fi
     # 12 wins over 13 when both (§4.3 Report).

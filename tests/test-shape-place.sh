@@ -224,10 +224,27 @@ assert_eq "$rc" "0" "released: exit 0, the session placed into"
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...one shell, started by restore's own respawn"
 detach_client
 
+echo "== a first block that cannot start the server stops the run (review round 1, Fable B1) =="
+stop_server; rm -rf "$SD/restoring"
+mkshape "s2:$SHAPE_TMP/d1"
+{ head -11 "$SD/shape"; printf '%s\n' 'session empty' 'id $9' ''; sed '1,11d' "$SD/shape"; } > "$SHAPE_TMP/nowin.shape"
+cp "$SHAPE_TMP/nowin.shape" "$SD/shape"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "16" "a session block with no windows, server stopped: refused whole, exit 16"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "...and no server was started"
+mkshape "huge:$SHAPE_TMP/d1" "s2:$SHAPE_TMP/d2"
+sed -i.bak 's/^layout b25d,200x50,0,0,0$/layout b25d,99999x99999,0,0,0/' "$SD/shape"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "1" "a bootstrap new-session tmux refuses: the whole run stops, exit 1"
+assert_contains "$(cat "$SHAPE_TMP/err")" "could not start the tmux server" "...with its error"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "...and nothing was placed on a server roost did not start (none is running)"
+[ ! -e "$SD/restoring" ]; assert_true $? "...and restoring/ is removed"
+
 echo "== the restored server survives a resize storm from a real client =="
 # Another tool's users crashed tmux this way on a server made by
 # `new-session -x -y`: a client attached at a different size, then resized fast.
 stop_server; rm -rf "$SD/restoring"
+mkshape "first:$SHAPE_TMP/d1" "second:$SHAPE_TMP/d2"
 R restore >/dev/null 2>&1
 op="$(attach_client first 80 20)"
 for i in 1 2 3 4 5 6 7 8 9 10; do

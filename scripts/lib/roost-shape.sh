@@ -684,7 +684,7 @@ roost_shape__digits() { [ -n "$1" ] && [ -z "${1//[0-9]/}" ]; }
 roost_shape_check() {
   local LC_ALL=C file="$1" line n=0 key val kind="" addr="" bstart=0 keys="" first=1
   local hdr_keys="" addrs=$'\n' sessions=$'\n' full=$'\n' later=$'\n' windows=$'\n'
-  local wchk="" pchk="" gchk="" s w rest
+  local wchk="" pchk="" gchk="" fchk="" wsess=$'\n' s w rest
   local nl=$'\n'
   ROOST_SHAPE_FAULT=""
   if [ ! -s "$file" ]; then ROOST_SHAPE_FAULT="line 1: no readable first line (want roost-shape 1)"; return 1; fi
@@ -710,7 +710,7 @@ roost_shape_check() {
       session)
         case "$keys" in
           *" group "*) later="$later$addr$nl" ;;
-          *) full="$full$addr$nl" ;;
+          *) full="$full$addr$nl" fchk="$fchk$bstart $addr$nl" ;;
         esac ;;
     esac
     kind="" keys=""
@@ -748,7 +748,7 @@ roost_shape_check() {
           if [ "$s" = "$val" ] || [ -z "$s" ] || ! roost_shape__digits "$rest"; then
             ROOST_SHAPE_FAULT="line $n: window $val is not SESSION:INDEX"; return 1
           fi
-          wchk="$wchk$n $s$nl" windows="$windows$val$nl" ;;
+          wchk="$wchk$n $s$nl" windows="$windows$val$nl" wsess="$wsess$s$nl" ;;
         pane)
           kind=pane
           s="${val%:*}" rest="${val##*:}"
@@ -790,6 +790,17 @@ roost_shape_check() {
     case "$windows" in *"$nl$a$nl"*) ;; *)
       ROOST_SHAPE_FAULT="line $ln: pane $(sed -n "${ln}s/^pane //p" "$file") has no window block"; return 1 ;; esac
   done <<< "$pchk"
+  # A full session needs a window: tmux has no session without one, and a
+  # first block with none could never start the server the roost way (review
+  # round 1, Fable B1: restore then made the NEXT session on a bare server,
+  # with no roost.conf, no hooks and no wiring). A later member of a group has
+  # no window blocks by design (R7) and is not checked here.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ln="${line%% *}" a="${line#* }"
+    case "$wsess" in *"$nl$a$nl"*) ;; *)
+      ROOST_SHAPE_FAULT="line $ln: session $a has no window block"; return 1 ;; esac
+  done <<< "$fchk"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     ln="${line%% *}" rest="${line#* }"
