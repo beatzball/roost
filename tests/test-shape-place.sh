@@ -265,6 +265,8 @@ mkshape "v3_69-x:$SHAPE_TMP/d1" "v3.69-x:$SHAPE_TMP/d1" "1:$SHAPE_TMP/d2" 2>/dev
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "12" "a saved v3_69-x that exists is skipped (exit 12)"
 assert_eq "$(TL list-sessions -F '#{session_name}' | grep -c '^v3_69-x$')" "1" "...never made twice (the dotted saved name is the same session)"
+assert_eq "$(grep -cF "session 'v3.69-x' exists — skipped" "$SHAPE_TMP/err")" "1" \
+  "...and restore knew it existed (not a new-session that tmux happened to refuse)"
 assert_eq "$(TL display -p -t "$(first_pane 1)" '#{pane_current_path}')" "$SHAPE_TMP/d2" "a session named 1 is placed, its pane in its saved directory"
 TL kill-session -t '=v3_69-x'; TL kill-session -t '=1'
 mkshape "v3.69-x:$SHAPE_TMP/d1"
