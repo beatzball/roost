@@ -617,6 +617,35 @@ case "${1:-up}" in
       "$id_session" "$id_cwd" "$id_harness" "$id_transcript" || true
     exit 0
     ;;
+  save)
+    # `roost save [--to FILE] [--trigger NAME] [--auto]` (#51): write this
+    # server's shape — its sessions, windows, panes, names, directories,
+    # layouts and agent keys — as a plain file. The work is in
+    # scripts/lib/roost-shape.sh; this arm parses flags. `--auto` is what the
+    # hooks will call (Part 4); until then it takes the same path, silently.
+    shift
+    save_to="" save_trigger="save" save_auto=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --to) [ "$#" -ge 2 ] || { echo "roost save: --to needs a file" >&2; exit 2; }
+              save_to="$2"; shift 2 ;;
+        --trigger) [ "$#" -ge 2 ] || { echo "roost save: --trigger needs a name" >&2; exit 2; }
+              save_trigger="$2"; shift 2 ;;
+        --auto) save_auto=1; shift ;;
+        *) echo "usage: roost save [--to FILE] [--trigger NAME]" >&2; exit 2 ;;
+      esac
+    done
+    case "$save_trigger" in ''|*[!a-z0-9-]*)
+      echo "roost save: --trigger takes lower-case letters, digits and '-'" >&2; exit 2 ;;
+    esac
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    if [ "$save_auto" = 1 ]; then
+      roost_shape_save "$_SOCKET_FLAG" "$SOCKET" "$save_to" "$save_trigger" >/dev/null 2>&1 || true
+      exit 0
+    fi
+    roost_shape_save "$_SOCKET_FLAG" "$SOCKET" "$save_to" "$save_trigger" || exit 1
+    exit 0
+    ;;
   help|--help|-h)
     # The command list is read back out of this file's own header comment
     # rather than duplicated here. A second copy would drift the first time
@@ -730,12 +759,18 @@ case "${1:-up}" in
     # would have (a string through the shell, an argv directly). The server's
     # own PATH cannot do this: tmux hands a client-created pane the CLIENT's
     # PATH (#58, design M1). With no command, default-command already does it.
+    # The command as handed, before roost-pane-shell wraps it: the `launch`
+    # hint a saved shape keeps (#51, spec §3.2) — what this pane was started
+    # as, for a person and for restore's report, never run by restore.
+    # Redacted at save, not here.
+    launch="$*"
     if [ "$#" -gt 0 ] && pane_cmd_wired; then set -- "$ROOST_HOME/scripts/roost-pane-shell" "$@"; fi
     new="$(t new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@")"
     # Naming is best-effort; the pane id is the contract. A short-lived CMD's
     # pane can already be gone by the time we set-option — don't let that abort
     # the command and swallow the id we already have.
     t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true
+    [ -n "$launch" ] && { t set-option -p -t "$new" @roost-launch "$launch" 2>/dev/null || true; }
     printf '%s\n' "$new"
     ;;
   split)
@@ -758,6 +793,8 @@ case "${1:-up}" in
     # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
     # A command on a wired server goes through roost-pane-shell, for the reason
     # given at the same line in `spawn`.
+    # The `launch` hint, as in `spawn`: the command as handed, before the wrap.
+    launch="$*"
     if [ "$#" -gt 0 ] && pane_cmd_wired; then set -- "$ROOST_HOME/scripts/roost-pane-shell" "$@"; fi
     new="$(t split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@")"
     # A label that survives what the process calls itself: #{pane_current_command}
@@ -766,6 +803,7 @@ case "${1:-up}" in
     # pane can already be gone by the time we set-option — don't let that abort
     # the command and swallow the id we already have.
     [ -n "$name" ] && { t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true; }
+    [ -n "$launch" ] && { t set-option -p -t "$new" @roost-launch "$launch" 2>/dev/null || true; }
     printf '%s\n' "$new"
     ;;
   view)
@@ -788,6 +826,10 @@ case "${1:-up}" in
     # replaces the previous view rather than adding another. That replacement
     # is the whole reason NAME exists.
     shift
+    # Its own arguments, kept for the `launch` hint below: the pane `split` or
+    # `spawn` makes is stamped with the command they were handed, and what a
+    # person would retype to get this view back is `roost view ...`.
+    view_launch="roost view $*"
     name="view"
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -872,6 +914,8 @@ case "${1:-up}" in
         || { echo "roost view: spawn failed" >&2; exit 1; }
       where=window
     fi
+    # Best effort, the way the name write is: the hint §4.3's report quotes.
+    t set-option -p -t "$new" @roost-launch "$view_launch" 2>/dev/null || true
 
     # The prefix is a user setting — tmux/roost.conf binds C-s, and the user
     # config sourced after it may rebind. Read the live one rather than

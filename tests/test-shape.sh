@@ -73,6 +73,260 @@ assert_eq "$(TL show -pqv -t "$p" @roost-session)" "3fa32375-68cd-43c9-8bcf-fbb8
   "the claude stub with STUB_IDENTIFY=1 identifies its pane with the --resume id"
 assert_contains "$(cat "$STUB_LOG")" "claude --resume 3fa32375-68cd-43c9-8bcf-fbb876b2db1e" "...and logs its argv"
 assert_eq "$(TL display -p -t "$p" '#{pane_current_command}')" "claude" "...and reads as claude"
+TL kill-pane -t "$p"
+
+# --- roost save: the writer (Task 1.9) ----------------------------------------
+ROOST="$PWD/bin/roost"
+R() { ROOST_SOCKET=roost "$ROOST" "$@"; }
+SD="$ROOST_SHAPE_DIR/roost"        # this server's shape directory (key: the -L name)
+# blk FILE ID — the block holding the line `id ID`; val BLOCK KEY — its value.
+blk() { awk -v RS= -v want="id $2" '{ s = $0 "\n"; if (index(s, "\n" want "\n")) print }' "$1"; }
+val() { printf '%s\n' "$1" | sed -n "s/^$2 //p"; }
+has() { printf '%s\n' "$1" | grep -q "^$2 "; }
+# wait_opt PANE OPTION — until the pane's option is set (an identify inside it
+# runs asynchronously to this shell), at most 3 s.
+wait_opt() { local i=0; while [ "$i" -lt 30 ] && [ -z "$(TL show -pqv -t "$1" "$2")" ]; do sleep 0.1; i=$((i+1)); done; }
+# wait_cmd PANE NAME — until #{pane_current_command} reads NAME, at most 3 s.
+wait_cmd() { local i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$1" '#{pane_current_command}')" != "$2" ]; do sleep 0.1; i=$((i+1)); done; }
+ID_A=3fa32375-68cd-43c9-8bcf-fbb876b2db1e
+ID_B=0b5e1c2a-7d4f-4e61-9a3b-5c2d1e0f9a87
+ID_C=6a7b8c9d-1e2f-4a3b-8c4d-5e6f7a8b9c0d
+
+echo "== roost_shape_agree: is the pane still running the agent it reported? =="
+assert_eq "$(roost_shape_agree claude claude)" "ok" "claude reported, claude running: ok"
+assert_eq "$(roost_shape_agree claude 2.1.312)" "ok" "Claude's version string is claude: ok"
+assert_eq "$(roost_shape_agree claude bash)" "exited" "a shell: exited"
+assert_eq "$(roost_shape_agree codex zsh)" "exited" "a shell, any harness: exited"
+assert_eq "$(roost_shape_agree codex claude)" "nested" "another harness running: nested"
+assert_eq "$(roost_shape_agree claude sleep)" "other" "any other command: other"
+assert_eq "$(roost_shape_agree copilot copilot)" "ok" "copilot reads copilot (probe 1.6): ok"
+assert_eq "$(roost_shape_agree copilot node)" "other" "copilot is measured, so node under it is other"
+assert_eq "$(roost_shape_agree pi node)" "ok" "pi reads node, not distinctive: presence alone"
+assert_eq "$(roost_shape_agree opencode node)" "ok" "opencode is not measured: presence alone"
+assert_eq "$(roost_shape_agree pi bash)" "exited" "a shell under pi: exited (holds for all five)"
+
+echo "== the fixture fleet =="
+TL set -g base-index 1
+TL new-session -d -s alpha -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
+# The setup session goes only AFTER alpha exists: killing a server's last
+# session ends the server, and the next command would start a fresh one with
+# none of the options set above.
+TL kill-session -t '=shp:' 2>/dev/null
+TL new-session -d -s beta -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
+# alpha: window 1 split in two and zoomed; the second pane carries a name with
+# two leading and three trailing spaces.
+a1="$(TL display -p -t '=alpha:1' '#{pane_id}')"
+a2="$(TL split-window -d -P -F '#{pane_id}' -t "$a1" -c "$SHAPE_TMP" 'ENV= exec /bin/sh')"
+TL set -p -t "$a2" @roost-name '  sp   '
+TL resize-pane -Z -t "$a1"
+# alpha window 2: a claude stub identified through the real `roost identify`.
+mkdir -p "$SHAPE_TMP/w.x/proj"
+k1="$(TL new-window -d -P -F '#{pane_id}' -t '=alpha:2' -c "$SHAPE_TMP/w.x/proj" -e STUB_IDENTIFY=1 "claude --resume $ID_A")"
+# beta window 5 (base-index 1 makes its first window 1): a codex pane identified
+# with a transcript, a stale exited pane, a nested pane, an `other` pane.
+k2="$(TL new-window -d -P -F '#{pane_id}' -t '=beta:5' -c "$SHAPE_TMP" \
+  "$ROOST identify --session $ID_B --cwd $SHAPE_TMP --harness codex --transcript $SHAPE_TMP/t.jsonl; exec \"\$STUB_BIN/codex\" 600")"
+ex="$(TL split-window -d -P -F '#{pane_id}' -t "$k2" -c "$SHAPE_TMP" \
+  "$ROOST identify --session $ID_C --cwd $SHAPE_TMP --harness claude; ENV= exec /bin/sh")"
+ne="$(TL split-window -d -P -F '#{pane_id}' -t "$k2" -c "$SHAPE_TMP" \
+  "$ROOST identify --session $ID_C --cwd $SHAPE_TMP --harness codex; exec \"\$STUB_BIN/claude\" 600")"
+ot="$(TL split-window -d -P -F '#{pane_id}' -t "$k2" -c "$SHAPE_TMP" \
+  "$ROOST identify --session $ID_A --cwd $SHAPE_TMP --harness claude; exec sleep 600")"
+for p in "$k1" "$k2" "$ex" "$ne" "$ot"; do wait_opt "$p" @roost-session; done
+wait_cmd "$k1" claude; wait_cmd "$k2" codex; wait_cmd "$ne" claude; wait_cmd "$ot" sleep
+# A pane `roost spawn` started with a secret in its command.
+sp="$(cd "$SHAPE_TMP" && TMUX_PANE="$a1" R spawn x 'FOO_TOKEN=abc sh')"
+
+echo "== a first save =="
+out="$(R save 2>"$SHAPE_TMP/save.err")"; rc=$?
+assert_eq "$rc:$out" "0:$SD/shape" "roost save prints the shape's path, exit 0"
+assert_eq "$(cat "$SHAPE_TMP/save.err")" "2 sessions, 5 windows, 9 panes, 2 with a conversation, 3 stale" \
+  "...and its summary on stderr"
+F="$SD/shape"
+assert_eq "$(head -1 "$F")" "roost-shape 1" "the file starts roost-shape 1"
+hdr="$(awk 'NF == 0 { exit } { print }' "$F")"
+for k in server socket boot saved gen trigger roost tmux host; do
+  has "$hdr" "$k"; assert_true $? "the header has $k"
+done
+assert_eq "$(val "$hdr" server)" "roost" "server is the key"
+assert_eq "$(val "$hdr" socket)" "$SHAPE_SOCK" "socket is the server's socket path"
+assert_eq "$(val "$hdr" boot)" "$(TL display -p '#{start_time}-#{pid}')" "boot is start_time-pid"
+case "$(val "$hdr" saved)" in
+  [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) r=0 ;; *) r=1 ;; esac
+assert_true $r "saved is a UTC stamp ($(val "$hdr" saved))"
+assert_eq "$(val "$hdr" gen)" "1" "gen 1"
+assert_eq "$(val "$hdr" trigger)" "save" "trigger save"
+assert_eq "$(val "$hdr" roost)" "$(cat VERSION)" "roost is this checkout's VERSION"
+assert_eq "$(val "$hdr" tmux)" "$(TL display -p '#{version}')" "tmux is the server's version"
+assert_eq "$(ls -l "$F" | cut -c1-10)" "-rw-------" "shape is 0600"
+assert_eq "$(cat "$SD/gen")" "1" "the gen file reads 1"
+assert_eq "$(ls "$SD/history" 2>/dev/null | wc -l | tr -d ' ')" "0" "a first save archives nothing"
+
+aid="$(TL display -p -t '=alpha:' '#{session_id}')"
+b="$(blk "$F" "$aid")"
+assert_eq "$(printf '%s\n' "$b" | head -1)" "session alpha" "a session block names its session"
+w="$(blk "$F" "$(TL display -p -t "$a1" '#{window_id}')")"
+assert_eq "$(printf '%s\n' "$w" | head -1)" "window alpha:1" "a window block is SESSION:INDEX"
+assert_eq "$(val "$w" layout)" "$(TL display -p -t "$a1" '#{window_layout}')" "the layout is #{window_layout} as read, zoomed (probe 1.1)"
+assert_eq "$(val "$w" zoomed)" "1" "the zoomed window has zoomed 1"
+w5="$(blk "$F" "$(TL display -p -t "$k2" '#{window_id}')")"
+assert_eq "$(printf '%s\n' "$w5" | head -1)" "window beta:5" "the window at index 5 keeps its index"
+has "$w5" zoomed; assert_eq "$?" "1" "an unzoomed window has no zoomed line"
+p="$(blk "$F" "$a2")"
+assert_eq "$(printf '%s\n' "$p" | head -1)" "pane alpha:1.1" "a pane block is SESSION:WINDOW.PANE"
+assert_eq "[$(val "$p" name)]" "[  sp   ]" "a name with two leading and three trailing spaces is kept byte for byte"
+assert_eq "$(val "$p" cwd)" "$SHAPE_TMP" "cwd is the pane's directory"
+has "$p" session_cwd; assert_eq "$?" "1" "no session_cwd where @roost-cwd is unset"
+p="$(blk "$F" "$k1")"
+assert_eq "$(val "$p" harness):$(val "$p" session_id)" "claude:$ID_A" "an agreeing claude pane has harness and session_id"
+assert_eq "$(val "$p" session_cwd)" "$SHAPE_TMP/w.x/proj" "session_cwd is @roost-cwd"
+assert_eq "$(val "$p" command)" "claude" "command is #{pane_current_command}"
+p="$(blk "$F" "$k2")"
+assert_eq "$(val "$p" harness):$(val "$p" transcript)" "codex:$SHAPE_TMP/t.jsonl" "a codex pane keeps its transcript"
+p="$(blk "$F" "$ex")"
+assert_eq "$(val "$p" stale_reason):$(val "$p" stale_harness):$(val "$p" stale_session_id)" "exited:claude:$ID_C" \
+  "an agent that exited to its shell is stale_reason exited"
+has "$p" harness; assert_eq "$?" "1" "...with no plain harness line"
+p="$(blk "$F" "$ne")"
+assert_eq "$(val "$p" stale_reason):$(val "$p" stale_harness)" "nested:codex" "codex reported, claude running: stale_reason nested"
+has "$p" harness; assert_eq "$?" "1" "...with no plain harness line"
+p="$(blk "$F" "$ot")"
+assert_eq "$(val "$p" stale_reason)" "other" "identity set, sleep running: stale_reason other"
+has "$p" session_id; assert_eq "$?" "1" "...with no plain session_id line"
+p="$(blk "$F" "$sp")"
+assert_eq "$(val "$p" launch)" "FOO_TOKEN=… sh" "spawn's command is the launch hint, its secret redacted"
+assert_eq "$(TL show -pqv -t "$sp" @roost-launch)" "FOO_TOKEN=abc sh" "...redacted at save, not in the pane option"
+assert_eq "$(TL list-panes -a -F '#{@roost-shape-probe}' | grep -c .)" "0" "no pane carries the writer's test option after the save"
+TL list-panes -a -F '#{pane_id}' > "$SHAPE_TMP/ids"
+assert_eq "$(grep -c '^pane ' "$F")" "$(wc -l < "$SHAPE_TMP/ids" | tr -d ' ')" "one pane block per pane"
+assert_eq "$(LC_ALL=C grep -c '[[:cntrl:]]' "$F")" "0" "no control byte anywhere in the file"
+
+echo "== the body compare (§8.1 test 1) =="
+R save >/dev/null 2>&1
+assert_eq "$(cat "$SD/gen"):$(ls "$SD/history" | wc -l | tr -d ' ')" "1:0" "a second save with no change writes nothing"
+TL rename-window -t "$k1" renamed
+R save >/dev/null 2>&1
+assert_eq "$(cat "$SD/gen"):$(ls "$SD/history" | wc -l | tr -d ' ')" "2:1" "a change: gen 2 and one history file"
+assert_eq "$(ls "$SD/history")" "$(val "$hdr" saved | tr -d ':-')-1" "the history file is the old save's stamp and gen"
+assert_eq "$(ls -l "$SD/history/"* | cut -c1-10)" "-rw-------" "a history file is 0600"
+R save >/dev/null 2>&1
+assert_eq "$(cat "$SD/gen"):$(ls "$SD/history" | wc -l | tr -d ' ')" "2:1" "no change again: still gen 2, one history file"
+assert_eq "$(val "$(blk "$F" "$(TL display -p -t "$k1" '#{window_id}')")" name)" "renamed" "a renamed window is saved with its name"
+R save --to "$SHAPE_TMP/copy" >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(head -1 "$SHAPE_TMP/copy" 2>/dev/null)" "0:roost-shape 1" "save --to FILE writes there"
+assert_eq "$(cat "$SD/gen"):$(ls "$SD/history" | wc -l | tr -d ' ')" "2:1" "...and leaves shape alone"
+R save --trigger spawn --to "$SHAPE_TMP/copy2" >/dev/null 2>&1
+assert_eq "$(sed -n 's/^trigger //p' "$SHAPE_TMP/copy2")" "spawn" "--trigger names the cause in the header"
+
+echo "== saving off, a read-only directory, a stopped server (§8.1 test 10a) =="
+out="$(ROOST_SHAPE_DIR= R save 2>"$SHAPE_TMP/e")"; rc=$?
+assert_eq "$rc:$out" "0:" "ROOST_SHAPE_DIR empty: exit 0, nothing printed"
+assert_contains "$(cat "$SHAPE_TMP/e")" "saving is off" "...one stderr line says saving is off"
+assert_eq "$(wc -l < "$SHAPE_TMP/e" | tr -d ' ')" "1" "...exactly one line"
+out="$(ROOST_SHAPE_DIR=rel/dir R save 2>"$SHAPE_TMP/e")"; rc=$?
+assert_eq "$rc:$out:$(cat "$SHAPE_TMP/e" | grep -c 'saving is off')" "0::1" "ROOST_SHAPE_DIR relative: the same"
+[ ! -e rel ]; assert_true $? "...and no relative directory was made"
+# Root writes into a mode-500 directory regardless (the Ubuntu container runs
+# the suite as root; CI's runner does not), so that case can only be asserted
+# as a normal user. A FILE where the directory should be refuses everyone.
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$SHAPE_TMP/ro/roost"; chmod 500 "$SHAPE_TMP/ro/roost"
+  ROOST_SHAPE_DIR="$SHAPE_TMP/ro" R save >/dev/null 2>"$SHAPE_TMP/e"; rc=$?
+  assert_eq "$rc" "1" "a read-only shape directory: exit 1"
+  assert_contains "$(cat "$SHAPE_TMP/e")" "$SHAPE_TMP/ro/roost" "...naming it"
+  assert_eq "$(ls -ld "$SHAPE_TMP/ro/roost" | cut -c1-10)" "dr-x------" "...and still read-only (roost takes bits away, never adds them)"
+  chmod 700 "$SHAPE_TMP/ro/roost"
+else
+  printf '  SKIP: a read-only shape directory (running as root, which writes into it anyway)\n'
+fi
+mkdir -p "$SHAPE_TMP/blocked"; : > "$SHAPE_TMP/blocked/roost"
+ROOST_SHAPE_DIR="$SHAPE_TMP/blocked" R save >/dev/null 2>"$SHAPE_TMP/e"; rc=$?
+assert_eq "$rc" "1" "a file where the shape directory should be: exit 1"
+assert_contains "$(cat "$SHAPE_TMP/e")" "$SHAPE_TMP/blocked/roost" "...naming it"
+cp -Rp "$SD" "$ROOST_SHAPE_DIR/stopped"
+ROOST_SOCKET=stopped "$ROOST" save >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "1" "a server that is not running: exit 1"
+diff -r "$SD" "$ROOST_SHAPE_DIR/stopped" >/dev/null; assert_true $? "...shape, gen and history unchanged (a failed listing never publishes)"
+
+echo "== odd values (probe 1.3, rulings R6 and R8) =="
+# Each value as a directory a shell entered, as @roost-cwd and as @roost-name.
+# R6: tmux 3.4 prints `$` as `\$`; the writer must read every one back as typed.
+O="$SHAPE_TMP/odd"; mkdir -p "$O"
+TL new-session -d -s odd -x 200 -y 50 -c "$O" 'ENV= exec /bin/sh'
+oddpane() { # VALUE -> pane id; a pane whose shell entered $O/VALUE, @roost-cwd and @roost-name set
+  local d="$O/$1" p
+  mkdir -p "$d"
+  p="$(TL new-window -d -P -F '#{pane_id}' -t '=odd:' -e "PD=$d" 'cd "$PD" && exec sleep 600')"
+  TL set -p -t "$p" @roost-cwd "$d"
+  TL set -p -t "$p" @roost-name "$1"
+  printf '%s\n' "$p"
+}
+ODD=('a$b' 'a\$b' 'a$HOME' 'a${HOME}b' 'ab'); OP=()
+for v in "${ODD[@]}"; do OP+=("$(oddpane "$v")"); done
+sleep 0.5
+R save --to "$SHAPE_TMP/odd.shape" >/dev/null 2>"$SHAPE_TMP/odd.err"
+i=0
+for v in "${ODD[@]}"; do
+  p="${OP[$i]}"; i=$((i+1)); b="$(blk "$SHAPE_TMP/odd.shape" "$p")"
+  assert_eq "$(val "$b" cwd)|$(val "$b" session_cwd)|$(val "$b" name)" "$O/$v|$O/$v|$v" \
+    "R6: [$v] round-trips as cwd, session_cwd and name ($(TL display -p '#{version}'))"
+done
+# Control bytes, Task 1.3's rows and R8: each dropped or sent home, one stderr
+# line each, the same result on every tmux build.
+esc="$(printf '\033')"; tab="$(printf '\t')"; nl="$(printf 'n\nl')"
+cbpane() { # VALUE -> pane id; its shell entered $O/VALUE and @roost-name is VALUE
+  local d="$O/$1" p
+  mkdir -p "$d"
+  p="$(TL new-window -d -P -F '#{pane_id}' -t '=odd:' -e "PD=$d" 'cd "$PD" && exec sleep 600')"
+  TL set -p -t "$p" @roost-name "$1"
+  printf '%s\n' "$p"
+}
+cbe="$(cbpane "e${esc}c")"; cbt="$(cbpane "t${tab}b")"; cbn="$(cbpane "$nl")"
+TL rename-window -t "$cbe" "w${esc}x"
+sleep 0.5
+R save --to "$SHAPE_TMP/cb.shape" >/dev/null 2>"$SHAPE_TMP/cb.err"; rc=$?
+assert_eq "$rc" "0" "a fleet with control bytes still saves, exit 0"
+assert_eq "$(LC_ALL=C grep -c '[[:cntrl:]]' "$SHAPE_TMP/cb.shape")" "0" "no control byte anywhere in the file"
+for pair in "$cbe:ESC" "$cbt:tab" "$cbn:newline (R8.1)"; do
+  p="${pair%%:*}"; what="${pair#*:}"; b="$(blk "$SHAPE_TMP/cb.shape" "$p")"
+  assert_eq "$(val "$b" cwd)" "$HOME" "a directory holding a $what: cwd is the home directory"
+  has "$b" name; assert_eq "$?" "1" "a name holding a $what: the name key is dropped"
+  assert_contains "$(cat "$SHAPE_TMP/cb.err")" "pane $p:" "...a stderr line names $p"
+done
+assert_eq "$(grep -c "pane $cbn:" "$SHAPE_TMP/cb.err")" "2" "the newline pane gets one line for its cwd and one for its name"
+w="$(blk "$SHAPE_TMP/cb.shape" "$(TL display -p -t "$cbe" '#{window_id}')")"
+assert_eq "$(val "$w" name)" 'w\033x' "a window name: tmux itself stores the ESC as text on every build (probe 1.3)"
+
+echo "== a session group (R7) =="
+TL new-session -d -s gmain -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
+TL new-window -d -t '=gmain:' 'ENV= exec /bin/sh'
+TL split-window -d -t '=gmain:2' 'ENV= exec /bin/sh'
+TL new-session -d -t '=gmain' -s gview
+TL select-window -t '=gview:2'
+R save --to "$SHAPE_TMP/g2.shape" >/dev/null 2>&1
+gm="$(blk "$SHAPE_TMP/g2.shape" "$(TL display -p -t '=gmain:' '#{session_id}')")"
+gv="$(blk "$SHAPE_TMP/g2.shape" "$(TL display -p -t '=gview:' '#{session_id}')")"
+has "$gm" group; assert_eq "$?" "1" "the first member (lowest id) is saved in full, with no group line"
+assert_eq "$(val "$gv" group)" "gmain" "the later member has group <first member's name>"
+assert_eq "$(val "$gv" active_window)" "2" "...and its own current window"
+assert_eq "$(grep -c '^window gview:' "$SHAPE_TMP/g2.shape"):$(grep -c '^pane gview:' "$SHAPE_TMP/g2.shape")" "0:0" \
+  "...and no window or pane blocks"
+assert_eq "$(grep -c '^window gmain:' "$SHAPE_TMP/g2.shape"):$(grep -c '^pane gmain:' "$SHAPE_TMP/g2.shape")" "2:3" \
+  "the first member's windows and panes are there once"
+assert_eq "$(sed -n 's/^id %//p' "$SHAPE_TMP/g2.shape" | sort | uniq -d)" "" "no pane id appears twice in the save"
+TL new-session -d -t '=gmain' -s gthird
+R save --to "$SHAPE_TMP/g3.shape" >/dev/null 2>&1
+assert_eq "$(grep -c '^group gmain$' "$SHAPE_TMP/g3.shape")" "2" "a three-member group: two later-member blocks"
+assert_eq "$(sed -n 's/^id %//p' "$SHAPE_TMP/g3.shape" | sort | uniq -d)" "" "...and still no pane id twice"
+TL kill-session -t '=gview'; TL kill-session -t '=gthird'; TL kill-session -t '=gmain'
+
+echo "== spawn, split and view keep the launch hint =="
+s2="$(TMUX_PANE="$a1" R split -t "$a1" sleep 600)"
+assert_eq "$(TL show -pqv -t "$s2" @roost-launch)" "sleep 600" "split sets @roost-launch to the command as handed"
+v="$(TMUX_PANE="$a1" ROOST_VIEW_MIN_COLS=100000 R view -n vv sleep 600 2>/dev/null)"
+assert_eq "$(TL show -pqv -t "$v" @roost-launch)" "roost view -n vv sleep 600" "view overwrites it with its own command"
+s3="$(TMUX_PANE="$a1" R spawn bare)"
+assert_eq "$(TL show -pqv -t "$s3" @roost-launch)" "" "a spawn with no command sets no launch hint"
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
