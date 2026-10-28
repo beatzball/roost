@@ -19,6 +19,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   the plan you approve and in the undo lines. A `roost` skill of your own is
   never replaced, nor is a broken link roost cannot show is its own, and an
   undo line removes a link only while it is still the one install made.
+  Every undo line `roost install` prints now writes each path in single
+  quotes, so a `$`, a backtick or a quote in a folder name is used as it is
+  and never expanded into some other path when you run the line.
   `roost doctor` prints one line per harness for its link, and
   `roost validate` reports what `roost install` would do with each one.
 

@@ -256,6 +256,24 @@ roost_skill_path() {
 }
 roost_skill_target() { printf '%s/skills/roost' "$(_roost_adapter_root)"; }
 
+# roost_shell_quote VALUE — VALUE as one POSIX shell word: single quotes, each
+# `'` in it written as `'\''`. For every value put into a command roost prints
+# for a person to run later (install's undo lines). Double quotes are not
+# enough there: `$name`, `$(cmd)` and backticks still expand inside them and
+# `"` ends the word, so a folder named `config$slot` made an undo's guard and
+# its `rm` act on `config-other`, a link install never made (#208, round 2).
+# Pure shell, no sed: a command substitution would also drop a trailing newline.
+roost_shell_quote() {
+  local rest="$1" out=""
+  while :; do
+    case "$rest" in
+      *"'"*) out="$out${rest%%"'"*}'\\''"; rest="${rest#*"'"}" ;;
+      *) break ;;
+    esac
+  done
+  printf "'%s%s'" "$out" "$rest"
+}
+
 # roost_skill_link_names HARNESS PATH — true when the live link at PATH is
 # another copy of roost's skill. Stricter than roost_adapter_link_names, and
 # on purpose: `/skills/roost` is a tail any skill collection named roost

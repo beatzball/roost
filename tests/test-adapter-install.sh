@@ -16,6 +16,10 @@
 # so all three are set here too.
 set -u
 . "$(dirname "$0")/lib.sh"
+# sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''. The
+# installer prints every value in an undo line this way (#208, round 2), so a
+# `$` or a backtick in a path is never expanded when the line is run.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL="$HERE/scripts/roost-install"
 
@@ -254,7 +258,7 @@ assert_contains "$out" "$(adapter_path_in "$box" opencode)" \
   "fresh machine: the plan names opencode's exact target path"
 # Every write gets a one-line undo, or a user who regrets this has to work out
 # what was touched from a tree they did not see before.
-assert_contains "$out" "rm \"$(adapter_path_in "$box" pi)\"" \
+assert_contains "$out" "rm $(sq "$(adapter_path_in "$box" pi)")" \
   "fresh machine: a copy-pasteable undo is printed for each link"
 
 # ===========================================================================
@@ -269,7 +273,8 @@ assert_eq "$(tree_of "$box")" "$before" "re-run: the sandbox tree is unchanged"
 # printing `rm` lines for links this run did not make is how a user ends up
 # deleting a working install.
 case "$out2" in
-  *"rm \"$(adapter_path_in "$box" pi)\""*) s=printed ;;
+  # Either quoting, so the check cannot pass just because the format moved.
+  *"rm \"$(adapter_path_in "$box" pi)\""*|*"rm $(sq "$(adapter_path_in "$box" pi)")"*) s=printed ;;
   *) s=quiet ;;
 esac
 assert_eq "$s" "quiet" "re-run: no undo line for a link this run did not create"
@@ -390,10 +395,10 @@ for pair in "opencode2 opencode" "pi pi"; do
   assert_contains "$out" "relinked" "$key, plain checkout, other copy's link: the output says relinked"
   assert_contains "$out" "was $old" "$key, plain checkout, other copy's link: the output names the old target"
   assert_contains "$out" "a second copy of roost" "$key, plain checkout, other copy's link: the output says it is a second copy"
-  assert_contains "$out" "rm \"$P\" && ln -s \"$old\" \"$P\"" \
+  assert_contains "$out" "rm $(sq "$P") && ln -s $(sq "$old") $(sq "$P")" \
     "$key, plain checkout, other copy's link: the printed undo puts the old link back"
   assert_contains "$(cat "$box/records" 2>/dev/null)" \
-    "$(printf 'wrote\t%s\t%s\trm "%s" && ln -s "%s" "%s"' "$h" "$P" "$P" "$old" "$P")" \
+    "$(printf 'wrote\t%s\t%s\trm %s && ln -s %s %s' "$h" "$P" "$(sq "$P")" "$(sq "$old")" "$(sq "$P")")" \
     "$key, plain checkout, other copy's link: --records holds wrote with the undo"
 
   # --- plain checkout, a stranger's link (the control) -> still refused
@@ -471,7 +476,7 @@ assert_eq "$rc" "0" "opencode 2, other copy's 1.x link, plain checkout: exits 0"
 [ -e "$old1" ]; assert_true $? "opencode 2, other copy's 1.x link, plain checkout: the other copy's adapter is untouched"
 assert_contains "$out" "removed  $P1" "opencode 2, other copy's 1.x link, plain checkout: the output names it"
 assert_contains "$(cat "$box/records" 2>/dev/null)" \
-  "$(printf 'removed\topencode\t%s\tln -s "%s" "%s"' "$P1" "$old1" "$P1")" \
+  "$(printf 'removed\topencode\t%s\tln -s %s %s' "$P1" "$(sq "$old1")" "$(sq "$P1")")" \
   "opencode 2, other copy's 1.x link, plain checkout: --records holds removed with the ln -s undo"
 
 box="$TMP/oc1x-wt"
@@ -2290,7 +2295,7 @@ out="$(run_install "$box" "$ALL_SHIM" --yes --records "$recs")"; rc=$?
 assert_eq "$rc" "0" "--records: the run still exits 0"
 for h in opencode pi copilot; do
   p="$(adapter_path_in "$box" "$h")"
-  assert_contains "$(records_of "$recs")" "wrote$TAB$h$TAB$p${TAB}rm \"$p\"" \
+  assert_contains "$(records_of "$recs")" "wrote$TAB$h$TAB$p${TAB}rm $(sq "$p")" \
     "--records: $h is recorded as written, with its own undo command"
 done
 # The undo lines in the record and the undo lines the human sees are the same
@@ -2299,7 +2304,7 @@ done
 rec_undo="$(records_of "$recs" | while IFS="$TAB" read -r v h p u; do
   [ "$v" = wrote ] && printf '%s\n' "$u"; done | sort)"
 # Both shapes: a skill link's undo is guarded, so it starts `if [` (#208).
-human_undo="$(printf '%s\n' "$out" | sed -n -e 's/^  rm "/rm "/p' -e 's/^  if \[ /if [ /p' | sort)"
+human_undo="$(printf '%s\n' "$out" | sed -n -e "s/^  rm '/rm '/p" -e 's/^  if \[ /if [ /p' | sort)"
 assert_eq "$rec_undo" "$human_undo" \
   "--records: the recorded undo lines are the ones printed to the human"
 
@@ -2349,7 +2354,7 @@ box="$TMP/records-json"
 recs5="$TMP/records5.tsv"
 run_install "$box" "$ALL_JSON_SHIM" --yes --only claude --records "$recs5" >/dev/null
 cset="$box/home/.claude/settings.json"
-assert_contains "$(records_of "$recs5")" "wrote${TAB}claude$TAB$cset${TAB}rm \"$cset\"" \
+assert_contains "$(records_of "$recs5")" "wrote${TAB}claude$TAB$cset${TAB}rm $(sq "$cset")" \
   "--records: a settings.json this run created records an rm as its undo"
 run_install "$box" "$ALL_JSON_SHIM" --yes --only claude --records "$TMP/records5b.tsv" >/dev/null
 assert_contains "$(records_of "$TMP/records5b.tsv")" "unchanged${TAB}claude$TAB$cset$TAB" \
@@ -2584,7 +2589,7 @@ assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
   "opencode 2, fresh home: no plugin/roost.js was created"
 n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "opencode 2, fresh home: exactly one symlink was created"
-assert_contains "$out" "rm \"$p2\"" "opencode 2, fresh home: the undo names plugins/roost"
+assert_contains "$out" "rm $(sq "$p2")" "opencode 2, fresh home: the undo names plugins/roost"
 
 # --- 2.x, a re-run -> nothing written, and the summary names opencode -------
 before="$(tree_of "$box")"
@@ -2620,11 +2625,11 @@ assert_eq "$rc" "0" "opencode 2, own 1.x link: exits 0"
 assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
   "opencode 2, own 1.x link: plugins/roost is linked"
 # The undo for a removal puts the link back, not an `rm`.
-undo1="ln -s \"$(adapter_target opencode)\" \"$p1\""
+undo1="ln -s $(sq "$(adapter_target opencode)") $(sq "$p1")"
 assert_contains "$out" "$undo1" "opencode 2, own 1.x link: the undo puts the 1.x link back"
 assert_contains "$(records_of "$recs")" "removed${TAB}opencode$TAB$p1$TAB$undo1" \
   "opencode 2, own 1.x link: --records says it was removed, with its undo"
-assert_contains "$(records_of "$recs")" "wrote${TAB}opencode$TAB$p2${TAB}rm \"$p2\"" \
+assert_contains "$(records_of "$recs")" "wrote${TAB}opencode$TAB$p2${TAB}rm $(sq "$p2")" \
   "opencode 2, own 1.x link: --records says plugins/roost was written"
 # The checkout's own 1.x adapter is untouched: removing a link never reaches
 # what it points at.
@@ -2748,7 +2753,7 @@ assert_eq "$rc" "0" "opencode 2, another checkout's 1.x link: exits 0"
   "opencode 2, another checkout's 1.x link: removed"
 [ -f "$TMP/other-checkout/adapters/opencode/roost.js" ]; assert_true $? \
   "opencode 2, another checkout's 1.x link: the other checkout's file is untouched"
-assert_contains "$out" "ln -s \"$TMP/other-checkout/adapters/opencode/roost.js\" \"$p1\"" \
+assert_contains "$out" "ln -s $(sq "$TMP/other-checkout/adapters/opencode/roost.js") $(sq "$p1")" \
   "opencode 2, another checkout's 1.x link: the undo puts it back"
 
 # The checkout's own 1.x FILE, reached through a plugin/ directory that is
@@ -2802,7 +2807,7 @@ assert_contains "$out" "never delete the file" \
   "opencode 2, symlinked plugin/ directory: the manual note says not to delete the file"
 assert_contains "$out" "remove or re-point" \
   "opencode 2, symlinked plugin/ directory: the manual note names the directory as the fix"
-case "$out" in *"rm \"$p1\""*) s=offered ;; *) s=absent ;; esac
+case "$out" in *"rm \"$p1\""*|*"rm $(sq "$p1")"*) s=offered ;; *) s=absent ;; esac
 assert_eq "$s" "absent" \
   "opencode 2, symlinked plugin/ directory: the manual note does not offer rm of the file"
 case "$out" in *"something that is not this checkout"*) s=claimed ;; *) s=absent ;; esac

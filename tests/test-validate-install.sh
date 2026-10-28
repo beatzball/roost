@@ -22,6 +22,10 @@
 # OWN home variable, so all three are set too.
 set -u
 . "$(dirname "$0")/lib.sh"
+# sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''. The
+# installer prints every value in an undo line this way (#208, round 2), and
+# the report turns a redacted leading '~/ into "$HOME"'/ so $HOME still expands.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 TMP="$(mktemp -d /tmp/amx.XXXX)"
@@ -510,7 +514,7 @@ ln -s "$(atarget opencode)" "$v1path"
 out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
 res="$(result_of "$out")"
 rep="${out#*===REPORT===}"; rep="${rep%%===RESULT===*}"
-undo="ln -s \"$(atarget opencode)\" \"\$HOME/.config/opencode/plugin/roost.js\""
+undo="ln -s $(sq "$(atarget opencode)") \"\$HOME\"'/.config/opencode/plugin/roost.js'"
 assert_eq "$(readlink "$v2path" 2>/dev/null)" "$(atarget opencode2)" \
   "opencode 2, old 1.x link: plugins/roost is linked"
 [ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
@@ -521,15 +525,26 @@ case "$out" in *"a symlink each, nothing else"*) s=claimed ;; *) s=absent ;; esa
 assert_eq "$s" "absent" "opencode 2, old 1.x link: the offer does not say nothing else"
 assert_contains "$out" "  removed $v1path" \
   "opencode 2, old 1.x link: the removal is printed as it happens"
-assert_contains "$res" "REMOVED	opencode	$v1path	ln -s \"$(atarget opencode)\" \"$v1path\"" \
+assert_contains "$res" "REMOVED	opencode	$v1path	ln -s $(sq "$(atarget opencode)") $(sq "$v1path")" \
   "opencode 2, old 1.x link: the removal and its undo are read from the record"
 assert_contains "$rep" "$undo" \
   "opencode 2, old 1.x link: the report's undo list has the ln -s"
-assert_contains "$rep" "rm \"\$HOME/.config/opencode/plugins/roost\"" \
+assert_contains "$rep" "rm \"\$HOME\"'/.config/opencode/plugins/roost'" \
   "opencode 2, old 1.x link: the report's undo list still has the rm for plugins/roost"
 assert_contains "$res" \
   "DECISION	offered and accepted — this run created 3 adapter symlink(s) and removed 1 opencode 1.x link(s); see the undo below" \
   "opencode 2, old 1.x link: the decision line counts the removal"
+# The report's undo block is run, not only read: its "$HOME"'/...' words must
+# join into the real path once HOME is the tester's. Under sh and dash, as a
+# tester may paste it into either.
+for shl in sh dash; do
+  command -v "$shl" >/dev/null 2>&1 || continue
+  rm -f "$v2path"; ln -s "$(atarget opencode2)" "$v2path"; rm -f "$v1path"
+  block="$(printf '%s\n' "$rep" | sed -n '/^```sh$/,/^```$/p' | sed '1d;$d')"
+  HOME="$box/home" "$shl" -c "$block" >/dev/null 2>&1
+  [ ! -e "$v2path" ] && [ ! -L "$v2path" ]; assert_true $? "opencode 2, old 1.x link ($shl): the report's undo removes plugins/roost"
+  assert_eq "$(readlink "$v1path" 2>/dev/null)" "$(atarget opencode)" "opencode 2, old 1.x link ($shl): the report's undo puts the 1.x link back"
+done
 
 # --- opencode 2 with a DANGLING link at plugin/roost.js -------------------
 # A dangling link says only that its target is gone, not whose target it was:
@@ -627,12 +642,15 @@ assert_eq "$s" "absent" "other-checkout, plain checkout: not filed as left alone
 assert_contains "$res" "INSTALLED	$ppath" "other-checkout, plain checkout: the run reports the link as its own work"
 assert_eq "$(readlink "$ppath")" "$vplain_p$ptail" "other-checkout, plain checkout: the link now points at this checkout"
 rep_body="${out##*===REPORT===}"; rep_body="${rep_body%%===RESULT===*}"
-assert_contains "$rep_body" "ln -s \"$oc2$ptail\" \"\$HOME/.pi/agent/extensions/roost.ts\"" \
+assert_contains "$rep_body" "ln -s $(sq "$oc2$ptail") \"\$HOME\"'/.pi/agent/extensions/roost.ts'" \
   "other-checkout, plain checkout: the report's undo (home path redacted to \$HOME) puts the other copy's link back"
 # The report redacts the home path to $HOME, as the undo assertion above
 # spells it, so the raw $ppath could never match and this could never fail.
+# Either quoting, so the check cannot pass just because the format moved.
 case "$rep_body" in *'
 rm "$HOME/.pi/agent/extensions/roost.ts"
+'*|*'
+rm "$HOME"'"'"'/.pi/agent/extensions/roost.ts'"'"'
 '*) s=bare ;; *) s=none ;; esac
 assert_eq "$s" "none" "other-checkout, plain checkout: no bare rm line for the relinked path"
 assert_contains "$res" "relinked 1 that pointed at another copy of roost" \

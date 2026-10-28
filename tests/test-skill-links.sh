@@ -181,15 +181,18 @@ for h in $ALL; do
   done
 done
 
+# sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''.
+# A second spelling of roost_shell_quote, through sed, so the two can disagree.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # skill_undo PATH TARGET [OLD] -- the undo line install prints for a skill
 # link it wrote: it acts only while PATH is still a symlink whose text is
 # exactly TARGET, and says it left the path alone otherwise. Spelled out here
 # rather than read back from the installer, so a change to it is argued with.
 skill_undo() {
-  local act="rm \"$1\""
-  [ -n "${3:-}" ] && act="rm \"$1\" && ln -s \"$3\" \"$1\""
-  printf 'if [ -L "%s" ] && [ "$(readlink "%s")" = "%s" ]; then %s; else echo "left %s alone: it is not the link roost made"; fi' \
-    "$1" "$1" "$2" "$act" "$1"
+  local act="rm $(sq "$1")"
+  [ -n "${3:-}" ] && act="rm $(sq "$1") && ln -s $(sq "$3") $(sq "$1")"
+  printf 'if [ -L %s ] && [ "$(readlink %s)" = %s ]; then %s; else printf '"'"'%%s\\n'"'"' %s; fi' \
+    "$(sq "$1")" "$(sq "$1")" "$(sq "$2")" "$act" "$(sq "left $1 alone: it is not the link roost made")"
 }
 # The text the installer writes is its checkout's PHYSICAL path
 # (roost_skill_target, through `cd -P`), which on macOS is /private/tmp/...
@@ -285,7 +288,8 @@ for h in $ALL; do
   out="$(run_install_from "$plain" "$b" --yes --only "$h")"
   [ -d "$p" ] && [ ! -L "$p" ]; assert_true $? "$h, real skill directory: still a real directory"
   assert_eq "$(cksum < "$p/SKILL.md")" "$(cksum < "$TMP/stranger-skill.md")" "$h, real skill directory: its SKILL.md is byte-identical"
-  case "$out" in *"rm \"$p\""*) s=rm ;; *) s=none ;; esac
+  # Either quoting, so the check cannot pass just because the format moved.
+  case "$out" in *"rm \"$p\""*|*"rm $(sq "$p")"*) s=rm ;; *) s=none ;; esac
   assert_eq "$s" "none" "$h, real skill directory: no rm is printed for it"
 done
 
@@ -296,7 +300,7 @@ p="$(spath "$b" claude)"
 out="$(run_install_from "$plain" "$b" --yes --only claude)"
 [ "$p" -ef "$plain/skills/roost" ]; assert_true $? "plain checkout, other copy's skill link: relinked"
 assert_contains "$out" "was $co2/skills/roost" "plain checkout, other copy's skill link: names the old link"
-assert_contains "$out" "rm \"$p\" && ln -s \"$co2/skills/roost\" \"$p\"" "plain checkout, other copy's skill link: undo puts it back"
+assert_contains "$out" "rm $(sq "$p") && ln -s $(sq "$co2/skills/roost") $(sq "$p")" "plain checkout, other copy's skill link: undo puts it back"
 
 b="$TMP/inst-other-wt"; mkdir -p "$b/home"; plant "$b" claude other
 p="$(spath "$b" claude)"
@@ -404,6 +408,80 @@ b="$TMP/undo-dangling"; mkdir -p "$b/home"; plant "$b" claude dangling
 out="$(run_install_from "$plain" "$b" --yes --only claude)"
 p="$(spath "$b" claude)"; sh -c "$(undo_for "$out" "$b")" >/dev/null 2>&1
 assert_eq "$(readlink "$p")" "$TMP/gone-co/skills/roost" "undo, relinked dangling link: the old link text is back"
+
+# Literal characters in a path. Every printed undo line is shell source the
+# person runs later, so each value in it must reach that shell as the exact
+# text install used. Inside double quotes `$name`, `$(cmd)` and backticks are
+# expanded and `"` ends the word: a config folder named `config$slot` made the
+# guard AND the `rm` act on `config-other`, a link install never made (#208,
+# round 2). The first three suffixes below each expand to -other under that
+# quoting, so a sibling home holding a copy of every link and file the run
+# wrote, under the expanded name, is exactly what the old lines removed. The
+# last expands to nothing; it holds the characters that end or escape a
+# double-quoted word, and a space. Run under sh and under dash, the shell CI's
+# /bin/sh is, because the person may paste the lines into either.
+lit_shells=sh; command -v dash >/dev/null 2>&1 && lit_shells="sh dash"
+# fingerprint DIR -- every link (with its text) and file (with its bytes'
+# checksum) under DIR, one per line, so "left exactly as it was" is one compare.
+fingerprint() {
+  ( cd "$1" 2>/dev/null && find . \( -type l -o -type f \) | sort | while IFS= read -r e; do
+      if [ -L "$e" ]; then printf '%s -> %s\n' "$e" "$(readlink "$e")"
+      else printf '%s = %s\n' "$e" "$(cksum < "$e")"; fi
+    done )
+}
+i=0
+while IFS= read -r sfx; do
+  for shl in $lit_shells; do
+    i=$((i + 1)); base="$TMP/lit$i"; mkdir -p "$base"
+    co="$base/co$sfx"; copy_checkout "$co"
+    home="$base/home$sfx"; mkdir -p "$home"
+    pbase="$(cd -P "$base" && pwd)"
+    # Spelled out rather than through boxenv: its output is word-split, and
+    # one of these homes has a space in it.
+    out="$(env HOME="$home" ZDOTDIR="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
+      COPILOT_HOME="$home/.copilot" PI_CODING_AGENT_DIR="$home/.pi/agent" CODEX_HOME="$home/.codex" \
+      CLAUDE_SETTINGS="$home/.claude/settings.json" CLAUDE_CONFIG_DIR="$home/.claude" \
+      PATH="$SHIM" bash "$co/scripts/roost-install" --yes --only claude,pi </dev/null 2>&1)"
+    what="literal path ($shl, suffix $sfx)"
+    undo="$(printf '%s\n' "$out" | sed -n '/^To undo/,/^$/p' | sed -n 's/^  //p')"
+    p="$home/.claude/skills/roost"
+    assert_eq "$(readlink "$p")" "$pbase/co$sfx/skills/roost" "$what: install linked claude's skill at the literal path"
+    # The sibling: every link and file the run wrote, under the name the
+    # expanded line would give it. A link's text is renamed the same way, so
+    # the old guard's readlink compare would have matched it too.
+    sib="$base/home-other"
+    ( cd "$home" && find . \( -type l -o -type f \) ) | while IFS= read -r e; do
+      mkdir -p "$sib/$(dirname "$e")"
+      if [ -L "$home/$e" ]; then
+        t="$(readlink "$home/$e")"
+        case "$t" in "$pbase/co$sfx"/*) t="$pbase/co-other${t#"$pbase/co$sfx"}" ;; "$base/co$sfx"/*) t="$base/co-other${t#"$base/co$sfx"}" ;; esac
+        ln -s "$t" "$sib/$e"
+      else
+        cp "$home/$e" "$sib/$e"
+      fi
+    done
+    before="$(fingerprint "$sib")"
+    said="$(cd "$base" && env slot=-other "$shl" -c "$undo" 2>&1)"; rc=$?
+    assert_eq "$rc" "0" "$what: the undo runs cleanly"
+    assert_eq "$(fingerprint "$sib")" "$before" "$what: the sibling the expanded line would name is untouched"
+    case "$before" in *"skills/roost -> "*) s=yes ;; *) s=no ;; esac
+    assert_eq "$s" "yes" "$what: the sibling holds a skill link (the probe is real)"
+    assert_eq "$(fingerprint "$home")" "" "$what: the undo removed everything the run wrote (the control)"
+    [ -f "$co/skills/roost/SKILL.md" ]; assert_true $? "$what: the checkout's skill is untouched"
+    # The else branch prints the path; it must print the literal one.
+    printf 'mine\n' > "$p"
+    # Found by its folder, not by $p: a `'` in $p is written `'\''` in the line.
+    line="$(printf '%s\n' "$undo" | grep '^if ' | grep -F '/.claude/skills/roost')"
+    said="$(cd "$base" && env slot=-other "$shl" -c "$line" 2>&1)"
+    assert_eq "$said" "left $p alone: it is not the link roost made" "$what: the message names the literal path"
+    assert_eq "$(cat "$p")" "mine" "$what: a file put there by then is left alone"
+  done
+done <<'EOF'
+$slot
+$(echo -other)
+`echo -other`
+-"q'\b sp
+EOF
 
 # The summary names whole labels. A claude whose skill is linked but whose
 # hooks are not yet written must not read "Already correct: claude".

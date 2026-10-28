@@ -1343,7 +1343,7 @@ offer_adapter_install() {
 "
         # The installer's own undo, kept with the path: for a relink it puts
         # the OLD link back, which a rebuilt `rm` of the new one would not.
-        [ -n "$undo" ] || undo="rm \"$path\""
+        [ -n "$undo" ] || undo="rm $(roost_shell_quote "$path")"
         INSTALLED_UNDOS="$INSTALLED_UNDOS$path	$undo
 "
         case "$undo" in
@@ -1480,15 +1480,17 @@ remove only the links this run made, and the \`ln -s\` lines put back exactly
 the link that was removed:"
     fi
     printf '```sh\n' >> "$BODY"
-    # $HOME, not the ~ that redact() leaves behind. A tilde inside double
-    # quotes is a literal tilde to every shell — `rm "~/.pi/..."` fails with
-    # "No such file or directory" — so a redacted undo line was not actually
+    # $HOME, not the ~ that redact() leaves behind. A tilde inside quotes is
+    # a literal tilde to every shell — `rm '~/.pi/...'` fails with "No such
+    # file or directory" — so a redacted undo line was not actually
     # paste-able, which for the one part of the report that changes the
-    # tester's machine back is worse than printing nothing. $HOME expands
-    # inside double quotes, survives a path with a space in it, and reveals
-    # exactly as little as the tilde did.
+    # tester's machine back is worse than printing nothing. The installer
+    # writes each path as a single-quoted shell literal, so a leading `'~/`
+    # becomes `"$HOME"'/`: $HOME expands in its own double quotes, the rest
+    # stays literal, the two join into one word, and it reveals exactly as
+    # little as the tilde did.
     printf '%s' "$INSTALLED_UNDOS" | while IFS="$(printf '\t')" read -r path undo; do
-      [ -n "$path" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
+      [ -n "$path" ] && printf '%s\n' "$undo" | redact | sed "s|'~/|\"\$HOME\"'/|g" >> "$BODY"
     done
     # In the same block, after the `rm` lines, so undoing the whole run is one
     # paste and it runs in reverse: the 2.x link goes, then the 1.x link comes
@@ -1496,7 +1498,7 @@ the link that was removed:"
     # and the link — so the tilde fix is global here rather than anchored to
     # the start of the line.
     printf '%s' "$REMOVED_LINKS" | while IFS="$(printf '\t')" read -r h path undo; do
-      [ -n "$h" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
+      [ -n "$h" ] && printf '%s\n' "$undo" | redact | sed "s|'~/|\"\$HOME\"'/|g" >> "$BODY"
     done
     printf '```\n\n' >> "$BODY"
     n_all="$(printf '%s' "$INSTALLED_LINKS" | grep -c . )"

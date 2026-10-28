@@ -1365,9 +1365,10 @@ if [ "$do_writes" -eq 1 ]; then
         printf '  %-8s %s\n' removed "$path"
         # The undo for a removal is the link it removed, put back exactly as
         # the plan read it.
-        UNDO="${UNDO}ln -s \"$target\" \"$path\"
+        undo="ln -s $(roost_shell_quote "$target") $(roost_shell_quote "$path")"
+        UNDO="${UNDO}$undo
 "
-        record_outcome removed "$h" "$path" "ln -s \"$target\" \"$path\""
+        record_outcome removed "$h" "$path" "$undo"
       else
         printf '  could NOT remove %s\n' "$path" >&2
         record_outcome failed "$h" "$path"
@@ -1405,8 +1406,11 @@ if [ "$do_writes" -eq 1 ]; then
 
     # The undo removes what this run made, and for a link it took over from
     # another copy of roost it also puts that link back exactly as it was.
-    undo="rm \"$path\""
-    [ -n "${old:-}" ] && undo="rm \"$path\" && ln -s \"$old\" \"$path\""
+    # Every value goes in as a shell literal (roost_shell_quote): the line is
+    # run later, and a `$` or a backtick in a path must not name another one.
+    qpath="$(roost_shell_quote "$path")"
+    undo="rm $qpath"
+    [ -n "${old:-}" ] && undo="rm $qpath && ln -s $(roost_shell_quote "$old") $qpath"
     # A skill row's undo is guarded. It is run later, by hand, and
     # ~/.claude/skills/roost is the name of ANY skill called roost: by then the
     # path may hold the user's own skill, file or link. So the line acts only
@@ -1415,7 +1419,8 @@ if [ "$do_writes" -eq 1 ]; then
     # their bare undo: their dangling arm is a separate plan arm, left as it
     # was for this change.
     case "$key" in
-      skill:*) undo="if [ -L \"$path\" ] && [ \"\$(readlink \"$path\")\" = \"$target\" ]; then $undo; else echo \"left $path alone: it is not the link roost made\"; fi" ;;
+      # printf, not echo: dash's echo reads a backslash in the path as an escape.
+      skill:*) undo="if [ -L $qpath ] && [ \"\$(readlink $qpath)\" = $(roost_shell_quote "$target") ]; then $undo; else printf '%s\\n' $(roost_shell_quote "left $path alone: it is not the link roost made"); fi" ;;
     esac
     # -n: if anything is at the path by now, a link to a directory is never
     # entered; ln fails on it instead, and that is reported as a failure.
@@ -1499,14 +1504,14 @@ EOF
         if [ -n "$json_bak" ]; then
           printf '           backup:  %s\n' "$json_bak"
           json_reindented=1
-          UNDO="${UNDO}cp \"$json_bak\" \"$real\"
-"
-          record_outcome wrote "$h" "$real" "cp \"$json_bak\" \"$real\""
+          # Shell literals, as the link undo lines are.
+          undo="cp $(roost_shell_quote "$json_bak") $(roost_shell_quote "$real")"
         else
-          UNDO="${UNDO}rm \"$real\"
-"
-          record_outcome wrote "$h" "$real" "rm \"$real\""
+          undo="rm $(roost_shell_quote "$real")"
         fi
+        UNDO="${UNDO}$undo
+"
+        record_outcome wrote "$h" "$real" "$undo"
         # Both said out loud, after the backup line so "the backup above" is
         # true. The first because roost's entry REPLACING theirs is exactly
         # what this used to do, and a user who has been bitten by a tool
