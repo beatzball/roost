@@ -793,7 +793,7 @@ prhome="$(mktemp -d /tmp/amx.XXXX)"; mkdir -p "$prhome/.claude"
 run_doctor() { # run_doctor HOME_DIR -- every home doctor can be steered by
   env HOME="$1" XDG_CONFIG_HOME="$1/.config" XDG_DATA_HOME="$1/.local/share" \
       COPILOT_HOME="$1/.copilot" PI_CODING_AGENT_DIR="$1/.pi/agent" \
-      CODEX_HOME="$1/.codex" CLAUDE_SETTINGS="$1/.claude/settings.json" \
+      CODEX_HOME="$1/.codex" CLAUDE_CONFIG_DIR="$1/.claude" CLAUDE_SETTINGS="$1/.claude/settings.json" \
       COLORTERM=truecolor ROOST_CONFIG_SOCK=/nonexistent/roost-pr-test-sock \
       ROOST_NOTIFY_SOCK=/nonexistent/roost-pr-test-sock \
       "$DOC" 2>&1
@@ -845,7 +845,7 @@ whome="$(mktemp -d /tmp/amx.XXXX)"; mkdir -p "$whome/.claude"
 run_wdoctor() {
   env HOME="$whome" XDG_CONFIG_HOME="$whome/.config" XDG_DATA_HOME="$whome/.local/share" \
       COPILOT_HOME="$whome/.copilot" PI_CODING_AGENT_DIR="$whome/.pi/agent" \
-      CODEX_HOME="$whome/.codex" CLAUDE_SETTINGS="$whome/.claude/settings.json" \
+      CODEX_HOME="$whome/.codex" CLAUDE_CONFIG_DIR="$whome/.claude" CLAUDE_SETTINGS="$whome/.claude/settings.json" \
       COLORTERM=truecolor ROOST_CONFIG_SOCK=/nonexistent/roost-pr-test-sock \
       ROOST_NOTIFY_SOCK=/nonexistent/roost-pr-test-sock \
       TMUX="$s,0,0" ROOST_WIRING_DIR="$wdir" ROOST_TMUX="$(command -v tmux)" \

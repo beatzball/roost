@@ -178,7 +178,7 @@ run_offer() { # run_offer BOX [validate args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="${SHIM:-$ALL_SHIM}" \
     bash "$DRIVER" "${SLICE:-$HEAD}" --out "$box/report.md" "$@" </dev/null 2>&1
 }

@@ -643,6 +643,7 @@ this repo's own smoke suites in section 4, and by section 5 only when
   fi
   printf '\n' >> "$BODY"
   report_install
+  report_skill_links
 
   if have roost; then
     record PASS 1 "roost is on PATH" "$(command -v roost)"
@@ -1390,6 +1391,57 @@ offer_adapter_install() {
   [ "$relinked" -gt 0 ] && INSTALL_DECISION="offered and accepted — this run created $created adapter symlink(s) and relinked $relinked that pointed at another copy of roost; see the undo below"
   [ "$removed" -gt 0 ] && INSTALL_DECISION="${INSTALL_DECISION%; see the undo below} and removed $removed opencode 1.x link(s); see the undo below"
   return 0
+}
+
+# skill_link_rows — one `harness|path|state|what roost install does` line per
+# installed harness, for the roost skill link (#208). A PREDICTION, and only
+# that: validate never makes these links. Its own install offer is
+# --symlinks-only, which leaves skill links out (see the skill block in
+# scripts/roost-install for why), so the tester reads here what a later
+# `roost install` will do and nothing on their machine has changed.
+#
+# The state comes from roost_skill_state and the verb from the installer's own
+# arms for it -- dangling and another copy's link are relinked from a plain
+# checkout, another copy's link is left alone from a git worktree, and a
+# stranger's is always left alone -- so the prediction and the run cannot
+# drift apart without a test noticing. `|` between fields, not a tab: these
+# rows end up in a markdown table, and a tab there is a column nobody sees.
+skill_link_rows() {
+  local h p st what
+  for h in claude codex opencode copilot pi; do
+    have "$h" || continue
+    p="$(roost_skill_path "$h")"; st="$(roost_skill_state "$h")"
+    case "$st" in
+      ok)       what="nothing — already linked" ;;
+      missing)  what="links it" ;;
+      dangling) what="relinks it" ;;
+      other-checkout)
+        if roost_checkout_is_worktree "$HERE"; then
+          what="leaves it alone (this checkout is a git worktree)"
+        else
+          what="relinks it"
+        fi ;;
+      *)        what="leaves it alone" ;;
+    esac
+    printf '%s|%s|%s|%s\n' "$h" "$p" "$st" "$what"
+  done
+}
+
+# report_skill_links — skill_link_rows as a table in section 1, after the
+# adapter links, so the tester sees both kinds of link in one place.
+report_skill_links() {
+  local rows h p st what
+  rows="$(skill_link_rows)"
+  [ -n "$rows" ] || return 0
+  sub "Skill links"
+  para "The roost skill tells an agent in a pane how to drive roost. \`roost install\`
+links it into each harness's own skills folder; this run did not, and the last
+column is what \`roost install\` will do."
+  printf '| Harness | Link | Now | roost install |\n|---|---|---|---|\n' >> "$BODY"
+  printf '%s\n' "$rows" | while IFS='|' read -r h p st what; do
+    [ -n "$h" ] && printf '| %s | `%s` | %s | %s |\n' "$h" "$p" "$st" "$what" | redact >> "$BODY"
+  done
+  printf '\n' >> "$BODY"
 }
 
 # report_install — the record of it, in section 1. Prominent on purpose: a

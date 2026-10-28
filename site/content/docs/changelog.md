@@ -16,6 +16,19 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`roost install` links the roost skill for every harness it wires
+  (#208).** An agent in a pane now knows roost is there and how to drive it
+  (`spawn`, `send`, `wait-done`, `read`) without you linking the skill by hand.
+  Each harness gets a `roost` link to this checkout's `skills/roost` in its own
+  skills folder: Claude Code `$CLAUDE_CONFIG_DIR/skills`, codex
+  `$CODEX_HOME/skills`, opencode `$XDG_CONFIG_HOME/opencode/skills`, copilot
+  `$COPILOT_HOME/skills`, pi `$PI_CODING_AGENT_DIR/skills`. The links are in
+  the plan you approve and in the undo lines. A `roost` skill of your own is
+  never replaced. `roost doctor` prints one line per harness for its link,
+  and `roost validate` reports what `roost install` would do with each one.
+
 ### Changed
 
 - **A bare `roost stop`, `roost kill` or `roost down` asks before it ends

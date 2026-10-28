@@ -38,6 +38,7 @@ export COPILOT_HOME="$CANARY/copilot"
 export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+export CLAUDE_CONFIG_DIR="$CANARY/claude-config"
 
 # What escaped, if anything. -mindepth 1 so the directory itself is never the
 # finding, and the whole listing is printed on failure rather than a count --
@@ -73,7 +74,7 @@ run_install() { # HOME_SUBDIR SHELL_PATH [args...]
   HOME="$home" SHELL="$shell_path" ZDOTDIR="${RUN_ZDOTDIR:-}" \
   XDG_CONFIG_HOME= XDG_DATA_HOME= \
   COPILOT_HOME="$home/.copilot" PI_CODING_AGENT_DIR="$home/.pi/agent" \
-  CODEX_HOME="$home/.codex" CLAUDE_SETTINGS="$home/.claude/settings.json" \
+  CODEX_HOME="$home/.codex" CLAUDE_CONFIG_DIR="$home/.claude" CLAUDE_SETTINGS="$home/.claude/settings.json" \
     sh "$INSTALL" "$@" </dev/null 2>&1
 }
 rc_line() { printf '%s' "$1" | sed -n '/roost: shell is/{n;s/^  //;p;}'; }
@@ -187,7 +188,7 @@ run_wire() { # run_wire BOX [args...]
     HOME="$box/home" SHELL=/bin/zsh PATH="$WIRE_SHIM" \
     XDG_CONFIG_HOME="$box/home/.config" XDG_DATA_HOME="$box/home/.local/share" \
     COPILOT_HOME="$box/home/.copilot" PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
-    CODEX_HOME="$box/home/.codex" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+    CODEX_HOME="$box/home/.codex" CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
     sh "$INSTALL" "$@" 2>&1
 }
 

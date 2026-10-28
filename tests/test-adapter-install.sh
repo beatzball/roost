@@ -127,7 +127,7 @@ run_install() { # run_install BOX SHIMDIR [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$INSTALL" "$@" </dev/null 2>&1
 }
@@ -144,7 +144,7 @@ run_install_stdin() { # run_install_stdin BOX SHIMDIR ANSWER [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$INSTALL" "$@" <<<"$ans" 2>&1
 }
@@ -160,7 +160,7 @@ adapter_path_in() { # adapter_path_in BOX HARNESS
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
     bash -c '. "'"$HERE"'/scripts/lib/roost-adapters.sh"; roost_adapter_path "$1"' _ "$h"
 }
 adapter_target() { # adapter_target HARNESS
@@ -241,7 +241,11 @@ for h in opencode pi copilot; do
   assert_eq "$(readlink "$p" 2>/dev/null)" "$(adapter_target "$h")" \
     "fresh machine: $h symlink points at this checkout"
 done
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+# Every count of symlinks in this file leaves out the roost skill links
+# (`<harness home>/skills/roost`, #208): they are one more link per detected
+# harness, and tests/test-skill-links.sh counts them, planted state by state.
+# Excluded by that exact tail, so any OTHER stray link is still counted here.
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "fresh machine: exactly three symlinks were created, no more"
 
 # The plan must name the exact path BEFORE the write, not after. A plan that
@@ -359,7 +363,7 @@ run_install_from() {
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$co/scripts/roost-install" "$@" </dev/null 2>&1
 }
@@ -602,7 +606,7 @@ box="$TMP/onlypi"
 out="$(run_install "$box" "$ALL_SHIM" --only pi --yes)"; rc=$?
 assert_eq "$rc" "0" "--only pi: exits 0"
 [ -L "$(adapter_path_in "$box" pi)" ]; assert_true $? "--only pi: pi is linked"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "--only pi: exactly one symlink exists"
 # Same stripping as case 9, same two reasons.
 body="$(printf '%s' "$out" | sed "s|$HERE||g")"
@@ -665,7 +669,7 @@ for empty_only in "--only=" "--only,--only-sep" "--only,--only-ws" "--only-space
   esac
   rc=$?
   assert_eq "$rc" "2" "--only naming nothing ($empty_only): exits 2"
-  n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+  n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
   assert_eq "$n" "0" "--only naming nothing ($empty_only): links nothing"
 done
 
@@ -674,7 +678,7 @@ done
 box="$TMP/onlyok"
 run_install "$box" "$ALL_SHIM" --only=copilot --yes >/dev/null; rc=$?
 assert_eq "$rc" "0" "--only=copilot (the = spelling with a real name): exits 0"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "--only=copilot: exactly one symlink"
 
 # ===========================================================================
@@ -705,7 +709,7 @@ shim="$(make_harness_shim opencode)"
 out="$(run_install "$box" "$shim" --yes)"; rc=$?
 assert_eq "$rc" "0" "one harness installed: exits 0"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? "one harness installed: opencode is linked"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "one harness installed: nothing else was linked"
 # The checkout's own path is stripped first, and then the harness name is
 # matched as a whole WORD. Both matter: this worktree lives under
@@ -733,7 +737,7 @@ rm -rf "$shim"
 box="$TMP/symonly"
 out="$(run_install "$box" "$ALL_SHIM" --symlinks-only --yes)"; rc=$?
 assert_eq "$rc" "0" "--symlinks-only: exits 0"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "--symlinks-only: the three symlinks are still made"
 case "$out" in *settings.json*|*hooks.json*) s=mentioned ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "--symlinks-only: no JSON file is mentioned"
@@ -773,7 +777,7 @@ if command -v python3 >/dev/null 2>&1; then
 else
   assert_true 0 "--print-only block comparison skipped (python3 needed)"
 fi
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "--print-only: the symlinks are still made (it only governs JSON)"
 
 # The other direction, which nothing covered: a NORMAL run must print no JSON
@@ -899,7 +903,10 @@ assert_eq "$(tree_of "$box")" "$before" "claude re-run: nothing under the sandbo
 # a mutation that plans the merge anyway and lets roost_json_merge discover it
 # is a no-op survives this whole case: the file does come back byte-identical
 # and no backup is taken, because the merge itself is idempotent.
-assert_contains "$out" "Already correct: opencode, claude" \
+# The names line, with ", " closed on the end so "claude" can only match
+# as a whole name: the line also carries "claude skill" (#208), which
+# names the skill link and not the hooks this case is about.
+assert_contains "$(printf '%s\n' "$out" | grep '^Already correct:'), " ", claude, " \
   "claude re-run: claude is named as already correct"
 case "$out" in *"merge  $cset"*) s=planned ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "claude re-run: no write is even PLANNED for it"
@@ -1219,7 +1226,10 @@ if command -v python3 >/dev/null 2>&1; then
 print(len(json.load(sys.stdin)))')" "2" \
     "claude beside a user's own hook, re-run: still exactly two entries"
 fi
-assert_contains "$out" "Already correct: opencode, claude" \
+# The names line, with ", " closed on the end so "claude" can only match
+# as a whole name: the line also carries "claude skill" (#208), which
+# names the skill link and not the hooks this case is about.
+assert_contains "$(printf '%s\n' "$out" | grep '^Already correct:'), " ", claude, " \
   "claude beside a user's own hook, re-run: nothing left to do"
 
 # --- malformed settings.json -> exit 1, no write, no backup ----------------
@@ -1243,7 +1253,7 @@ cset="$box/home/.claude/settings.json"
 out="$(run_install "$box" "$ALL_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "claude with no JSON tool: exits 0"
 assert_file_absent "$cset" "claude with no JSON tool: settings.json is not written"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "claude with no JSON tool: the symlinks are still made"
 if command -v python3 >/dev/null 2>&1; then
   want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
@@ -1282,7 +1292,7 @@ out="$(run_install "$box" "$CLAUDE_SHIM" --print-only --yes)"; rc=$?
 assert_eq "$rc" "0" "claude --print-only: exits 0"
 assert_file_absent "$box/home/.claude/settings.json" \
   "claude --print-only: settings.json is not written even though a JSON tool is there"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "claude --print-only: the symlink is still made (it only governs JSON)"
 if command -v python3 >/dev/null 2>&1; then
   want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
@@ -2176,7 +2186,7 @@ run_roost() { # run_roost BOX SHIMDIR [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ROOST_SELF_SOCK \
     bash "${RUN_BIN:-$ROOST_BIN}" "$@" </dev/null 2>&1
@@ -2315,7 +2325,9 @@ run_install "$box" "$ALL_SHIM" --yes --records "$recs3" >/dev/null
 fpath="$(adapter_path_in "$box" pi)"
 assert_contains "$(records_of "$recs3")" "refused${TAB}pi$TAB$fpath$TAB" \
   "--records: a foreign path is recorded as refused"
-case "$(records_of "$recs3")" in *"wrote${TAB}pi$TAB"*) s=claimed ;; *) s=absent ;; esac
+# Matched on the refused PATH: pi's skill link (#208) is a separate path that
+# this run really did write.
+case "$(records_of "$recs3")" in *"wrote${TAB}pi$TAB$fpath$TAB"*) s=claimed ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "--records: a path this run refused is never recorded as written"
 
 # --dry-run wrote nothing, so it records no write. The file is still created
@@ -2449,7 +2461,7 @@ in_adapter_lib() {
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash -c 'set -u; . "$1/scripts/lib/roost-adapters.sh"; shift; "$@"' _ "$root" "$@"
 }
@@ -2569,7 +2581,7 @@ assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
 [ -d "$p2/" ]; assert_true $? "opencode 2, fresh home: plugins/roost reaches a real directory"
 [ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
   "opencode 2, fresh home: no plugin/roost.js was created"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "opencode 2, fresh home: exactly one symlink was created"
 assert_contains "$out" "rm \"$p2\"" "opencode 2, fresh home: the undo names plugins/roost"
 

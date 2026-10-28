@@ -26,6 +26,7 @@ export COPILOT_HOME="$CANARY/copilot"
 export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+export CLAUDE_CONFIG_DIR="$CANARY/claude-config"
 canary_leaks() { find "$CANARY" -mindepth 1 2>/dev/null | sort; }
 
 . "$HERE/scripts/lib/roost-adapters.sh"

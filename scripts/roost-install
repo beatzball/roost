@@ -786,6 +786,67 @@ done
 
 DETECTED="${DETECTED# }"
 
+# --- the roost skill (#208) --------------------------------------------------
+# One more symlink per detected harness: `roost` in that harness's own skills
+# folder, pointing at this checkout's skills/roost, so an agent in a pane knows
+# how to drive roost without anyone linking it by hand. Where each folder is,
+# and why it is not ~/.agents/skills, is in scripts/lib/roost-adapters.sh
+# beside roost_skill_dir.
+#
+# The rows go into the SAME lists as the adapter links, so they are printed in
+# the same plan, covered by the same one answer, re-checked the same way
+# before writing, and undone by the same printed lines. Their KEY is
+# `skill:<harness>`, which step_state below routes to roost_skill_state; every
+# other field means what it means for an adapter row. The five arms are the
+# adapter loop's, for the same reasons given there.
+#
+# Not under --symlinks-only. That mode is `roost validate`'s call, and validate
+# promises its tester that the report names every link the call made; it
+# reads back only the adapter paths it offered, so a skill link made there
+# would be a change to the tester's machine that no report line mentions.
+# validate predicts the skill links instead (skill_link_rows) and leaves them
+# to `roost install`.
+if [ "$SYMLINKS_ONLY" -eq 0 ]; then
+  for h in $DETECTED; do
+    sp="$(roost_skill_path "$h")"; st="$(roost_skill_target)"
+    case "$(roost_skill_state "$h")" in
+      # "<harness> skill" in the summary's name list, so "Already correct:
+      # claude" is never printed on the strength of the skill alone while
+      # claude's hooks are still to be written.
+      ok)       OK_STEPS="$OK_STEPS$h skill$TAB$sp
+"
+                record_outcome unchanged "$h" "$sp" ;;
+      missing)  LINK_STEPS="${LINK_STEPS}link$TAB$h$TAB$sp$TAB$st${TAB}skill:$h
+" ;;
+      dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$sp$TAB$st${TAB}skill:$h
+" ;;
+      other-checkout)
+        if [ "$IN_WORKTREE" -eq 0 ]; then
+          LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$sp$TAB$st${TAB}skill:$h$TAB$(readlink "$sp")
+"
+        else
+          REFUSED="$REFUSED$h$TAB$sp$TAB$st${TAB}worktree
+"
+          record_outcome refused "$h" "$sp"
+        fi ;;
+      foreign)  REFUSED="$REFUSED$h$TAB$sp$TAB$st${TAB}link
+"
+                record_outcome refused "$h" "$sp" ;;
+      *) : ;;
+    esac
+  done
+fi
+
+# step_state KEY -- the state of the path a LINK_STEPS or UNLINK_STEPS row is
+# about, asked of the table that row came from: `skill:<harness>` for a skill
+# link, an adapter key for everything else.
+step_state() {
+  case "$1" in
+    skill:*) roost_skill_state "${1#skill:}" ;;
+    *)       roost_adapter_state "$1" ;;
+  esac
+}
+
 # --- the JSON steps --------------------------------------------------------
 # The harnesses configured by editing a JSON file rather than by a symlink.
 # One name per task as they land; the machinery below is shared.
@@ -1225,8 +1286,9 @@ if [ "$do_writes" -eq 1 ]; then
     #
     # Asked with the step's KEY, not the harness name: on opencode 2 the two
     # opencode steps are about two different paths (plugins/roost and the 1.x
-    # plugin/roost.js), and only the key says which one this line means.
-    state="$(roost_adapter_state "$key")"
+    # plugin/roost.js), and only the key says which one this line means. A
+    # skill row's key routes the question to the skill table (step_state).
+    state="$(step_state "$key")"
     # The plan removes a dangling link only when it names a roost adapter. A
     # link swapped for someone else's dangling one while the prompt sat there
     # still reads `dangling`, so the same rule is asked again here, and a link
@@ -1554,14 +1616,19 @@ if [ -n "$REFUSED" ]; then
       add_manual "$oc_note"
       continue
     fi
+    # Named for what roost wants there. A skill row's TARGET is this
+    # checkout's skills/roost, and a stranger's skill there is most likely
+    # their own skill called roost, which "adapter" would misdescribe.
+    what=adapter
+    [ "$target" = "$(roost_skill_target)" ] && what=skill
     # The `rm` only for a symlink, the rule scripts/roost-doctor follows:
     # handed for a regular file or a directory it deletes the thing itself,
     # which may be the only copy of someone's own plugin.
     if [ -L "$path" ]; then
       add_manual "$h: something that is not this checkout is at
     $path
-  roost install will not replace it. If you are sure you want roost's adapter
-  there instead, look at the file first, then:
+  roost install will not replace it. If you are sure you want roost's $what
+  there instead, look at it first, then:
     rm \"$path\" && ln -s \"$target\" \"$path\""
     else
       add_manual "$h: something that is not this checkout is at

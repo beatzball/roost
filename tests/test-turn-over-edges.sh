@@ -354,7 +354,7 @@ dh="$work/doctor-home"; mkdir -p "$dh/.claude"; wd="$work/wiring"; mkdir -p "$wd
 run_doc() {
   env HOME="$dh" XDG_CONFIG_HOME="$dh/.config" XDG_DATA_HOME="$dh/.local/share" \
       COPILOT_HOME="$dh/.copilot" PI_CODING_AGENT_DIR="$dh/.pi/agent" \
-      CODEX_HOME="$dh/.codex" CLAUDE_SETTINGS="$dh/.claude/settings.json" \
+      CODEX_HOME="$dh/.codex" CLAUDE_CONFIG_DIR="$dh/.claude" CLAUDE_SETTINGS="$dh/.claude/settings.json" \
       COLORTERM=truecolor ROOST_CONFIG_SOCK=/nonexistent/roost-edge-sock \
       ROOST_NOTIFY_SOCK=/nonexistent/roost-edge-sock \
       TMUX="$s,0,0" ROOST_WIRING_DIR="$wd" ROOST_TMUX="$(command -v tmux)" \

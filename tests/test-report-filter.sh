@@ -208,7 +208,7 @@ dh="$work/home"; mkdir -p "$dh" "$work/ocstub"
 printf '#!/bin/sh\necho "1.18.30"\n' > "$work/ocstub/opencode"; chmod +x "$work/ocstub/opencode"
 doc="$(cd "$work" && env -u TMUX -u TMUX_PANE HOME="$dh" XDG_CONFIG_HOME="$dh/.config" XDG_DATA_HOME="$dh/.local/share" \
   XDG_STATE_HOME="$dh/.local/state" COPILOT_HOME="$dh/.copilot" PI_CODING_AGENT_DIR="$dh/.pi/agent" \
-  CODEX_HOME="$dh/.codex" CLAUDE_SETTINGS="$dh/.claude/settings.json" ZDOTDIR="$dh" \
+  CODEX_HOME="$dh/.codex" CLAUDE_CONFIG_DIR="$dh/.claude" CLAUDE_SETTINGS="$dh/.claude/settings.json" ZDOTDIR="$dh" \
   ROOST_CONFIG_SOCK="$s" ROOST_NOTIFY_SOCK=/nonexistent/sock PATH="$work/ocstub:$PATH" "$DOC" 2>&1)"
 assert_contains "$doc" "$p1" "doctor names the pane that refused a report"
 assert_contains "$doc" "not in its process tree" "...and says why"

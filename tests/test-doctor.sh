@@ -81,6 +81,7 @@ export COPILOT_HOME="$CANARY/copilot"
 export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+export CLAUDE_CONFIG_DIR="$CANARY/claude-config"
 
 # --- which opencode this file sees -------------------------------------------
 # doctor now asks the opencode on PATH for its version, where it used to ask
@@ -147,7 +148,7 @@ run_doctor() { # run_doctor HOME_DIR [VAR=VAL ...]
   out="$(env HOME="$home" \
     XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
     COPILOT_HOME="$home/.copilot" PI_CODING_AGENT_DIR="$home/.pi/agent" \
-    CODEX_HOME="$home/.codex" CLAUDE_SETTINGS="$home/.claude/settings.json" \
+    CODEX_HOME="$home/.codex" CLAUDE_CONFIG_DIR="$home/.claude" CLAUDE_SETTINGS="$home/.claude/settings.json" \
     "$@" "$DOC" 2>&1)"; rc=$?
   # Every line of every run, for the read half of the canary check at the
   # bottom of this file. A leaked variable does not write anything here -- it

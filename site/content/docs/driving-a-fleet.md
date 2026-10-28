@@ -771,7 +771,11 @@ What it does not report:
 
 ## The agent skill
 
-For LLM agents, install the portable skill so they know the loop:
+`roost install` links the roost skill into the skills folder of every harness
+it wires, so an agent in a pane already knows the loop. The folders are listed
+on [Getting started](/docs/getting-started#the-roost-skill).
+
+For an agent roost does not wire, install the portable skill:
 
 ```sh
 npx skills add beatzball/roost --skill roost
