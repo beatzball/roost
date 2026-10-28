@@ -24,7 +24,7 @@ set -u
 . "$(dirname "$0")/lib.sh"
 # sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''. The
 # installer prints every value in an undo line this way (#208, round 2), and
-# the report turns a redacted leading '~/ into "$HOME"'/ so $HOME still expands.
+# the report writes a path under $HOME as "$HOME"'/rest' so $HOME still expands.
 sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -180,7 +180,7 @@ run_offer() { # run_offer BOX [validate args...]
   XDG_CONFIG_HOME="$box/home/.config" \
   XDG_DATA_HOME="$box/home/.local/share" \
   COPILOT_HOME="$box/home/.copilot" \
-  PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+  PI_CODING_AGENT_DIR="${PI_DIR:-$box/home/.pi/agent}" \
   CODEX_HOME="$box/home/.codex" \
   CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="${SHIM:-$ALL_SHIM}" \
@@ -705,6 +705,64 @@ for slice in "$vplain" "$vwt"; do
     assert_eq "$s" "none" "other-checkout fix (worktree): no ln -s is printed"
   fi
 done
+
+# ===========================================================================
+# 11c. a path that holds an apostrophe and a tilde: the report's undo is exact
+# ===========================================================================
+# The report once rewrote every `'~/` in the installer's quoted undo to
+# `"$HOME"'/`. An apostrophe in a path is quoted as `'\''`, so a folder named
+# `p'~` came out as `'\''~/` and was rewritten too: the undo then named
+# `.../p'` + $HOME + `/agent/...`, and ran `rm` on a stranger's file there, in
+# both redaction modes (#208, round 3). Each case plants a sentinel at that
+# wrongly expanded path, runs the report's whole undo block under sh and dash,
+# and checks that the sentinel survives and the installed link is gone (the
+# control). `apart` keeps `~` and `'` in different words of the path, and
+# `out` is a folder outside $HOME, where no "$HOME" word may appear at all.
+PI_SHIM="$(make_shim pi)"
+for mode in redact keep; do
+  for kind in joined apart out; do
+    for shl in sh dash; do
+      command -v "$shl" >/dev/null 2>&1 || continue
+      box="$TMP/tilde-$mode-$kind-$shl"
+      mkdir -p "$box/home"
+      case "$kind" in
+        joined) pdir="$box/home/p'~/agent" ;;
+        apart)  pdir="$box/home/a~b/c'd/agent" ;;
+        out)    pdir="$box/out/p'~/agent" ;;
+      esac
+      mkdir -p "$pdir"
+      ppath="$(PI_CODING_AGENT_DIR="$pdir" bash -c '. "'"$CO"'/scripts/lib/roost-adapters.sh"; roost_adapter_path pi')"
+      # The old rewrite's reading of the path: the text before `'~/`, then
+      # $HOME, then the rest. Only a path that holds `'~/` has one.
+      wrong=""
+      case "$ppath" in *"'~/"*) wrong="${ppath%%\'~/*}'$box/home/${ppath#*\'~/}" ;; esac
+      if [ -n "$wrong" ]; then
+        mkdir -p "${wrong%/*}"; printf 'foreign file\n' > "$wrong"
+      fi
+      args="--install"; [ "$mode" = keep ] && args="--install --keep-home-paths"
+      # shellcheck disable=SC2086
+      out="$(SLICE="$HEAD" PI_DIR="$pdir" SHIM="$PI_SHIM" run_offer "$box" $args)"
+      rep="${out#*===REPORT===}"; rep="${rep%%===RESULT===*}"
+      t="$mode/$kind ($shl)"
+      assert_eq "$(readlink "$ppath" 2>/dev/null)" "$(atarget pi)" "tilde path $t: install linked the literal path"
+      block="$(printf '%s\n' "$rep" | sed -n '/^```sh$/,/^```$/p' | sed '1d;$d')"
+      assert_contains "$block" "rm " "tilde path $t: the report has an undo block"
+      HOME="$box/home" "$shl" -c "$block" >/dev/null 2>&1
+      assert_true $? "tilde path $t: the report's undo exits 0"
+      [ ! -e "$ppath" ] && [ ! -L "$ppath" ]; assert_true $? "tilde path $t: the report's undo removes the installed link (control)"
+      if [ -n "$wrong" ]; then
+        assert_eq "$(cat "$wrong" 2>/dev/null)" "foreign file" "tilde path $t: a file at the wrongly expanded path survives"
+      fi
+      if [ "$kind" = out ] || [ "$mode" = keep ]; then
+        case "$block" in *'$HOME'*) s=named ;; *) s=absent ;; esac
+        assert_eq "$s" "absent" "tilde path $t: no \$HOME word where the path was not redacted"
+      else
+        assert_contains "$block" "rm \"\$HOME\"'/" "tilde path $t: the redacted path starts with \"\$HOME\""
+      fi
+    done
+  done
+done
+rm -rf "$PI_SHIM"
 
 # ===========================================================================
 # 12. the file itself

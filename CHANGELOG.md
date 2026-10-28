@@ -22,6 +22,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   Every undo line `roost install` prints now writes each path in single
   quotes, so a `$`, a backtick or a quote in a folder name is used as it is
   and never expanded into some other path when you run the line.
+  The undo in a `roost validate` report is built from the paths themselves,
+  so an apostrophe next to a `~` in a folder name cannot point it at another
+  file.
   `roost doctor` prints one line per harness for its link, and
   `roost validate` reports what `roost install` would do with each one.
 
