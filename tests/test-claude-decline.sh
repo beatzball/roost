@@ -268,11 +268,28 @@ p_dialog="$(newpane)"; stamp "$p_dialog" "$work/yes.jsonl" $((now - 4000))
 X send-keys -t "$p_dialog" "printf '%s\\n' 'Do you want to proceed?' '❯ 1. Yes' '  3. No' 'Esc to cancel'" Enter
 wait_for "$p_dialog" '^Do you want to proceed'
 p_new="$(newpane)"; stamp "$p_new" "$work/yes.jsonl" "$now"
+# doctor reads every harness home, so every one is redirected (AGENTS.md
+# section 8), and the sandbox canary from tests/test-install.sh is exported
+# first: a variable the call below forgets is inherited from the canary, not
+# from the developer. CLAUDE_CONFIG_DIR is in the set because doctor reads the
+# roost skill link from $CLAUDE_CONFIG_DIR/skills (#208). A fake claude is on
+# PATH so that read really happens here, on CI too, and the check after the
+# call can see which folder it was.
+CANARY="$work/canary"
+export ZDOTDIR="$CANARY/zdot" XDG_CONFIG_HOME="$CANARY/xdg-config" XDG_DATA_HOME="$CANARY/xdg-data" \
+  COPILOT_HOME="$CANARY/copilot" PI_CODING_AGENT_DIR="$CANARY/pi/agent" CODEX_HOME="$CANARY/codex" \
+  CLAUDE_SETTINGS="$CANARY/claude/settings.json" CLAUDE_CONFIG_DIR="$CANARY/claude-config"
+dshim="$work/dshim"; mkdir -p "$dshim"; printf "#!/bin/sh\nexit 0\n" > "$dshim/claude"; chmod +x "$dshim/claude"
 dhome="$work/dhome"; mkdir -p "$dhome"
-dout="$(cd "$work" && env HOME="$dhome" XDG_CONFIG_HOME="$dhome/x" XDG_DATA_HOME="$dhome/d" \
+dout="$(cd "$work" && env HOME="$dhome" ZDOTDIR="$dhome" XDG_CONFIG_HOME="$dhome/x" XDG_DATA_HOME="$dhome/d" \
   COPILOT_HOME="$dhome/c" PI_CODING_AGENT_DIR="$dhome/p" CODEX_HOME="$dhome/cx" \
-  CLAUDE_SETTINGS="$dhome/s.json" ROOST_CONFIG_SOCK="$s" ROOST_NOTIFY_SOCK=/nonexistent/sock \
+  CLAUDE_SETTINGS="$dhome/s.json" CLAUDE_CONFIG_DIR="$dhome/cc" PATH="$dshim:$PATH" \
+  ROOST_CONFIG_SOCK="$s" ROOST_NOTIFY_SOCK=/nonexistent/sock \
   "$HERE/scripts/roost-doctor" 2>&1)"
+assert_contains "$dout" "$dhome/cc/skills/roost" "doctor reads the claude skill folder in the sandbox"
+case "$dout" in *"$CANARY"*) r=leaked ;; *) r=sandboxed ;; esac
+assert_eq "$r" "sandboxed" "doctor read nothing through an inherited home"
+assert_eq "$(find "$CANARY" -mindepth 1 2>/dev/null)" "" "doctor wrote nothing outside its sandbox"
 line="$(printf '%s\n' "$dout" | grep "may be stuck" | grep -F "$p_old" || true)"
 assert_contains "$line" "$p_old" "doctor names a pane blocked for over an hour with no dialog on screen"
 printf '%s\n' "$dout" | grep "may be stuck" | grep -qF "$p_dialog"

@@ -144,12 +144,23 @@ assert_eq "$(env $(boxenv "$b") XDG_CONFIG_HOME="$TMP/xc" bash -c '. "$1/scripts
 # plant BOX HARNESS KIND -- put one kind of thing at the harness's link path.
 printf -- '---\nname: roost\ndescription: a stranger'"'"'s own skill\n---\nmine\n' > "$TMP/stranger-skill.md"
 mkdir -p "$TMP/stranger/skills/roost"; cp "$TMP/stranger-skill.md" "$TMP/stranger/skills/roost/SKILL.md"
+# A copy of roost whose skills/roost is gone: what a dangling link must name
+# for roost to call it its own. The rule has to hold without the target, so
+# the proof is the checkout the text names, not the directory it pointed at.
+mkdir -p "$TMP/gone-co/scripts/lib"; cp "$HERE/scripts/lib/roost-adapters.sh" "$TMP/gone-co/scripts/lib/"
 plant() {
   local p; p="$(spath "$1" "$2")"
   mkdir -p "$(dirname "$p")"
   case "$3" in
     ours)     ln -s "$plain/skills/roost" "$p" ;;
-    dangling) ln -s "$TMP/gone/skills/roost" "$p" ;;
+    dangling) ln -s "$TMP/gone-co/skills/roost" "$p" ;;
+    # Two dangling links that are NOT provably roost's, so both must read
+    # foreign and never be replaced: a user's broken link to some other
+    # tool's skill, and a link whose text ends in /skills/roost but names a
+    # place that is not there at all (a volume that is not mounted), so
+    # nothing can show it was ever a roost checkout.
+    dangling-bare) ln -s "$TMP/unrelated-tool/missing-skill" "$p" ;;
+    dangling-away) ln -s "$TMP/unmounted/skills/roost" "$p" ;;
     other)    ln -s "$co2/skills/roost" "$p" ;;
     # A stranger's link whose text ALSO ends in /skills/roost. The tail alone
     # is too common a name to prove a link is roost's, so this must read as
@@ -159,16 +170,31 @@ plant() {
   esac
 }
 for h in $ALL; do
-  for kind in missing ours dangling other stranger realdir; do
+  for kind in missing ours dangling dangling-bare dangling-away other stranger realdir; do
     b="$TMP/state-$h-$kind"; mkdir -p "$b/home"
     [ "$kind" = missing ] || plant "$b" "$h" "$kind"
     case "$kind" in
       missing) want=missing ;; ours) want=ok ;; dangling) want=dangling ;;
-      other) want=other-checkout ;; stranger|realdir) want=foreign ;;
+      other) want=other-checkout ;; stranger|realdir|dangling-bare|dangling-away) want=foreign ;;
     esac
     assert_eq "$(lib_in "$b" "$plain" roost_skill_state "$h")" "$want" "$h skill, $kind: reads $want"
   done
 done
+
+# skill_undo PATH TARGET [OLD] -- the undo line install prints for a skill
+# link it wrote: it acts only while PATH is still a symlink whose text is
+# exactly TARGET, and says it left the path alone otherwise. Spelled out here
+# rather than read back from the installer, so a change to it is argued with.
+skill_undo() {
+  local act="rm \"$1\""
+  [ -n "${3:-}" ] && act="rm \"$1\" && ln -s \"$3\" \"$1\""
+  printf 'if [ -L "%s" ] && [ "$(readlink "%s")" = "%s" ]; then %s; else echo "left %s alone: it is not the link roost made"; fi' \
+    "$1" "$1" "$2" "$act" "$1"
+}
+# The text the installer writes is its checkout's PHYSICAL path
+# (roost_skill_target, through `cd -P`), which on macOS is /private/tmp/...
+# for a checkout under /tmp. The guard compares text, so it must be this one.
+PT="$(cd -P "$plain" && pwd)/skills/roost"
 
 # ===========================================================================
 # 3. roost install, plain checkout: the plan, the links, the undo, the record
@@ -181,8 +207,8 @@ for h in $ALL; do
   p="$(spath "$b" "$h")"
   [ -L "$p" ] && [ "$p" -ef "$plain/skills/roost" ]; assert_true $? "install: $h skill linked to this checkout"
   assert_contains "$plan" "$p" "install: $h skill is in the plan printed before the prompt"
-  assert_contains "$out" "rm \"$p\"" "install: $h skill has an undo line"
-  assert_contains "$(cat "$b/records")" "$(printf 'wrote\t%s\t%s\trm "%s"' "$h" "$p" "$p")" "install: --records says $h's skill was written"
+  assert_contains "$out" "$(skill_undo "$p" "$PT")" "install: $h skill has a guarded undo line"
+  assert_contains "$(cat "$b/records")" "$(printf 'wrote\t%s\t%s\t%s' "$h" "$p" "$(skill_undo "$p" "$PT")")" "install: --records says $h's skill was written"
 done
 # Re-run: nothing to do, nothing to undo.
 out="$(run_install_from "$plain" "$b" --yes --records "$b/records2")"
@@ -221,11 +247,27 @@ assert_eq "$(find "$b/home" -name roost -path '*skills*' | sed "s#$b/home/##")" 
 # 4. roost install against each planted state
 # ===========================================================================
 for h in $ALL; do
-  # dangling -> relinked
+  # dangling, and provably roost's -> relinked, and the undo puts the old
+  # text back
   b="$TMP/inst-$h-dangling"; mkdir -p "$b/home"; plant "$b" "$h" dangling
   out="$(run_install_from "$plain" "$b" --yes --only "$h")"
   p="$(spath "$b" "$h")"
   [ "$p" -ef "$plain/skills/roost" ]; assert_true $? "$h, dangling skill link: relinked to this checkout"
+  assert_contains "$out" "$(skill_undo "$p" "$PT" "$TMP/gone-co/skills/roost")" \
+    "$h, dangling skill link: the undo puts the old link text back"
+  case "$out" in *"a second copy of roost"*) s=second ;; *) s=plain ;; esac
+  assert_eq "$s" "plain" "$h, dangling skill link: not called a second copy of roost"
+
+  # dangling, and NOT provably roost's -> refused, the link text unchanged
+  for kind in dangling-bare dangling-away; do
+    b="$TMP/inst-$h-$kind"; mkdir -p "$b/home"; plant "$b" "$h" "$kind"
+    p="$(spath "$b" "$h")"; was="$(readlink "$p")"
+    out="$(run_install_from "$plain" "$b" --yes --only "$h")"
+    assert_eq "$(readlink "$p")" "$was" "$h, $kind skill link: the link is unchanged"
+    assert_contains "$out" "Will NOT touch" "$h, $kind skill link: the plan says it is left alone"
+    case "$out" in *"relinked $p"*) s=relinked ;; *) s=kept ;; esac
+    assert_eq "$s" "kept" "$h, $kind skill link: never relinked"
+  done
 
   # a stranger's link -> refused, untouched, named
   b="$TMP/inst-$h-stranger"; mkdir -p "$b/home"; plant "$b" "$h" stranger
@@ -267,14 +309,110 @@ b="$TMP/inst-missing-wt"; mkdir -p "$b/home"
 run_install_from "$wt" "$b" --yes --only claude >/dev/null
 [ "$(spath "$b" claude)" -ef "$wt/skills/roost" ]; assert_true $? "worktree, missing skill link: linked (the control)"
 
+# The same rule at apply time. The plan sees roost's own dangling skill link
+# for claude; then, before claude's row runs, it is swapped. The swap rides on
+# `ln`: pi's row runs first (the installer's harness order), and `ln` comes
+# from the shim PATH. The shim's `ln` is a SYMLINK to the real binary, so it
+# is removed first and the wrapper written to a fresh file: `>` would follow
+# the link and overwrite the real `ln`.
+#   foreign  a dangling link that is not provably roost's: the re-check must
+#            read it as foreign, as the plan would have
+#   roost2   ANOTHER dangling roost link: still roost's, but not the link the
+#            plan showed, so the undo's old text would be a lie
+#   unproven the SAME link text, but the checkout it names no longer carries
+#            scripts/lib/roost-adapters.sh: only the ownership rule, asked
+#            again, can see that (the old-text check passes)
+mkdir -p "$TMP/gone-co2/scripts/lib"; cp "$HERE/scripts/lib/roost-adapters.sh" "$TMP/gone-co2/scripts/lib/"
+real_ln="$(command -v ln)"
+for swap in foreign roost2 unproven; do
+  b="$TMP/swap-$swap"; mkdir -p "$b/home"
+  plant "$b" claude dangling; pp="$(spath "$b" pi)"; cp_="$(spath "$b" claude)"
+  act=""
+  case "$swap" in
+    foreign) to="$TMP/unmounted/skills/roost" ;;
+    roost2)  to="$TMP/gone-co2/skills/roost" ;;
+    # Its own checkout, so taking the proof away cannot touch the others.
+    unproven)
+      mkdir -p "$TMP/gone-co3/scripts/lib"; cp "$HERE/scripts/lib/roost-adapters.sh" "$TMP/gone-co3/scripts/lib/"
+      "$(command -v rm)" -f "$cp_"; ln -s "$TMP/gone-co3/skills/roost" "$cp_"
+      to="$TMP/gone-co3/skills/roost"
+      act="\"$(command -v rm)\" -f \"$TMP/gone-co3/scripts/lib/roost-adapters.sh\"" ;;
+  esac
+  [ -n "$act" ] || act="\"$(command -v rm)\" -f \"$cp_\" && \"$real_ln\" -s \"$to\" \"$cp_\""
+  SWAP="$(make_shim $ALL)"
+  rm -f "$SWAP/ln"
+  if [ ! -e "$SWAP/ln" ] && [ ! -L "$SWAP/ln" ]; then
+    cat > "$SWAP/ln" <<EOF
+#!/bin/sh
+case "\$*" in
+  *"$pp"*) $act ;;
+esac
+exec "$real_ln" "\$@"
+EOF
+    chmod +x "$SWAP/ln"
+  fi
+  out="$(env $(boxenv "$b") PATH="$SWAP" bash "$plain/scripts/roost-install" --yes --only pi,claude --records "$b/recs" </dev/null 2>&1)"
+  assert_contains "$out" "relink $cp_" "swapped for a $swap dangling link during the run: the plan saw roost's link"
+  assert_eq "$(readlink "$cp_")" "$to" "swapped for a $swap dangling link during the run: the swapped-in link is still there"
+  assert_contains "$(cat "$b/recs")" "$(printf 'refused\tclaude\t%s' "$cp_")" "swapped for a $swap dangling link during the run: --records says it was refused"
+  rm -rf "$SWAP"
+done
+
 # The printed undo removes only what the run made.
 b="$TMP/undo"; mkdir -p "$b/home"; plant "$b" pi stranger
 out="$(run_install_from "$plain" "$b" --yes --only claude,pi)"
-undo="$(printf '%s\n' "$out" | sed -n '/^To undo/,/^$/p' | grep '^  rm ')"
+undo="$(printf '%s\n' "$out" | sed -n '/^To undo/,/^$/p' | grep '^  if ')"
 sh -c "$(printf '%s\n' "$undo" | sed 's/^  //')"
 [ ! -e "$(spath "$b" claude)" ] && [ ! -L "$(spath "$b" claude)" ]; assert_true $? "undo: claude's skill link is gone"
 assert_eq "$(readlink "$(spath "$b" pi)")" "$TMP/stranger/skills/roost" "undo: the stranger's link is still there"
 [ -f "$plain/skills/roost/SKILL.md" ]; assert_true $? "undo: the checkout's skill is untouched"
+
+# The undo is run later, by hand, and the path may hold something else by
+# then. Each kind below is put where roost's link was AFTER the install, and
+# the printed undo must leave it exactly as it is and say so.
+undo_for() { # undo_for BOX -- claude's printed undo line, the leading spaces cut
+  printf '%s\n' "$1" | sed -n '/^To undo/,/^$/p' | grep -F "$(spath "$2" claude)" | sed 's/^  //'
+}
+for kind in file dir foreign dangling-foreign; do
+  b="$TMP/undo-$kind"; mkdir -p "$b/home"
+  out="$(run_install_from "$plain" "$b" --yes --only claude)"
+  p="$(spath "$b" claude)"; line="$(undo_for "$out" "$b")"
+  rm -f "$p"
+  case "$kind" in
+    file)             printf 'mine\n' > "$p" ;;
+    dir)              mkdir -p "$p"; cp "$TMP/stranger-skill.md" "$p/SKILL.md" ;;
+    foreign)          ln -s "$TMP/stranger/skills/roost" "$p" ;;
+    dangling-foreign) ln -s "$TMP/unmounted/skills/roost" "$p" ;;
+  esac
+  said="$(sh -c "$line" 2>&1)"
+  case "$kind" in
+    file)             [ -f "$p" ] && [ ! -L "$p" ] && [ "$(cat "$p")" = mine ] ;;
+    dir)              [ -d "$p" ] && [ ! -L "$p" ] && cmp -s "$p/SKILL.md" "$TMP/stranger-skill.md" ;;
+    foreign)          [ "$(readlink "$p")" = "$TMP/stranger/skills/roost" ] ;;
+    dangling-foreign) [ "$(readlink "$p")" = "$TMP/unmounted/skills/roost" ] ;;
+  esac
+  assert_true $? "undo, a $kind at the path by then: left exactly as it is"
+  assert_contains "$said" "left $p alone" "undo, a $kind at the path by then: says it left it alone"
+done
+# The control: the same line, with roost's link still there, removes it.
+b="$TMP/undo-control"; mkdir -p "$b/home"
+out="$(run_install_from "$plain" "$b" --yes --only claude)"
+p="$(spath "$b" claude)"; sh -c "$(undo_for "$out" "$b")" >/dev/null 2>&1
+[ ! -e "$p" ] && [ ! -L "$p" ]; assert_true $? "undo, roost's link still there: removed (the control)"
+# And a relink of roost's own dangling link: the undo puts the old text back.
+b="$TMP/undo-dangling"; mkdir -p "$b/home"; plant "$b" claude dangling
+out="$(run_install_from "$plain" "$b" --yes --only claude)"
+p="$(spath "$b" claude)"; sh -c "$(undo_for "$out" "$b")" >/dev/null 2>&1
+assert_eq "$(readlink "$p")" "$TMP/gone-co/skills/roost" "undo, relinked dangling link: the old link text is back"
+
+# The summary names whole labels. A claude whose skill is linked but whose
+# hooks are not yet written must not read "Already correct: claude".
+b="$TMP/label"; mkdir -p "$b/home"; plant "$b" claude ours
+out="$(run_install_from "$plain" "$b" --dry-run --only claude)"
+line="$(printf '%s\n' "$out" | grep '^Already correct:')"
+assert_eq "$line" "Already correct: claude skill" "summary, skill linked and hooks missing: names the skill as one label"
+case "$out" in *"merge  "*) s=planned ;; *) s=absent ;; esac
+assert_eq "$s" "planned" "summary, skill linked and hooks missing: the hooks are still planned (the control)"
 
 # ===========================================================================
 # 5. roost doctor reports each state
@@ -283,7 +421,7 @@ DSHIM="$(mktemp -d /tmp/amx.XXXX)"
 for h in $ALL; do printf '#!/bin/sh\nexit 0\n' > "$DSHIM/$h"; chmod +x "$DSHIM/$h"; done
 printf '#!/bin/sh\necho "1.18.30"\n' > "$DSHIM/opencode"
 run_doctor_in() { env $(boxenv "$1") PATH="$DSHIM:$PATH" COLORTERM=truecolor bash "$plain/scripts/roost-doctor" 2>&1; }
-for kind in missing ours dangling other stranger realdir; do
+for kind in missing ours dangling dangling-away other stranger realdir; do
   b="$TMP/doc-$kind"; mkdir -p "$b/home"
   [ "$kind" = missing ] || plant "$b" codex "$kind"
   p="$(spath "$b" codex)"
@@ -295,6 +433,7 @@ for kind in missing ours dangling other stranger realdir; do
     dangling) assert_contains "$line" "dangling" "doctor, dangling: says dangling" ;;
     other)    assert_contains "$line" "another copy of roost, $co2/skills/roost" "doctor, other copy: names it" ;;
     stranger) assert_contains "$line" "is not this install" "doctor, stranger's link: not ours" ;;
+    dangling-away) assert_contains "$line" "is not this install — look at it first" "doctor, a dangling link not provably roost's: not ours, look first" ;;
     realdir)  assert_contains "$line" "not a symlink" "doctor, real directory: not a symlink, no rm" ;;
   esac
   case "$line" in "  ✗"*) s=bad ;; *) s=fine ;; esac
@@ -318,7 +457,7 @@ grep -q '^skill_link_rows() {' "$HEAD"; assert_true $? "validate: the slice defi
 rows_in() { # rows_in BOX CHECKOUT
   env $(boxenv "$1") PATH="$SHIM" bash -c 'co="$1"; out="$2"; shift 2; . "$co/scripts/roost-validate-head" --out "$out" >/dev/null 2>&1; trap - EXIT; skill_link_rows' _ "$2" "$1/report.md" 2>&1
 }
-for kind in missing ours dangling other stranger; do
+for kind in missing ours dangling dangling-bare dangling-away other stranger; do
   b="$TMP/val-$kind"; mkdir -p "$b/home"
   [ "$kind" = missing ] || plant "$b" pi "$kind"
   row="$(rows_in "$b" "$plain" | grep "^pi|")"
@@ -327,7 +466,7 @@ for kind in missing ours dangling other stranger; do
     ours)     want="pi|$(spath "$b" pi)|ok|nothing — already linked" ;;
     dangling) want="pi|$(spath "$b" pi)|dangling|relinks it" ;;
     other)    want="pi|$(spath "$b" pi)|other-checkout|relinks it" ;;
-    stranger) want="pi|$(spath "$b" pi)|foreign|leaves it alone" ;;
+    stranger|dangling-bare|dangling-away) want="pi|$(spath "$b" pi)|foreign|leaves it alone" ;;
   esac
   assert_eq "$row" "$want" "validate, $kind: predicts what install does"
 done

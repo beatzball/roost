@@ -273,13 +273,42 @@ roost_skill_link_names() {
   [ -f "$root/scripts/lib/roost-adapters.sh" ]
 }
 
+# roost_skill_dangling_names PATH — true when the DANGLING link at PATH is
+# provably a roost skill link: its text ends in /skills/roost AND the
+# directory that text puts two levels above the skill still carries
+# scripts/lib/roost-adapters.sh. The same proof roost_skill_link_names asks of
+# a live link, asked of the link's TEXT, because there is nothing to resolve.
+# A relative text is read from the link's own directory, as the kernel would.
+#
+# Anything it cannot prove is not roost's. `dangling` alone says only that the
+# target is missing, not whose target it was: a user's own skill on a volume
+# that is not mounted, or a broken link to some other tool's skill, reads the
+# same, and replacing either loses something that was never roost's to touch.
+# A roost checkout that was deleted or moved whole is refused by this too —
+# the cost is one printed fix, where the other mistake costs a user's link.
+roost_skill_dangling_names() {
+  local text root
+  text="$(readlink "$1")" || return 1
+  text="${text%/}"
+  case "$text" in */skills/roost) : ;; *) return 1 ;; esac
+  root="${text%/skills/roost}"
+  case "$root" in /*) : ;; *) root="$(dirname "$1")/$root" ;; esac
+  [ -f "$root/scripts/lib/roost-adapters.sh" ]
+}
+
 # roost_skill_state HARNESS -> ok | missing | dangling | other-checkout | foreign | none
 # The same five words roost_adapter_state prints, with the same meanings;
-# `none` for a name that has no skills folder.
+# `none` for a name that has no skills folder. One difference, and it makes
+# `dangling` mean what its comment above says: a dangling link is `dangling`
+# here only when roost_skill_dangling_names proves it is roost's, and
+# `foreign` otherwise. Install's plan, its re-check before writing, doctor
+# and validate all ask this one function, so all four refuse the same link.
 roost_skill_state() {
-  local path; path="$(roost_skill_path "$1")"
+  local path st; path="$(roost_skill_path "$1")"
   [ -n "$path" ] || { printf 'none'; return 0; }
-  _roost_link_state "$path" "$(roost_skill_target)" roost_skill_link_names "$1"
+  st="$(_roost_link_state "$path" "$(roost_skill_target)" roost_skill_link_names "$1")"
+  if [ "$st" = dangling ] && ! roost_skill_dangling_names "$path"; then st=foreign; fi
+  printf '%s' "$st"
 }
 
 # roost_checkout_is_worktree [DIR] — true when DIR (default: this checkout) is

@@ -179,6 +179,10 @@ already running does not.
 The links follow the same rules as the adapters. They are in the plan you
 approve, and the undo lines remove them. A `roost` skill of your own at one of
 those paths is never replaced: `roost install` names it and leaves it alone.
+A broken link there is replaced only when roost can show it was its own: the
+roost checkout it names is still there. Each undo line for a skill link
+removes it only while it is still the link install made, and says so when it
+leaves the path alone.
 A link to another copy of roost is relinked from a plain checkout and left
 alone from a git worktree. `roost doctor` prints one line per harness for its
 link.

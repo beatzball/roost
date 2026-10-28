@@ -2298,7 +2298,8 @@ done
 # to prevent, so they are compared rather than each asserted alone.
 rec_undo="$(records_of "$recs" | while IFS="$TAB" read -r v h p u; do
   [ "$v" = wrote ] && printf '%s\n' "$u"; done | sort)"
-human_undo="$(printf '%s\n' "$out" | sed -n 's/^  rm "/rm "/p' | sort)"
+# Both shapes: a skill link's undo is guarded, so it starts `if [` (#208).
+human_undo="$(printf '%s\n' "$out" | sed -n -e 's/^  rm "/rm "/p' -e 's/^  if \[ /if [ /p' | sort)"
 assert_eq "$rec_undo" "$human_undo" \
   "--records: the recorded undo lines are the ones printed to the human"
 

@@ -26,8 +26,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   `$CODEX_HOME/skills`, opencode `$XDG_CONFIG_HOME/opencode/skills`, copilot
   `$COPILOT_HOME/skills`, pi `$PI_CODING_AGENT_DIR/skills`. The links are in
   the plan you approve and in the undo lines. A `roost` skill of your own is
-  never replaced. `roost doctor` prints one line per harness for its link,
-  and `roost validate` reports what `roost install` would do with each one.
+  never replaced, nor is a broken link roost cannot show is its own, and an
+  undo line removes a link only while it is still the one install made.
+  `roost doctor` prints one line per harness for its link, and
+  `roost validate` reports what `roost install` would do with each one.
 
 ### Changed
 
