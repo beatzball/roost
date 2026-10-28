@@ -891,6 +891,21 @@ Rules, each with its reason:
   `cwd`, `state`, `harness`, `session_id`), so the two never say one thing
   with two words.
 
+**A read rule for `$` (2026-10-27, coordinator ruling R6, probe 1.3).** tmux
+3.4 prints every `$` in a value with one backslash put before it — in
+`show-options -v`, `display -p` and `list-panes -F` alike, with or without
+`#{q:}` — so a pane in `a$b` reads `pane_current_path` `a\$b`, and
+`@roost-name` and `@roost-cwd` the same; a backslash already there is not
+doubled (`a\$b` reads `a\\$b`). tmux 3.2a and 3.6 print `$` bare. Measured
+once on each build and re-run by the coordinator on 3.4
+(docs/airig/probes/persist-1-control-bytes.md). So before it lists, the writer
+learns once per run whether this server does it: it sets one pane option to
+a known value holding `$`, reads it back, and unsets it. When the read comes
+back with the backslash, the writer removes exactly one backslash before every
+`$` in every value it reads, before any other rule of this section applies.
+Without this a save on 3.4 would write a `cwd` that does not exist and a
+`name` the person never typed.
+
 ### 3.3 Why a file of its own and not the pane records
 
 The record is per pane, keyed by a boot that is gone, and it says nothing

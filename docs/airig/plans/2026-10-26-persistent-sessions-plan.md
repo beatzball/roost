@@ -108,6 +108,23 @@ rules, or left out.
   `ensure_session` starts from a terminal is. Part 5 probe with its "if
   confirmed, do Y" table: Task 5.3; the build, only if confirmed: Task 5.10.
 
+## Coordinator ruling R6: a read rule from probe 1.3
+
+- **R6 — tmux 3.4 prints `$` as `\$`** (extends spec §3.2; found by Task
+  1.3's probe, docs/airig/probes/persist-1-control-bytes.md, and re-run by
+  the coordinator on `ubuntu:24.04`). On tmux 3.4 every value tmux prints
+  holding `$` comes out with one backslash before each `$`, whatever the
+  read (`show-options -v`, `display -p`, `list-panes -F`, with or without
+  `#{q:}`); a backslash already there is not doubled. 3.2a and 3.6 print `$`
+  bare. Rule: before a save lists, the writer learns once per run whether
+  this server does it — set one pane option to a known value holding `$`,
+  read it back, unset it — and if it does, removes exactly one backslash
+  before every `$` in every value it reads. Red tests, run on the CI tmux
+  (3.4) as well as this Mac: a round trip of `a$b`, `a\$b`, `$HOME`-shaped
+  text (`a$HOME` and `a${HOME}b`, never expanded) and a no-`$` control `ab`,
+  each as a directory (`cwd`, `session_cwd`) and as a `name`. The writer half
+  is in Task 1.9, the round trip through the reader in Task 1.10.
+
 ## Probes
 
 Each part's first tasks are its probes: those §6 names, and in Part 1 also the
@@ -603,6 +620,13 @@ after each. Also do it for a background session if the version offers one
    with its stderr line, and no control byte anywhere in the file (`LC_ALL=C
    grep -c '[[:cntrl:]]'` on it, tabs included, prints 0). That the file also
    passes the reader is Task 1.10's case, since the reader lands there.
+   **R6, the writer half:** panes whose shells `cd` into `a$b`, `a\$b`,
+   `a$HOME`, `a${HOME}b` and `ab`, each with `@roost-cwd` set to the same
+   directory and `@roost-name` set to the same last part → the file's `cwd`,
+   `session_cwd` and `name` hold each value byte for byte (no `$` expanded,
+   no backslash added or lost); after the save no pane carries the
+   writer's test option. The suite runs this on tmux 3.4 in CI and on the
+   Mac, so both branches of the rule are exercised.
 2. `bin/roost` `spawn` and `split`: set `@roost-launch` on the new pane to the
    command as handed (before `roost-pane-shell` wraps it), beside the
    `@roost-name` stamp (`spawn` and `split` each have one `set-option -p …
@@ -622,7 +646,10 @@ after each. Also do it for a background session if the version offers one
    those harnesses stay on presence alone); a harness that names a different one → `nested`; the same →
    `ok`; no harness from the command, and HARNESS is pi/copilot/opencode with
    no measured name → `ok` on presence (§3.2); anything else → `other`.
-4. The writer: one `list-sessions`, one `list-windows -a`, one `list-panes -a`
+4. The writer: first R6's test (set one pane option to a known value holding
+   `$`, read it back, unset it; when it reads `\$`, remove exactly one
+   backslash before every `$` in every value read below, before any other
+   rule); then one `list-sessions`, one `list-windows -a`, one `list-panes -a`
    with space-separated `#{q:}` fields (no tab); the consistency check of §3.5
    step 2 (every pane's window and session in the other listings, else list
    again, at most 3 times); `printf` the blocks; redact `launch`; a value
@@ -656,7 +683,11 @@ after each. Also do it for a background session if the version offers one
    ignored. A name with leading and trailing spaces parses byte for byte.
    **The writer's files pass the reader** (moved here from Task 1.9, whose
    writer lands first): every file Task 1.9's cases write, the odd-value ones
-   included, passes `roost_shape_check`.
+   included, passes `roost_shape_check`. **R6, the round trip:** the file
+   Task 1.9's R6 case writes passes `roost_shape_check`, and
+   `roost_shape_parse` + `roost_shape_get` give back `a$b`, `a\$b`, `a$HOME`,
+   `a${HOME}b` and `ab` byte for byte for `cwd`, `session_cwd` and `name`
+   (on tmux 3.4 in CI and on the Mac).
    A zero-byte file and a file cut off inside its header are named refusals
    (exit 16 at restore), never "nothing to restore". **The kept shape:**
    `tests/fixtures/shape-v1.txt` is a shape this task's own test writes with
