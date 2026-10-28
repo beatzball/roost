@@ -140,7 +140,7 @@ assert_eq "$(TL list-panes -s -t '=keep:' -F x | wc -l | tr -d ' '):$(TL show -p
 s2p="$(first_pane s2)"
 assert_eq "$(TL display -p -t "$s2p" '#{pane_current_path}')" "$SHAPE_TMP/d2" "the other session is placed, its pane in the saved directory"
 shells_wait "$s2p"; assert_eq "$(shells_for "$s2p" | wc -l | tr -d ' ')" "1" "...as a shell (one shells.log line)"
-[ ! -e "$SD/restoring" ]; assert_true $? "restoring/ is removed once restore is done"
+[ ! -e "$SD/restoring/owner" ]; assert_true $? "restoring/ is held by nobody once restore is done (its owner record is gone)"
 TL kill-session -t '=s2'
 
 echo "== sessions a person made are never replaced (§8.1 test 2 a-e) =="
@@ -173,6 +173,7 @@ assert_eq "$(TL display -p -t "$fp" '#{pane_current_path}')" "$SHAPE_TMP/d1" "th
 assert_eq "$(TL list-sessions -F '#{session_name}' | sort | tr '\n' ' ')" "first second " "every saved session exists, none twice"
 assert_eq "$(TL display -p -t "$fp" '#{window_width}x#{window_height}')" "200x50" "the server was made at the saved size, not 80x24"
 assert_eq "$(TL show -gqv @roost-home)" "$HERE" "the server got ensure_session's globals"
+[ -e "$SD/restoring/bootstrap.used" ]; assert_true $? "restoring/bootstrap.used is what is left"
 
 echo "== (f) a key in the held bootstrap: taken, the saved session skipped =="
 # Pane ids restart at %0 with every server, so a line an earlier server's %0
@@ -244,7 +245,7 @@ assert_contains "$(cat "$SHAPE_TMP/err")" "pid $$" "...naming the pid"
 printf 'pid %s\nlstart %s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$SD/restoring/owner"
 R restore >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "12" "a live pid with another start time is a reused pid: taken over (first exists: exit 12)"
-[ ! -e "$SD/restoring" ]; assert_true $? "...and restoring/ is dropped at the end"
+[ ! -e "$SD/restoring/owner" ]; assert_true $? "...and its owner record is dropped at the end"
 echo "== T2b: a dead run's bootstrap is settled into a shell =="
 stop_server; mkshape "first:$SHAPE_TMP/d1" "second:$SHAPE_TMP/d2"
 mkdir -p "$SD/restoring"; : > "$SD/restoring/bootstrap"
@@ -293,6 +294,185 @@ assert_eq "$(TL list-sessions -F '#{session_name} #{session_group}' | sort | tr 
 assert_eq "$(TL list-panes -a -F '#{pane_id}' | sort -u | wc -l | tr -d ' ')" "$npanes" "one copy of each saved pane, not one per member"
 TL new-window -d -t '=gm:'
 assert_eq "$(TL list-windows -t '=gv:' -F x | wc -l | tr -d ' ')" "2" "a window made in one member is visible in another"
+stop_server
+
+# --- restore: windows, splits, the saved layout (Task 1.13) -------------------
+# strip LAYOUT -> the layout with its checksum and every pane id removed, so a
+# layout compares by its cells alone (§8.1 test 1).
+strip() { printf '%s\n' "$1" | sed -E 's/^[0-9a-f]{4},//; s/([0-9]+x[0-9]+,[0-9]+,[0-9]+),[0-9]+/\1/g'; }
+# fleet -> one line per pane: session|window index|window name|pane index|@roost-name|directory
+fleet() { TL list-panes -a -F '#{session_name}|#{window_index}|#{window_name}|#{pane_index}|#{@roost-name}|#{pane_current_path}' | sort; }
+layouts() { TL list-windows -a -F '#{session_name}:#{window_index} #{window_layout} #{window_zoomed_flag}' | while read -r w l z; do printf '%s %s %s\n' "$w" "$(strip "$l")" "$z"; done | sort; }
+# json5 -> session, window_name, window_index, pane_index, name of every pane, from status --json
+json5() { R status --json 2>/dev/null | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for p in sorted(d.get("panes", []), key=lambda p: (p.get("session"), p.get("window_index"), p.get("pane_index"))):
+    print(p.get("session"), p.get("window_name"), p.get("window_index"), p.get("pane_index"), p.get("name"))'; }
+# fresh_server: a stopped server, then a new one with the restored conf's
+# indices, so a fixture's indices are what restore's conf gives back.
+fresh_server() {
+  stop_server; rm -rf "$SD/restoring"
+  TL -f /dev/null new-session -d -s scratch -x 200 -y 50 'sleep 600'
+  TL set -g base-index 1; TL setw -g pane-base-index 1; TL set -g default-shell "$BASH_BIN"
+  # roost.conf names a window after its pane's directory; the restored server
+  # runs roost.conf, so the fixture's automatic names must follow the same rule.
+  TL setw -g automatic-rename-format '#{b:pane_current_path}'
+}
+for d in d1 d2 d3 d4 d5 d6; do mkdir -p "$SHAPE_TMP/$d"; done
+
+echo "== placement: sessions, windows, splits, layouts, zoom (§8.1 test 1) =="
+fresh_server
+TL new-session -d -s alpha -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL kill-session -t '=scratch'
+TL rename-window -t '=alpha:1' left-right
+a1="$(first_pane alpha)"; TL set -p -t "$a1" @roost-name left
+a2="$(TL split-window -h -d -P -F '#{pane_id}' -t "$a1" -c "$SHAPE_TMP/d2" "$BASH_BIN")"; TL set -p -t "$a2" @roost-name right
+z1="$(TL new-window -d -P -F '#{pane_id}' -t '=alpha:5' -n zoomy -c "$SHAPE_TMP/d3" "$BASH_BIN")"
+TL split-window -v -d -t "$z1" -c "$SHAPE_TMP/d4" "$BASH_BIN"
+TL resize-pane -Z -t "$z1"
+TL new-session -d -s beta -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL rename-window -t '=beta:1' stacked
+b1="$(first_pane beta)"
+for d in d2 d3 d4 d5 d6; do TL split-window -v -d -t "$b1" -c "$SHAPE_TMP/$d" "$BASH_BIN"; TL select-layout -t '=beta:1' even-vertical; done
+k="$(TL list-panes -t '=beta:1' -F '#{pane_id}' | tail -1)"
+TL respawn-pane -k -t "$k" -c "$SHAPE_TMP/d6" -e STUB_IDENTIFY=1 "claude --resume 3fa32375-68cd-43c9-8bcf-fbb876b2db1e"
+TL new-session -d -s gamma -x 200 -y 10 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL rename-window -t '=gamma:1' wide
+g1="$(first_pane gamma)"
+for d in d2 d3 d4 d5 d6; do TL split-window -h -d -t "$g1" -c "$SHAPE_TMP/$d" "$BASH_BIN"; TL select-layout -t '=gamma:1' even-horizontal; done
+TL link-window -s '=alpha:1' -t '=gamma:9'
+sleep 1
+F1="$(fleet)"; L1="$(layouts)"; J1="$(json5)"
+R save >/dev/null 2>&1
+stop_server; : > "$HOME/shells.log"; : > "$HOME/env.log"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "0" "restore exits 0"
+sleep 1
+F2="$(fleet)"
+assert_eq "$(printf '%s\n' "$F2" | grep -v '^gamma|9|')" "$(printf '%s\n' "$F1" | grep -v '^gamma|9|')" \
+  "every pane is back: session, window index and name, pane index, name, directory (the first pane's included)"
+assert_eq "$(json5 | grep -v '^gamma .* 9 ')" "$(printf '%s\n' "$J1" | grep -v '^gamma .* 9 ')" "status --json agrees on session, window_name, window_index, pane_index, name"
+L2="$(layouts)"
+assert_eq "$(printf '%s\n' "$L2" | grep -v '^gamma:9 ')" "$(printf '%s\n' "$L1" | grep -v '^gamma:9 ')" \
+  "every layout is the saved one (checksum and pane ids stripped); the zoomed window is zoomed"
+assert_eq "$(TL list-panes -t '=beta:1' -F x | wc -l | tr -d ' ')" "6" "six stacked panes in a 200x50 window"
+assert_eq "$(TL list-panes -t '=gamma:1' -F x | wc -l | tr -d ' ')" "6" "six side-by-side panes in a 200x10 window (the largest side, across it)"
+zl="$(TL display -p -t '=alpha:5' '#{window_layout}')"
+TL resize-pane -Z -t '=alpha:5'
+assert_eq "$(strip "$(TL display -p -t '=alpha:5' '#{window_layout}')")" "$(strip "$(sed -n '/^window alpha:5$/,/^$/s/^layout //p' "$SD/shape")")" \
+  "unzoomed after restore, the zoomed window's layout is the saved one (probe 1.1)"
+assert_eq "$(TL display -p -t "$(first_pane alpha)" '#{window_width}x#{window_height}')" "200x50" "the first window is 200x50"
+assert_eq "$(TL list-panes -t '=gamma:9' -F x | wc -l | tr -d ' '):$(TL display -p -t '=gamma:9' '#{window_linked}')" "2:0" \
+  "a window linked into two sessions comes back as two windows (§3.2)"
+assert_eq "$(TL display -p -t "$(TL list-panes -t '=beta:1' -F '#{pane_id}' | tail -1)" '#{pane_current_path}')" "$SHAPE_TMP/d6" \
+  "a keyed pane is a shell in its directory (agents are not resumed in this part)"
+npl="$(TL list-panes -a -F x | wc -l | tr -d ' ')"
+assert_eq "$(cut -d' ' -f1 "$HOME/shells.log" | sort -u | wc -l | tr -d ' ')" "$npl" "every pane, the first included, started a shell"
+assert_eq "$(grep -c ' wired$' "$HOME/env.log")" "$npl" "...and every one of them is wired (ROOST_TMUX set)"
+assert_eq "$(TL list-panes -a -F '#{pane_start_command}' | grep -vc roost-pane-shell)" "0" "every pane's start command is roost-pane-shell (§8.1 test 1, wired)"
+
+echo "== odd names come back exactly, twice (probe 1.3, R8.3) =="
+fresh_server
+ODDN=('sp ace' 'a$b' "a'b" 'a"b' 'a#b' 'trail ' 'a🐓b' 'a\b')
+TL new-session -d -s v3.69-x -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL new-session -d -s 1 -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL kill-session -t '=scratch'
+for v in "${ODDN[@]}"; do
+  mkdir -p "$SHAPE_TMP/o/$v"
+  w="$(TL new-window -d -P -F '#{window_id}' -t '=1:' -c "$SHAPE_TMP/o/$v" "$BASH_BIN")"
+  TL rename-window -t "$w" "$v"
+done
+sleep 1
+before="$(fleet)"
+for cycle in 1 2; do
+  R save >/dev/null 2>&1; stop_server; R restore >/dev/null 2>&1; sleep 1
+  assert_eq "$(fleet)" "$before" "cycle $cycle: window names and directories with odd characters are the same, none grown ($(TL display -p '#{version}'))"
+done
+
+echo "== (i) a pane placement made, used during placement (§8.1 test 2 i, unkeyed) =="
+fresh_server
+# The two-pane session comes FIRST: ROOST_TEST_PLACE_HOLD holds at the first
+# window restore builds, and this case needs that window held.
+mkshape "two:$SHAPE_TMP/d1" "keepme:$SHAPE_TMP/d1"
+python3 - "$SD/shape" "$SHAPE_TMP/d2" <<'PYS'
+import sys
+p, d = sys.argv[1], sys.argv[2]
+s = open(p).read()
+s = s.replace("window two:1\nid @0\nlayout b25d,200x50,0,0,0",
+              "window two:1\nid @0\nlayout 9d6f,200x50,0,0{100x50,0,0,0,99x50,101,0,9}")
+s += "pane two:1.1\nid %9\ncwd %s\n\n" % d
+open(p, "w").write(s)
+PYS
+TL kill-session -t '=scratch' 2>/dev/null; TL -f /dev/null new-session -d -s other 'sleep 600'; TL set -g default-shell "$BASH_BIN"
+rm -f "$H"
+ROOST_TEST_PLACE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; while [ "$i" -lt 50 ] && [ "$(TL list-panes -t '=two:' -F x 2>/dev/null | wc -l | tr -d ' ')" != 2 ]; do sleep 0.1; i=$((i+1)); done
+sleep 0.5
+tp="$(TL list-panes -t '=two:' -F '#{pane_id}' | tail -1)"
+TL send-keys -t "$tp" x; shells_wait "$tp"; sleep 0.3
+TL send-keys -t "$tp" 'sleep 60' Enter; sleep 0.5
+tpid="$(TL display -p -t "$tp" '#{pane_pid}')"; spid="$(pgrep -P "$tpid" sleep | head -1)"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc" "0" "released: exit 0"
+assert_eq "$(TL display -p -t "$tp" '#{pane_pid}')" "$tpid" "the used pane is the person's: its pane_pid unchanged"
+kill -0 "$spid" 2>/dev/null; assert_true $? "...and the sleep started in it still runs"
+assert_eq "$(TL display -p -t "$(TL list-panes -t '=two:' -F '#{pane_id}' | head -1)" '#{pane_current_path}')" "$SHAPE_TMP/d1" "every other pane is placed as saved"
+
+echo "== (j) won, then changed by hand: the person's (§8.1 test 2 j) =="
+fresh_server
+mkshape "solo:$SHAPE_TMP/d1"
+TL kill-session -t '=scratch' 2>/dev/null; TL -f /dev/null new-session -d -s other 'sleep 600'; TL set -g default-shell "$BASH_BIN"
+rm -f "$H"
+ROOST_TEST_PLACE_HOLD_AFTER_USED="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$SD/restoring/"place.*.used >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+jp="$(first_pane solo)"; used="$(ls "$SD/restoring/"place.*.used)"
+TL respawn-pane -k -t "$jp" 'sleep 60'; sleep 0.3
+jpid="$(TL display -p -t "$jp" '#{pane_pid}')"
+used="${used%.used}"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc" "0" "released: exit 0"
+[ -e "$used.taken" ] && [ ! -e "$used.used" ]; assert_true $? "the file is ${used##*/}.taken (the person-owned row), not left .used"
+assert_eq "$(TL display -p -t "$jp" '#{pane_pid}:#{pane_current_command}')" "$jpid:sleep" "...and the sleep is alive, the pane untouched"
+
+echo "== hand-edited copies (§8.1 test 5, the restore half) =="
+fresh_server
+TL new-session -d -s hand -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL kill-session -t '=scratch'
+TL split-window -h -d -t '=hand:1' -c "$SHAPE_TMP/d2" "$BASH_BIN"
+R save >/dev/null 2>&1
+cp "$SD/shape" "$SHAPE_TMP/hand.shape"
+stop_server
+awk -v RS= -v ORS='\n\n' '!/^pane hand:1\.2\n/' "$SHAPE_TMP/hand.shape" > "$SD/shape"
+R restore >/dev/null 2>"$SHAPE_TMP/err"
+assert_eq "$(TL list-panes -t '=hand:1' -F x | wc -l | tr -d ' ')" "1" "a copy with a deleted pane block does not restore that pane"
+stop_server
+sed 's/hand/renamed/' "$SHAPE_TMP/hand.shape" > "$SD/shape"
+R restore >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(TL list-sessions -F '#{session_name}')" "0:renamed" "a session renamed with its addresses is created under the new name"
+
+echo "== the K-pane fallback names every block it could not place =="
+# A 4x2 window: with the largest-side rule a 20x6 one still holds six panes,
+# so the case needs a window that really cannot.
+fresh_server
+TL kill-session -t '=scratch' 2>/dev/null; TL -f /dev/null new-session -d -s other 'sleep 600'; TL set -g default-shell "$BASH_BIN"
+{ printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' 'saved 2026-10-28T12:00:00Z' \
+    'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' '' 'session tiny' 'id $0' '' \
+    'window tiny:1' 'id @0' 'layout 0000,4x2,0,0[4x1,0,0,0,4x0,0,1,1]' '' 
+  for n in 0 1 2 3 4 5; do
+    printf '%s\n' "pane tiny:1.$n" "id %$n" "cwd $SHAPE_TMP/d1"
+    case $n in 4) printf '%s\n' 'harness claude' 'session_id 3fa32375-68cd-43c9-8bcf-fbb876b2db1e' ;;
+               5) printf '%s\n' 'harness codex' 'session_id 0b5e1c2a-7d4f-4e61-9a3b-5c2d1e0f9a87' ;; esac
+    printf '\n'
+  done; } > "$SD/shape"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+placed="$(TL list-panes -t '=tiny:1' -F x | wc -l | tr -d ' ')"
+assert_eq "$rc" "13" "a window that cannot hold every saved pane: exit 13"
+[ "$placed" -ge 1 ] && [ "$placed" -lt 6 ]; assert_true $? "...the panes that fit are placed ($placed)"
+assert_contains "$(cat "$SHAPE_TMP/err")" "pane tiny:1.5 not placed" "...and every block not placed is named"
+assert_contains "$(cat "$SHAPE_TMP/err")" "codex 0b5e1c2a-7d4f-4e61-9a3b-5c2d1e0f9a87" "...with its key"
+assert_contains "$(cat "$SHAPE_TMP/err")" "roost revive" "...and how to bring it back"
 stop_server
 
 canary_check

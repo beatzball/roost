@@ -82,7 +82,10 @@ shape_test_setup() {
   # Both rc files, because which one bash reads depends on whether the shell
   # is a login shell, and a test must not care which kind restore started.
   # Single quotes: the pane's own $TMUX_PANE and $$, at the moment it starts.
+  # A second line goes to env.log: whether the shell has ROOST_TMUX, which
+  # `roost wiring apply` sets, so a test can tell a wired shell (§8.1 test 1).
   printf '%s\n' 'printf "%s %s\n" "$TMUX_PANE" "$$" >> "$HOME/shells.log"' \
+    'printf "%s %s\n" "$TMUX_PANE" "${ROOST_TMUX:+wired}" >> "$HOME/env.log"' \
     > "$HOME/.bash_profile"
   cp "$HOME/.bash_profile" "$HOME/.bashrc"
 

@@ -134,7 +134,7 @@ roost_restore__panes() {
 # session's saved layouts. A detached server is otherwise 80x24, and a window
 # of six stacked panes cannot be built in 24 lines (§2.7).
 roost_restore__size() {
-  local f l c w=80 h=24 cw ch
+  local f l c w=0 h=0 cw ch
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     l="$(roost_shape_get "$f" layout)" || continue
@@ -144,6 +144,8 @@ roost_restore__size() {
     [ "$cw" -gt "$w" ] && w="$cw"
     [ "$ch" -gt "$h" ] && h="$ch"
   done <<< "$(roost_restore__windows "$1")"
+  # No readable layout at all: tmux's own detached default.
+  [ "$w" -gt 0 ] && [ "$h" -gt 0 ] || { w=80 h=24; }
   printf '%s %s\n' "$w" "$h"
 }
 
@@ -159,11 +161,14 @@ roost_restore__cwd() {
   printf '%s\n' "${HOME:-/}"
 }
 
-# roost_restore__new_file -> prints a fresh restoring/place.<n> path, made.
+# roost_restore__new_file -> ROOST_RESTORE_F, a fresh restoring/place.<n>,
+# made. SETS rather than prints: the counter has to move in the caller's
+# shell, and a $(...) would count in a subshell and hand every pane the same
+# file (measured: every split pane got place.1, and only one could win it).
 roost_restore__new_file() {
   ROOST_RESTORE_N=$((ROOST_RESTORE_N + 1))
-  : > "$ROOST_RESTORE_RD/place.$ROOST_RESTORE_N"
-  printf '%s\n' "$ROOST_RESTORE_RD/place.$ROOST_RESTORE_N"
+  ROOST_RESTORE_F="$ROOST_RESTORE_RD/place.$ROOST_RESTORE_N"
+  : > "$ROOST_RESTORE_F"
 }
 
 # roost_restore__shell_cmd -> sets ROOST_RESTORE_SHELL_ARGS (an array): the
@@ -205,17 +210,31 @@ roost_restore__placing() {
 #         placeholder stays as a dead pane, is cleared first: a shell should
 #         behave like any other.
 roost_restore_place_pane() {
-  local pane="$1" f="$2" cwd="$3" sc
-  mv "$f" "$f.used" 2>/dev/null || return 1
+  roost_restore__claim "$1" "$2" || return $?
+  roost_restore__respawn "$1" "$3"
+}
+
+# roost_restore__claim PANE FILE -> steps (i)-(iii) of the per-pane step
+# above: 0 claimed (FILE is FILE.used and the pane still runs its placing
+# line), 1 lost, 2 changed by hand (now FILE.taken). The bootstrap pane is
+# claimed on its own, before its window is built, because whether its
+# session is replaceable rests on this rename (§4.3).
+roost_restore__claim() {
+  local sc
+  mv "$2" "$2.used" 2>/dev/null || return 1
   roost_restore__hold ROOST_TEST_PLACE_HOLD_AFTER_USED
-  sc="$(t display-message -p -t "$pane" '#{pane_start_command}' 2>/dev/null || true)"
-  if ! roost_restore__placing "$sc" "${f##*/}"; then
-    mv "$f.used" "$f.taken" 2>/dev/null || true
+  sc="$(t display-message -p -t "$1" '#{pane_start_command}' 2>/dev/null || true)"
+  if ! roost_restore__placing "$sc" "${2##*/}"; then
+    mv "$2.used" "$2.taken" 2>/dev/null || true
     return 2
   fi
-  t set-option -pu -t "$pane" remain-on-exit 2>/dev/null || true
-  t respawn-pane -k -t "$pane" -c "$cwd" "${ROOST_RESTORE_SHELL_ARGS[@]}" 2>/dev/null || true
   return 0
+}
+
+# roost_restore__respawn PANE CWD -> step (iv): a shell in CWD.
+roost_restore__respawn() {
+  t set-option -pu -t "$1" remain-on-exit 2>/dev/null || true
+  t respawn-pane -k -t "$1" -c "$2" "${ROOST_RESTORE_SHELL_ARGS[@]}" 2>/dev/null || true
 }
 
 # roost_restore__settle_dead -> §4.7 arrow T2b. A restore that takes over a
@@ -259,26 +278,132 @@ roost_restore__window_first() {
   t move-window -s "$2" -t "$1:$3" 2>/dev/null || true
 }
 
+# roost_restore__key BLOCKFILE -> prints "HARNESS ID" for a pane block that
+# names a conversation (live or stale keys), or nothing.
+roost_restore__key() {
+  local h i
+  if h="$(roost_shape_get "$1" harness)" && i="$(roost_shape_get "$1" session_id)"; then
+    printf '%s %s\n' "$h" "$i"
+  elif h="$(roost_shape_get "$1" stale_harness)" && i="$(roost_shape_get "$1" stale_session_id)"; then
+    printf '%s %s\n' "$h" "$i"
+  fi
+}
+
+# roost_restore__build_window WID WINDOWBLOCK FIRSTPANE FIRSTFILE PRECLAIMED
+# -> 0, or 13 when the window could not hold every saved pane.
+#
+# §4.3 Windows. The window exists with its first pane, a placing placeholder
+# (FIRSTPANE, watching FIRSTFILE). Then:
+#   1. split until the saved pane count exists, each time on THE PANE WHOSE
+#      LARGER SIDE IS THE LARGEST, ACROSS THAT SIDE (-h when its width >= its
+#      height, else -v). §2.7 measured both halves: splitting the newest pane
+#      stops at four on 24 lines, and the largest pane split in tmux's default
+#      direction stops at four on a 200x10 window. Every new pane is a placing
+#      placeholder after its own restoring/place.<n> (T1).
+#   2. a split tmux refuses: the window keeps the K panes it has, tmux's
+#      default layout, and every saved block after them is named on stderr
+#      with its key, so its conversation is never lost in silence (exit 13).
+#   3. select-layout with the saved string (a failure: one line, tmux's
+#      default layout), the saved active pane, then `resize-pane -Z` for
+#      `zoomed 1` — the layout string does not carry the zoom (probe 1.1).
+#   4. the ROOST_TEST_PLACE_HOLD seam, then the per-pane step on EVERY pane in
+#      index order against the saved blocks in order (T2, T3): select-layout
+#      gives cell i to the pane at index i, which is the saved pane i.
+#      PRECLAIMED is a pane already claimed (the bootstrap's): respawned only.
+#   5. names re-stamped on the panes restore placed.
+roost_restore__build_window() {
+  local wid="$1" wf="$2" waddr layout map count k i f out tgt dir best bw bh pw ph id rc=0 act zp
+  local -a blocks panes
+  waddr="$(roost_restore__addr "$wf")"
+  while IFS= read -r f; do [ -n "$f" ] && blocks+=("$f"); done <<< "$(roost_restore__panes "$waddr")"
+  k="${#blocks[@]}"
+  map=$'\n'"$3 $4"$'\n'
+  count=1
+  while [ "$count" -lt "$k" ]; do
+    best="" bw=-1
+    while IFS=' ' read -r id pw ph; do
+      [ -n "$id" ] || continue
+      if [ "$pw" -ge "$ph" ]; then bh="$pw"; else bh="$ph"; fi
+      if [ "$bh" -gt "$bw" ]; then bw="$bh"; best="$id"; tgt="$pw $ph"; fi
+    done <<< "$(t list-panes -t "$wid" -F '#{pane_id} #{pane_width} #{pane_height}' 2>/dev/null || true)"
+    if [ "${tgt% *}" -ge "${tgt#* }" ]; then dir=-h; else dir=-v; fi
+    roost_restore__new_file; f="$ROOST_RESTORE_F"
+    out="$(t split-window -d "$dir" -P -F '#{pane_id}' -t "$best" -c "$(roost_restore__cwd "${blocks[$count]}" 2>/dev/null)" \
+      "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || { rm -f "$f"; break; }
+    t set-option -p -t "$out" remain-on-exit failed 2>/dev/null || true
+    map="$map$out $f"$'\n'
+    count=$((count + 1))
+  done
+  layout="$(roost_shape_get "$wf" layout)"
+  if [ "$count" -lt "$k" ]; then
+    rc=13
+    i="$count"
+    while [ "$i" -lt "$k" ]; do
+      id="$(roost_restore__key "${blocks[$i]}")"
+      printf 'roost restore: pane %s not placed: no room in the window%s; start it by hand, or with roost revive\n' \
+        "$(roost_restore__addr "${blocks[$i]}")" "${id:+ (its conversation: $id)}" >&2
+      i=$((i + 1))
+    done
+  elif [ -n "$layout" ] && ! t select-layout -t "$wid" "$layout" >/dev/null 2>&1; then
+    printf "roost restore: window %s: the saved layout did not apply; tmux's default layout instead\n" "$waddr" >&2
+  fi
+  while IFS= read -r id; do [ -n "$id" ] && panes+=("$id"); done <<< "$(t list-panes -t "$wid" -F '#{pane_id}' 2>/dev/null || true)"
+  act="" zp=""
+  i=0
+  while [ "$i" -lt "${#panes[@]}" ] && [ "$i" -lt "$k" ]; do
+    [ "$(roost_shape_get "${blocks[$i]}" active 2>/dev/null)" = 1 ] && act="${panes[$i]}"
+    i=$((i + 1))
+  done
+  [ -n "$act" ] && t select-pane -t "$act" 2>/dev/null || true
+  if [ "$(roost_shape_get "$wf" zoomed 2>/dev/null)" = 1 ] && [ "${#panes[@]}" -gt 1 ]; then
+    t resize-pane -Z -t "${act:-${panes[0]}}" 2>/dev/null || true
+  fi
+  roost_restore__hold ROOST_TEST_PLACE_HOLD
+  i=0
+  while [ "$i" -lt "${#panes[@]}" ] && [ "$i" -lt "$k" ]; do
+    id="${panes[$i]}"
+    f="${map#*$'\n'"$id "}"; f="${f%%$'\n'*}"
+    out="$(roost_restore__cwd "${blocks[$i]}")"
+    if [ "$id" = "$5" ]; then
+      roost_restore__respawn "$id" "$out"; zp=0
+    else
+      zp=0; roost_restore_place_pane "$id" "$f" "$out" || zp=$?
+    fi
+    if [ "$zp" = 0 ]; then
+      ROOST_RESTORE_PANES=$((ROOST_RESTORE_PANES + 1))
+      if f="$(roost_shape_get "${blocks[$i]}" name)"; then
+        t set-option -p -t "$id" @roost-name "$f" 2>/dev/null || true
+      fi
+    fi
+    i=$((i + 1))
+  done
+  ROOST_RESTORE_WINDOWS=$((ROOST_RESTORE_WINDOWS + 1))
+  return "$rc"
+}
+
 # roost_restore__make_session SESSIONBLOCK BOOTSTRAP -> places one full
-# session; returns 0 placed, 12 skipped. BOOTSTRAP=1 when the server is not
-# running: the session is made with the server, as its bootstrap (§4.3
-# Server).
+# session; returns 0 placed, 12 skipped, 13 placed but a window could not
+# hold every pane. BOOTSTRAP=1 when the server is not running: the session is
+# made with the server, as its bootstrap (§4.3 Server).
 roost_restore__make_session() {
-  local blk="$1" boot="$2" name wfirst wname pfirst cwd size w h f out sid wid pane npanes rc
+  local blk="$1" boot="$2" name wfirst wname pfirst cwd size w h f out sid wid pane npanes rc=0 r
+  local wf idx pre="" act=""
+  local -a wins
   name="$(roost_restore__addr "$blk")"
-  wfirst="$(roost_restore__windows "$name" | head -1)"
-  [ -n "$wfirst" ] || return 0
+  while IFS= read -r wf; do [ -n "$wf" ] && wins+=("$wf"); done <<< "$(roost_restore__windows "$name")"
+  [ "${#wins[@]}" -gt 0 ] || return 0
+  wfirst="${wins[0]}"
   pfirst="$(roost_restore__panes "$(roost_restore__addr "$wfirst")" | head -1)"
   [ -n "$pfirst" ] || return 0
   npanes=0
-  while IFS= read -r f; do
-    [ -n "$f" ] && npanes=$((npanes + $(roost_restore__panes "$(roost_restore__addr "$f")" | grep -c .)))
-  done <<< "$(roost_restore__windows "$name")"
+  for wf in "${wins[@]}"; do
+    npanes=$((npanes + $(roost_restore__panes "$(roost_restore__addr "$wf")" | grep -c .)))
+  done
   if [ "$boot" != 1 ] && roost_restore__exists "$name"; then
     printf "roost restore: session '%s' exists — skipped, %s panes not restored\n" "$name" "$npanes" >&2
     return 12
   fi
-  cwd="$(roost_restore__cwd "$pfirst")"
+  cwd="$(roost_restore__cwd "$pfirst" 2>/dev/null)"
   size="$(roost_restore__size "$name")"; w="${size% *}" h="${size#* }"
   local -a nflag=()
   wname="$(roost_shape_get "$wfirst" name)" && nflag=(-n "$wname")
@@ -291,7 +416,7 @@ roost_restore__make_session() {
       -s "$(roost_restore__unvis "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
       "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || return 1
   else
-    f="$(roost_restore__new_file)"
+    roost_restore__new_file; f="$ROOST_RESTORE_F"
     out="$(t new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
       -s "$(roost_restore__unvis "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
       "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || {
@@ -304,21 +429,46 @@ roost_restore__make_session() {
     roost_restore__hold ROOST_TEST_RESTORE_HOLD
     server_init
     roost_restore__shell_cmd
-  fi
-  roost_restore__window_first "$sid" "$wid" "$(roost_restore__addr "$wfirst" | sed 's/.*://')"
-  rc=0; roost_restore_place_pane "$pane" "$f" "$cwd" || rc=$?
-  if [ "$boot" = 1 ]; then
-    # Replaceable only when this run made it, won the rename, and it still
-    # holds the one pane restore made (§4.3). Lost: a key took it, the
-    # pane is the person's, and the saved session is skipped by name.
-    if [ "$rc" = 1 ] || [ "$rc" = 2 ]; then
+    # Replaceable only when this run made it, wins the rename, and it still
+    # holds the one pane restore made (§4.3). Lost: a key took it, the pane
+    # is the person's, and the saved session is skipped by name.
+    r=0; roost_restore__claim "$pane" "$f" || r=$?
+    if [ "$r" = 0 ] && [ "$(t list-panes -s -t "$sid" -F x 2>/dev/null | grep -c .)" != 1 ]; then
+      mv "$f.used" "$f.taken" 2>/dev/null || true; r=2
+    fi
+    if [ "$r" != 0 ]; then
       printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --only NAME)\n" "$name" "$npanes" >&2
       return 12
     fi
+    pre="$pane"
   fi
+  roost_restore__window_first "$sid" "$wid" "$(roost_restore__addr "$wfirst" | sed 's/.*://')"
+  for wf in "${wins[@]}"; do
+    idx="$(roost_restore__addr "$wf" | sed 's/.*://')"
+    if [ "$wf" != "$wfirst" ]; then
+      local -a nf=()
+      wname="$(roost_shape_get "$wf" name)" && nf=(-n "$wname")
+      pfirst="$(roost_restore__panes "$(roost_restore__addr "$wf")" | head -1)"
+      [ -n "$pfirst" ] || continue
+      roost_restore__new_file; f="$ROOST_RESTORE_F"
+      # The window name goes in as saved: `new-window -n` stores it as given,
+      # where undoing tmux's escaping would make it drift (R8.3, measured).
+      out="$(t new-window -d -P -F '#{window_id} #{pane_id}' -t "$sid:$idx" ${nf[@]+"${nf[@]}"} \
+        -c "$(roost_restore__cwd "$pfirst" 2>/dev/null)" \
+        "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || {
+          printf 'roost restore: window %s could not be made; its panes are not restored\n' "$(roost_restore__addr "$wf")" >&2
+          rc=13; continue; }
+      wid="${out%% *}" pane="${out#* }"
+      t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
+    fi
+    r=0; roost_restore__build_window "$wid" "$wf" "$pane" "$f" "$pre" || r=$?
+    [ "$r" = 13 ] && rc=13
+    [ "$(roost_shape_get "$wf" active 2>/dev/null)" = 1 ] && act="$wid"
+    pre=""
+  done
+  [ -n "$act" ] && t select-window -t "$act" 2>/dev/null || true
   ROOST_RESTORE_SESSIONS=$((ROOST_RESTORE_SESSIONS + 1))
-  ROOST_RESTORE_PANES=$((ROOST_RESTORE_PANES + 1))
-  return 0
+  return "$rc"
 }
 
 # roost_restore__make_member SESSIONBLOCK -> a later member of a session
@@ -362,7 +512,7 @@ roost_restore_run() {
   # files go to a directory of its own.
   if [ -n "$sdir" ]; then ROOST_RESTORE_RD="$sdir/restoring"
   else ROOST_RESTORE_RD="$(mktemp -d)/restoring"; fi
-  ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_PANES=0
+  ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
   ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
   own=0; roost_shape_owner_take "$ROOST_RESTORE_RD" || own=$?
   if [ "$own" = 1 ]; then
@@ -391,7 +541,8 @@ roost_restore_run() {
       boot=0
       roost_shape__read_rules || true
     fi
-    case "$r" in 12) rc=12 ;; 0) ;; *) [ "$rc" = 0 ] && rc="$r" ;; esac
+    # 12 wins over 13 when both (§4.3 Report).
+    case "$r" in 0) ;; 12) rc=12 ;; 13) [ "$rc" = 12 ] || rc=13 ;; *) [ "$rc" = 0 ] && rc="$r" ;; esac
     roost_restore__names
   done
   for blk in "$ROOST_RESTORE_PD"/*.session; do

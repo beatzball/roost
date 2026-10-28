@@ -877,5 +877,17 @@ roost_shape_owner_take() {
   return 2
 }
 
-# roost_shape_owner_drop DIR -> removes DIR, the owner's last act.
-roost_shape_owner_drop() { rm -rf "$1"; }
+# roost_shape_owner_drop DIR -> gives DIR up, the owner's last act: its
+# owner record goes, and DIR itself only when nothing else is in it.
+#
+# A finished restore's `restoring/` keeps the files of its run — each pane's
+# place.<n>.used or .taken, the bootstrap's — as the record of what happened
+# to each pane (§8.1 test 2 reads them after the run: "restoring/
+# bootstrap.used is what is left"; `place.<n>.taken`). With no owner record
+# it is held by nobody: the owner rule treats it as a dead owner's, so the
+# next restore takes it over and settles it (T2b) — a no-op for panes
+# already respawned — and clears it.
+roost_shape_owner_drop() {
+  rm -f "$1/owner"
+  rmdir "$1" 2>/dev/null || true
+}
