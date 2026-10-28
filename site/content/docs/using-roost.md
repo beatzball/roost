@@ -17,6 +17,8 @@ roost kill a      # kill session "a" (omit the name to stop the whole server)
 roost settings    # change theme/glyphs/separator/notifications, live
 ```
 
+`roost kill` with no session name stops the whole server: every session and every agent on it ends. `roost stop` and `roost down` are the same command. On a terminal it asks first. It prints what will end, for example `This ends 14 agents in 6 sessions.`, and stops the server only when you type `y`. Off a terminal (a script, a pipe) it does not ask: it refuses and exits 1 unless you pass `--yes` (or `-y`). `roost kill NAME` names one session and never asks.
+
 Detach with the prefix then `d`, like any tmux. Inside `roost`, run your agents as windows (`claude`, `codex`, `aider`, …) and the status bar shows one badged tab per agent — so you can see who is blocked at a glance.
 
 ## Sessions

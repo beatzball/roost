@@ -79,8 +79,11 @@ demo_tmux() { tmux -S "$DEMO_SOCK" "$@"; }
 demo_reset() {
   demo_env
   mkdir -p "$(dirname "$DEMO_SOCK")"
-  # Only ever the demo socket, which demo_env just pinned.
-  "$ROOST" kill >/dev/null 2>&1 || true
+  # Only ever the demo socket, which demo_env just pinned. --yes because
+  # output is discarded and this is not a question for the person recording:
+  # without it a bare kill off a terminal refuses (#207) and the old demo
+  # server would quietly survive the reset.
+  "$ROOST" kill --yes >/dev/null 2>&1 || true
 
   rm -rf "$DEMO_REPO" "$DEMO_XDG" "$DEMO_ZDOT"
   mkdir -p "$DEMO_REPO/src" "$DEMO_XDG" "$DEMO_ZDOT"
@@ -175,5 +178,7 @@ demo_scan_panes() {
 # Stop the demo server. Leaves /tmp in place for inspection.
 demo_stop() {
   demo_env
-  "$ROOST" kill >/dev/null 2>&1 || true
+  # --yes for the same reason as demo_reset: off a terminal a bare kill
+  # refuses (#207), and the `|| true` would hide that.
+  "$ROOST" kill --yes >/dev/null 2>&1 || true
 }

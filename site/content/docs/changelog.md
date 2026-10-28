@@ -18,6 +18,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A bare `roost stop`, `roost kill` or `roost down` asks before it ends
+  the whole server (#207).** With no session name it used to stop every
+  session and every agent at once, with no count and no question. On a
+  terminal it now prints what will end (`This ends 14 agents in 6
+  sessions.`) and stops only when you type `y`; anything else, or no answer,
+  prints `roost: not stopped.` and exits 1. Off a terminal it refuses and
+  exits 1, naming the `--yes` form; `--yes` (or `-y`) stops it with no
+  question. `roost kill NAME` is unchanged and never asks.
 - **A pane held only by its own background work has a badge of its own
   (#193).** When a Claude Code turn has answered but a background command,
   agent or `Monitor` it started still runs, the pane used to read ⏳ like an
