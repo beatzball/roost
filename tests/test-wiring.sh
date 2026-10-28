@@ -35,6 +35,7 @@ CANARY="$TMP/canary"
 export HOME="$CANARY/home"
 export XDG_CONFIG_HOME="$CANARY/xdg-config"
 export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+export CLAUDE_CONFIG_DIR="$CANARY/claude-config"
 export COPILOT_HOME="$CANARY/copilot"
 export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
@@ -136,7 +137,7 @@ PY
 # binary.
 install_claude() {
   PATH="$B/real:$PATH" \
-  HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
+  HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_CONFIG_DIR="$B/home/.claude" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
   COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
     "$ROOST" install --only claude --yes </dev/null >"$B/out/install" 2>&1
 }
@@ -609,7 +610,7 @@ printf '\n== doctor: a row for every wiring state ==\n'
 box doc
 srv
 S="$B/sock/roost"
-doc() { env -i PATH="$1" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
+doc() { env -i PATH="$1" HOME="$B/home" XDG_CONFIG_HOME="$B/xdg" CLAUDE_CONFIG_DIR="$B/home/.claude" CLAUDE_SETTINGS="$B/home/.claude/settings.json" \
   COPILOT_HOME="$B/home/.copilot" PI_CODING_AGENT_DIR="$B/home/.pi/agent" CODEX_HOME="$B/home/.codex" \
   ROOST_CONFIG_SOCK=/nonexistent ROOST_NOTIFY_SOCK=/nonexistent "${@:2}" "$HERE/scripts/roost-doctor" 2>&1; }
 # The 1.x stub goes on this PATH too. `doc` starts doctor under `env -i`, so

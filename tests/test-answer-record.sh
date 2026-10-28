@@ -34,7 +34,7 @@ sdir="$(mktemp -d /tmp/amx.XXXX)"; s="$sdir/roost"
 CANARY="$sdir/canary"
 export HOME="$CANARY/home" XDG_CONFIG_HOME="$CANARY/xdg-config" \
        XDG_STATE_HOME="$CANARY/xdg-state" XDG_DATA_HOME="$CANARY/xdg-data" \
-       CLAUDE_SETTINGS="$CANARY/claude/settings.json" CODEX_HOME="$CANARY/codex" \
+       CLAUDE_CONFIG_DIR="$CANARY/claude-config" CLAUDE_SETTINGS="$CANARY/claude/settings.json" CODEX_HOME="$CANARY/codex" \
        COPILOT_HOME="$CANARY/copilot" PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export ROOST_RECORD_DIR=""
 export ROOST_EVENTS=""

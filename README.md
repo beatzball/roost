@@ -242,7 +242,14 @@ badging, `roost doctor` names the harness and ends that line with
 Claude block and `roost hooks codex` the codex one. Full walkthrough:
 [roosting.dev/docs/state-badges](https://roosting.dev/docs/state-badges).
 
-For LLM agents, install the portable skill so they know the coordination loop:
+`roost install` also links the roost skill (`skills/roost`) so an agent in a
+pane knows the coordination loop. Each link is `<folder>/roost`, in the
+harness's own skills folder: Claude Code `$CLAUDE_CONFIG_DIR/skills` (default
+`~/.claude/skills`), codex `$CODEX_HOME/skills`, opencode
+`$XDG_CONFIG_HOME/opencode/skills`, copilot `$COPILOT_HOME/skills`, pi
+`$PI_CODING_AGENT_DIR/skills`. The table is `roost_skill_dir` in
+`scripts/lib/roost-adapters.sh`. For any other agent, install the portable
+skill:
 
 ```sh
 npx skills add beatzball/roost --skill roost

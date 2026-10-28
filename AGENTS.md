@@ -189,7 +189,8 @@ python3 tests/test-contrast.py   # also a CI step — run it too
   alone is not enough and neither is the XDG pair. The table lives in
   `scripts/lib/roost-adapters.sh`: `XDG_CONFIG_HOME` (opencode),
   `PI_CODING_AGENT_DIR` (pi), `COPILOT_HOME` (copilot), `CODEX_HOME` (codex),
-  and `CLAUDE_SETTINGS` — which names a **file**, not a directory. Clear
+  `CLAUDE_SETTINGS` — which names a **file**, not a directory — and
+  `CLAUDE_CONFIG_DIR`, where the roost skill link for Claude goes (#208). Clear
   `ZDOTDIR` too. `tests/test-install.sh`'s `run_install` sets the whole set in
   one place; copy that shape rather than deriving the list again. A runner that
   exports any of these has it inherited straight through a sandboxed `HOME`,

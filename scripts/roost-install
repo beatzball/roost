@@ -659,9 +659,10 @@ upstream_note() {
 # worktree. The note for that one reads the old target back off the link.
 #
 # OLD is the link's text as the plan read it, and only a relink of a link
-# that names another copy of roost carries it: the summary names it, and the
-# undo puts it back. It is the LAST field and is left off entirely, never
-# written empty, on every other row.
+# that names another copy of roost, or of a skill link that is roost's and
+# dangling, carries it: the summary names it, and the undo puts it back. It
+# is the LAST field and is left off entirely, never written empty, on every
+# other row. (An adapter's dangling relink carries none; see the undo below.)
 #
 # A field is never left empty. IFS is a tab here, and a tab is IFS
 # whitespace, so `read` folds two tabs in a row into one and every later
@@ -785,6 +786,71 @@ for h in $HARNESSES; do
 done
 
 DETECTED="${DETECTED# }"
+
+# --- the roost skill (#208) --------------------------------------------------
+# One more symlink per detected harness: `roost` in that harness's own skills
+# folder, pointing at this checkout's skills/roost, so an agent in a pane knows
+# how to drive roost without anyone linking it by hand. Where each folder is,
+# and why it is not ~/.agents/skills, is in scripts/lib/roost-adapters.sh
+# beside roost_skill_dir.
+#
+# The rows go into the SAME lists as the adapter links, so they are printed in
+# the same plan, covered by the same one answer, re-checked the same way
+# before writing, and undone by the same printed lines. Their KEY is
+# `skill:<harness>`, which step_state below routes to roost_skill_state; every
+# other field means what it means for an adapter row. The five arms are the
+# adapter loop's, for the same reasons given there.
+#
+# Not under --symlinks-only. That mode is `roost validate`'s call, and validate
+# promises its tester that the report names every link the call made; it
+# reads back only the adapter paths it offered, so a skill link made there
+# would be a change to the tester's machine that no report line mentions.
+# validate predicts the skill links instead (skill_link_rows) and leaves them
+# to `roost install`.
+if [ "$SYMLINKS_ONLY" -eq 0 ]; then
+  for h in $DETECTED; do
+    sp="$(roost_skill_path "$h")"; st="$(roost_skill_target)"
+    case "$(roost_skill_state "$h")" in
+      # "<harness> skill" in the summary's name list, so "Already correct:
+      # claude" is never printed on the strength of the skill alone while
+      # claude's hooks are still to be written.
+      ok)       OK_STEPS="$OK_STEPS$h skill$TAB$sp
+"
+                record_outcome unchanged "$h" "$sp" ;;
+      missing)  LINK_STEPS="${LINK_STEPS}link$TAB$h$TAB$sp$TAB$st${TAB}skill:$h
+" ;;
+      # roost_skill_state reads `dangling` only for a link it can PROVE is
+      # roost's (roost_skill_dangling_names); any other dangling link is
+      # `foreign` and refused below. The link's text rides along as OLD, so
+      # the undo puts back exactly the link this run replaced.
+      dangling) LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$sp$TAB$st${TAB}skill:$h$TAB$(readlink "$sp")
+" ;;
+      other-checkout)
+        if [ "$IN_WORKTREE" -eq 0 ]; then
+          LINK_STEPS="${LINK_STEPS}relink$TAB$h$TAB$sp$TAB$st${TAB}skill:$h$TAB$(readlink "$sp")
+"
+        else
+          REFUSED="$REFUSED$h$TAB$sp$TAB$st${TAB}worktree
+"
+          record_outcome refused "$h" "$sp"
+        fi ;;
+      foreign)  REFUSED="$REFUSED$h$TAB$sp$TAB$st${TAB}link
+"
+                record_outcome refused "$h" "$sp" ;;
+      *) : ;;
+    esac
+  done
+fi
+
+# step_state KEY -- the state of the path a LINK_STEPS or UNLINK_STEPS row is
+# about, asked of the table that row came from: `skill:<harness>` for a skill
+# link, an adapter key for everything else.
+step_state() {
+  case "$1" in
+    skill:*) roost_skill_state "${1#skill:}" ;;
+    *)       roost_adapter_state "$1" ;;
+  esac
+}
 
 # --- the JSON steps --------------------------------------------------------
 # The harnesses configured by editing a JSON file rather than by a symlink.
@@ -1047,6 +1113,8 @@ if [ -n "$LINK_STEPS$JSON_STEPS" ]; then
     [ -n "$action" ] || continue
     # A relink of a link into another copy of roost says what it replaces:
     # that link works, so the reader is about to lose something that does.
+    # A skill link that is roost's and dangling says it too, so the text the
+    # undo will put back is on screen before the answer.
     was=""; [ -n "${old:-}" ] && was=" (was $old)"
     printf '  %-6s %s%s\n         -> %s\n' "$action" "$path" "$was" "$target"
   done
@@ -1105,16 +1173,19 @@ if [ -n "$OK_STEPS$JSON_OK" ]; then
   #
   # De-duplicated: copilot has BOTH a symlink and a settings file, so without
   # this it reports itself twice on a machine where both are already right.
+  #
+  # Joined label by label, never by turning spaces into commas: a skill row's
+  # label is "<harness> skill", and split at its space it would print
+  # "claude, skill", claiming claude's hooks are correct on the skill alone.
   ok_names=""
   while IFS="$TAB" read -r h path; do
     [ -n "${h:-}" ] || continue
-    case " $ok_names " in *" $h "*) continue ;; esac
-    ok_names="$ok_names $h"
+    case ", $ok_names, " in *", $h, "*) continue ;; esac
+    ok_names="${ok_names:+$ok_names, }$h"
   done <<EOF
 $OK_STEPS$JSON_OK
 EOF
-  ok_names="${ok_names# }"
-  printf 'Already correct: %s\n\n' "${ok_names// /, }"
+  printf 'Already correct: %s\n\n' "$ok_names"
 fi
 
 # own_file_via_dir PATH TARGET — true when PATH is not a link but IS this
@@ -1225,8 +1296,9 @@ if [ "$do_writes" -eq 1 ]; then
     #
     # Asked with the step's KEY, not the harness name: on opencode 2 the two
     # opencode steps are about two different paths (plugins/roost and the 1.x
-    # plugin/roost.js), and only the key says which one this line means.
-    state="$(roost_adapter_state "$key")"
+    # plugin/roost.js), and only the key says which one this line means. A
+    # skill row's key routes the question to the skill table (step_state).
+    state="$(step_state "$key")"
     # The plan removes a dangling link only when it names a roost adapter. A
     # link swapped for someone else's dangling one while the prompt sat there
     # still reads `dangling`, so the same rule is asked again here, and a link
@@ -1249,6 +1321,13 @@ if [ "$do_writes" -eq 1 ]; then
     if [ "$action:$state" = relink:other-checkout ] \
        && { [ -z "${old:-}" ] || [ "$(readlink "$path" 2>/dev/null)" != "$old" ]; }; then
       state="other-checkout, not the link the plan named"
+    fi
+    # A skill link's dangling relink carries OLD too, and is held to it the
+    # same way: step_state already re-proved the link is roost's, and this
+    # makes it the same link the plan showed, so the undo's old text is true.
+    if [ "$action:$state" = relink:dangling ] && [ -n "${old:-}" ] \
+       && [ "$(readlink "$path" 2>/dev/null)" != "$old" ]; then
+      state="dangling, not the link the plan named"
     fi
     case "$action:$state" in
       link:missing|relink:dangling|relink:other-checkout|unlink:ok|unlink:dangling|unlink:other-checkout) : ;;
@@ -1286,9 +1365,10 @@ if [ "$do_writes" -eq 1 ]; then
         printf '  %-8s %s\n' removed "$path"
         # The undo for a removal is the link it removed, put back exactly as
         # the plan read it.
-        UNDO="${UNDO}ln -s \"$target\" \"$path\"
+        undo="ln -s $(roost_shell_quote "$target") $(roost_shell_quote "$path")"
+        UNDO="${UNDO}$undo
 "
-        record_outcome removed "$h" "$path" "ln -s \"$target\" \"$path\""
+        record_outcome removed "$h" "$path" "$undo"
       else
         printf '  could NOT remove %s\n' "$path" >&2
         record_outcome failed "$h" "$path"
@@ -1326,13 +1406,29 @@ if [ "$do_writes" -eq 1 ]; then
 
     # The undo removes what this run made, and for a link it took over from
     # another copy of roost it also puts that link back exactly as it was.
-    undo="rm \"$path\""
-    [ -n "${old:-}" ] && undo="rm \"$path\" && ln -s \"$old\" \"$path\""
+    # Every value goes in as a shell literal (roost_shell_quote): the line is
+    # run later, and a `$` or a backtick in a path must not name another one.
+    qpath="$(roost_shell_quote "$path")"
+    undo="rm $qpath"
+    [ -n "${old:-}" ] && undo="rm $qpath && ln -s $(roost_shell_quote "$old") $qpath"
+    # A skill row's undo is guarded. It is run later, by hand, and
+    # ~/.claude/skills/roost is the name of ANY skill called roost: by then the
+    # path may hold the user's own skill, file or link. So the line acts only
+    # while the path is still a symlink whose text is exactly what this run
+    # wrote, and otherwise says it left the path alone. The adapter rows keep
+    # their bare undo: their dangling arm is a separate plan arm, left as it
+    # was for this change.
+    case "$key" in
+      # printf, not echo: dash's echo reads a backslash in the path as an escape.
+      skill:*) undo="if [ -L $qpath ] && [ \"\$(readlink $qpath)\" = $(roost_shell_quote "$target") ]; then $undo; else printf '%s\\n' $(roost_shell_quote "left $path alone: it is not the link roost made"); fi" ;;
+    esac
     # -n: if anything is at the path by now, a link to a directory is never
     # entered; ln fails on it instead, and that is reported as a failure.
     if mkdir -p "$(dirname "$path")" 2>/dev/null && ln -sn "$target" "$path" 2>/dev/null; then
       printf '  %-8s %s\n' "${action}ed" "$path"
-      if [ -n "${old:-}" ]; then
+      # Only for a take-over: a skill link's dangling relink carries OLD as
+      # well, and a link to nothing is not a second copy of anything.
+      if [ -n "${old:-}" ] && [ "$state" = other-checkout ]; then
         # roost does not look for copies of itself; it names the one it was
         # just pointed at, because a second copy nobody meant to keep is how
         # this link came to point at it.
@@ -1408,14 +1504,14 @@ EOF
         if [ -n "$json_bak" ]; then
           printf '           backup:  %s\n' "$json_bak"
           json_reindented=1
-          UNDO="${UNDO}cp \"$json_bak\" \"$real\"
-"
-          record_outcome wrote "$h" "$real" "cp \"$json_bak\" \"$real\""
+          # Shell literals, as the link undo lines are.
+          undo="cp $(roost_shell_quote "$json_bak") $(roost_shell_quote "$real")"
         else
-          UNDO="${UNDO}rm \"$real\"
-"
-          record_outcome wrote "$h" "$real" "rm \"$real\""
+          undo="rm $(roost_shell_quote "$real")"
         fi
+        UNDO="${UNDO}$undo
+"
+        record_outcome wrote "$h" "$real" "$undo"
         # Both said out loud, after the backup line so "the backup above" is
         # true. The first because roost's entry REPLACING theirs is exactly
         # what this used to do, and a user who has been bitten by a tool
@@ -1554,14 +1650,19 @@ if [ -n "$REFUSED" ]; then
       add_manual "$oc_note"
       continue
     fi
+    # Named for what roost wants there. A skill row's TARGET is this
+    # checkout's skills/roost, and a stranger's skill there is most likely
+    # their own skill called roost, which "adapter" would misdescribe.
+    what=adapter
+    [ "$target" = "$(roost_skill_target)" ] && what=skill
     # The `rm` only for a symlink, the rule scripts/roost-doctor follows:
     # handed for a regular file or a directory it deletes the thing itself,
     # which may be the only copy of someone's own plugin.
     if [ -L "$path" ]; then
       add_manual "$h: something that is not this checkout is at
     $path
-  roost install will not replace it. If you are sure you want roost's adapter
-  there instead, look at the file first, then:
+  roost install will not replace it. If you are sure you want roost's $what
+  there instead, look at it first, then:
     rm \"$path\" && ln -s \"$target\" \"$path\""
     else
       add_manual "$h: something that is not this checkout is at

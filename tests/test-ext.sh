@@ -45,6 +45,7 @@ export COPILOT_HOME="$CANARY/copilot"
 export PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 export CODEX_HOME="$CANARY/codex"
 export CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+export CLAUDE_CONFIG_DIR="$CANARY/claude-config"
 
 # What escaped, if anything. -mindepth 1 so the directory itself is never the
 # finding, and the whole listing is printed on failure rather than a count —

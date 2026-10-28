@@ -164,6 +164,27 @@ export ROOST_NOTIFY_SOCK="/nonexistent/roost-session-context-test-sock"
 cfgdir="$(mktemp -d /tmp/amx.XXXX)"
 setdir="$(mktemp -d /tmp/amx.XXXX)"
 
+# doctor reads every harness home, so every doctor call below runs through
+# doc(), which redirects them all into $dhome (AGENTS.md section 8); only
+# XDG_CONFIG_HOME and CLAUDE_SETTINGS are each case's own. The sandbox canary
+# from tests/test-install.sh is exported first: a variable doc() forgets is
+# inherited from the canary, not from the developer. CLAUDE_CONFIG_DIR is in
+# the set because doctor reads the roost skill link from
+# $CLAUDE_CONFIG_DIR/skills (#208); a fake claude on PATH makes that read
+# happen here, on CI too, so the check at the end can see which folder it was.
+CANARY="$setdir/canary"
+export ZDOTDIR="$CANARY/zdot" XDG_CONFIG_HOME="$CANARY/xdg-config" XDG_DATA_HOME="$CANARY/xdg-data" \
+  COPILOT_HOME="$CANARY/copilot" PI_CODING_AGENT_DIR="$CANARY/pi/agent" CODEX_HOME="$CANARY/codex" \
+  CLAUDE_SETTINGS="$CANARY/claude/settings.json" CLAUDE_CONFIG_DIR="$CANARY/claude-config"
+dhome="$setdir/dhome"; mkdir -p "$dhome"
+dshim="$setdir/dshim"; mkdir -p "$dshim"; printf "#!/bin/sh\nexit 0\n" > "$dshim/claude"; chmod +x "$dshim/claude"
+doc() { # doc XDG_CONFIG_HOME CLAUDE_SETTINGS -- roost-doctor, sandboxed
+  env HOME="$dhome" ZDOTDIR="$dhome" XDG_CONFIG_HOME="$1" XDG_DATA_HOME="$dhome/d" \
+    COPILOT_HOME="$dhome/c" PI_CODING_AGENT_DIR="$dhome/p" CODEX_HOME="$dhome/cx" \
+    CLAUDE_SETTINGS="$2" CLAUDE_CONFIG_DIR="$dhome/cc" PATH="$dshim:$PATH" \
+    COLORTERM=truecolor "$HERE/scripts/roost-doctor"
+}
+
 # A settings file in the shape someone gets by copying `roost hooks` BEFORE
 # this hook existed: the four state hooks, no SessionStart.
 # $HERE, not "/x": doctor now compares the wired command against THIS
@@ -172,23 +193,31 @@ setdir="$(mktemp -d /tmp/amx.XXXX)"
 # case stops testing the thing it names.
 printf '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"%s/scripts/roost-agent-state working"}]}],"Stop":[{"hooks":[{"type":"command","command":"%s/scripts/roost-agent-state done --stop-hook"}]}]}}\n' \
   "$HERE" "$HERE" > "$setdir/old.json"
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$cfgdir" CLAUDE_SETTINGS="$setdir/old.json" "$HERE/scripts/roost-doctor" 2>&1)"
+out="$(doc "$cfgdir" "$setdir/old.json" 2>&1)"
 assert_contains "$out" "no SessionStart hook" "doctor names a settings file wired before SessionStart existed"
 
 # ...and it stays a WARNING. Most of doctor's optional checks must never fail
 # the required-check exit code, and a missing context hook costs guidance, not
 # correctness.
-COLORTERM=truecolor XDG_CONFIG_HOME="$cfgdir" CLAUDE_SETTINGS="$setdir/old.json" "$HERE/scripts/roost-doctor" >/dev/null 2>&1
+doc "$cfgdir" "$setdir/old.json" >/dev/null 2>&1
 assert_eq "$?" "0" "a missing SessionStart hook does not fail doctor"
 
 # The same file with the hook added draws no such warning.
 printf '{"hooks":{"SessionStart":[{"matcher":"*","hooks":[{"type":"command","command":"/x/scripts/roost-session-context"}]}],"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/x/scripts/roost-agent-state working"}]}],"Stop":[{"hooks":[{"type":"command","command":"/x/scripts/roost-agent-state done --stop-hook"}]}]}}\n' \
   > "$setdir/new.json"
-out="$(COLORTERM=truecolor XDG_CONFIG_HOME="$cfgdir" CLAUDE_SETTINGS="$setdir/new.json" "$HERE/scripts/roost-doctor" 2>&1)"
+out="$(doc "$cfgdir" "$setdir/new.json" 2>&1)"
 case "$out" in
   *"no SessionStart hook"*) ROOST_TESTS_FAIL=$((ROOST_TESTS_FAIL+1)); printf '  FAIL: %s\n' "doctor is quiet when the SessionStart hook is wired" ;;
   *) ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "doctor is quiet when the SessionStart hook is wired" ;;
 esac
+
+# Nothing read or written through an inherited home: the last doctor run named
+# the sandbox's claude skill folder and never the canary's, and the canary
+# is still empty.
+assert_contains "$out" "$dhome/cc/skills/roost" "doctor reads the claude skill folder in the sandbox"
+case "$out" in *"$CANARY"*) r=leaked ;; *) r=sandboxed ;; esac
+assert_eq "$r" "sandboxed" "doctor read nothing through an inherited home"
+assert_eq "$(find "$CANARY" -mindepth 1 2>/dev/null)" "" "doctor wrote nothing outside its sandbox"
 
 rm -rf "$cfgdir" "$setdir"
 exit 0

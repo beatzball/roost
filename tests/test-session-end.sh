@@ -482,7 +482,7 @@ dhome="$work/dhome"; mkdir -p "$dhome/.claude"
 run_doctor() {
   env HOME="$dhome" XDG_CONFIG_HOME="$dhome/.config" XDG_DATA_HOME="$dhome/.local/share" \
       COPILOT_HOME="$dhome/.copilot" PI_CODING_AGENT_DIR="$dhome/.pi/agent" \
-      CODEX_HOME="$dhome/.codex" CLAUDE_SETTINGS="$dhome/.claude/settings.json" \
+      CODEX_HOME="$dhome/.codex" CLAUDE_CONFIG_DIR="$dhome/.claude" CLAUDE_SETTINGS="$dhome/.claude/settings.json" \
       COLORTERM=truecolor ROOST_CONFIG_SOCK=/nonexistent/roost-se-test-sock \
       ROOST_NOTIFY_SOCK=/nonexistent/roost-se-test-sock "$@" \
       "$DOC" 2>&1

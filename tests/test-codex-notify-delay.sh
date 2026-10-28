@@ -41,7 +41,7 @@ mkdir -p "$T0/home" "$T0/state"
 export HOME="$T0/home" XDG_STATE_HOME="$T0/state" ROOST_EVENTS="$T0/state/events"
 export XDG_CONFIG_HOME="$CANARY/xdg-config" XDG_DATA_HOME="$CANARY/xdg-data"
 export COPILOT_HOME="$CANARY/copilot" PI_CODING_AGENT_DIR="$CANARY/pi/agent"
-export CODEX_HOME="$CANARY/codex" CLAUDE_SETTINGS="$CANARY/claude/settings.json"
+export CODEX_HOME="$CANARY/codex" CLAUDE_CONFIG_DIR="$CANARY/claude-config" CLAUDE_SETTINGS="$CANARY/claude/settings.json"
 export ZDOTDIR="$CANARY/zdot"
 unset ROOST_NOTIFY_DEFER TMUX TMUX_PANE
 # A deferred child outlives the hook that started it, so it can outlive this

@@ -16,6 +16,10 @@
 # so all three are set here too.
 set -u
 . "$(dirname "$0")/lib.sh"
+# sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''. The
+# installer prints every value in an undo line this way (#208, round 2), so a
+# `$` or a backtick in a path is never expanded when the line is run.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 INSTALL="$HERE/scripts/roost-install"
 
@@ -127,7 +131,7 @@ run_install() { # run_install BOX SHIMDIR [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$INSTALL" "$@" </dev/null 2>&1
 }
@@ -144,7 +148,7 @@ run_install_stdin() { # run_install_stdin BOX SHIMDIR ANSWER [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$INSTALL" "$@" <<<"$ans" 2>&1
 }
@@ -160,7 +164,7 @@ adapter_path_in() { # adapter_path_in BOX HARNESS
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
     bash -c '. "'"$HERE"'/scripts/lib/roost-adapters.sh"; roost_adapter_path "$1"' _ "$h"
 }
 adapter_target() { # adapter_target HARNESS
@@ -241,7 +245,11 @@ for h in opencode pi copilot; do
   assert_eq "$(readlink "$p" 2>/dev/null)" "$(adapter_target "$h")" \
     "fresh machine: $h symlink points at this checkout"
 done
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+# Every count of symlinks in this file leaves out the roost skill links
+# (`<harness home>/skills/roost`, #208): they are one more link per detected
+# harness, and tests/test-skill-links.sh counts them, planted state by state.
+# Excluded by that exact tail, so any OTHER stray link is still counted here.
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "fresh machine: exactly three symlinks were created, no more"
 
 # The plan must name the exact path BEFORE the write, not after. A plan that
@@ -250,7 +258,7 @@ assert_contains "$out" "$(adapter_path_in "$box" opencode)" \
   "fresh machine: the plan names opencode's exact target path"
 # Every write gets a one-line undo, or a user who regrets this has to work out
 # what was touched from a tree they did not see before.
-assert_contains "$out" "rm \"$(adapter_path_in "$box" pi)\"" \
+assert_contains "$out" "rm $(sq "$(adapter_path_in "$box" pi)")" \
   "fresh machine: a copy-pasteable undo is printed for each link"
 
 # ===========================================================================
@@ -265,7 +273,8 @@ assert_eq "$(tree_of "$box")" "$before" "re-run: the sandbox tree is unchanged"
 # printing `rm` lines for links this run did not make is how a user ends up
 # deleting a working install.
 case "$out2" in
-  *"rm \"$(adapter_path_in "$box" pi)\""*) s=printed ;;
+  # Either quoting, so the check cannot pass just because the format moved.
+  *"rm \"$(adapter_path_in "$box" pi)\""*|*"rm $(sq "$(adapter_path_in "$box" pi)")"*) s=printed ;;
   *) s=quiet ;;
 esac
 assert_eq "$s" "quiet" "re-run: no undo line for a link this run did not create"
@@ -359,7 +368,7 @@ run_install_from() {
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash "$co/scripts/roost-install" "$@" </dev/null 2>&1
 }
@@ -386,10 +395,10 @@ for pair in "opencode2 opencode" "pi pi"; do
   assert_contains "$out" "relinked" "$key, plain checkout, other copy's link: the output says relinked"
   assert_contains "$out" "was $old" "$key, plain checkout, other copy's link: the output names the old target"
   assert_contains "$out" "a second copy of roost" "$key, plain checkout, other copy's link: the output says it is a second copy"
-  assert_contains "$out" "rm \"$P\" && ln -s \"$old\" \"$P\"" \
+  assert_contains "$out" "rm $(sq "$P") && ln -s $(sq "$old") $(sq "$P")" \
     "$key, plain checkout, other copy's link: the printed undo puts the old link back"
   assert_contains "$(cat "$box/records" 2>/dev/null)" \
-    "$(printf 'wrote\t%s\t%s\trm "%s" && ln -s "%s" "%s"' "$h" "$P" "$P" "$old" "$P")" \
+    "$(printf 'wrote\t%s\t%s\trm %s && ln -s %s %s' "$h" "$P" "$(sq "$P")" "$(sq "$old")" "$(sq "$P")")" \
     "$key, plain checkout, other copy's link: --records holds wrote with the undo"
 
   # --- plain checkout, a stranger's link (the control) -> still refused
@@ -467,7 +476,7 @@ assert_eq "$rc" "0" "opencode 2, other copy's 1.x link, plain checkout: exits 0"
 [ -e "$old1" ]; assert_true $? "opencode 2, other copy's 1.x link, plain checkout: the other copy's adapter is untouched"
 assert_contains "$out" "removed  $P1" "opencode 2, other copy's 1.x link, plain checkout: the output names it"
 assert_contains "$(cat "$box/records" 2>/dev/null)" \
-  "$(printf 'removed\topencode\t%s\tln -s "%s" "%s"' "$P1" "$old1" "$P1")" \
+  "$(printf 'removed\topencode\t%s\tln -s %s %s' "$P1" "$(sq "$old1")" "$(sq "$P1")")" \
   "opencode 2, other copy's 1.x link, plain checkout: --records holds removed with the ln -s undo"
 
 box="$TMP/oc1x-wt"
@@ -602,7 +611,7 @@ box="$TMP/onlypi"
 out="$(run_install "$box" "$ALL_SHIM" --only pi --yes)"; rc=$?
 assert_eq "$rc" "0" "--only pi: exits 0"
 [ -L "$(adapter_path_in "$box" pi)" ]; assert_true $? "--only pi: pi is linked"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "--only pi: exactly one symlink exists"
 # Same stripping as case 9, same two reasons.
 body="$(printf '%s' "$out" | sed "s|$HERE||g")"
@@ -665,7 +674,7 @@ for empty_only in "--only=" "--only,--only-sep" "--only,--only-ws" "--only-space
   esac
   rc=$?
   assert_eq "$rc" "2" "--only naming nothing ($empty_only): exits 2"
-  n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+  n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
   assert_eq "$n" "0" "--only naming nothing ($empty_only): links nothing"
 done
 
@@ -674,7 +683,7 @@ done
 box="$TMP/onlyok"
 run_install "$box" "$ALL_SHIM" --only=copilot --yes >/dev/null; rc=$?
 assert_eq "$rc" "0" "--only=copilot (the = spelling with a real name): exits 0"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "--only=copilot: exactly one symlink"
 
 # ===========================================================================
@@ -705,7 +714,7 @@ shim="$(make_harness_shim opencode)"
 out="$(run_install "$box" "$shim" --yes)"; rc=$?
 assert_eq "$rc" "0" "one harness installed: exits 0"
 [ -L "$(adapter_path_in "$box" opencode)" ]; assert_true $? "one harness installed: opencode is linked"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "one harness installed: nothing else was linked"
 # The checkout's own path is stripped first, and then the harness name is
 # matched as a whole WORD. Both matter: this worktree lives under
@@ -733,7 +742,7 @@ rm -rf "$shim"
 box="$TMP/symonly"
 out="$(run_install "$box" "$ALL_SHIM" --symlinks-only --yes)"; rc=$?
 assert_eq "$rc" "0" "--symlinks-only: exits 0"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "--symlinks-only: the three symlinks are still made"
 case "$out" in *settings.json*|*hooks.json*) s=mentioned ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "--symlinks-only: no JSON file is mentioned"
@@ -773,7 +782,7 @@ if command -v python3 >/dev/null 2>&1; then
 else
   assert_true 0 "--print-only block comparison skipped (python3 needed)"
 fi
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "--print-only: the symlinks are still made (it only governs JSON)"
 
 # The other direction, which nothing covered: a NORMAL run must print no JSON
@@ -899,7 +908,10 @@ assert_eq "$(tree_of "$box")" "$before" "claude re-run: nothing under the sandbo
 # a mutation that plans the merge anyway and lets roost_json_merge discover it
 # is a no-op survives this whole case: the file does come back byte-identical
 # and no backup is taken, because the merge itself is idempotent.
-assert_contains "$out" "Already correct: opencode, claude" \
+# The names line, with ", " closed on the end so "claude" can only match
+# as a whole name: the line also carries "claude skill" (#208), which
+# names the skill link and not the hooks this case is about.
+assert_contains "$(printf '%s\n' "$out" | grep '^Already correct:'), " ", claude, " \
   "claude re-run: claude is named as already correct"
 case "$out" in *"merge  $cset"*) s=planned ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "claude re-run: no write is even PLANNED for it"
@@ -1219,7 +1231,10 @@ if command -v python3 >/dev/null 2>&1; then
 print(len(json.load(sys.stdin)))')" "2" \
     "claude beside a user's own hook, re-run: still exactly two entries"
 fi
-assert_contains "$out" "Already correct: opencode, claude" \
+# The names line, with ", " closed on the end so "claude" can only match
+# as a whole name: the line also carries "claude skill" (#208), which
+# names the skill link and not the hooks this case is about.
+assert_contains "$(printf '%s\n' "$out" | grep '^Already correct:'), " ", claude, " \
   "claude beside a user's own hook, re-run: nothing left to do"
 
 # --- malformed settings.json -> exit 1, no write, no backup ----------------
@@ -1243,7 +1258,7 @@ cset="$box/home/.claude/settings.json"
 out="$(run_install "$box" "$ALL_SHIM" --yes)"; rc=$?
 assert_eq "$rc" "0" "claude with no JSON tool: exits 0"
 assert_file_absent "$cset" "claude with no JSON tool: settings.json is not written"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "3" "claude with no JSON tool: the symlinks are still made"
 if command -v python3 >/dev/null 2>&1; then
   want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
@@ -1282,7 +1297,7 @@ out="$(run_install "$box" "$CLAUDE_SHIM" --print-only --yes)"; rc=$?
 assert_eq "$rc" "0" "claude --print-only: exits 0"
 assert_file_absent "$box/home/.claude/settings.json" \
   "claude --print-only: settings.json is not written even though a JSON tool is there"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "claude --print-only: the symlink is still made (it only governs JSON)"
 if command -v python3 >/dev/null 2>&1; then
   want_claude="$(. "$HERE/scripts/lib/roost-hooks.sh"; roost_hooks_claude | hook_blocks)"
@@ -2176,7 +2191,7 @@ run_roost() { # run_roost BOX SHIMDIR [args...]
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ROOST_SELF_SOCK \
     bash "${RUN_BIN:-$ROOST_BIN}" "$@" </dev/null 2>&1
@@ -2280,7 +2295,7 @@ out="$(run_install "$box" "$ALL_SHIM" --yes --records "$recs")"; rc=$?
 assert_eq "$rc" "0" "--records: the run still exits 0"
 for h in opencode pi copilot; do
   p="$(adapter_path_in "$box" "$h")"
-  assert_contains "$(records_of "$recs")" "wrote$TAB$h$TAB$p${TAB}rm \"$p\"" \
+  assert_contains "$(records_of "$recs")" "wrote$TAB$h$TAB$p${TAB}rm $(sq "$p")" \
     "--records: $h is recorded as written, with its own undo command"
 done
 # The undo lines in the record and the undo lines the human sees are the same
@@ -2288,7 +2303,8 @@ done
 # to prevent, so they are compared rather than each asserted alone.
 rec_undo="$(records_of "$recs" | while IFS="$TAB" read -r v h p u; do
   [ "$v" = wrote ] && printf '%s\n' "$u"; done | sort)"
-human_undo="$(printf '%s\n' "$out" | sed -n 's/^  rm "/rm "/p' | sort)"
+# Both shapes: a skill link's undo is guarded, so it starts `if [` (#208).
+human_undo="$(printf '%s\n' "$out" | sed -n -e "s/^  rm '/rm '/p" -e 's/^  if \[ /if [ /p' | sort)"
 assert_eq "$rec_undo" "$human_undo" \
   "--records: the recorded undo lines are the ones printed to the human"
 
@@ -2315,7 +2331,9 @@ run_install "$box" "$ALL_SHIM" --yes --records "$recs3" >/dev/null
 fpath="$(adapter_path_in "$box" pi)"
 assert_contains "$(records_of "$recs3")" "refused${TAB}pi$TAB$fpath$TAB" \
   "--records: a foreign path is recorded as refused"
-case "$(records_of "$recs3")" in *"wrote${TAB}pi$TAB"*) s=claimed ;; *) s=absent ;; esac
+# Matched on the refused PATH: pi's skill link (#208) is a separate path that
+# this run really did write.
+case "$(records_of "$recs3")" in *"wrote${TAB}pi$TAB$fpath$TAB"*) s=claimed ;; *) s=absent ;; esac
 assert_eq "$s" "absent" "--records: a path this run refused is never recorded as written"
 
 # --dry-run wrote nothing, so it records no write. The file is still created
@@ -2336,7 +2354,7 @@ box="$TMP/records-json"
 recs5="$TMP/records5.tsv"
 run_install "$box" "$ALL_JSON_SHIM" --yes --only claude --records "$recs5" >/dev/null
 cset="$box/home/.claude/settings.json"
-assert_contains "$(records_of "$recs5")" "wrote${TAB}claude$TAB$cset${TAB}rm \"$cset\"" \
+assert_contains "$(records_of "$recs5")" "wrote${TAB}claude$TAB$cset${TAB}rm $(sq "$cset")" \
   "--records: a settings.json this run created records an rm as its undo"
 run_install "$box" "$ALL_JSON_SHIM" --yes --only claude --records "$TMP/records5b.tsv" >/dev/null
 assert_contains "$(records_of "$TMP/records5b.tsv")" "unchanged${TAB}claude$TAB$cset$TAB" \
@@ -2449,7 +2467,7 @@ in_adapter_lib() {
   COPILOT_HOME="$box/home/.copilot" \
   PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="$shim" \
     bash -c 'set -u; . "$1/scripts/lib/roost-adapters.sh"; shift; "$@"' _ "$root" "$@"
 }
@@ -2569,9 +2587,9 @@ assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
 [ -d "$p2/" ]; assert_true $? "opencode 2, fresh home: plugins/roost reaches a real directory"
 [ ! -e "$p1" ] && [ ! -L "$p1" ]; assert_true $? \
   "opencode 2, fresh home: no plugin/roost.js was created"
-n="$(find "$box/home" -type l 2>/dev/null | wc -l | tr -d ' ')"
+n="$(find "$box/home" -type l ! -path '*/skills/roost' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$n" "1" "opencode 2, fresh home: exactly one symlink was created"
-assert_contains "$out" "rm \"$p2\"" "opencode 2, fresh home: the undo names plugins/roost"
+assert_contains "$out" "rm $(sq "$p2")" "opencode 2, fresh home: the undo names plugins/roost"
 
 # --- 2.x, a re-run -> nothing written, and the summary names opencode -------
 before="$(tree_of "$box")"
@@ -2607,11 +2625,11 @@ assert_eq "$rc" "0" "opencode 2, own 1.x link: exits 0"
 assert_eq "$(readlink "$p2" 2>/dev/null)" "$(adapter_target opencode2)" \
   "opencode 2, own 1.x link: plugins/roost is linked"
 # The undo for a removal puts the link back, not an `rm`.
-undo1="ln -s \"$(adapter_target opencode)\" \"$p1\""
+undo1="ln -s $(sq "$(adapter_target opencode)") $(sq "$p1")"
 assert_contains "$out" "$undo1" "opencode 2, own 1.x link: the undo puts the 1.x link back"
 assert_contains "$(records_of "$recs")" "removed${TAB}opencode$TAB$p1$TAB$undo1" \
   "opencode 2, own 1.x link: --records says it was removed, with its undo"
-assert_contains "$(records_of "$recs")" "wrote${TAB}opencode$TAB$p2${TAB}rm \"$p2\"" \
+assert_contains "$(records_of "$recs")" "wrote${TAB}opencode$TAB$p2${TAB}rm $(sq "$p2")" \
   "opencode 2, own 1.x link: --records says plugins/roost was written"
 # The checkout's own 1.x adapter is untouched: removing a link never reaches
 # what it points at.
@@ -2735,7 +2753,7 @@ assert_eq "$rc" "0" "opencode 2, another checkout's 1.x link: exits 0"
   "opencode 2, another checkout's 1.x link: removed"
 [ -f "$TMP/other-checkout/adapters/opencode/roost.js" ]; assert_true $? \
   "opencode 2, another checkout's 1.x link: the other checkout's file is untouched"
-assert_contains "$out" "ln -s \"$TMP/other-checkout/adapters/opencode/roost.js\" \"$p1\"" \
+assert_contains "$out" "ln -s $(sq "$TMP/other-checkout/adapters/opencode/roost.js") $(sq "$p1")" \
   "opencode 2, another checkout's 1.x link: the undo puts it back"
 
 # The checkout's own 1.x FILE, reached through a plugin/ directory that is
@@ -2789,7 +2807,7 @@ assert_contains "$out" "never delete the file" \
   "opencode 2, symlinked plugin/ directory: the manual note says not to delete the file"
 assert_contains "$out" "remove or re-point" \
   "opencode 2, symlinked plugin/ directory: the manual note names the directory as the fix"
-case "$out" in *"rm \"$p1\""*) s=offered ;; *) s=absent ;; esac
+case "$out" in *"rm \"$p1\""*|*"rm $(sq "$p1")"*) s=offered ;; *) s=absent ;; esac
 assert_eq "$s" "absent" \
   "opencode 2, symlinked plugin/ directory: the manual note does not offer rm of the file"
 case "$out" in *"something that is not this checkout"*) s=claimed ;; *) s=absent ;; esac

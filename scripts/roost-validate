@@ -643,6 +643,7 @@ this repo's own smoke suites in section 4, and by section 5 only when
   fi
   printf '\n' >> "$BODY"
   report_install
+  report_skill_links
 
   if have roost; then
     record PASS 1 "roost is on PATH" "$(command -v roost)"
@@ -1342,7 +1343,7 @@ offer_adapter_install() {
 "
         # The installer's own undo, kept with the path: for a relink it puts
         # the OLD link back, which a rebuilt `rm` of the new one would not.
-        [ -n "$undo" ] || undo="rm \"$path\""
+        [ -n "$undo" ] || undo="rm $(roost_shell_quote "$path")"
         INSTALLED_UNDOS="$INSTALLED_UNDOS$path	$undo
 "
         case "$undo" in
@@ -1392,6 +1393,150 @@ offer_adapter_install() {
   return 0
 }
 
+# skill_link_rows — one `harness|path|state|what roost install does` line per
+# installed harness, for the roost skill link (#208). A PREDICTION, and only
+# that: validate never makes these links. Its own install offer is
+# --symlinks-only, which leaves skill links out (see the skill block in
+# scripts/roost-install for why), so the tester reads here what a later
+# `roost install` will do and nothing on their machine has changed.
+#
+# The state comes from roost_skill_state and the verb from the installer's own
+# arms for it -- dangling and another copy's link are relinked from a plain
+# checkout, another copy's link is left alone from a git worktree, and a
+# stranger's is always left alone -- so the prediction and the run cannot
+# drift apart without a test noticing. `|` between fields, not a tab: these
+# rows end up in a markdown table, and a tab there is a column nobody sees.
+skill_link_rows() {
+  local h p st what
+  for h in claude codex opencode copilot pi; do
+    have "$h" || continue
+    p="$(roost_skill_path "$h")"; st="$(roost_skill_state "$h")"
+    case "$st" in
+      ok)       what="nothing — already linked" ;;
+      missing)  what="links it" ;;
+      dangling) what="relinks it" ;;
+      other-checkout)
+        if roost_checkout_is_worktree "$HERE"; then
+          what="leaves it alone (this checkout is a git worktree)"
+        else
+          what="relinks it"
+        fi ;;
+      *)        what="leaves it alone" ;;
+    esac
+    printf '%s|%s|%s|%s\n' "$h" "$p" "$st" "$what"
+  done
+}
+
+# report_skill_links — skill_link_rows as a table in section 1, after the
+# adapter links, so the tester sees both kinds of link in one place.
+report_skill_links() {
+  local rows h p st what
+  rows="$(skill_link_rows)"
+  [ -n "$rows" ] || return 0
+  sub "Skill links"
+  para "The roost skill tells an agent in a pane how to drive roost. \`roost install\`
+links it into each harness's own skills folder; this run did not, and the last
+column is what \`roost install\` will do."
+  printf '| Harness | Link | Now | roost install |\n|---|---|---|---|\n' >> "$BODY"
+  printf '%s\n' "$rows" | while IFS='|' read -r h p st what; do
+    [ -n "$h" ] && printf '| %s | `%s` | %s | %s |\n' "$h" "$p" "$st" "$what" | redact >> "$BODY"
+  done
+  printf '\n' >> "$BODY"
+}
+
+# report_word VALUE — VALUE as one shell word for the report's undo block,
+# built from the RAW value and never by editing quoted text (#208, round 3).
+# The report once rewrote every `'~/` in the installer's quoted undo to
+# `"$HOME"'/`, and an apostrophe in a path is quoted as `'\''`, so a folder
+# named `p'~` made the undo name `.../p'` + $HOME + `/...` and `rm` a
+# stranger's file there.
+#
+# $HOME, not the ~ that redact() leaves behind: a tilde inside quotes is a
+# literal tilde to every shell, so `rm '~/.pi/...'` fails. A value that really
+# starts with $HOME becomes `"$HOME"'/rest'` -- $HOME expands in its own double
+# quotes, the rest stays literal, the two join into one word, and it reveals
+# exactly as little as the tilde did. With --keep-home-paths there is no
+# redaction, so there is no rewrite either: the word is the plain quoted value.
+#
+# Sets RW_WORD, and RW_EXACT=0 when redaction changed the value past its
+# leading $HOME (a username or scratch dir in it), which makes the word name a
+# path the run never touched. A global, not a command substitution, so a
+# value's trailing newline cannot be lost on the way.
+report_word() {
+  local v="$1" rest red
+  RW_EXACT=1
+  if [ -z "$REDACT_SED" ]; then
+    RW_WORD="$(roost_shell_quote "$v")"; return 0
+  fi
+  case "$v" in
+    "$HOME") [ -n "${HOME:-}" ] && { RW_WORD='"$HOME"'; return 0; } ;;
+    "$HOME"/*)
+      if [ -n "${HOME:-}" ]; then
+        rest="${v#"$HOME"}"
+        red="$(printf '%s' "$rest" | redact)"
+        [ "$red" = "$rest" ] || RW_EXACT=0
+        RW_WORD='"$HOME"'"$(roost_shell_quote "$red")"; return 0
+      fi ;;
+  esac
+  red="$(printf '%s' "$v" | redact)"
+  [ "$red" = "$v" ] || RW_EXACT=0
+  RW_WORD="$(roost_shell_quote "$red")"
+}
+
+# unquote_word WORD — set UQ_VALUE to the value WORD stands for, when WORD is
+# exactly one roost_shell_quote word; false for anything else. Proved by
+# quoting the result again and comparing, so no other spelling can get by.
+unquote_word() {
+  local q="$1" body v=""
+  case "$q" in "'"*"'") ;; *) return 1 ;; esac
+  body="${q#"'"}"; body="${body%"'"}"
+  while :; do
+    case "$body" in
+      *"'\\''"*) v="$v${body%%"'\\''"*}'"; body="${body#*"'\\''"}" ;;
+      *) break ;;
+    esac
+  done
+  v="$v$body"
+  [ "$(roost_shell_quote "$v")" = "$q" ] || return 1
+  UQ_VALUE="$v"
+}
+
+# report_undo_line PATH UNDO — the report's spelling of one installer undo
+# line for PATH. The installer writes exactly three shapes for a link it made
+# or removed (scripts/roost-install): `rm P`, `rm P && ln -s OLD P` and
+# `ln -s OLD P`, each value through roost_shell_quote. PATH is the raw value
+# from the record, so P is matched by quoting it, OLD is read back by
+# unquote_word, and every word is rebuilt by report_word. A line in any other
+# shape, or one whose path had to be redacted, is printed as a comment: a
+# runnable line that names the wrong path is how an undo deletes a stranger's
+# file.
+report_undo_line() {
+  local path="$1" undo="$2" qp mid line="" exact=1 wp
+  qp="$(roost_shell_quote "$path")"
+  report_word "$path"; wp="$RW_WORD"; [ "$RW_EXACT" = 1 ] || exact=0
+  case "$undo" in
+    "rm $qp") line="rm $wp" ;;
+    "rm $qp && ln -s "*" $qp"|"ln -s "*" $qp")
+      mid="${undo%" $qp"}"; mid="${mid#"rm $qp && "}"; mid="${mid#"ln -s "}"
+      if unquote_word "$mid"; then
+        report_word "$UQ_VALUE"; [ "$RW_EXACT" = 1 ] || exact=0
+        case "$undo" in
+          "rm "*) line="rm $wp && ln -s $RW_WORD $wp" ;;
+          *)      line="ln -s $RW_WORD $wp" ;;
+        esac
+      fi ;;
+  esac
+  if [ -z "$line" ]; then
+    printf '# not in a shape roost validate can check; read it before running it:\n'
+    printf '%s\n' "$undo" | redact | sed 's/^/# /'
+  elif [ "$exact" = 0 ]; then
+    printf '# a path here had to be redacted, so this line is not runnable as printed:\n'
+    printf '# %s\n' "$line"
+  else
+    printf '%s\n' "$line"
+  fi
+}
+
 # report_install — the record of it, in section 1. Prominent on purpose: a
 # report that changed the machine it ran on and did not say so is worse than
 # one that skipped.
@@ -1428,23 +1573,14 @@ remove only the links this run made, and the \`ln -s\` lines put back exactly
 the link that was removed:"
     fi
     printf '```sh\n' >> "$BODY"
-    # $HOME, not the ~ that redact() leaves behind. A tilde inside double
-    # quotes is a literal tilde to every shell — `rm "~/.pi/..."` fails with
-    # "No such file or directory" — so a redacted undo line was not actually
-    # paste-able, which for the one part of the report that changes the
-    # tester's machine back is worse than printing nothing. $HOME expands
-    # inside double quotes, survives a path with a space in it, and reveals
-    # exactly as little as the tilde did.
     printf '%s' "$INSTALLED_UNDOS" | while IFS="$(printf '\t')" read -r path undo; do
-      [ -n "$path" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
+      [ -n "$path" ] && report_undo_line "$path" "$undo" >> "$BODY"
     done
     # In the same block, after the `rm` lines, so undoing the whole run is one
     # paste and it runs in reverse: the 2.x link goes, then the 1.x link comes
-    # back. Both quoted paths of an `ln -s` can be under $HOME — the checkout
-    # and the link — so the tilde fix is global here rather than anchored to
-    # the start of the line.
+    # back.
     printf '%s' "$REMOVED_LINKS" | while IFS="$(printf '\t')" read -r h path undo; do
-      [ -n "$h" ] && printf '%s\n' "$undo" | redact | sed 's|"~/|"$HOME/|g' >> "$BODY"
+      [ -n "$h" ] && report_undo_line "$path" "$undo" >> "$BODY"
     done
     printf '```\n\n' >> "$BODY"
     n_all="$(printf '%s' "$INSTALLED_LINKS" | grep -c . )"

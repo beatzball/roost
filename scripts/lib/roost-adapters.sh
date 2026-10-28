@@ -189,15 +189,144 @@ roost_adapter_link_names() {
 # its target directory; `-e` and `-L` behave the same for both; and a real
 # directory sitting at the path is not `-ef` the target, so it reads foreign.
 roost_adapter_state() {
-  local h="$1" path want
+  local h="$1"
   case "$h" in opencode|opencode2|pi|copilot) : ;; *) printf 'none'; return 0 ;; esac
-  path="$(roost_adapter_path "$h")"; want="$(roost_adapter_target "$h")"
+  _roost_link_state "$(roost_adapter_path "$h")" "$(roost_adapter_target "$h")" \
+    roost_adapter_link_names "$h"
+}
+
+# _roost_link_state PATH WANT NAMES_FN HARNESS -> one of the five words above
+# (never `none`). The body roost_adapter_state always had, taken out so the
+# skill link below reports the SAME five states by the same tests, in the same
+# order. NAMES_FN HARNESS PATH is the one thing the two disagree on: what makes
+# a live link "another copy of roost's" rather than a stranger's.
+_roost_link_state() {
+  local path="$1" want="$2" names="$3" h="$4"
   if [ ! -e "$path" ] && [ ! -L "$path" ]; then printf 'missing'
   elif [ -L "$path" ] && [ ! -e "$path" ]; then printf 'dangling'
   elif [ "$path" -ef "$want" ]; then printf 'ok'
-  elif [ -L "$path" ] && roost_adapter_link_names "$h" "$path"; then printf 'other-checkout'
+  elif [ -L "$path" ] && "$names" "$h" "$path"; then printf 'other-checkout'
   else printf 'foreign'
   fi
+}
+
+# --- the roost skill (#208) --------------------------------------------------
+# One symlink per harness, named `roost`, in that harness's own user-level
+# skills folder, pointing at this checkout's skills/roost. A link to a
+# DIRECTORY, like opencode2's adapter, so the five states need nothing new.
+#
+# Every folder below was MEASURED for #208, each with a live listing in
+# redirected homes (a link to skills/roost beside a real-directory control):
+# Claude Code 2.1.312 (its first API request, captured by a local stub),
+# codex 0.164.0 (`skills/list` over `codex app-server`), opencode 2.1.3
+# (`GET /api/skill` on a private `opencode serve`), Copilot CLI 1.0.103
+# (`copilot skill list`) and pi 0.81.1 (`get_commands` in `--mode rpc`). All
+# five follow the symlink. opencode 1.x was read from source only
+# (v1.19.4, src/skill/index.ts: `{skill,skills}/**/SKILL.md` under each config
+# dir, scanned with `symlink: true`), so both versions share one folder and
+# one key here, and roost_adapter_key's opencode2 is folded back to opencode.
+#
+# Not ~/.agents/skills, though codex, opencode and pi read it too: Copilot
+# 1.0.103 did not list a skill from it, its help text notwithstanding, and
+# nothing but HOME moves it. A per-harness folder is also what makes install,
+# doctor and validate speak about one harness at a time.
+#
+# Duplicates are harmless where measured: opencode also reads
+# ~/.claude/skills, and with roost linked in both it listed one `roost`, from
+# its own folder; codex with both $CODEX_HOME/skills and ~/.agents/skills
+# linked listed one. opencode 1.x logs "duplicate skill name" and keeps one.
+
+# roost_skill_dir HARNESS — the folder that harness reads user skills from.
+#
+# claude's is $CLAUDE_CONFIG_DIR/skills, and NOT roost_adapter_home claude:
+# that is derived from $CLAUDE_SETTINGS, a FILE override roost honours for the
+# hooks, and Claude Code does not look for skills beside it. Measured: with
+# CLAUDE_CONFIG_DIR set, a skill in $HOME/.claude/skills was not listed. An
+# empty CLAUDE_CONFIG_DIR is treated as unset, as `:-` does everywhere here.
+roost_skill_dir() {
+  case "$1" in
+    claude) printf '%s/skills' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" ;;
+    opencode|opencode2|codex|copilot|pi)
+      printf '%s/skills' "$(roost_adapter_home "$1")" ;;
+  esac
+}
+roost_skill_path() {
+  local d; d="$(roost_skill_dir "$1")"
+  [ -n "$d" ] && printf '%s/roost' "$d"
+}
+roost_skill_target() { printf '%s/skills/roost' "$(_roost_adapter_root)"; }
+
+# roost_shell_quote VALUE — VALUE as one POSIX shell word: single quotes, each
+# `'` in it written as `'\''`. For every value put into a command roost prints
+# for a person to run later (install's undo lines). Double quotes are not
+# enough there: `$name`, `$(cmd)` and backticks still expand inside them and
+# `"` ends the word, so a folder named `config$slot` made an undo's guard and
+# its `rm` act on `config-other`, a link install never made (#208, round 2).
+# Pure shell, no sed: a command substitution would also drop a trailing newline.
+roost_shell_quote() {
+  local rest="$1" out=""
+  while :; do
+    case "$rest" in
+      *"'"*) out="$out${rest%%"'"*}'\\''"; rest="${rest#*"'"}" ;;
+      *) break ;;
+    esac
+  done
+  printf "'%s%s'" "$out" "$rest"
+}
+
+# roost_skill_link_names HARNESS PATH — true when the live link at PATH is
+# another copy of roost's skill. Stricter than roost_adapter_link_names, and
+# on purpose: `/skills/roost` is a tail any skill collection named roost
+# shares, so a link whose text merely ends in it is not enough to replace it.
+# The directory it resolves to must also sit in a roost checkout, two levels
+# under a root that carries scripts/lib/roost-adapters.sh. Only a LIVE link
+# reaches this (_roost_link_state reports a dangling one first), so the
+# resolve can be asked.
+roost_skill_link_names() {
+  local text root
+  text="$(readlink "$2")" || return 1
+  text="${text%/}"
+  case "$text" in */skills/roost) : ;; *) return 1 ;; esac
+  root="$(cd -P "$2/../.." 2>/dev/null && pwd)" || return 1
+  [ -f "$root/scripts/lib/roost-adapters.sh" ]
+}
+
+# roost_skill_dangling_names PATH — true when the DANGLING link at PATH is
+# provably a roost skill link: its text ends in /skills/roost AND the
+# directory that text puts two levels above the skill still carries
+# scripts/lib/roost-adapters.sh. The same proof roost_skill_link_names asks of
+# a live link, asked of the link's TEXT, because there is nothing to resolve.
+# A relative text is read from the link's own directory, as the kernel would.
+#
+# Anything it cannot prove is not roost's. `dangling` alone says only that the
+# target is missing, not whose target it was: a user's own skill on a volume
+# that is not mounted, or a broken link to some other tool's skill, reads the
+# same, and replacing either loses something that was never roost's to touch.
+# A roost checkout that was deleted or moved whole is refused by this too —
+# the cost is one printed fix, where the other mistake costs a user's link.
+roost_skill_dangling_names() {
+  local text root
+  text="$(readlink "$1")" || return 1
+  text="${text%/}"
+  case "$text" in */skills/roost) : ;; *) return 1 ;; esac
+  root="${text%/skills/roost}"
+  case "$root" in /*) : ;; *) root="$(dirname "$1")/$root" ;; esac
+  [ -f "$root/scripts/lib/roost-adapters.sh" ]
+}
+
+# roost_skill_state HARNESS -> ok | missing | dangling | other-checkout | foreign | none
+# The same five words roost_adapter_state prints, with the same meanings;
+# `none` for a name that has no skills folder. One difference, and it makes
+# `dangling` mean what its comment above says: a dangling link is `dangling`
+# here only when roost_skill_dangling_names proves it is roost's, and
+# `foreign` otherwise. Install's plan, its re-check before writing, doctor
+# and validate all ask this one function, so all four refuse the same link.
+roost_skill_state() {
+  local path st; path="$(roost_skill_path "$1")"
+  [ -n "$path" ] || { printf 'none'; return 0; }
+  st="$(_roost_link_state "$path" "$(roost_skill_target)" roost_skill_link_names "$1")"
+  if [ "$st" = dangling ] && ! roost_skill_dangling_names "$path"; then st=foreign; fi
+  printf '%s' "$st"
 }
 
 # roost_checkout_is_worktree [DIR] — true when DIR (default: this checkout) is

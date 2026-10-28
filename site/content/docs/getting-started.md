@@ -80,7 +80,8 @@ you. That is the part that makes the badges work: until a harness has roost's
 adapter, its pane is never badged and roost looks broken. It touches only
 harnesses you already have, and only their own agent config — one symlink each
 for opencode, pi and copilot, roost's hooks merged into Claude's and codex's
-settings, and copilot's `EXTENSIONS` flag turned on.
+settings, copilot's `EXTENSIONS` flag turned on, and the roost skill linked
+into each harness's skills folder (see [The roost skill](#the-roost-skill)).
 
 Piped from `curl` it cannot stop to ask you: stdin is the script itself, so a
 prompt there would eat the rest of the script. So it prints a block naming
@@ -152,6 +153,39 @@ when it finishes:
   disk records it.
 
 Both are covered in full on [Enable the state badges](/docs/state-badges).
+
+### The roost skill
+
+The badges tell *you* what each agent is doing. The roost skill tells the
+*agent* that roost exists and how to drive it: `spawn`, `send`, `wait-done`,
+`read`. Without it, an agent in a pane badges and replies correctly but does
+not know it can start or prompt another one.
+
+`roost install` links it for every harness it finds. Each link is named `roost`
+and points at this checkout's `skills/roost`, in that harness's own folder:
+
+| Harness | Skills folder | Moved by |
+|---|---|---|
+| Claude Code | `~/.claude/skills` | `CLAUDE_CONFIG_DIR` |
+| codex | `~/.codex/skills` | `CODEX_HOME` |
+| opencode (1.x and 2.x) | `~/.config/opencode/skills` | `XDG_CONFIG_HOME` |
+| copilot | `~/.copilot/skills` | `COPILOT_HOME` |
+| pi | `~/.pi/agent/skills` | `PI_CODING_AGENT_DIR` |
+
+Claude Code looks in `$CLAUDE_CONFIG_DIR/skills`, not beside a settings file
+you moved with `CLAUDE_SETTINGS`. A new session lists the skill; one that was
+already running does not.
+
+The links follow the same rules as the adapters. They are in the plan you
+approve, and the undo lines remove them. A `roost` skill of your own at one of
+those paths is never replaced: `roost install` names it and leaves it alone.
+A broken link there is replaced only when roost can show it was its own: the
+roost checkout it names is still there. Each undo line for a skill link
+removes it only while it is still the link install made, and says so when it
+leaves the path alone.
+A link to another copy of roost is relinked from a plain checkout and left
+alone from a git worktree. `roost doctor` prints one line per harness for its
+link.
 
 ### By hand
 

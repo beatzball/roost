@@ -892,6 +892,42 @@ if command -v codex >/dev/null 2>&1; then
   fi
 fi
 
+# --- the roost skill, per harness (#208) ---
+# One line for each installed harness: is `roost` in that harness's skills
+# folder, and is it this checkout's. Where each folder is, and why, is in
+# scripts/lib/roost-adapters.sh beside roost_skill_dir; the state is asked of
+# roost_skill_state, the same function roost install plans with, so this
+# report and the installer cannot disagree about a link.
+#
+# Never `bad`. Without the skill a pane still badges and replies; its agent
+# just does not know roost is there to drive. So a missing or broken link is a
+# warning, and only the states roost install resolves end in "run: roost
+# install" (the rule the adapter lines above follow, for the reason given
+# above them). The `rm` is offered for a symlink only: a real directory there
+# is someone's own skill called roost, and an `rm` would delete it.
+sk_want="$(roost_skill_target)"
+for sk_h in claude codex opencode copilot pi; do
+  command -v "$sk_h" >/dev/null 2>&1 || continue
+  sk_p="$(roost_skill_path "$sk_h")"
+  case "$(roost_skill_state "$sk_h")" in
+    ok)       ok "$sk_h: roost skill linked at $sk_p" ;;
+    missing)  warn "$sk_h: roost skill not linked at $sk_p — run: roost install, or: mkdir -p \"$(dirname "$sk_p")\" && ln -s \"$sk_want\" \"$sk_p\"" ;;
+    dangling) warn "$sk_h: roost skill link at $sk_p is dangling — run: roost install, or: rm \"$sk_p\" && ln -s \"$sk_want\" \"$sk_p\"" ;;
+    other-checkout)
+      if [ "$doc_in_wt" = 1 ]; then
+        warn_left_alone "$sk_h: roost skill" "$sk_p"
+      else
+        warn "$sk_h: roost skill at $sk_p points at another copy of roost, $(readlink "$sk_p") — run: roost install, or: rm \"$sk_p\" && ln -s \"$sk_want\" \"$sk_p\""
+      fi ;;
+    *)
+      if [ -L "$sk_p" ]; then
+        warn "$sk_h: roost skill at $sk_p is not this install — look at it first, then relink it: rm \"$sk_p\" && ln -s \"$sk_want\" \"$sk_p\""
+      else
+        warn "$sk_h: roost skill at $sk_p is not this install, and it is not a symlink — look at it first, move it aside yourself, then: ln -s \"$sk_want\" \"$sk_p\""
+      fi ;;
+  esac
+done
+
 # --- the saved error glyph doesn't match the saved glyph set ---
 # Two different situations reach this check, and the old single message named
 # one of them as the cause for both:

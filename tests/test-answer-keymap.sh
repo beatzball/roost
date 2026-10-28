@@ -18,7 +18,7 @@ trap 'rm -rf "$work"' EXIT
 CANARY="$work/canary"
 export HOME="$CANARY/home" XDG_CONFIG_HOME="$CANARY/xdg-config" \
        XDG_STATE_HOME="$CANARY/xdg-state" XDG_DATA_HOME="$CANARY/xdg-data" \
-       ROOST_RECORD_DIR="" CLAUDE_SETTINGS="$CANARY/claude/settings.json" \
+       ROOST_RECORD_DIR="" CLAUDE_CONFIG_DIR="$CANARY/claude-config" CLAUDE_SETTINGS="$CANARY/claude/settings.json" \
        CODEX_HOME="$CANARY/codex" COPILOT_HOME="$CANARY/copilot" \
        PI_CODING_AGENT_DIR="$CANARY/pi/agent"
 . "$HERE/scripts/lib/roost-answer.sh"

@@ -22,6 +22,18 @@
 # OWN home variable, so all three are set too.
 set -u
 . "$(dirname "$0")/lib.sh"
+# PI_DIR is this file's own test-only override of the pi home, set inline by
+# the tilde-path cases below and read by run_offer as ${PI_DIR:-...}. Assigned,
+# not defaulted, as tests/lib.sh does for ROOST_RECORD_DIR: a PI_DIR exported
+# in the developer's shell would otherwise steer EVERY earlier case's
+# PI_CODING_AGENT_DIR out of its scratch home and into whatever that names —
+# measured in review round 4 of #208: 21 failures, and a live link written
+# outside the sandbox before any assertion ran.
+PI_DIR=""
+# sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''. The
+# installer prints every value in an undo line this way (#208, round 2), and
+# the report writes a path under $HOME as "$HOME"'/rest' so $HOME still expands.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 TMP="$(mktemp -d /tmp/amx.XXXX)"
@@ -176,9 +188,9 @@ run_offer() { # run_offer BOX [validate args...]
   XDG_CONFIG_HOME="$box/home/.config" \
   XDG_DATA_HOME="$box/home/.local/share" \
   COPILOT_HOME="$box/home/.copilot" \
-  PI_CODING_AGENT_DIR="$box/home/.pi/agent" \
+  PI_CODING_AGENT_DIR="${PI_DIR:-$box/home/.pi/agent}" \
   CODEX_HOME="$box/home/.codex" \
-  CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
+  CLAUDE_CONFIG_DIR="$box/home/.claude" CLAUDE_SETTINGS="$box/home/.claude/settings.json" \
   PATH="${SHIM:-$ALL_SHIM}" \
     bash "$DRIVER" "${SLICE:-$HEAD}" --out "$box/report.md" "$@" </dev/null 2>&1
 }
@@ -510,7 +522,7 @@ ln -s "$(atarget opencode)" "$v1path"
 out="$(SHIM="$V2_SHIM" run_offer "$box" --install)"
 res="$(result_of "$out")"
 rep="${out#*===REPORT===}"; rep="${rep%%===RESULT===*}"
-undo="ln -s \"$(atarget opencode)\" \"\$HOME/.config/opencode/plugin/roost.js\""
+undo="ln -s $(sq "$(atarget opencode)") \"\$HOME\"'/.config/opencode/plugin/roost.js'"
 assert_eq "$(readlink "$v2path" 2>/dev/null)" "$(atarget opencode2)" \
   "opencode 2, old 1.x link: plugins/roost is linked"
 [ -e "$v1path" ] || [ -L "$v1path" ]; assert_eq "$?" "1" \
@@ -521,15 +533,26 @@ case "$out" in *"a symlink each, nothing else"*) s=claimed ;; *) s=absent ;; esa
 assert_eq "$s" "absent" "opencode 2, old 1.x link: the offer does not say nothing else"
 assert_contains "$out" "  removed $v1path" \
   "opencode 2, old 1.x link: the removal is printed as it happens"
-assert_contains "$res" "REMOVED	opencode	$v1path	ln -s \"$(atarget opencode)\" \"$v1path\"" \
+assert_contains "$res" "REMOVED	opencode	$v1path	ln -s $(sq "$(atarget opencode)") $(sq "$v1path")" \
   "opencode 2, old 1.x link: the removal and its undo are read from the record"
 assert_contains "$rep" "$undo" \
   "opencode 2, old 1.x link: the report's undo list has the ln -s"
-assert_contains "$rep" "rm \"\$HOME/.config/opencode/plugins/roost\"" \
+assert_contains "$rep" "rm \"\$HOME\"'/.config/opencode/plugins/roost'" \
   "opencode 2, old 1.x link: the report's undo list still has the rm for plugins/roost"
 assert_contains "$res" \
   "DECISION	offered and accepted — this run created 3 adapter symlink(s) and removed 1 opencode 1.x link(s); see the undo below" \
   "opencode 2, old 1.x link: the decision line counts the removal"
+# The report's undo block is run, not only read: its "$HOME"'/...' words must
+# join into the real path once HOME is the tester's. Under sh and dash, as a
+# tester may paste it into either.
+for shl in sh dash; do
+  command -v "$shl" >/dev/null 2>&1 || continue
+  rm -f "$v2path"; ln -s "$(atarget opencode2)" "$v2path"; rm -f "$v1path"
+  block="$(printf '%s\n' "$rep" | sed -n '/^```sh$/,/^```$/p' | sed '1d;$d')"
+  HOME="$box/home" "$shl" -c "$block" >/dev/null 2>&1
+  [ ! -e "$v2path" ] && [ ! -L "$v2path" ]; assert_true $? "opencode 2, old 1.x link ($shl): the report's undo removes plugins/roost"
+  assert_eq "$(readlink "$v1path" 2>/dev/null)" "$(atarget opencode)" "opencode 2, old 1.x link ($shl): the report's undo puts the 1.x link back"
+done
 
 # --- opencode 2 with a DANGLING link at plugin/roost.js -------------------
 # A dangling link says only that its target is gone, not whose target it was:
@@ -627,12 +650,15 @@ assert_eq "$s" "absent" "other-checkout, plain checkout: not filed as left alone
 assert_contains "$res" "INSTALLED	$ppath" "other-checkout, plain checkout: the run reports the link as its own work"
 assert_eq "$(readlink "$ppath")" "$vplain_p$ptail" "other-checkout, plain checkout: the link now points at this checkout"
 rep_body="${out##*===REPORT===}"; rep_body="${rep_body%%===RESULT===*}"
-assert_contains "$rep_body" "ln -s \"$oc2$ptail\" \"\$HOME/.pi/agent/extensions/roost.ts\"" \
+assert_contains "$rep_body" "ln -s $(sq "$oc2$ptail") \"\$HOME\"'/.pi/agent/extensions/roost.ts'" \
   "other-checkout, plain checkout: the report's undo (home path redacted to \$HOME) puts the other copy's link back"
 # The report redacts the home path to $HOME, as the undo assertion above
 # spells it, so the raw $ppath could never match and this could never fail.
+# Either quoting, so the check cannot pass just because the format moved.
 case "$rep_body" in *'
 rm "$HOME/.pi/agent/extensions/roost.ts"
+'*|*'
+rm "$HOME"'"'"'/.pi/agent/extensions/roost.ts'"'"'
 '*) s=bare ;; *) s=none ;; esac
 assert_eq "$s" "none" "other-checkout, plain checkout: no bare rm line for the relinked path"
 assert_contains "$res" "relinked 1 that pointed at another copy of roost" \
@@ -687,6 +713,64 @@ for slice in "$vplain" "$vwt"; do
     assert_eq "$s" "none" "other-checkout fix (worktree): no ln -s is printed"
   fi
 done
+
+# ===========================================================================
+# 11c. a path that holds an apostrophe and a tilde: the report's undo is exact
+# ===========================================================================
+# The report once rewrote every `'~/` in the installer's quoted undo to
+# `"$HOME"'/`. An apostrophe in a path is quoted as `'\''`, so a folder named
+# `p'~` came out as `'\''~/` and was rewritten too: the undo then named
+# `.../p'` + $HOME + `/agent/...`, and ran `rm` on a stranger's file there, in
+# both redaction modes (#208, round 3). Each case plants a sentinel at that
+# wrongly expanded path, runs the report's whole undo block under sh and dash,
+# and checks that the sentinel survives and the installed link is gone (the
+# control). `apart` keeps `~` and `'` in different words of the path, and
+# `out` is a folder outside $HOME, where no "$HOME" word may appear at all.
+PI_SHIM="$(make_shim pi)"
+for mode in redact keep; do
+  for kind in joined apart out; do
+    for shl in sh dash; do
+      command -v "$shl" >/dev/null 2>&1 || continue
+      box="$TMP/tilde-$mode-$kind-$shl"
+      mkdir -p "$box/home"
+      case "$kind" in
+        joined) pdir="$box/home/p'~/agent" ;;
+        apart)  pdir="$box/home/a~b/c'd/agent" ;;
+        out)    pdir="$box/out/p'~/agent" ;;
+      esac
+      mkdir -p "$pdir"
+      ppath="$(PI_CODING_AGENT_DIR="$pdir" bash -c '. "'"$CO"'/scripts/lib/roost-adapters.sh"; roost_adapter_path pi')"
+      # The old rewrite's reading of the path: the text before `'~/`, then
+      # $HOME, then the rest. Only a path that holds `'~/` has one.
+      wrong=""
+      case "$ppath" in *"'~/"*) wrong="${ppath%%\'~/*}'$box/home/${ppath#*\'~/}" ;; esac
+      if [ -n "$wrong" ]; then
+        mkdir -p "${wrong%/*}"; printf 'foreign file\n' > "$wrong"
+      fi
+      args="--install"; [ "$mode" = keep ] && args="--install --keep-home-paths"
+      # shellcheck disable=SC2086
+      out="$(SLICE="$HEAD" PI_DIR="$pdir" SHIM="$PI_SHIM" run_offer "$box" $args)"
+      rep="${out#*===REPORT===}"; rep="${rep%%===RESULT===*}"
+      t="$mode/$kind ($shl)"
+      assert_eq "$(readlink "$ppath" 2>/dev/null)" "$(atarget pi)" "tilde path $t: install linked the literal path"
+      block="$(printf '%s\n' "$rep" | sed -n '/^```sh$/,/^```$/p' | sed '1d;$d')"
+      assert_contains "$block" "rm " "tilde path $t: the report has an undo block"
+      HOME="$box/home" "$shl" -c "$block" >/dev/null 2>&1
+      assert_true $? "tilde path $t: the report's undo exits 0"
+      [ ! -e "$ppath" ] && [ ! -L "$ppath" ]; assert_true $? "tilde path $t: the report's undo removes the installed link (control)"
+      if [ -n "$wrong" ]; then
+        assert_eq "$(cat "$wrong" 2>/dev/null)" "foreign file" "tilde path $t: a file at the wrongly expanded path survives"
+      fi
+      if [ "$kind" = out ] || [ "$mode" = keep ]; then
+        case "$block" in *'$HOME'*) s=named ;; *) s=absent ;; esac
+        assert_eq "$s" "absent" "tilde path $t: no \$HOME word where the path was not redacted"
+      else
+        assert_contains "$block" "rm \"\$HOME\"'/" "tilde path $t: the redacted path starts with \"\$HOME\""
+      fi
+    done
+  done
+done
+rm -rf "$PI_SHIM"
 
 # ===========================================================================
 # 12. the file itself
