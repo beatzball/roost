@@ -125,6 +125,69 @@ rules, or left out.
   each as a directory (`cwd`, `session_cwd`) and as a `name`. The writer half
   is in Task 1.9, the round trip through the reader in Task 1.10.
 
+## Coordinator ruling R7 (human decision): a session group is one block per later member
+
+- **R7 — a group-aware block** (extends spec §3.2; decided by the human on
+  2026-10-28 after Task 1.2's probe, docs/airig/probes/persist-1-session-group.md,
+  showed a group listed once per member with the same window and pane ids).
+  Groups are keyed on `#{session_group}`, never `#{window_linked}` (it reads
+  0 on tmux 3.2a and 3.4 and 1 on 3.6 for the same group). The **first
+  member** — the lowest session id, so the choice is stable — is saved in
+  full. Each **later member** is a `session` block holding only its own
+  keys (`id`, `active` when set, `active_window INDEX` — its own current
+  window, since it has no window blocks to carry an `active 1`) and one
+  `group <first member's name>` line, and **no** window or pane blocks.
+  Restore makes the first member as usual, then each later member with
+  `new-session -d -t =<first> -s <name>`. **Refusal** (the checker, the
+  spec's existing rule "an address with no parent is a named refusal of
+  the whole file"): a `group` line naming a session that has no full
+  `session` block in the file, naming itself, naming another later member,
+  or a later member that also has window or pane blocks → exit 16, nothing
+  done. **`--only`** of a later member alone: it joins its first member when
+  that session already exists on the server; otherwise it is the same
+  "no parent" refusal, exit 16, nothing done. `--only` of the first member
+  brings its later members with it. The addressing, `--only`, `--dry-run`
+  and `--list` output name a later member once, as joining its group
+  (`session view (joins main's group)`). Red tests: round trip of a two- and
+  a three-member group; no pane id appears twice in the save; restore makes
+  one copy of each pane; a window made in one member after restore is
+  visible in the other; `--only` of a later member alone (joins a live first
+  member; refused without one); a bad `group` line refused; on tmux 3.2a,
+  3.4 and this Mac. The writer half in Task 1.9, the checker and round trip
+  in 1.10, the restore half in 1.12, the output in 1.14.
+
+## Coordinator ruling R8: the other probe 1.3 facts, probe 1.4, the test server name
+
+1. **A newline cuts a listing line.** A listing line that does not start
+   with its id field (`%N`, `@N`, `$N`) is a fault of that round, not data.
+   The writer then reads that object's free-text values one at a time with
+   `display -p -t <id>`, and a value holding a newline gets the control-byte
+   rule (drop `name`; `cwd` → home; one stderr line). Task 1.9 cases: a
+   newline in `@roost-name` and in a directory.
+2. **ESC/SOH read as `\NNN` text on tmux 3.4.** R6's shape: once per run,
+   set a known value holding ESC, read it back; if this server prints a
+   backslash and three octal digits, any `\NNN` (octal) sequence in a read
+   free-text value is treated as a control byte under the existing rule. A
+   literal `\033` a person typed is then dropped too: the safe side, said
+   in the docs. Task 1.9's odd-value test expects the same result on every
+   build.
+3. **Backslash and `$` in session and window names drift on restore.**
+   Test first: save and restore sessions and windows named `a\b` and `a$b`
+   on tmux 3.2a, 3.4 and this Mac; the name after restore equals the one
+   before, and does not grow over two cycles. Measure tmux's rewrite; if
+   restore can undo it exactly on every build, do that before `new-session
+   -s` / `new-window -n`; if not exact on some build, the writer drops such
+   a name on that build (default name, one stderr line). Tasks 1.12
+   (sessions) and 1.13 (windows).
+4. **Probe 1.4 applies in Tasks 1.12 and 1.13:** every target after the
+   session comes from the id the creating command prints (`-P -F`); a
+   dotted session name is stored by tmux with `_`, so restore reads the
+   created name back.
+5. **The shape test server is `-L roost`** under a guarded temp
+   `TMUX_TMPDIR` (Task 1.8's finding: roost's hooks and `identify` act only
+   on a socket path ending in `/roost`), driven and killed by its full
+   socket path.
+
 ## Probes
 
 Each part's first tasks are its probes: those §6 names, and in Part 1 also the
@@ -521,8 +584,10 @@ after each. Also do it for a background session if the version offers one
    `roost_test_tmux_named_guard`; every home in Global constraints at a temp
    dir; the canary; `ROOST_SHAPE_DIR=$TMP/shapes`; a redirected `HOME` whose
    `.bash_profile` and `.bashrc` each append `"$TMUX_PANE $$"` to
-   `$HOME/shells.log`; `ROOST_SOCKET=shp$$` (a `-L` name). `shape_test_teardown`
-   kills only that named server. Helpers `shells_for %N` (lines in
+   `$HOME/shells.log`; `ROOST_SOCKET=roost` (a `-L` name under the guarded
+   temp `TMUX_TMPDIR`; ruling R8 item 5: roost's hooks and `identify` act only
+   on a socket path ending in `/roost`). `shape_test_teardown` kills only that
+   server, by its full socket path. Helpers `shells_for %N` (lines in
    `shells.log` for a pane) and `canary_check`. The stub harnesses (§8.1's
    opening). **The foreground name must be the harness's**, because
    `roost_shape_agree` classifies by `#{pane_current_command}` and a stub that
@@ -2741,6 +2806,7 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 4 siblings, duplicate, stale, store miss, mid-turn line | 3.5 |
 | 5 parse refusals, unknown block, whitespace | 1.10 |
 | 5 deleted block, renamed session, linked window | 1.13 |
+| 5 a session group (R7): one block per later member, round trip, `--only`, a bad `group` line | 1.9 (writer), 1.10 (checker), 1.12 (restore), 1.14 (output) |
 | 5 "create nothing" on a refusal | 1.14 |
 | 6 live pane, own key, exited, nested, other (revive), release only one's own | 2.6 |
 | 6 `other` — saved with `stale_reason other` | 1.9 |
@@ -2803,7 +2869,7 @@ A deferred check that fails is a new task in a new part, not a rewind.
 ## Coverage: plan additions beyond §8.1 → the task that lands each
 
 Field lessons from other tools, written as test cases inside the spec's rules,
-and the coordinator's rulings R2–R5. Each is red before its code.
+and the coordinator's rulings R2–R8. Each is red before its code.
 
 | addition | task |
 |---|---|
@@ -2826,6 +2892,11 @@ and the coordinator's rulings R2–R5. Each is red before its code.
 | odd names and directories round-trip (space, `$`, quotes, `#`, trailing space, UTF-8) | 1.13 |
 | the K-pane fallback names every unplaced block with its key | 1.13 |
 | R4: a headless Claude child does not re-identify the pane | 1.15 |
+| R6: `$` read back as `\$` on tmux 3.4 — the read test and the round trip | 1.9, 1.10 |
+| R7: a session group saved as one full member and later-member blocks; restored with `new-session -t` | 1.9, 1.10, 1.12, 1.14 |
+| R8.1: a newline cuts a listing line — re-read by id, the control-byte rule | 1.9 |
+| R8.2: ESC/SOH read as `\NNN` on tmux 3.4 — the read test, same result on every build | 1.9 |
+| R8.3: backslash and `$` in session and window names do not drift over two cycles | 1.12, 1.13 |
 | launch-flag, harness-home and live-registry reads (recorded only) | 2.1 |
 | the worktree-relocated transcript (probe, and its fixture) | 2.2, 3.5 |
 | a listing that fails mid-round publishes nothing | 4.5 |

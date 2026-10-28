@@ -906,6 +906,39 @@ back with the backslash, the writer removes exactly one backslash before every
 Without this a save on 3.4 would write a `cwd` that does not exist and a
 `name` the person never typed.
 
+**A session group (2026-10-28, coordinator ruling R7, the human's decision,
+probe 1.2).** tmux lists a group (`new-session -t`) once per member, every
+window and pane under each member's name with the same ids, on 3.2a, 3.4 and
+3.6 (docs/airig/probes/persist-1-session-group.md); saved as a linked window,
+it would come back as one independent copy per member. So a group is keyed
+on `#{session_group}` — never `#{window_linked}`, which reads 0 for a group's
+windows on 3.2a and 3.4 and 1 on 3.6 — and its **first member**, the lowest
+session id, is saved in full; each **later member** is a `session` block
+with only its own keys (`id`, `active`, and `active_window INDEX`, its own
+current window) and one `group <first member's name>` line, and no window or
+pane blocks. Restore makes the first member, then each later one with
+`new-session -d -t =FIRST -s NAME`. A `group` line naming a session with no
+full block in the file is an address with no parent: the whole file is
+refused (exit 16), the rule above; `--only` of a later member alone joins a
+first member already on the server, and is otherwise the same refusal. The
+linked-window rule above still holds for a window linked by `link-window`
+outside a group.
+
+**What a listing cannot carry (2026-10-28, coordinator ruling R8, probe
+1.3).** A newline in a free-text value cuts tmux's line-based listing on
+every build; a listing line that does not start with its id (`%N`, `@N`,
+`$N`) is a fault of that round, and the writer reads that object's values
+one at a time with `display -p -t ID`, applying the control-byte rule to a
+newline. tmux 3.4 also prints ESC and other control bytes in an option or
+path as `\NNN` text; the writer learns this once per run as it does for `$`
+(R6) and then treats any `\NNN` octal sequence in a free-text value as a
+control byte — a literal `\033` a person typed is dropped too, the safe side.
+A backslash in a session or window name is doubled by tmux at creation, and a
+`$` stored as `\$` on 3.2a and 3.4; restore undoes that rewrite before
+`new-session -s` and `new-window -n` where it can be undone exactly, and the
+writer drops such a name (one stderr line) on a build where it cannot, so a
+name never grows from one save and restore to the next.
+
 ### 3.3 Why a file of its own and not the pane records
 
 The record is per pane, keyed by a boot that is gone, and it says nothing
