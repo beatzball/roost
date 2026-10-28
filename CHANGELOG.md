@@ -28,6 +28,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
   `roost doctor` prints one line per harness for its link, and
   `roost validate` reports what `roost install` would do with each one.
 
+- **`roost save` and `roost restore` put your sessions back after a reboot
+  or a crash (#51).** `roost save` writes the fleet's shape — every session,
+  window and pane, with names, directories, layouts and each agent's
+  conversation key — to a plain text file under
+  `~/.local/state/roost/shapes/`, keeping earlier saves in `history/`.
+  `roost restore` puts it back: each saved session that does not exist is
+  made again with its windows at their saved indices and layouts, and each
+  pane is a shell in its saved directory. A session that already exists is
+  skipped and named. `--dry-run` prints the plan and starts nothing,
+  `--list` shows every save, `--from` picks an earlier save or a copy, and
+  `--only` restores one session, window or pane. Agents are not resumed yet,
+  and nothing saves on its own yet: run `roost save` when you want one. See
+  the Persistent Sessions docs page.
+
 ### Changed
 
 - **A bare `roost stop`, `roost kill` or `roost down` asks before it ends

@@ -48,6 +48,9 @@
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
+#   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). `rm -rf` that shapes directory forgets every shape and nothing else
+#   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--only SEL ...]
+#                            put a saved shape back as shells in their saved directories, at their saved indices and layouts; agents are not resumed yet. A session that exists is skipped and named (exit 12); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
 #   roost kill [--yes] [SESSION]
 #                            end one session, or with no SESSION stop the whole server: every session and every agent on it. The bare form asks first on a terminal (only y stops it) and, off a terminal, refuses unless --yes (or -y). `roost stop` and `roost down` are the same command
 #   roost help               show this text
