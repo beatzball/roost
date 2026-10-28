@@ -22,6 +22,14 @@
 # OWN home variable, so all three are set too.
 set -u
 . "$(dirname "$0")/lib.sh"
+# PI_DIR is this file's own test-only override of the pi home, set inline by
+# the tilde-path cases below and read by run_offer as ${PI_DIR:-...}. Assigned,
+# not defaulted, as tests/lib.sh does for ROOST_RECORD_DIR: a PI_DIR exported
+# in the developer's shell would otherwise steer EVERY earlier case's
+# PI_CODING_AGENT_DIR out of its scratch home and into whatever that names —
+# measured in review round 4 of #208: 21 failures, and a live link written
+# outside the sandbox before any assertion ran.
+PI_DIR=""
 # sq VALUE -- VALUE as one single-quoted shell word, each ' written '\''. The
 # installer prints every value in an undo line this way (#208, round 2), and
 # the report writes a path under $HOME as "$HOME"'/rest' so $HOME still expands.
