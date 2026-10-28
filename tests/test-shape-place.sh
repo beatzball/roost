@@ -654,6 +654,9 @@ stop_server
 out="$(R restore --dry-run 2>/dev/null)"
 assert_contains "$out" "session gv (joins gm's group)" "--dry-run names a later member once, as joining its group"
 assert_eq "$(printf '%s\n' "$out" | grep -c '^session ')" "2" "...each session one line"
+lst="$(R restore --list 2>&1)"
+assert_contains "$(printf '%s\n' "$lst" | grep -A1 '^\*')" "sessions: gm, gv (joins gm's group)" \
+  "--list names each save's sessions, a later member once as joining its group (R7)"
 TL -f /dev/null new-session -d -s other 'sleep 600'
 before="$(TL list-sessions -F '#{session_name}')"
 R restore --only gv >/dev/null 2>"$SHAPE_TMP/err"; rc=$?

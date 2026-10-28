@@ -888,6 +888,13 @@ roost_restore_list() {
     printf '%s %s  %s  %s sessions, %s windows, %s panes  %s\n' "$mark" "$(roost_restore__stampgen "$f")" \
       "$(roost_restore__hdr "$f" trigger)" "$(grep -c '^session ' "$f")" "$(grep -c '^window ' "$f")" \
       "$(grep -c '^pane ' "$f")" "$where"
+    # Its sessions, by name; a later member of a group once, as joining its
+    # group (ruling R7: --list names a member the way --dry-run does).
+    printf '    sessions: %s\n' "$(awk -v RS= '/^session / {
+        n = $0; sub(/^session /, "", n); sub(/\n.*/, "", n)
+        g = ""; if (match($0, /\ngroup [^\n]*/)) g = substr($0, RSTART + 7, RLENGTH - 7)
+        printf "%s%s%s", (c++ ? ", " : ""), n, (g != "" ? " (joins " g "'"'"'s group)" : "")
+      }' "$f")"
   done
   return 0
 }
