@@ -1,0 +1,65 @@
+roost-shape 1
+server roost
+socket /tmp/roost-fixture/tmux-501/roost
+boot 1792526903-7170
+saved 2026-10-28T12:00:00Z
+gen 0
+trigger save
+roost 0.10.0
+tmux 3.6
+host fixture.local
+
+session work
+id $1
+
+window work:1
+id @3
+layout 655b,200x50,0,0[200x25,0,0,3,200x24,0,26,4]
+zoomed 1
+active 1
+
+pane work:1.0
+id %3
+name promo
+cwd /tmp/roost-fixture/w/roost
+command bash
+active 1
+
+pane work:1.1
+id %4
+cwd /tmp/roost-fixture/w/roost/.claude/worktrees/w1
+session_cwd /tmp/roost-fixture/w/roost/.claude/worktrees/w1
+harness claude
+session_id 11111111-1111-4111-8111-111111111111
+command claude
+
+window work:2
+id @4
+name build
+layout aca2,200x50,0,0,5
+
+pane work:2.0
+id %5
+name build
+cwd /tmp/roost-fixture/w/roost
+launch FOO_TOKEN=… sh
+command bash
+active 1
+
+session side
+id $2
+
+window side:1
+id @5
+layout aca3,200x50,0,0,6
+active 1
+
+pane side:1.0
+id %6
+cwd /tmp/roost-fixture/w/roost
+session_cwd /tmp/roost-fixture/w/roost
+stale_reason exited
+stale_harness claude
+stale_session_id 22222222-2222-4222-8222-222222222222
+command bash
+active 1

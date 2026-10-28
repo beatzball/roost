@@ -328,6 +328,118 @@ assert_eq "$(TL show -pqv -t "$v" @roost-launch)" "roost view -n vv sleep 600" "
 s3="$(TMUX_PANE="$a1" R spawn bare)"
 assert_eq "$(TL show -pqv -t "$s3" @roost-launch)" "" "a spawn with no command sets no launch hint"
 
+# --- the checker and the parser (Task 1.10) ------------------------------------
+# A file is checked WHOLE before restore runs its first tmux command (§3.2,
+# §4.3): any fault refuses the file, naming the line. ck FILE -> "rc|fault".
+ck() { roost_shape_check "$1" 2>"$SHAPE_TMP/ck.err"; printf '%s|%s' "$?" "${ROOST_SHAPE_FAULT:-}"; }
+good() { # a small valid shape, one line per argument appended to the last block
+  printf '%s\n' 'roost-shape 1' 'server roost' 'socket /tmp/x/roost' 'boot 1792526903-7170' \
+    'saved 2026-10-24T20:51:02Z' 'gen 3' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' '' \
+    'session main' 'id $0' '' \
+    'window main:1' 'id @0' 'layout 2774,200x50,0,0,0' 'active 1' '' \
+    'pane main:1.0' 'id %0' 'cwd /tmp' "$@"
+}
+C="$SHAPE_TMP/ck"; mkdir -p "$C"
+echo "== the checker refuses by line (§8.1 test 5, the parse half) =="
+good > "$C/ok"
+assert_eq "$(ck "$C/ok")" "0|" "a valid file passes"
+good | sed '1s/.*/roost-shape 2/' > "$C/v2"
+assert_eq "$(ck "$C/v2")" "1|line 1: roost-shape 2 is newer than this roost reads (1)" "roost-shape 2 is refused"
+: > "$C/empty"
+assert_eq "$(ck "$C/empty")" "1|line 1: no readable first line (want roost-shape 1)" "a zero-byte file is a named refusal"
+printf 'hello\n' > "$C/junk"
+assert_eq "$(ck "$C/junk")" "1|line 1: no readable first line (want roost-shape 1)" "a file that is not a shape is refused"
+good | head -3 > "$C/cut"
+assert_eq "$(ck "$C/cut")" "1|line 1: the header has no boot" "a file cut off inside its header is a named refusal"
+good | sed '/^boot /d' > "$C/noboot"
+assert_eq "$(ck "$C/noboot")" "1|line 1: the header has no boot" "a header with no boot is refused"
+good 'cwd /var' > "$C/rep"
+assert_eq "$(ck "$C/rep")" "1|line 23: repeated key cwd" "a repeated key in one block is refused"
+good "$(printf 'name a\tb')" > "$C/tab"
+assert_eq "$(ck "$C/tab")" "1|line 23: a value holds a tab or a control character" "a value with a tab is refused"
+good "$(printf 'name a\033b')" > "$C/esc"
+assert_eq "$(ck "$C/esc")" "1|line 23: a value holds a tab or a control character" "a value with another control character is refused"
+{ good; printf '%s\n' '' 'window main:1' 'id @1' 'layout 1,1x1,0,0,0'; } > "$C/dupaddr"
+assert_eq "$(ck "$C/dupaddr")" "1|line 24: repeated address window main:1" "a repeated address is refused"
+good | sed '/^layout /d' > "$C/nolayout"
+assert_eq "$(ck "$C/nolayout")" "1|line 15: window main:1 has no layout" "a window with no layout is refused"
+good | sed '/^cwd /d' > "$C/nocwd"
+assert_eq "$(ck "$C/nocwd")" "1|line 20: pane main:1.0 has no cwd" "a pane with no cwd is refused"
+good | sed 's/^pane main:1\.0/pane main:2.0/' > "$C/noparent"
+assert_eq "$(ck "$C/noparent")" "1|line 20: pane main:2.0 has no window block" "a pane whose window block is missing is refused"
+good | sed 's/^session main$/session work/' > "$C/renamed"
+assert_eq "$(ck "$C/renamed")" "1|line 15: window main:1 has no session block" "a renamed session whose windows and panes were not renamed is refused"
+good | sed 's/main/work/' > "$C/renamedall"
+assert_eq "$(ck "$C/renamedall")" "0|" "a session renamed with all its addresses passes"
+good | sed 's/^pane main:1\.0/pane main:1/' > "$C/badaddr"
+assert_eq "$(ck "$C/badaddr")" "1|line 20: pane main:1 is not SESSION:WINDOW.PANE" "a malformed address is refused"
+good 'nokey' > "$C/nospace"
+assert_eq "$(ck "$C/nospace")" "1|line 23: no value after the key nokey" "a line with no value is refused"
+{ good; printf '%s\n' '' 'parent main:1.0' 'id x'; } > "$C/unknown"
+assert_eq "$(ck "$C/unknown")" "0|" "a block whose first word is unknown is skipped and the file passes"
+assert_contains "$(cat "$SHAPE_TMP/ck.err")" "line 24" "...with one stderr line naming its line"
+assert_eq "$(wc -l < "$SHAPE_TMP/ck.err" | tr -d ' ')" "1" "...exactly one"
+good 'futurekey whatever' > "$C/unknownkey"
+assert_eq "$(ck "$C/unknownkey")" "0|" "an unknown key is ignored"
+
+echo "== session groups in the checker (R7) =="
+{ good; printf '%s\n' '' 'session view' 'id $1' 'group main' 'active_window 1'; } > "$C/grp"
+assert_eq "$(ck "$C/grp")" "0|" "a later member naming a full session passes"
+{ good; printf '%s\n' '' 'session view' 'id $1' 'group nosuch'; } > "$C/grpbad"
+assert_eq "$(ck "$C/grpbad")" "1|line 24: session view joins nosuch, which has no full session block" "a group line naming a session not in the file: the whole file is refused"
+{ good; printf '%s\n' '' 'session view' 'id $1' 'group view'; } > "$C/grpself"
+assert_eq "$(ck "$C/grpself")" "1|line 24: session view joins view, which has no full session block" "a member joining itself is refused"
+{ good; printf '%s\n' '' 'session view' 'id $1' 'group main' '' 'session third' 'id $2' 'group view'; } > "$C/grpchain"
+assert_eq "$(ck "$C/grpchain")" "1|line 28: session third joins view, which has no full session block" "a member joining another later member is refused"
+{ good; printf '%s\n' '' 'session view' 'id $1' 'group main' '' 'window view:1' 'id @0' 'layout 1,1x1,0,0,0'; } > "$C/grpwin"
+assert_eq "$(ck "$C/grpwin")" "1|line 28: window view:1 belongs to view, a later member of a group (it has no windows of its own)" "a later member with a window block is refused"
+
+echo "== the parser =="
+roost_shape_check "$C/grp" 2>/dev/null
+PD="$SHAPE_TMP/parsed"; rm -rf "$PD"; roost_shape_parse "$C/grp" "$PD"
+assert_eq "$(ls "$PD" | tr '\n' ' ')" "0000.header 0001.session 0002.window 0003.pane 0004.session " "one file per block, NNNN.<kind>, in file order"
+assert_eq "$(roost_shape_get "$PD/0003.pane" cwd)" "/tmp" "roost_shape_get prints a value"
+roost_shape_get "$PD/0003.pane" name >/dev/null; assert_eq "$?" "1" "...and returns 1 for an absent key (a reader tests presence)"
+roost_shape_check "$C/unknown" 2>/dev/null; rm -rf "$PD"; roost_shape_parse "$C/unknown" "$PD"
+assert_eq "$(ls "$PD" | grep -c parent)" "0" "an unknown block is not handed to restore"
+
+echo "== the writer's files pass the reader (moved here from Task 1.9) =="
+for f in "$F" "$SHAPE_TMP/copy" "$SHAPE_TMP/copy2" "$SHAPE_TMP/odd.shape" "$SHAPE_TMP/cb.shape" "$SHAPE_TMP/g2.shape" "$SHAPE_TMP/g3.shape" "$SD/history/"*; do
+  assert_eq "$(ck "$f")" "0|" "$(basename "$f") passes roost_shape_check"
+done
+rm -rf "$PD"; roost_shape_parse "$F" "$PD"
+b="$(grep -l "^id $a2\$" "$PD"/*.pane)"
+assert_eq "[$(roost_shape_get "$b" name)]" "[  sp   ]" "a name with leading and trailing spaces parses byte for byte"
+echo "== R6: the round trip through the reader =="
+rm -rf "$PD"; roost_shape_parse "$SHAPE_TMP/odd.shape" "$PD"
+i=0
+for v in "${ODD[@]}"; do
+  b="$(grep -l "^id ${OP[$i]}\$" "$PD"/*.pane)"; i=$((i+1))
+  assert_eq "$(roost_shape_get "$b" cwd)|$(roost_shape_get "$b" session_cwd)|$(roost_shape_get "$b" name)" "$O/$v|$O/$v|$v" \
+    "[$v] comes back from save, check and parse byte for byte ($(TL display -p '#{version}'))"
+done
+
+echo "== the kept shape (tests/fixtures/shape-v1.txt) =="
+# This file was written by `roost save` (Task 1.10's own fleet: two sessions,
+# a zoomed window, a keyed pane, a stale pane, a launch line), scrubbed to
+# /tmp/roost-fixture/... paths and fake ids, and committed. It is NEVER
+# edited: a later key gets a second fixture beside it, so every later roost is
+# proven to read what this one wrote. One tool lost every saved session at an
+# upgrade because nothing pinned its old format.
+FX="tests/fixtures/shape-v1.txt"
+assert_eq "$(ck "$FX")" "0|" "the kept shape passes the checker"
+rm -rf "$PD"; roost_shape_parse "$FX" "$PD"
+assert_eq "$(ls "$PD" | sed 's/^[0-9]*\.//' | sort | uniq -c | tr -s ' ' | tr '\n' ',')" " 1 header, 4 pane, 2 session, 3 window," "its block counts"
+assert_eq "$(roost_shape_get "$PD/0000.header" server)" "roost" "header server"
+b="$(grep -l '^harness claude$' "$PD"/*.pane)"
+assert_eq "$(roost_shape_get "$b" session_id)" "11111111-1111-4111-8111-111111111111" "the keyed pane's session_id"
+b="$(grep -l '^stale_reason ' "$PD"/*.pane)"
+assert_eq "$(roost_shape_get "$b" stale_reason)" "exited" "the stale pane's reason"
+b="$(grep -l '^zoomed 1$' "$PD"/*.window)"
+assert_eq "$(roost_shape_get "$b" layout | cut -d, -f2)" "200x50" "the zoomed window's layout"
+b="$(grep -l '^launch ' "$PD"/*.pane)"
+assert_eq "$(roost_shape_get "$b" launch)" "FOO_TOKEN=… sh" "the launch line"
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

@@ -639,3 +639,190 @@ roost_shape_save() {
   printf '%s\n' "$ROOST_SHAPE_COUNTS" >&2
   return 0
 }
+
+# roost_shape_check FILE -> exit 0 when the whole file may be restored; else
+# exit 1 with ROOST_SHAPE_FAULT="line N: <fault>". An unknown block is skipped
+# with one stderr line naming its line, and the file still passes.
+#
+# The whole file is checked before restore's first tmux command (§3.2, §4.3):
+# #51 requirement 7 is never to half-restore, so one bad line refuses all of
+# it. One pass, `IFS= read -r line`, the key as ${line%% *} and the value as
+# ${line#* } — everything after the first space, byte for byte, leading and
+# trailing spaces included — then the cross-block checks. Nothing in the file
+# is evaluated: no eval, no source.
+#
+# The rules, in order:
+#   - the first line is `roost-shape N`; no readable first line, or a larger
+#     N, is a refusal (the number moves only when a key changes meaning);
+#   - a line with no space has no value; a value holding a tab or any other
+#     control character is refused (the writer never writes one, probe 1.3);
+#   - a key repeated inside one block is a hand-edit error;
+#   - a block starts with `session NAME`, `window SESSION:INDEX` or `pane
+#     SESSION:INDEX.PANE`; any other first word is a block a later roost
+#     added, skipped, so an additive file never makes an older roost refuse;
+#   - required keys: the header's roost-shape, server, boot, saved, gen,
+#     trigger; a session's id; a window's id and layout; a pane's id and cwd;
+#   - no address repeats, every window names a session block and every pane a
+#     window block (an address with no parent);
+#   - a session group (R7): a `group` line names a session with a full block
+#     — not itself, not another later member — and a later member owns no
+#     window or pane block. Each of these is "an address with no parent", so
+#     the whole file is refused, the rule above.
+# roost_shape__digits X -> exit 0 when X is one or more ASCII digits.
+roost_shape__digits() { [ -n "$1" ] && [ -z "${1//[0-9]/}" ]; }
+
+roost_shape_check() {
+  local LC_ALL=C file="$1" line n=0 key val kind="" addr="" bstart=0 keys="" first=1
+  local hdr_keys="" addrs=$'\n' sessions=$'\n' full=$'\n' later=$'\n' windows=$'\n'
+  local wchk="" pchk="" gchk="" s w rest
+  local nl=$'\n'
+  ROOST_SHAPE_FAULT=""
+  if [ ! -s "$file" ]; then ROOST_SHAPE_FAULT="line 1: no readable first line (want roost-shape 1)"; return 1; fi
+  # The block's end: check its required keys and record its address.
+  roost_shape__endblock() {
+    case "$kind" in
+      header)
+        for key in roost-shape server boot saved gen trigger; do
+          case "$keys" in *" $key "*) ;; *) ROOST_SHAPE_FAULT="line 1: the header has no $key"; return 1 ;; esac
+        done ;;
+      session)
+        case "$keys" in *" id "*) ;; *) ROOST_SHAPE_FAULT="line $bstart: session $addr has no id"; return 1 ;; esac ;;
+      window)
+        for key in id layout; do
+          case "$keys" in *" $key "*) ;; *) ROOST_SHAPE_FAULT="line $bstart: window $addr has no $key"; return 1 ;; esac
+        done ;;
+      pane)
+        for key in id cwd; do
+          case "$keys" in *" $key "*) ;; *) ROOST_SHAPE_FAULT="line $bstart: pane $addr has no $key"; return 1 ;; esac
+        done ;;
+    esac
+    case "$kind" in
+      session)
+        case "$keys" in
+          *" group "*) later="$later$addr$nl" ;;
+          *) full="$full$addr$nl" ;;
+        esac ;;
+    esac
+    kind="" keys=""
+    return 0
+  }
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    if [ "$first" = 1 ]; then
+      first=0
+      case "$line" in
+        "roost-shape "*)
+          val="${line#roost-shape }"
+          case "$val" in ''|*[!0-9]*) ROOST_SHAPE_FAULT="line 1: no readable first line (want roost-shape 1)"; return 1 ;; esac
+          if [ "$val" -gt 1 ]; then ROOST_SHAPE_FAULT="line 1: roost-shape $val is newer than this roost reads (1)"; return 1; fi ;;
+        *) ROOST_SHAPE_FAULT="line 1: no readable first line (want roost-shape 1)"; return 1 ;;
+      esac
+      kind=header bstart=1 keys=" roost-shape "
+      continue
+    fi
+    if [ -z "$line" ]; then
+      [ -n "$kind" ] && { roost_shape__endblock || return 1; }
+      continue
+    fi
+    case "$line" in *" "*) ;; *) ROOST_SHAPE_FAULT="line $n: no value after the key $line"; return 1 ;; esac
+    key="${line%% *}" val="${line#* }"
+    case "$val" in *[[:cntrl:]]*) ROOST_SHAPE_FAULT="line $n: a value holds a tab or a control character"; return 1 ;; esac
+    if [ -z "$kind" ]; then
+      # A block's first line.
+      bstart=$n addr="$val" keys=""
+      case "$key" in
+        session) kind=session ;;
+        window)
+          kind=window
+          s="${val%:*}" rest="${val##*:}"
+          if [ "$s" = "$val" ] || [ -z "$s" ] || ! roost_shape__digits "$rest"; then
+            ROOST_SHAPE_FAULT="line $n: window $val is not SESSION:INDEX"; return 1
+          fi
+          wchk="$wchk$n $s$nl" windows="$windows$val$nl" ;;
+        pane)
+          kind=pane
+          s="${val%:*}" rest="${val##*:}"
+          w="${rest%.*}"
+          if [ "$s" = "$val" ] || [ -z "$s" ] || [ "$w" = "$rest" ] \
+             || ! roost_shape__digits "$w" || ! roost_shape__digits "${rest##*.}"; then
+            ROOST_SHAPE_FAULT="line $n: pane $val is not SESSION:WINDOW.PANE"; return 1
+          fi
+          pchk="$pchk$n $s:$w$nl" ;;
+        *)
+          printf 'roost: line %s: unknown block %s skipped\n' "$n" "$key" >&2
+          kind=unknown ;;
+      esac
+      if [ "$kind" != unknown ]; then
+        case "$addrs" in *"$nl$key $val$nl"*) ROOST_SHAPE_FAULT="line $n: repeated address $key $val"; return 1 ;; esac
+        addrs="$addrs$key $val$nl"
+      fi
+      continue
+    fi
+    [ "$kind" = unknown ] && continue
+    case "$keys" in *" $key "*) ROOST_SHAPE_FAULT="line $n: repeated key $key"; return 1 ;; esac
+    keys="$keys $key "
+    [ "$kind" = session ] && [ "$key" = group ] && gchk="$gchk$bstart $addr $val$nl"
+  done < "$file"
+  [ -n "$kind" ] && { roost_shape__endblock || return 1; }
+  # The cross-block checks, once every block is known: parents, then groups.
+  local ln a g
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ln="${line%% *}" a="${line#* }"
+    case "$full$later" in *"$nl$a$nl"*) ;; *)
+      ROOST_SHAPE_FAULT="line $ln: window $(sed -n "${ln}s/^window //p" "$file") has no session block"; return 1 ;; esac
+    case "$later" in *"$nl$a$nl"*)
+      ROOST_SHAPE_FAULT="line $ln: window $(sed -n "${ln}s/^window //p" "$file") belongs to $a, a later member of a group (it has no windows of its own)"; return 1 ;; esac
+  done <<< "$wchk"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ln="${line%% *}" a="${line#* }"
+    case "$windows" in *"$nl$a$nl"*) ;; *)
+      ROOST_SHAPE_FAULT="line $ln: pane $(sed -n "${ln}s/^pane //p" "$file") has no window block"; return 1 ;; esac
+  done <<< "$pchk"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    ln="${line%% *}" rest="${line#* }"
+    # rest is "<member> <first>"; a session name holds no space only when tmux
+    # made it, so split on the LAST space is wrong for a hand-made one: the
+    # member's name is the block address, read back from its line.
+    a="$(sed -n "${ln}s/^session //p" "$file")" g="${rest#"$a" }"
+    case "$full" in *"$nl$g$nl"*) ;; *)
+      ROOST_SHAPE_FAULT="line $ln: session $a joins $g, which has no full session block"; return 1 ;; esac
+  done <<< "$gchk"
+  return 0
+}
+
+# roost_shape_parse FILE DIR -> one file per block in DIR, named NNNN.<kind>
+# (0000.header, then session, window and pane blocks in file order), each
+# holding that block's lines verbatim. Call it only after roost_shape_check
+# passed. An unknown block is not written: restore never sees it.
+roost_shape_parse() {
+  local file="$1" dir="$2" line n=0 cur="" kind=""
+  ( umask 077; mkdir -p "$dir" ) || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ -z "$line" ]; then cur=""; continue; fi
+    if [ -z "$cur" ]; then
+      case "${line%% *}" in
+        roost-shape) kind=header ;;
+        session|window|pane) kind="${line%% *}" ;;
+        *) kind=unknown ;;
+      esac
+      if [ "$kind" = unknown ]; then cur=/dev/null
+      else cur="$dir/$(printf '%04d' "$n").$kind"; n=$((n + 1)); : > "$cur"; fi
+    fi
+    [ "$cur" = /dev/null ] || printf '%s\n' "$line" >> "$cur"
+  done < "$file"
+}
+
+# roost_shape_get BLOCKFILE KEY -> prints the value; exit 1 when the key is
+# absent. A reader tests presence (§3.2: absent, not empty). The block's
+# first line is its address, not a key, and is never matched.
+roost_shape_get() {
+  local line first=1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$first" = 1 ]; then first=0; continue; fi
+    case "$line" in "$2 "*) printf '%s\n' "${line#"$2" }"; return 0 ;; esac
+  done < "$1"
+  return 1
+}
