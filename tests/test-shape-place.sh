@@ -587,6 +587,30 @@ assert_eq "$rc:$(TL display -p -t '=victim:' '#{window_name}'):$(TL display -p -
   "restore skips it (exit 12), and the person's window name and pane are as they made them ($(TL display -p '#{version}'))"
 stop_server; rm -f "$H"
 
+echo "== a bootstrap a person took after the claim keeps the person's window name (review round 7, Codex R7-B1) =="
+# The same, but the person replaces the pane AFTER restore's claim won, and
+# does not split it: the one-pane recheck still passes, and only the second
+# look right before the respawn sees the person's command. The name is put
+# right only there, when the respawn really happens, so here it stays the
+# person's.
+stop_server; rm -rf "$SD/restoring"
+TL -f /dev/null new-session -d -s victim -n 'saved\name' -x 200 -y 50 -c "$SHAPE_TMP/d1" 'ENV= exec /bin/sh'
+R save >/dev/null 2>&1; stop_server
+H="$SHAPE_TMP/hold"; rm -f "$H"
+ROOST_TEST_BOOT_HOLD_AFTER_CLAIM="$H" R restore --only victim >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+# Held after the claim: the bootstrap's file is .used.
+i=0; while [ "$i" -lt 100 ] && ! ls "$SD"/restoring/bootstrap.*.used >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+bp="$(first_pane victim)"
+TL respawn-pane -k -t "$bp" 'exec sleep 300'
+TL rename-window -t '=victim:' personal-window
+ppid_before="$(TL display -p -t "$bp" '#{pane_pid}')"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$(TL display -p -t '=victim:' '#{window_name}'):$(TL display -p -t "$bp" '#{pane_pid}')" "personal-window:$ppid_before" \
+  "the person's window name and pane are as they made them (exit $rc, $(TL display -p '#{version}'))"
+assert_contains "$(cat "$SHAPE_TMP/err")" "was changed by hand during placement" "...and restore says the pane was changed by hand"
+stop_server; rm -f "$H"
+
 echo "== a session group comes back as a group (R7) =="
 stop_server
 TL -f /dev/null new-session -d -s gm -c "$SHAPE_TMP/d1" -x 200 -y 50 'ENV= exec /bin/sh'

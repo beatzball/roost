@@ -388,11 +388,24 @@ roost_restore__claim() {
 # its respawns go through here: without the second look, restore killed the
 # person's process (review round 1, Codex B1; review round 2, Codex R2-B2,
 # the split-session fallback).
+#
+# The bootstrap's first window name is put right here too, and only here:
+# the one moment restore has just seen the pane still runs its placing line
+# and is about to respawn it. ROOST_RESTORE_BOOT_NAME_PANE names that pane,
+# set only once the bootstrap's claim won and its recheck passed; anywhere
+# earlier, a person could have taken the pane since and named the window
+# (review round 6, Codex R6-B1, before the claim; review round 7, Codex
+# R7-B1, after it).
 roost_restore__respawn_claimed() {
   if roost_restore__placing "$(t -u display-message -p -t "$1" '#{pane_start_command}' 2>/dev/null || true)" "${2##*/}"; then
+    if [ -n "${ROOST_RESTORE_BOOT_NAME_PANE:-}" ] && [ "$1" = "$ROOST_RESTORE_BOOT_NAME_PANE" ]; then
+      roost_restore__window_name "$ROOST_RESTORE_BOOT_NAME_WID" "$ROOST_RESTORE_BOOT_NAME"
+    fi
+    ROOST_RESTORE_BOOT_NAME_PANE=""
     roost_restore__respawn "$1" "$3"
     return 0
   fi
+  [ "$1" = "${ROOST_RESTORE_BOOT_NAME_PANE:-}" ] && ROOST_RESTORE_BOOT_NAME_PANE=""
   mv "$2.used" "$2.taken" 2>/dev/null || true
   return 2
 }
@@ -614,11 +627,11 @@ roost_restore__make_session() {
         return 12; }
   fi
   sid="${out%% *}" out="${out#* }" wid="${out%% *}" pane="${out#* }"
-  # A bootstrap's first window is read back below, once two things are
+  # A bootstrap's first window is read back later, once two things are
   # known: the read rules of a server that was not running when they were
   # learned (review round 5, Fable N1: before them, a `$` that 3.4 prints as
-  # `\$` looked grown), and that the bootstrap is still restore's (review
-  # round 6, Codex R6-B1: a person who took it may have named the window).
+  # `\$` looked grown), and that the bootstrap is still restore's, right
+  # before its respawn (roost_restore__respawn_claimed).
   [ "$boot" != 1 ] && [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
   t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
   if [ "$boot" = 1 ]; then
@@ -654,8 +667,12 @@ roost_restore__make_session() {
          printf "roost restore: session '%s' skipped: it was changed by hand during placement — %s panes not restored\n" "$name" "$npanes" >&2
          return 12 ;;
     esac
-    # Still restore's: the claim won and the recheck passed.
-    [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
+    # Still restore's: the claim won and the recheck passed. Its name is
+    # put right when its respawn's own look passes too.
+    ROOST_RESTORE_BOOT_NAME_PANE=""
+    if [ "${#nflag[@]}" -gt 0 ]; then
+      ROOST_RESTORE_BOOT_NAME_PANE="$pane" ROOST_RESTORE_BOOT_NAME_WID="$wid" ROOST_RESTORE_BOOT_NAME="$wname"
+    fi
     pre="$pane"
   fi
   roost_restore__window_first "$sid" "$wid" "$(roost_restore__addr "$wfirst" | sed 's/.*://')"
