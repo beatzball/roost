@@ -463,14 +463,18 @@ echo "== which tmux versions store a session name's dots as _ (review round 5, C
 # roost_restore__learn_dots reads #{version} and nothing else; `t` here
 # prints a version, so each row is the rule alone. 1: `.` and `:` stored as
 # `_`; 0: kept. CHANGES puts the change in 3.7 -> 3.7a (Codex measured 3.7a
-# on a real build); a git build (next-3.8, master) is past it.
+# on a real build); a git build (next-3.8, master) is past it. A version
+# that is neither a release nor a git build (OpenBSD's own, `openbsd-` and
+# the OS release) keeps the old rule, which was right for every build before
+# the change: roost does not support those builds (doctor refuses them), and
+# OpenBSD's tmux of 7.6 maps the dots (review round 5, Codex B2).
 dots_rule() { ( . scripts/lib/roost-shape.sh; . scripts/lib/roost-restore.sh
   t() { printf '%s\n' "$V"; }; roost_restore__learn_dots; printf '%s' "$ROOST_RESTORE_MAPDOTS" ) 2>/dev/null; }
 got="" want=""
-for row in 3.2a:1 3.4:1 3.6:1 3.7:1 3.7a:0 3.7b:0 3.8:0 3.10:0 next-3.8:0 master:0; do
+for row in 3.2a:1 3.4:1 3.6:1 3.7:1 3.7a:0 3.7b:0 3.8:0 3.10:0 next-3.8:0 master:0 next-3.7:1 3.8-rc2:0 openbsd-7.6:1; do
   got="$got ${row%:*}=$(V="${row%:*}" dots_rule)"; want="$want $row"
 done
-assert_eq "$got" "$(printf '%s' "$want" | tr ':' '=')" "the version table: up to 3.7 maps, 3.7a and later and git builds keep"
+assert_eq "$got" "$(printf '%s' "$want" | tr ':' '=')" "the version table: up to 3.7 maps, 3.7a and later and git builds keep, anything else maps"
 
 echo "== dotted and numeric session names (probe 1.4) =="
 # Up to tmux 3.7 a session name's `.` and `:` are stored as `_` (probe 1.4),

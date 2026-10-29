@@ -116,8 +116,7 @@ roost_restore__names() {
 # docs/airig/probes/persist-1-tmux38.md),
 # and `v3.69-x` and `v3_69-x` are two sessions. The rule is the server's
 # version, read once: a test session made only to see how its name is stored
-# would run a person's session-created hooks. A version this cannot read
-# (`master`, `next-3.9`) is a newer tmux, which keeps them. Learned by
+# would run a person's session-created hooks. Learned by
 # roost_restore__learn_dots, in the caller's own shell: this one runs inside
 # $(...), where a value it set would be lost.
 roost_restore__stored() {
@@ -132,10 +131,20 @@ roost_restore__stored() {
 
 # roost_restore__learn_dots -> ROOST_RESTORE_MAPDOTS, 1 when this server
 # stores `.` and `:` in a session name as `_` (roost_restore__stored).
+#
+# Only a version known to be 3.7a or later keeps them: a release (`3.7a`,
+# `3.8`, `3.8-rc2`, `3.10`, `4.0`) or a git build after 3.7 (`next-3.8`,
+# `master`). A release up to 3.7, `next-3.7` and older, and anything else
+# keep the old rule, which held for every build before the change: OpenBSD's
+# own tmux prints `openbsd-` and the OS release, and its 7.6 maps the dots
+# (review round 5, Codex B2); roost does not support such a build (doctor
+# refuses it), and a server not yet running prints nothing, and is asked
+# again after the bootstrap starts it (roost_restore__names).
 roost_restore__learn_dots() {
   case "$(t -u display-message -p '#{version}' 2>/dev/null || true)" in
-    [0-2].*|3.[0-6]|3.[0-6][a-z]|3.7) ROOST_RESTORE_MAPDOTS=1 ;;
-    *) ROOST_RESTORE_MAPDOTS=0 ;;
+    3.7[a-z]*|3.[89]*|3.[1-9][0-9]*|[4-9].*|[1-9][0-9]*.*|next-3.[89]*|next-3.[1-9][0-9]*|next-[4-9].*|next-[1-9][0-9]*.*|master)
+      ROOST_RESTORE_MAPDOTS=0 ;;
+    *) ROOST_RESTORE_MAPDOTS=1 ;;
   esac
 }
 

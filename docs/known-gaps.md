@@ -50,7 +50,10 @@ that changes one of these breaks the rule quietly.
   matches a saved dotted name to the `_` one and never makes it twice; from
   3.7a tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
   and restore asks the server's version which rule holds (a test session
-  would run a person's hooks).
+  would run a person's hooks). A version that is neither a release nor a git
+  build (OpenBSD's tmux prints `openbsd-7.6`) is given the old rule; OpenBSD
+  7.6 maps the dots, a later OpenBSD tmux that keeps them would be matched
+  wrongly. roost does not support those builds (doctor refuses them).
 - **Exact targets.** `=NAME:INDEX` falls back to a window NAMED like the
   index when that index does not exist, on all three builds, and `display -p`
   on a missing target exits 0 with empty output. Restore therefore targets
