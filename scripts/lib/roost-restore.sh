@@ -604,6 +604,12 @@ roost_restore__make_session() {
   local -a nflag=()
   wname="$(roost_shape_get "$wfirst" name)" && nflag=(-n "$wname")
   if [ "$boot" = 1 ]; then
+    # A new bootstrap starts with no name record. One left by an earlier
+    # bootstrap of this run whose server died before its respawn would
+    # otherwise name THIS server's panes: a new server's ids restart at %0
+    # and @0, and the split fallback below looks the record up before the
+    # record for this bootstrap is set (review round 8, Codex R8-B1).
+    ROOST_RESTORE_BOOT_NAME_PANE="" ROOST_RESTORE_BOOT_NAME_WID="" ROOST_RESTORE_BOOT_NAME=""
     f="$ROOST_RESTORE_RD/bootstrap.$ROOST_RESTORE_RUN"; : > "$f"
     # The server's first session, started the way ensure_session starts one
     # (-f CONF), at the saved size, with the placing placeholder by its own

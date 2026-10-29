@@ -611,6 +611,54 @@ assert_eq "$(TL display -p -t '=victim:' '#{window_name}'):$(TL display -p -t "$
 assert_contains "$(cat "$SHAPE_TMP/err")" "was changed by hand during placement" "...and restore says the pane was changed by hand"
 stop_server; rm -f "$H"
 
+echo "== a dead bootstrap's name record is not a later bootstrap's (review round 8, Codex R8-B1) =="
+# Two saved sessions on a stopped server, each first window named. The first
+# bootstrap passes its claim, then its server dies at restore's first look
+# at its panes (a tmux on PATH kills the TEST server there, once), so its
+# respawn never runs. Restore starts a fresh server for the second session:
+# its pane and window ids are %0 and @0 again. A person splits that
+# bootstrap after its claim and names the window. Restore skips it as
+# changed by hand, and must not rename it with the first session's record.
+stop_server; rm -rf "$SD/restoring"
+{ printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' \
+    'saved 2026-10-28T12:00:00Z' 'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' ''
+  n=0
+  for nm in bfirst bsecond; do
+    printf '%s\n' "session $nm" "id \$$n" '' "window $nm:1" "id @$n" "name $nm"'\\name' \
+      "layout b25d,200x50,0,0,0" 'active 1' '' "pane $nm:1.0" "id %$n" "cwd $SHAPE_TMP/d1" ''
+    n=$((n+1))
+  done
+} > "$SD/shape"
+KSHIM="$SHAPE_TMP/kshim"; mkdir -p "$KSHIM"; rm -f "$SHAPE_TMP/killed"
+H="$SHAPE_TMP/hold"; : > "$H"
+cat > "$KSHIM/tmux" <<KSH
+#!/bin/sh
+case "\$*" in
+  *'list-panes -t @0 -F #{pane_id}')
+    if [ ! -e "$SHAPE_TMP/killed" ]; then
+      : > "$SHAPE_TMP/killed"; rm -f "$H"
+      "$(command -v tmux)" -S "$SHAPE_SOCK" kill-server; exit 1
+    fi ;;
+esac
+exec "$(command -v tmux)" "\$@"
+KSH
+chmod +x "$KSHIM/tmux"
+# The hold file exists, so the first bootstrap passes the after-claim hold;
+# the kill removes it, so the second one waits there.
+PATH="$KSHIM:$PATH" ROOST_TEST_BOOT_HOLD_AFTER_CLAIM="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; p=""; while [ "$i" -lt 150 ] && [ -z "$p" ]; do p="$(first_pane bsecond)"; [ -n "$p" ] || sleep 0.1; i=$((i+1)); done
+# Both bootstraps of one run share one file name, so its .used says nothing
+# here; a split before or after the claim takes the same split path.
+sleep 1
+TL split-window -d -t "$p" 'exec sleep 300'
+TL rename-window -t "$p" personal-second
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$([ -e "$SHAPE_TMP/killed" ] && echo killed):$p" "killed:%0" "the fixture: the first server died, and the second bootstrap is %0 again"
+assert_eq "$rc:$(TL display -p -t "$p" '#{window_name}')" "12:personal-second" \
+  "a split second bootstrap is skipped (exit 12) and keeps the person's window name ($(TL display -p '#{version}'))"
+stop_server; rm -f "$H"
+
 echo "== a session group comes back as a group (R7) =="
 stop_server
 TL -f /dev/null new-session -d -s gm -c "$SHAPE_TMP/d1" -x 200 -y 50 'ENV= exec /bin/sh'
