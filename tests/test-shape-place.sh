@@ -525,6 +525,29 @@ for cycle in 1 2; do
   assert_eq "$(TL list-sessions -F '#{session_name}' | sort)" "$before" "cycle $cycle: the session names a person sees are the same, not grown ($(TL display -p '#{version}'))"
 done
 
+echo "== the bootstrap's first window is read back with the server's read rules (review round 5, Fable N1) =="
+# A first window named a\$b, restored on a stopped server: the bootstrap
+# path. Its name is read back to see whether tmux escaped it (from 3.7). That
+# read must use this server's rules (roost_shape__read_rules: 3.2a and 3.4
+# print `$` as `\$`); read before them, the name looked grown on 3.2a and
+# 3.4 and was renamed. A tmux on PATH that logs each command shows whether a
+# rename ran; before 3.7 none may (the name is stored as given there).
+stop_server
+TL -f /dev/null new-session -d -s nb -x 200 -y 50 -c "$SHAPE_TMP/d1" 'ENV= exec /bin/sh'
+TL rename-window -t '=nb:' 'a\$b'
+R save >/dev/null 2>&1; before="$(TL list-windows -a -F '#{window_name}')"; stop_server
+TSHIM="$SHAPE_TMP/tshim"; mkdir -p "$TSHIM"; : > "$SHAPE_TMP/tmux.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$SHAPE_TMP/tmux.log" "$(command -v tmux)" > "$TSHIM/tmux"
+chmod +x "$TSHIM/tmux"
+PATH="$TSHIM:$PATH" R restore >/dev/null 2>&1; rc=$?
+assert_eq "$rc:$(TL list-windows -a -F '#{window_name}')" "0:$before" "the first window's name is the same after a bootstrap restore"
+case "$(TL display -p '#{version}')" in
+  [0-2].*|3.[0-6]*)
+    assert_eq "$(grep -c ' rename-window ' "$SHAPE_TMP/tmux.log")" "0" \
+      "...and tmux $(TL display -p '#{version}') stores it as given, so it is not renamed" ;;
+esac
+stop_server
+
 echo "== a session group comes back as a group (R7) =="
 stop_server
 TL -f /dev/null new-session -d -s gm -c "$SHAPE_TMP/d1" -x 200 -y 50 'ENV= exec /bin/sh'
