@@ -883,9 +883,10 @@ roost_shape_get() {
 # but its owner is unwritten — the first version's mkdir-then-write left one,
 # and a reader there saw "no owner" and took over. Taking over a DEAD record
 # is itself a claim, made the same way on a name derived from exactly that
-# record (roost_shape__claim on DIR/owner.x.<that record>): only one process
-# can win the takeover of one dead record, and only its winner removes it.
-# A takeover whose taker died is taken over the same way, one level down.
+# record (roost_shape__claim on DIR/owner.x.<sum>, roost_shape__takeover):
+# only one process can win the takeover of one dead record, and only its
+# winner removes it. A takeover whose taker died is taken over the same way,
+# one level down.
 
 # roost_shape__lstart PID -> prints the process's start time, or nothing.
 roost_shape__lstart() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
@@ -910,24 +911,52 @@ roost_shape__seam() {
   while [ ! -e "$f" ] && [ "$i" -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
 }
 
+# roost_shape__takeover PATH RECORD -> prints the name a takeover of PATH's
+# dead RECORD is claimed on: PATH's first name, `.x.`, and the cksum of PATH
+# and RECORD together. One name per (path, record), so two takers of the same
+# dead record race on one `ln -s`, and a later holder who dies has a name of
+# its own. Its length is FIXED: the first version appended the whole record
+# to PATH at every level, and a chain of takers that died holding their
+# claims reached a name longer than a file name may be (ENAMETOOLONG; review
+# round 2, Codex R2-B4). cksum is POSIX; a clash of two sums only makes two
+# records share one takeover name, which is still exclusive.
+roost_shape__takeover() {
+  local dir="${1%/*}" base="${1##*/}" sum
+  sum="$(printf '%s\n%s' "$1" "$2" | cksum | sed 's/[^0-9][^0-9]*/-/;s/[^0-9-]//g')"
+  printf '%s/%s.x.%s\n' "$dir" "${base%%.x.*}" "$sum"
+}
+
 # roost_shape__claim PATH ME -> 0 claimed (PATH was free), 2 claimed from a
-# dead holder, 1 a live process holds it (ROOST_SHAPE_OWNER_PID).
+# dead holder, 1 a live process holds it (ROOST_SHAPE_OWNER_PID), 3 it cannot
+# be claimed at all (ROOST_SHAPE_OWNER_FAULT says why).
 roost_shape__claim() {
-  local path="$1" me="$2" cur sub took=0 i=0 r first=1
+  local path="$1" me="$2" cur sub took=0 i=0 r first=1 miss=0
+  ROOST_SHAPE_OWNER_FAULT=""
   while [ "$i" -lt 100 ]; do
     i=$((i + 1))
     [ "$first" = 1 ] && roost_shape__seam ROOST_TEST_OWNER_PAUSE_FRESH
     first=0
     if ln -s "$me" "$path" 2>/dev/null; then return "$took"; fi
-    cur="$(readlink "$path" 2>/dev/null)" || continue
+    if ! cur="$(readlink "$path" 2>/dev/null)"; then
+      # `ln -s` failed and nothing is there: either the record went between
+      # the two calls (the next turn wins), or the name cannot be made at
+      # all. Three in a row is the second: a clear refusal, never a loop
+      # retrying an `ln -s` that cannot succeed (review round 2, R2-B4).
+      miss=$((miss + 1))
+      if [ "$miss" -ge 3 ]; then
+        ROOST_SHAPE_OWNER_FAULT="cannot create $path"
+        return 3
+      fi
+      continue
+    fi
+    miss=0
     roost_shape__alive "$cur" && return 1
     roost_shape__seam ROOST_TEST_OWNER_PAUSE_DEAD
-    # The takeover of THIS dead record: one name per record, so two takers of
-    # the same dead owner race on one `ln -s`, and a later owner who dies has
-    # a record of its own and a takeover name of its own.
-    sub="$path.x.$(printf '%s' "$cur" | tr -c 'A-Za-z0-9' '_')"
+    sub="$(roost_shape__takeover "$path" "$cur")"
     r=0; roost_shape__claim "$sub" "$me" || r=$?
+    [ "$r" = 3 ] && return 3
     if [ "$r" = 1 ]; then sleep 0.05; continue; fi
+    roost_shape__seam ROOST_TEST_OWNER_PAUSE_HELD
     # Held. The record is still the dead one (only this takeover's holder may
     # remove it, a dead owner releases nothing, and a fresh `ln -s` fails
     # while it exists), so remove it and claim; whoever links first owns it.
@@ -943,8 +972,9 @@ roost_shape__claim() {
 # roost_shape_owner_take DIR -> 0 when DIR is made and owned by this process;
 # 2 when taken over from an owner that is gone (the caller then settles what
 # that owner left, §4.7 arrow T2b); 1 when a live owner holds it
-# (ROOST_SHAPE_OWNER_PID names it). DIR itself is made by anyone (mkdir -p):
-# what is exclusive is the owner record in it.
+# (ROOST_SHAPE_OWNER_PID names it); 3 when it cannot be owned at all
+# (ROOST_SHAPE_OWNER_FAULT says why, naming the path). DIR itself is made by
+# anyone (mkdir -p): what is exclusive is the owner record in it.
 roost_shape_owner_take() {
   ( umask 077; mkdir -p "$1" ) 2>/dev/null || return 1
   roost_shape__claim "$1/owner" "$$ $(roost_shape__lstart "$$")"

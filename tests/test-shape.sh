@@ -329,6 +329,33 @@ assert_eq "$(printf '%s\n%s\n' "$rc_c" "$rc_e" | sort | tr '\n' ' ')" "0 1 " \
   "a directory with no owner yet, two claims at once: exactly one owns it"
 : > "$OD/stop"; wait 2>/dev/null
 
+echo "== a chain of takers that died holding their claim is taken over (review round 2, Codex R2-B4) =="
+# Each taker K1..K8 dies while it holds a takeover claim, one level deeper
+# than the one before it: ROOST_TEST_OWNER_PAUSE_HELD stops it right after
+# its claim is held, and it is killed there. The first version named each
+# level after the whole name above it, so the eighth name was longer than a
+# file name may be (ENAMETOOLONG, measured) and nobody could take the
+# directory again. Each taker exits by itself once it has its rc ($OD/stop).
+D3="$OD/chain"; mkdir -p "$D3"; ln -s "$deadpid Thu Jan  1 00:00:00 1970" "$D3/owner"
+k=1; held=0
+while [ "$k" -le 8 ]; do
+  taker "K$k" "$D3" ROOST_TEST_OWNER_PAUSE_HELD; arrived "K$k"
+  ls "$OD/go.K$k.at."* >/dev/null 2>&1 && held=$((held + 1))
+  kp="$(cat "$OD/K$k.pid" 2>/dev/null)"; kill -9 "$kp" 2>/dev/null; wait "$kp" 2>/dev/null
+  k=$((k + 1))
+done
+assert_eq "$held" "8" "eight takers each died holding a claim one level deeper"
+taker F "$D3" ROOST_TEST_OWNER_PAUSE_NONE; rf="$(done_rc F)"
+assert_eq "$rf" "2" "the next one takes the directory over (exit 2), within 5 s"
+assert_eq "$(readlink "$D3/owner" | cut -d' ' -f1)" "$(cat "$OD/F.pid" 2>/dev/null)" "...the record names it"
+assert_eq "$(ls "$D3" | tr '\n' ' ')" "owner " "...and every dead takeover claim is gone"
+# A taker still stuck (the first version spun) is stopped; one with an rc
+# has exited by itself.
+[ -s "$OD/F.rc" ] || kill -9 "$(cat "$OD/F.pid" 2>/dev/null)" 2>/dev/null; wait 2>/dev/null
+long="$(printf 'n%.0s' $(seq 1 300))"
+out="$(bash -c '. scripts/lib/roost-shape.sh; roost_shape__claim "$1" "1 x"; echo "$?|$ROOST_SHAPE_OWNER_FAULT"' _ "$OD/$long")"
+assert_eq "$out" "3|cannot create $OD/$long" "a name that cannot be made is a refusal naming it (exit 3), not a loop"
+
 echo "== the caller's locale changes nothing (review round 1, B4) =="
 # tmux's CLIENT decides how to print a value: under LC_ALL=C or no locale at
 # all it turns a control byte and every non-ASCII byte into `_` (measured on

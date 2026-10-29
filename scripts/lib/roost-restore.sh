@@ -577,6 +577,11 @@ roost_restore_run() {
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
   ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
   own=0; roost_shape_owner_take "$ROOST_RESTORE_RD" || own=$?
+  if [ "$own" = 3 ]; then
+    printf 'roost restore: %s; nothing done\n' "${ROOST_SHAPE_OWNER_FAULT:-cannot own $ROOST_RESTORE_RD}" >&2
+    rm -rf "$ROOST_RESTORE_PD"
+    return 1
+  fi
   if [ "$own" = 1 ]; then
     printf 'roost restore: another restore (pid %s) is placing panes on this server; nothing done\n' \
       "${ROOST_SHAPE_OWNER_PID:-?}" >&2
