@@ -372,10 +372,12 @@ TL set -gu default-command
 echo "== a default-shell with \$ in its path runs as the person set it (review round 2, Codex R2-B3) =="
 # The same R6 correction, for default-shell: read back raw on 3.4, its path
 # named a file that does not exist, the respawned pane died at once and the
-# pane was gone. Red on 3.4 only.
-stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"
+# pane was gone. Red on 3.4 only. The shell marks $HOME/dollar-shell when it
+# runs: the fallback for a shell that cannot run (the next case) also keeps
+# the pane, so only the mark shows that THIS shell was the one started.
+stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"; rm -f "$HOME/dollar-shell"
 SHD="$SHAPE_TMP/sh\$ell"; mkdir -p "$SHD"
-printf '#!/bin/sh\nexec "%s" "$@"\n' "$BASH_BIN" > "$SHD/bash"; chmod +x "$SHD/bash"
+printf '#!/bin/sh\n: > "$HOME/dollar-shell"\nexec "%s" "$@"\n' "$BASH_BIN" > "$SHD/bash"; chmod +x "$SHD/bash"
 TL -f /dev/null new-session -d -s other -c "$SHAPE_TMP/d1" 'sleep 600'
 TL new-session -d -s victim -c "$SHAPE_TMP/d1" 'sleep 600'
 R save >/dev/null 2>&1; TL kill-session -t '=victim'
@@ -383,7 +385,9 @@ TL set -g default-shell "$SHD/bash"; TL set -gu default-command
 R restore --only victim >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 vp="$(first_pane victim)"
 assert_eq "$rc:$([ -n "$vp" ] && echo kept)" "0:kept" "restore exits 0 and the victim's pane is there ($(TL display -p '#{version}'))"
-shells_wait "$vp"; assert_eq "$(shells_for "$vp" | wc -l | tr -d ' ')" "1" "...running a shell started through that default-shell"
+shells_wait "$vp"; assert_eq "$(shells_for "$vp" | wc -l | tr -d ' ')" "1" "...running a shell"
+[ -e "$HOME/dollar-shell" ]; assert_true $? "...started through that default-shell, with no fallback"
+assert_eq "$(grep -c 'cannot be run' "$SHAPE_TMP/err")" "0" "...and no line saying it cannot be run"
 
 echo "== a default-shell that cannot be run is said, and the pane kept (review round 2, Codex R2-B3) =="
 # A pane whose shell cannot start dies at once, and restore said nothing and
