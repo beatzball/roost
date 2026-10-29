@@ -775,15 +775,23 @@ fresh_server
 # The two-pane session comes FIRST: ROOST_TEST_PLACE_HOLD holds at the first
 # window restore builds, and this case needs that window held.
 mkshape "two:$SHAPE_TMP/d1" "keepme:$SHAPE_TMP/d1"
+# The fixture must be what the case thinks it is: the edit refuses (exit 1)
+# when the window it rewrites is not there, and an error in the edit itself
+# fails the case instead of leaving the one-pane shape (review round 7,
+# Codex NOTE: `%9` in a %-formatted string raised, and the two-pane case
+# never ran).
 python3 - "$SD/shape" "$SHAPE_TMP/d2" <<'PYS'
 import sys
 p, d = sys.argv[1], sys.argv[2]
 s = open(p).read()
-s = s.replace("window two:1\nid @0\nlayout b25d,200x50,0,0,0",
-              "window two:1\nid @0\nlayout 9d6f,200x50,0,0{100x50,0,0,0,99x50,101,0,9}")
-s += "pane two:1.1\nid %9\ncwd %s\n\n" % d
+old = "window two:1\nid @0\nlayout b25d,200x50,0,0,0"
+if s.count(old) != 1:
+    sys.exit(1)
+s = s.replace(old, "window two:1\nid @0\nlayout 9d6f,200x50,0,0{100x50,0,0,0,99x50,101,0,9}")
+s += "pane two:1.1\nid %9\ncwd " + d + "\n\n"
 open(p, "w").write(s)
 PYS
+assert_eq "$?:$(grep -c '^pane two:1\.' "$SD/shape")" "0:2" "the fixture: the saved window two:1 holds two panes"
 TL kill-session -t '=scratch' 2>/dev/null; TL -f /dev/null new-session -d -s other 'sleep 600'; TL set -g default-shell "$BASH_BIN"
 rm -f "$H"
 ROOST_TEST_PLACE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
