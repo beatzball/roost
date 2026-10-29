@@ -548,6 +548,30 @@ case "$(TL display -p '#{version}')" in
 esac
 stop_server
 
+echo "== a bootstrap a person took keeps the person's window name (review round 6, Codex R6-B1) =="
+# The bootstrap's first window name is put right only once restore knows
+# the bootstrap is still its own (the claim won, the recheck passed). Here
+# the person replaces the held bootstrap's pane and renames its window:
+# restore skips the session, and must leave both as the person made them.
+# The saved name holds a backslash, so a repair would rename it.
+stop_server; rm -rf "$SD/restoring"
+TL -f /dev/null new-session -d -s victim -n 'saved\name' -x 200 -y 50 -c "$SHAPE_TMP/d1" 'ENV= exec /bin/sh'
+R save >/dev/null 2>&1; stop_server
+H="$SHAPE_TMP/hold"; rm -f "$H"
+ROOST_TEST_RESTORE_HOLD="$H" R restore --only victim >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; while [ "$i" -lt 100 ] && [ -z "$(first_pane victim)" ]; do sleep 0.1; i=$((i+1)); done
+bp="$(first_pane victim)"
+# remain-on-exit is set just before the hold: from then on restore is held.
+i=0; while [ "$i" -lt 100 ] && [ "$(TL show -pv -t "$bp" remain-on-exit 2>/dev/null)" != failed ]; do sleep 0.1; i=$((i+1)); done
+TL respawn-pane -k -t "$bp" 'exec sleep 300'
+TL rename-window -t '=victim:' personal-window
+ppid_before="$(TL display -p -t "$bp" '#{pane_pid}')"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc:$(TL display -p -t '=victim:' '#{window_name}'):$(TL display -p -t "$bp" '#{pane_pid}')" "12:personal-window:$ppid_before" \
+  "restore skips it (exit 12), and the person's window name and pane are as they made them ($(TL display -p '#{version}'))"
+stop_server; rm -f "$H"
+
 echo "== a session group comes back as a group (R7) =="
 stop_server
 TL -f /dev/null new-session -d -s gm -c "$SHAPE_TMP/d1" -x 200 -y 50 'ENV= exec /bin/sh'

@@ -596,16 +596,17 @@ roost_restore__make_session() {
         return 12; }
   fi
   sid="${out%% *}" out="${out#* }" wid="${out%% *}" pane="${out#* }"
-  # A bootstrap's server was not running when the read rules were learned:
-  # its first window is read back below, once they are (review round 5,
-  # Fable N1: before them, a `$` that 3.4 prints as `\$` looked grown).
+  # A bootstrap's first window is read back below, once two things are
+  # known: the read rules of a server that was not running when they were
+  # learned (review round 5, Fable N1: before them, a `$` that 3.4 prints as
+  # `\$` looked grown), and that the bootstrap is still restore's (review
+  # round 6, Codex R6-B1: a person who took it may have named the window).
   [ "$boot" != 1 ] && [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
   t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
   if [ "$boot" = 1 ]; then
     roost_restore__hold ROOST_TEST_RESTORE_HOLD
     server_init
     roost_shape__read_rules || true
-    [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
     roost_restore__shell_cmd
     # Replaceable only when this run made it, wins the rename, and it still
     # holds the one pane restore made (§4.3). Lost: a key took it, the pane
@@ -635,6 +636,8 @@ roost_restore__make_session() {
          printf "roost restore: session '%s' skipped: it was changed by hand during placement — %s panes not restored\n" "$name" "$npanes" >&2
          return 12 ;;
     esac
+    # Still restore's: the claim won and the recheck passed.
+    [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
     pre="$pane"
   fi
   roost_restore__window_first "$sid" "$wid" "$(roost_restore__addr "$wfirst" | sed 's/.*://')"
