@@ -871,10 +871,13 @@ Rules, each with its reason:
   were mid-turn (§4.3).
 - **`zoomed 1`** on a window block when `#{window_zoomed_flag}` is set; the
   layout string does not carry it (§2.7).
-- **A dotted session name** is the `_` one up to tmux 3.7, which stores
-  `.` and `:` as `_` (probe 1.4), and is its own name from 3.7a, which keeps
-  both (CHANGES 3.7 -> 3.7a; measured on 3.7a and 3.8, `persist-1-tmux38.md`). Restore's
-  "this session exists" test takes the rule from the server's version.
+- **A dotted session name** is the `_` one up to tmux 3.6, which stores
+  `.` and `:` as `_` (probe 1.4); tmux 3.7 refuses it ("invalid session
+  name"); from 3.7a it is its own name, which tmux keeps (CHANGES 3.7 ->
+  3.7a; 3.7, 3.7a and 3.8 measured, `persist-1-tmux38.md`). Restore's
+  "this session exists" test takes the rule from the server's version, and
+  where tmux does not keep the dots restore makes the session under the `_`
+  form, so a dotted saved name is made on 3.7 too.
 - **`layout`** is `#{window_layout}` exactly as the server prints it: the
   `CSUM,WxH,X,Y...` form up to tmux 3.7, and from tmux 3.8 a JSON form,
   `{"V":2,"L":{"t":"h","w":200,"h":50,...}}` (built, measured:

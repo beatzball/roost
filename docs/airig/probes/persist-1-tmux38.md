@@ -62,15 +62,19 @@ CHANGES, "CHANGES FROM 3.7 TO 3.7a": "Only forbid #( in names, allow #[,
 empty names, : and .". This note first dated it 3.7b, a misreading of
 which heading the line sits under; review round 5 (Codex B1) built 3.7a and
 measured that a fresh `v3.69-x` there is a session of its own beside
-`v3_69-x`. What 3.7 itself does was not measured: by CHANGES it does not
-allow `.` or `:`, so restore treats it as mapping them to `_`, as before.
+`v3_69-x`. tmux 3.7 refuses both: review round 6 (Fable) built 3.7 from
+its release tarball, and so did the builder (ubuntu:24.04, a throwaway
+`-S` socket): `new-session -s v3.69-x` and `-s p.q` exit 1, "invalid
+session name". So restore gives `new-session` the `_` form wherever tmux
+does not keep the dots (3.7 and older), and a dotted saved name is made on
+3.7 as it is on 3.6.
 
-| `new-session -s` | tmux 3.6 | tmux 3.8 |
-|---|---|---|
-| `v3.69-x` | stored `v3_69-x` | stored `v3.69-x` |
-| `a:b`, `p.q:r` | not made | stored as given |
+| `new-session -s` | tmux 3.6 | tmux 3.7 | tmux 3.7a, 3.8 |
+|---|---|---|---|
+| `v3.69-x` | stored `v3_69-x` | refused | stored `v3.69-x` |
+| `a:b`, `p.q:r` | not made | refused | stored as given |
 
-Probe 1.4's rule (tmux stores `.` and `:` as `_`) holds up to 3.7 only.
+Probe 1.4's rule (tmux stores `.` and `:` as `_`) holds up to 3.6 only.
 Restore used it to decide that a saved `v3.69-x` is the session `v3_69-x`;
 on 3.8 those are two sessions.
 

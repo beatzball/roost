@@ -110,11 +110,15 @@ roost_restore__names() {
 }
 
 # roost_restore__stored NAME -> prints the name tmux stores for a saved
-# session NAME. Up to tmux 3.7, `.` and `:` are stored as `_` (probe 1.4),
-# so a hand-edited `v3.69-x` is the session `v3_69-x`; from 3.7a both are
+# session NAME. Up to tmux 3.6, `.` and `:` are stored as `_` (probe 1.4),
+# so a hand-edited `v3.69-x` is the session `v3_69-x`. tmux 3.7 refuses
+# them: `new-session -s v3.69-x` fails, "invalid session name" (measured on
+# 3.7 built from its release tarball, review round 6). From 3.7a both are
 # kept (CHANGES 3.7 -> 3.7a; 3.7a measured in review round 5, 3.8 here,
 # docs/airig/probes/persist-1-tmux38.md),
-# and `v3.69-x` and `v3_69-x` are two sessions. The rule is the server's
+# and `v3.69-x` and `v3_69-x` are two sessions. On every build that does
+# not keep them, restore makes the session under this `_` form
+# (roost_restore__made), so 3.7 makes it too. The rule is the server's
 # version, read once: a test session made only to see how its name is stored
 # would run a person's session-created hooks. Learned by
 # roost_restore__learn_dots, in the caller's own shell: this one runs inside
@@ -138,14 +142,28 @@ roost_restore__stored() {
 # keep the old rule, which held for every build before the change: OpenBSD's
 # own tmux prints `openbsd-` and the OS release, and its 7.6 maps the dots
 # (review round 5, Codex B2); roost does not support such a build (doctor
-# refuses it), and a server not yet running prints nothing, and is asked
-# again after the bootstrap starts it (roost_restore__names).
+# refuses it). A server not yet running prints nothing: then the version is
+# the tmux binary's own (`tmux -V`), which is the one the bootstrap starts the
+# server with, so the bootstrap session is made under the right name too. It
+# is asked again after the bootstrap starts it (roost_restore__names).
 roost_restore__learn_dots() {
-  case "$(t -u display-message -p '#{version}' 2>/dev/null || true)" in
+  local v
+  v="$(t -u display-message -p '#{version}' 2>/dev/null || true)"
+  [ -n "$v" ] || { v="$(t -V 2>/dev/null || true)"; v="${v#tmux }"; }
+  case "$v" in
     3.7[a-z]*|3.[89]*|3.[1-9][0-9]*|[4-9].*|[1-9][0-9]*.*|next-3.[89]*|next-3.[1-9][0-9]*|next-[4-9].*|next-[1-9][0-9]*.*|master)
       ROOST_RESTORE_MAPDOTS=0 ;;
     *) ROOST_RESTORE_MAPDOTS=1 ;;
   esac
+}
+
+# roost_restore__made NAME -> prints the name `new-session -s` is given for
+# a saved session NAME: tmux's escaping undone (roost_restore__unvis), and
+# `.` and `:` as `_` where this tmux does not keep them
+# (roost_restore__stored): 3.7 refuses a dotted name, and up to 3.6 tmux
+# stores the `_` form anyway (review round 6, Fable N1).
+roost_restore__made() {
+  roost_restore__stored "$(roost_restore__unvis "$1")"
 }
 
 # roost_restore__exists NAME -> exit 0 when a session of that saved name is on
@@ -581,7 +599,7 @@ roost_restore__make_session() {
     # no later session may be made on a server that was not started the roost
     # way (review round 1, Fable B1).
     if ! out="$(t -f "$CONF" new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
-      -s "$(roost_restore__unvis "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
+      -s "$(roost_restore__made "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
       "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>&1)"; then
       printf "roost restore: could not start the tmux server with session '%s' (%s); nothing restored\n" \
         "$name" "$(printf '%s' "$out" | head -1)" >&2
@@ -590,7 +608,7 @@ roost_restore__make_session() {
   else
     roost_restore__new_file; f="$ROOST_RESTORE_F"
     out="$(t new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
-      -s "$(roost_restore__unvis "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
+      -s "$(roost_restore__made "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
       "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || {
         printf "roost restore: session '%s' could not be made — skipped, %s panes not restored\n" "$name" "$npanes" >&2
         return 12; }
@@ -687,7 +705,7 @@ roost_restore__make_member() {
     printf "roost restore: session '%s' skipped: %s, whose group it joins, is not on the server\n" "$name" "$grp" >&2
     return 12
   fi
-  out="$(t new-session -d -P -F '#{session_id}' -t "$gid" -s "$(roost_restore__unvis "$name")" 2>/dev/null)" || {
+  out="$(t new-session -d -P -F '#{session_id}' -t "$gid" -s "$(roost_restore__made "$name")" 2>/dev/null)" || {
     printf "roost restore: session '%s' could not join %s's group — skipped\n" "$name" "$grp" >&2; return 12; }
   if aw="$(roost_shape_get "$blk" active_window)"; then
     roost_shape__digits "$aw" && t select-window -t "$out:$aw" 2>/dev/null || true

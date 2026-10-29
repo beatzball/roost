@@ -475,19 +475,28 @@ for row in 3.2a:1 3.4:1 3.6:1 3.7:1 3.7a:0 3.7b:0 3.8:0 3.10:0 next-3.8:0 master
   got="$got ${row%:*}=$(V="${row%:*}" dots_rule)"; want="$want $row"
 done
 assert_eq "$got" "$(printf '%s' "$want" | tr ':' '=')" "the version table: up to 3.7 maps, 3.7a and later and git builds keep, anything else maps"
+# No server yet (the bootstrap): display-message prints nothing, and the
+# rule is the tmux binary's own `tmux -V`, the one that will start it.
+noserver() { ( . scripts/lib/roost-shape.sh; . scripts/lib/roost-restore.sh
+  t() { case "$*" in *-V*) printf 'tmux %s\n' "$V" ;; esac; }; roost_restore__learn_dots; printf '%s' "$ROOST_RESTORE_MAPDOTS" ) 2>/dev/null; }
+assert_eq "$(V=3.8 noserver)$(V=3.7 noserver)$(V=3.6 noserver)" "011" "...and with no server yet, tmux -V decides: 3.8 keeps, 3.7 and 3.6 map"
 
 echo "== dotted and numeric session names (probe 1.4) =="
-# Up to tmux 3.7 a session name's `.` and `:` are stored as `_` (probe 1.4),
-# so a saved v3.69-x IS the session v3_69-x. From 3.7a both are kept
-# (docs/airig/probes/persist-1-tmux38.md), and those are two sessions. The
-# test asks THIS tmux how it stores one, never the rule under test.
-TL new-session -d -s p.q 'ENV= exec /bin/sh'
-if TL has-session -t '=p_q:' 2>/dev/null; then maps=1; TL kill-session -t '=p_q:'; else maps=0; TL kill-session -t '=p.q:'; fi
-TL new-session -d -s v3.69-x 'ENV= exec /bin/sh'
+# Up to tmux 3.6 a session name's `.` and `:` are stored as `_` (probe 1.4),
+# so a saved v3.69-x IS the session v3_69-x; tmux 3.7 refuses them ("invalid
+# session name", measured on a 3.7 built from its release tarball); from
+# 3.7a both are kept (docs/airig/probes/persist-1-tmux38.md), and those are
+# two sessions. The test asks THIS tmux which, never the rule under test.
+# Where tmux maps or refuses, restore gives new-session the `_` form, so a
+# dotted saved name is made as the `_` one either way.
+if ! TL new-session -d -s p.q 'ENV= exec /bin/sh' 2>/dev/null; then dots=refuses maps=1
+elif TL has-session -t '=p_q:' 2>/dev/null; then dots=maps maps=1; TL kill-session -t '=p_q:'
+else dots=keeps maps=0; TL kill-session -t '=p.q:'; fi
+if [ "$maps" = 1 ]; then TL new-session -d -s v3_69-x 'ENV= exec /bin/sh'; else TL new-session -d -s v3.69-x 'ENV= exec /bin/sh'; fi
 mkshape "v3_69-x:$SHAPE_TMP/d1" "v3.69-x:$SHAPE_TMP/d1" "1:$SHAPE_TMP/d2" 2>/dev/null
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 if [ "$maps" = 1 ]; then
-  assert_eq "$rc" "12" "a saved v3_69-x that exists is skipped (exit 12)"
+  assert_eq "$rc" "12" "tmux $(TL display -p '#{version}') $dots a dot: a saved v3_69-x that exists is skipped (exit 12)"
   assert_eq "$(TL list-sessions -F '#{session_name}' | grep -c '^v3_69-x$')" "1" "...never made twice (the dotted saved name is the same session)"
   assert_eq "$(grep -cF "session 'v3.69-x' exists — skipped" "$SHAPE_TMP/err")" "1" \
     "...and restore knew it existed (not a new-session that tmux happened to refuse)"
@@ -502,10 +511,16 @@ assert_eq "$(TL display -p -t "$(first_pane 1)" '#{pane_current_path}')" "$SHAPE
 if [ "$maps" = 1 ]; then TL kill-session -t '=v3_69-x:'; else TL kill-session -t '=v3.69-x:'; fi
 TL kill-session -t '=1:'
 if [ "$maps" = 1 ]; then
+  # A tmux on PATH that logs each command shows the name new-session got.
+  DSHIM="$SHAPE_TMP/dshim"; mkdir -p "$DSHIM"; : > "$SHAPE_TMP/dtmux.log"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s" "$@"\n' "$SHAPE_TMP/dtmux.log" "$(command -v tmux)" > "$DSHIM/tmux"
+  chmod +x "$DSHIM/tmux"
   mkshape "v3.69-x:$SHAPE_TMP/d1"
-  R restore >/dev/null 2>&1; rc=$?
+  PATH="$DSHIM:$PATH" R restore >/dev/null 2>&1; rc=$?
   assert_eq "$rc:$(TL display -p -t "$(first_pane v3_69-x)" '#{pane_current_path}')" "0:$SHAPE_TMP/d1" \
-    "a saved dotted name that does not exist is placed (tmux stores it with _)"
+    "a saved dotted name that does not exist is placed as v3_69-x (tmux $dots a dot)"
+  assert_eq "$(grep ' new-session ' "$SHAPE_TMP/dtmux.log" | grep -c -- ' -s v3_69-x ')" "1" \
+    "...because restore gave new-session the _ form, not the dotted name (review round 6, Fable N1)"
 else
   # v3_69-x is still there; the saved v3.69-x is not it.
   mkshape "v3.69-x:$SHAPE_TMP/d1"

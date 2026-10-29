@@ -46,8 +46,9 @@ that changes one of these breaks the rule quietly.
   3.7 tmux escapes a window name too, and restore reads each named window
   back and renames it with the escaping undone when it differs. All measured
   to come back the same over two save-and-restore cycles (3.8 included). Up to tmux 3.7 a dotted
-  session name cannot exist (tmux stores `.` and `:` as `_`), and restore
-  matches a saved dotted name to the `_` one and never makes it twice; from
+  session name cannot exist (up to 3.6 tmux stores `.` and `:` as `_`; 3.7
+  refuses them), and restore matches a saved dotted name to the `_` one,
+  makes it under that name, and never makes it twice; from
   3.7a tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
   and restore asks the server's version which rule holds (a test session
   would run a person's hooks). A version that is neither a release nor a git
