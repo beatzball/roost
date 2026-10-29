@@ -362,6 +362,18 @@ rm -rf "$D6"; : > "$OD/go.DR"
 assert_eq "$(done_rc DR)" "0" "the directory was removed before the first link: made again and owned (exit 0)"
 : > "$OD/stop"; wait 2>/dev/null
 
+echo "== a session killed between two listings is a relist (review round 2, Fable N3) =="
+# list-sessions saw $2, list-windows ran after it was killed: no window
+# names it. Every pane's window and every window's session were checked, not
+# every session's windows, so the round went on to a file the checker
+# refuses ("has no window block") and the save failed instead of listing again.
+out="$(bash -c '. scripts/lib/roost-shape.sh
+  S_ID=(\$1 \$2) W_ID=(@1) W_SID=(\$1) P_ID=(%1) P_WID=(@1) P_SID=(\$1)
+  roost_shape__consistent; echo "$?"
+  S_ID=(\$1)
+  roost_shape__consistent; echo "$?"')"
+assert_eq "$(printf '%s' "$out" | tr '\n' ' ')" "1 0" "a listed session no window names is inconsistent; without it, consistent"
+
 echo "== a chain of takers that died holding their claim is taken over (review round 2, Codex R2-B4) =="
 # Each taker K1..K8 dies while it holds a takeover claim, one level deeper
 # than the one before it: ROOST_TEST_OWNER_PAUSE_HELD stops it right after

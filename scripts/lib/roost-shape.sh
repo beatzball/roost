@@ -400,9 +400,22 @@ roost_shape__parse_panes() {
 }
 
 # roost_shape__consistent -> exit 0 when every pane's (session, window) pair
-# is a listed window and every window's session a listed session.
+# is a listed window, every window's session a listed session, and every
+# listed session has a listed window. The third: a session killed after
+# list-sessions and before list-windows is in the first listing only, and
+# without this the round went on to a file the checker refuses (a session
+# with no window block) instead of listing again (review round 2, Fable N3).
+# `list-windows -a` lists a group's later member's windows under it too, so
+# a member is held to the same rule.
 roost_shape__consistent() {
   local i j ok
+  i=0
+  while [ "$i" -lt "${#S_ID[@]}" ]; do
+    ok=1; j=0
+    while [ "$j" -lt "${#W_SID[@]}" ]; do [ "${W_SID[$j]}" = "${S_ID[$i]}" ] && { ok=0; break; }; j=$((j + 1)); done
+    [ "$ok" = 0 ] || return 1
+    i=$((i + 1))
+  done
   i=0
   while [ "$i" -lt "${#W_ID[@]}" ]; do
     ok=1; j=0
