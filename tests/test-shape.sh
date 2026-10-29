@@ -379,6 +379,46 @@ assert_eq "$rgb|$rga" "2|1" "B links first after the dead record: 2; A is refuse
 assert_eq "$(readlink "$D4/owner" | cut -d' ' -f1)" "$(cat "$OD/GB.pid" 2>/dev/null)" "...and the record names B"
 : > "$OD/stop"; wait 2>/dev/null
 
+echo "== a live owner stays live when the wall clock moves (review round 5, Codex B3, Fable N2) =="
+# On Linux `ps -o lstart=` is boot time plus the start ticks, and boot time
+# moves with any step of the realtime clock (a laptop or a VM waking), so a
+# live owner's recorded start time stopped matching and a second restore
+# took it over. Linux now records and compares the start ticks from
+# /proc/PID/stat, which do not move. The contender here runs with a `ps` on
+# PATH that reports every start time a minute later: the clock step, for
+# the contender alone. It must still be refused. Linux only: elsewhere `ps`
+# is the record (macOS keeps the absolute start time and does not move it).
+if [ -r /proc/self/stat ]; then
+  rm -f "$OD/stop"
+  FPS="$OD/fakeps"; mkdir -p "$FPS"
+  printf '#!/bin/sh\ncase "$*" in *lstart*) echo "Thu Jan  1 00:01:00 1970" ;; *) exec %s "$@" ;; esac\n' "$(command -v ps)" > "$FPS/ps"
+  chmod +x "$FPS/ps"
+  D8="$OD/clock"
+  taker CH "$D8" ROOST_TEST_OWNER_NO_SEAM; rch="$(done_rc CH)"
+  hp="$(cat "$OD/CH.pid" 2>/dev/null)"
+  assert_eq "$rch|$(PATH="$FPS:$PATH" ps -o lstart= -p "$hp")" "0|Thu Jan  1 00:01:00 1970" \
+    "the fixture: the holder owns the directory, and the contender's ps reads its start a minute off"
+  rcp="$(bash -c '. scripts/lib/roost-shape.sh; roost_shape_owner_take "$1"; echo $?' _ "$D8" 2>/dev/null)"
+  assert_eq "$rcp" "1" "a contender whose clock did not move is refused (the control)"
+  rcc="$(PATH="$FPS:$PATH" bash -c '. scripts/lib/roost-shape.sh; roost_shape_owner_take "$1"; echo $?' _ "$D8" 2>/dev/null)"
+  assert_eq "$rcc|$(readlink "$D8/owner" | cut -d' ' -f1)" "1|$hp" "...and so is one whose clock moved, and the record still names the holder"
+  # PID reuse is still caught: the holder's pid with other start ticks is a
+  # different process.
+  assert_eq "$(bash -c '. scripts/lib/roost-shape.sh; roost_shape__alive "$1 t:1"; echo $?' _ "$hp")" "1" \
+    "...and the holder's pid with other start ticks reads as dead (pid reuse)"
+  assert_eq "$(bash -c '. scripts/lib/roost-shape.sh; roost_shape__alive "$1 $(ps -o lstart= -p "$1")"; echo $?' _ "$hp")" "0" \
+    "...while a record in the old ps form, from a roost before the ticks, still reads as live"
+  # The command name is field 2, in parentheses, and may hold `) `: the
+  # ticks are counted from after its LAST `) `.
+  cp "$(command -v sleep)" "$OD/a) b) c"; "$OD/a) b) c" 30 & op=$!; sleep 0.2
+  assert_eq "$(bash -c '. scripts/lib/roost-shape.sh; roost_shape__lstart "$1"' _ "$op")" \
+    "t:$(sed 's/.*) //' "/proc/$op/stat" | cut -d' ' -f20)" "...and a command name holding ') ' does not shift the fields"
+  kill "$op" 2>/dev/null
+  : > "$OD/stop"; wait 2>/dev/null
+else
+  printf '  SKIP: a live owner when the wall clock moves (no /proc: ps -o lstart= is the record here)\n'
+fi
+
 echo "== an owner that is not a record, and a directory removed under a taker (review round 2, Fable N2) =="
 # A plain file at DIR/owner was read as an owner with no pid: every restore
 # was refused, "pid ?", after 100 quick turns. It is named instead.

@@ -842,7 +842,8 @@ because the bootstrap cases need it, and Task 1.13 reuses it for every pane.
    pane`; released: exit 0, a line only from restore's own respawn. Plus the
    owner rule: `restoring/` with a live pid makes a second restore refuse
    (exit 1, naming the pid); a dead pid, or a live pid with another start time
-   (`ps -o lstart=`), is taken over (and T2b settles the dead run's bootstrap
+   (`ps -o lstart=`; on Linux the start ticks of `/proc/PID/stat`, review
+   round 5), is taken over (and T2b settles the dead run's bootstrap
    into a shell, its session then skipped, exit 12). **Dotted and numeric
    names** (Task 1.4): a saved session `v3.69-x` that exists is skipped and
    named, not made again; one that does not exist is placed (its one pane in

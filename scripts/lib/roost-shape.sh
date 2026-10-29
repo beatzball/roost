@@ -902,16 +902,45 @@ roost_shape_get() {
 # one level down.
 
 # roost_shape__lstart PID -> prints the process's start time, or nothing.
-roost_shape__lstart() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
+#
+# On Linux it is `t:` and the start time in clock ticks since boot, field 22
+# of /proc/PID/stat: `ps -o lstart=` there is boot time plus those ticks,
+# and boot time moves with every step of the realtime clock (a laptop or a
+# VM waking), so a live owner's record stopped matching and a second restore
+# took it over (review round 5, Codex B3, Fable N2). The ticks do not move,
+# and a new process on a reused pid has other ticks. Field 2, the command
+# name, is in parentheses and may hold spaces and `)`, so the fields are
+# counted from after its LAST `) `. Elsewhere (macOS keeps the absolute
+# start time) it is `ps -o lstart=`, as before.
+roost_shape__lstart() {
+  local st
+  local -a f
+  if [ -r "/proc/$1/stat" ] && st="$(cat "/proc/$1/stat" 2>/dev/null)" && [ -n "$st" ]; then
+    read -r -a f <<< "${st##*) }"
+    # f[0] is field 3 (state), so field 22 is f[19].
+    case "${f[19]:-}" in ''|*[!0-9]*) return 0 ;; esac
+    printf 't:%s\n' "${f[19]}"
+    return 0
+  fi
+  roost_shape__pslstart "$1"
+}
+roost_shape__pslstart() { ps -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//'; }
 
 # roost_shape__alive RECORD -> exit 0 when "PID LSTART" names a running
-# process with that start time; ROOST_SHAPE_OWNER_PID is the pid.
+# process with that start time; ROOST_SHAPE_OWNER_PID is the pid. A record
+# in the `ps -o lstart=` form on Linux was written by a roost from before
+# the start ticks: it is compared in its own form, so that owner, if still
+# running, is not taken for dead.
 roost_shape__alive() {
   local pid="${1%% *}" lst="${1#* }"
   ROOST_SHAPE_OWNER_PID="$pid"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   lst="$(printf '%s' "$lst" | sed 's/^ *//;s/ *$//')"
-  [ -n "$lst" ] && [ "$(roost_shape__lstart "$pid")" = "$lst" ]
+  [ -n "$lst" ] || return 1
+  case "$lst" in
+    t:*) [ "$(roost_shape__lstart "$pid")" = "$lst" ] ;;
+    *) [ "$(roost_shape__pslstart "$pid")" = "$lst" ] ;;
+  esac
 }
 
 # roost_shape__seam VAR — a test seam: when the variable names a file, mark
