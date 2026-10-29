@@ -1528,7 +1528,10 @@ the hidden form the service runs (§4.4).
   by path as argv: `new-session … <checkout>/scripts/roost-placeholder
   restoring/place.<n> --placing`, the same for `new-window` and
   `split-window`. Every such pane is in §4.7's state **placing** until the
-  per-pane step claims it.
+  per-pane step claims it. Built, each name carries its run's token
+  (`place.<run>.<n>`, `bootstrap.<run>`; review round 2 of Part 1): a
+  key's shell keeps its placing line for as long as the pane lives, and a
+  later run's own `place.1` once matched it.
 - **Windows.** `new-window -d -t SESSION:INDEX -n NAME -c CWD` at the saved
   index (a sparse set and `base-index` come back as saved; `renumber-windows`
   on the user's conf would move them and is noted in `--dry-run`); then

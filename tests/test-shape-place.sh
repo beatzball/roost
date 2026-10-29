@@ -33,6 +33,12 @@ wait_screen() {
   done
   return 1
 }
+# boot_file [SUFFIX] -> the run's bootstrap file with SUFFIX (.used, .taken),
+# or nothing. Each run's names carry its own token (bootstrap.<run>), so the
+# tests find them by pattern.
+boot_file() { ls -d "$SD/restoring/"bootstrap.*"${1:-}" 2>/dev/null | head -1; }
+# wait_boot SUFFIX [TENTHS] — until boot_file SUFFIX exists.
+wait_boot() { local i=0 n="${2:-30}"; while [ "$i" -lt "$n" ]; do [ -n "$(boot_file "$1")" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
 # wait_file PATH [TENTHS] — until PATH exists.
 wait_file() { local i=0 n="${2:-30}"; while [ "$i" -lt "$n" ]; do [ -e "$1" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
 # shells_wait PANE — until shells.log has a line for PANE (3 s).
@@ -184,13 +190,13 @@ stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"
 H="$SHAPE_TMP/hold"; rm -f "$H"
 ROOST_TEST_RESTORE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
 rpid=$!
-wait_file "$SD/restoring/bootstrap" 50
+wait_boot "" 50
 i=0; while [ "$i" -lt 50 ] && [ -z "$(first_pane first)" ]; do sleep 0.1; i=$((i+1)); done
 bp="$(first_pane first)"
 wait_screen "$bp" "$PLACING" 30
 attach_client first 80 20 >/dev/null
 TL send-keys -t "$bp" x
-wait_file "$SD/restoring/bootstrap.taken"; assert_true $? "the key won: bootstrap.taken"
+wait_boot .taken; assert_true $? "the key won: bootstrap.taken"
 : > "$H"; wait "$rpid"; rc=$?
 assert_eq "$rc" "12" "...the saved session of that name is skipped, exit 12"
 assert_contains "$(cat "$SHAPE_TMP/err")" "the bootstrap pane was taken by a key" "...and the reason is named"
@@ -211,14 +217,14 @@ echo "== (h) a key after restore has won the bootstrap =="
 stop_server; rm -rf "$SD/restoring"; rm -f "$H"; : > "$HOME/shells.log"
 ROOST_TEST_PLACE_HOLD_AFTER_USED="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
 rpid=$!
-wait_file "$SD/restoring/bootstrap.used" 50
+wait_boot .used 50
 bp="$(first_pane first)"
 attach_client first 100 30 >/dev/null
 TL send-keys -t "$bp" x
 wait_screen "$bp" "$CLAIMED"; assert_true $? "while held: the screen says restore is placing this pane"
 sleep 0.5
 assert_eq "$(shells_for "$bp")" "" "...no shell started"
-[ -e "$SD/restoring/bootstrap.used" ]; assert_true $? "...the file is still bootstrap.used"
+[ -n "$(boot_file .used)" ]; assert_true $? "...the file is still bootstrap.used"
 : > "$H"; wait "$rpid"; rc=$?
 assert_eq "$rc" "0" "released: exit 0, the session placed into"
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...one shell, started by restore's own respawn"
@@ -263,7 +269,7 @@ stop_server; rm -rf "$SD/restoring"; rm -f "$H"
 mkshape "first:$SHAPE_TMP/d1"
 ROOST_TEST_PLACE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
 rpid=$!
-wait_file "$SD/restoring/bootstrap.used" 50; sleep 1
+wait_boot .used 50; sleep 1
 bp="$(first_pane first)"
 TL respawn-pane -k -t "$bp" 'sleep 600'; sleep 0.3
 bpid="$(TL display -p -t "$bp" '#{pane_pid}')"
@@ -276,13 +282,43 @@ stop_server; rm -rf "$SD/restoring"; rm -f "$H"; : > "$HOME/shells.log"
 mkshape "first:$SHAPE_TMP/d1"
 ROOST_TEST_PLACE_HOLD_AFTER_USED="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
 rpid=$!
-wait_file "$SD/restoring/bootstrap.used" 50
+wait_boot .used 50
 bp="$(first_pane first)"
 TL split-window -d -t "$bp" "$BASH_BIN"; sleep 0.3
 : > "$H"; wait "$rpid"; rc=$?
 assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane restore made"
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...and the bootstrap pane is a shell, not a placeholder no key can free"
 TL display -p -t "$bp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" "...no longer running the placeholder"
+
+echo "== a pane a person took in one restore is left alone by the next (review round 2, Codex R2-B1) =="
+# A shell a key took keeps the placeholder's start command, which names its
+# placing file. Every run used to count from place.1 again, so the next
+# run's own place.1 made its final sweep take the old pane for one of its
+# own and respawn it, killing what the person ran there. A real foreground
+# process (sleep 600) is in the taken shell, as a person's would be.
+stop_server; rm -rf "$SD/restoring"; rm -f "$H"; : > "$HOME/shells.log"
+TL -f /dev/null new-session -d -s keep -c "$SHAPE_TMP/d1" 'sleep 600'
+TL set -g default-shell "$BASH_BIN"
+mkshape "first:$SHAPE_TMP/d1"
+ROOST_TEST_PLACE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; while [ "$i" -lt 50 ] && [ -z "$(first_pane first)" ]; do sleep 0.1; i=$((i+1)); done
+tp="$(first_pane first)"; wait_screen "$tp" "$PLACING" 30
+TL send-keys -t "$tp" x
+i=0; while [ "$i" -lt 50 ] && ! ls "$SD/restoring/"place.*.taken >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+shells_wait "$tp"
+TL send-keys -t "$tp" 'sleep 600' Enter
+i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$tp" '#{pane_current_command}')" != sleep ]; do sleep 0.1; i=$((i+1)); done
+tpid="$(TL display -p -t "$tp" '#{pane_pid}')"; spid="$(pgrep -P "$tpid" -x sleep)"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc" "0" "the first restore exits 0, the pane left to the person"
+kill -0 "$spid" 2>/dev/null; assert_true $? "...and the person's sleep is running"
+mkshape "second:$SHAPE_TMP/d2"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "0" "a second restore, of another session, exits 0"
+assert_eq "$(TL display -p -t "$tp" '#{pane_pid}')" "$tpid" "...the taken pane is not respawned: same pane_pid"
+kill -0 "$spid" 2>/dev/null; assert_true $? "...and the person's sleep is still running, same pid"
+kill "$spid" 2>/dev/null
 
 echo "== a group whose first member has spaces round its name (review round 1, Codex B6) =="
 stop_server; rm -rf "$SD/restoring"
@@ -333,10 +369,10 @@ assert_eq "$rc" "12" "a live pid with another start time is a reused pid: taken 
 [ ! -e "$SD/restoring" ]; assert_true $? "...and restoring/ is removed at the end"
 echo "== T2b: a dead run's bootstrap is settled into a shell =="
 stop_server; mkshape "first:$SHAPE_TMP/d1" "second:$SHAPE_TMP/d2"
-mkdir -p "$SD/restoring"; : > "$SD/restoring/bootstrap"
+mkdir -p "$SD/restoring"; : > "$SD/restoring/bootstrap.1-1-1"
 sh -c 'exit 0' & dead=$!; wait "$dead"
 ln -s "$dead Thu Jan  1 00:00:00 1970" "$SD/restoring/owner"
-TL -f /dev/null new-session -d -s first -c "$SHAPE_TMP/d3" -x 200 -y 50 "$PH" "$SD/restoring/bootstrap" --placing
+TL -f /dev/null new-session -d -s first -c "$SHAPE_TMP/d3" -x 200 -y 50 "$PH" "$SD/restoring/bootstrap.1-1-1" --placing
 TL set -g default-shell "$BASH_BIN"
 bp="$(first_pane first)"; wait_screen "$bp" "$PLACING" 30
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?

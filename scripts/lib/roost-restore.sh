@@ -172,13 +172,22 @@ roost_restore__cwd() {
   printf '%s\n' "${HOME:-/}"
 }
 
-# roost_restore__new_file -> ROOST_RESTORE_F, a fresh restoring/place.<n>,
-# made. SETS rather than prints: the counter has to move in the caller's
-# shell, and a $(...) would count in a subshell and hand every pane the same
-# file (measured: every split pane got place.1, and only one could win it).
+# roost_restore__new_file -> ROOST_RESTORE_F, a fresh
+# restoring/place.<run>.<n>, made. SETS rather than prints: the counter has
+# to move in the caller's shell, and a $(...) would count in a subshell and
+# hand every pane the same file (measured: every split pane got place.1, and
+# only one could win it).
+#
+# <run> is this run's token (ROOST_RESTORE_RUN). A shell a key took keeps the
+# placeholder's start command, which names its file, for as long as the pane
+# lives; every run counted from place.1 again, so the next run's own place.1
+# made its sweep take that old pane for one of its own and respawn it,
+# killing what the person ran there (review round 2, Codex R2-B1). With the
+# token, a pane's placing line can only ever match a file of the run that
+# made it.
 roost_restore__new_file() {
   ROOST_RESTORE_N=$((ROOST_RESTORE_N + 1))
-  ROOST_RESTORE_F="$ROOST_RESTORE_RD/place.$ROOST_RESTORE_N"
+  ROOST_RESTORE_F="$ROOST_RESTORE_RD/place.$ROOST_RESTORE_RUN.$ROOST_RESTORE_N"
   : > "$ROOST_RESTORE_F"
 }
 
@@ -204,11 +213,11 @@ roost_restore__shell_cmd() {
 }
 
 # roost_restore__placing STARTCOMMAND BASE -> exit 0 when a pane's start
-# command is the placing placeholder for the file named BASE (`place.3`,
-# `bootstrap`). tmux prints an argv command with double quotes round an
+# command is the placing placeholder for the file named BASE (`place.<run>.3`,
+# `bootstrap.<run>`). tmux prints an argv command with double quotes round an
 # argument that holds a space (measured, tmux 3.6), so quotes and backslashes
 # are dropped before the compare, and the name must be followed by exactly
-# ` --placing` at the end: `place.1` never matches `place.10`.
+# ` --placing` at the end: `place.<run>.1` never matches `place.<run>.10`.
 roost_restore__placing() {
   local sc="$1"
   sc="${sc//\"/}"; sc="${sc//\\/}"
@@ -262,10 +271,15 @@ roost_restore__respawn() {
 # dead run's files are cleared. The dead run's bootstrap is settled the same
 # way, so it holds a shell and is NOT a replaceable session for this run: its
 # saved session is skipped as existing (§4.3).
+#
+# Only panes whose placing line names a file IN restoring/ are touched, and
+# every file there is this run's or the dead run's being settled: each run's
+# names carry its own token (roost_restore__new_file), and restoring/ goes
+# with each run that ends. A pane from an earlier run, a key's shell among
+# them, names a file no run will make again (review round 2, Codex R2-B1).
 roost_restore__settle_dead() {
   local f base id sc dir
-  for f in "$ROOST_RESTORE_RD"/bootstrap "$ROOST_RESTORE_RD"/bootstrap.used \
-           "$ROOST_RESTORE_RD"/place.* ; do
+  for f in "$ROOST_RESTORE_RD"/bootstrap* "$ROOST_RESTORE_RD"/place.* ; do
     [ -e "$f" ] || continue
     base="${f##*/}"
     case "$base" in
@@ -445,7 +459,7 @@ roost_restore__make_session() {
   local -a nflag=()
   wname="$(roost_shape_get "$wfirst" name)" && nflag=(-n "$wname")
   if [ "$boot" = 1 ]; then
-    f="$ROOST_RESTORE_RD/bootstrap"; : > "$f"
+    f="$ROOST_RESTORE_RD/bootstrap.$ROOST_RESTORE_RUN"; : > "$f"
     # The server's first session, started the way ensure_session starts one
     # (-f CONF), at the saved size, with the placing placeholder by its own
     # path as its one pane (§4.3 Server, §2.10).
@@ -575,6 +589,11 @@ roost_restore_run() {
   if [ -n "$sdir" ]; then ROOST_RESTORE_RD="$sdir/restoring"
   else ROOST_RESTORE_RD="$(mktemp -d)/restoring"; fi
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
+  # This run's token for its file names (roost_restore__new_file): pid,
+  # clock and a random number, digits and `-` only, so it never holds the
+  # `.` the names are split on. Unique enough across runs: a repeat needs the
+  # same pid in the same second and the same 15-bit draw.
+  ROOST_RESTORE_RUN="$$-$(date +%s)-$RANDOM"
   ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
   own=0; roost_shape_owner_take "$ROOST_RESTORE_RD" || own=$?
   if [ "$own" = 3 ]; then
