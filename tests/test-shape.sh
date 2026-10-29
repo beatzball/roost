@@ -297,6 +297,20 @@ assert_eq "$(grep -c "pane $cbn:" "$SHAPE_TMP/cb.err")" "2" "the newline pane ge
 w="$(blk "$SHAPE_TMP/cb.shape" "$(TL display -p -t "$cbe" '#{window_id}')")"
 assert_eq "$(val "$w" name)" 'w\033x' "a window name: tmux itself stores the ESC as text on every build (probe 1.3)"
 
+echo "== a failed read of the server's rules publishes nothing =="
+# Every listing that fails returns before its arrays are set, so bin/roost's
+# own `set -u` would stop a save that ignored it: those cases cannot tell the
+# guard from the shell's safety net. A failed probe (roost_shape__read_rules)
+# can: the listings after it succeed. A tmux in front of the real one refuses
+# just the probe; the save must still write nothing.
+FB="$SHAPE_TMP/fakebin"; mkdir -p "$FB"
+printf '#!/bin/sh\ncase "$*" in *@roost-shape-probe*) exit 1 ;; esac\nexec "%s" "$@"\n' "$(command -v tmux)" > "$FB/tmux"
+chmod +x "$FB/tmux"
+rm -f "$SHAPE_TMP/noprobe.shape"
+PATH="$FB:$PATH" R save --to "$SHAPE_TMP/noprobe.shape" >/dev/null 2>"$SHAPE_TMP/noprobe.err"; rc=$?
+assert_eq "$rc:$([ -e "$SHAPE_TMP/noprobe.shape" ] && echo written)" "1:" "the probe refused: exit 1, no file written"
+assert_contains "$(cat "$SHAPE_TMP/noprobe.err")" "could not list the tmux server" "...and the save says why"
+
 echo "== the owner rule holds under a race (review round 1, B2) =="
 # Two separate processes (each its own $$ and start time, as two restores
 # are) call the real roost_shape_owner_take on one directory. The seams pause
@@ -320,6 +334,17 @@ arrived A; arrived B
 : > "$OD/go.B"; rb="$(done_rc B)"
 assert_eq "$ra|$rb" "2|1" "both saw the same dead owner: A takes it over, B is refused while A lives"
 assert_eq "$(readlink "$D1/owner" | cut -d' ' -f1)" "$(cat "$OD/A.pid")" "...and the record names A"
+# The same two, both let go at once: only one may get as far as holding the
+# takeover (PAUSE_HELD, after the claim and before the dead record is
+# removed). The other waits on that claim, sees the winner live, and is
+# refused. A takeover that is not itself claimed lets both through.
+: > "$OD/stop"; wait 2>/dev/null; rm -f "$OD/stop"
+D7="$OD/both"; mkdir -p "$D7"; ln -s "$deadpid Thu Jan  1 00:00:00 1970" "$D7/owner"
+taker HA "$D7" ROOST_TEST_OWNER_PAUSE_HELD; taker HB "$D7" ROOST_TEST_OWNER_PAUSE_HELD
+arrived HA; arrived HB; sleep 0.5
+assert_eq "$(ls "$OD"/go.HA.at.* "$OD"/go.HB.at.* 2>/dev/null | wc -l | tr -d ' ')" "1" \
+  "two takers of one dead owner at once: exactly one holds the takeover"
+: > "$OD/go.HA"; : > "$OD/go.HB"; done_rc HA >/dev/null; done_rc HB >/dev/null
 D2="$OD/fresh"; mkdir -p "$D2"
 taker C "$D2" ROOST_TEST_OWNER_PAUSE_FRESH; taker E "$D2" ROOST_TEST_OWNER_PAUSE_FRESH
 arrived C; arrived E

@@ -290,6 +290,23 @@ assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane re
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...and the bootstrap pane is a shell, not a placeholder no key can free"
 TL display -p -t "$bp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" "...no longer running the placeholder"
 
+echo "== each pane is a shell by its own step, not by the final sweep =="
+# The final sweep turns any pane of the run still placing into a shell, so a
+# per-pane step that respawned the placeholder again (a bare respawn-pane
+# re-runs the pane's creation command) ended the same. Held before the
+# sweep, the pane must already have left the placeholder.
+stop_server; rm -rf "$SD/restoring"; rm -f "$H"
+TL -f /dev/null new-session -d -s keep -c "$SHAPE_TMP/d1" 'sleep 600'
+mkshape "first:$SHAPE_TMP/d1"
+ROOST_TEST_HOLD_BEFORE_SWEEP="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; while [ "$i" -lt 50 ] && [ -z "$(first_pane first)" ]; do sleep 0.1; i=$((i+1)); done
+fp="$(first_pane first)"
+i=0; while [ "$i" -lt 30 ] && TL display -p -t "$fp" '#{pane_start_command}' | grep -q roost-placeholder; do sleep 0.1; i=$((i+1)); done
+TL display -p -t "$fp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" \
+  "held before the sweep: the placed pane already runs a shell, not the placeholder"
+: > "$H"; wait "$rpid"
+
 echo "== a bootstrap replaced and split after its claim is left alone (review round 2, Codex R2-B2) =="
 # The split-session fallback respawned the bootstrap with no second look. A
 # person who replaced it (and split the session) after the claim's check

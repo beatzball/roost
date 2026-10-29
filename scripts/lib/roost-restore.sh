@@ -689,6 +689,7 @@ roost_restore_run() {
   # its placing line (a step that stopped early) would be left with no file
   # its key could win. Each is settled into a shell, the T2b rule for a dead
   # run's panes, applied to this run's own.
+  roost_restore__hold ROOST_TEST_HOLD_BEFORE_SWEEP
   server_running && roost_restore__settle_dead
   roost_shape_owner_drop "$ROOST_RESTORE_RD"
   rm -rf "$ROOST_RESTORE_PD"

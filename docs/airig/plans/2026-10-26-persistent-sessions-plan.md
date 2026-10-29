@@ -315,6 +315,7 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_NOW=EPOCH` | the clock for every stamp `save` and `close` write, and the offer's "ago" | 1.9 (`save`), 4.7 (`close`), 7.4 |
 | `ROOST_TEST_RESTORE_HOLD=FILE` | restore waits right after `new-session`, holding `restoring/`, until FILE exists | 1.12 |
 | `ROOST_TEST_PLACE_HOLD=FILE` | restore waits after a window's panes exist and its layout is applied, before the per-pane step | 1.13 |
+| `ROOST_TEST_HOLD_BEFORE_SWEEP=FILE` | restore waits after every session is placed, before its final sweep, until FILE exists | review round 2 of Part 1 (a mutant the sweep hid) |
 | `ROOST_TEST_BOOT_HOLD_AFTER_CLAIM=FILE` | restore waits right after the bootstrap's claim returned, before it counts that session's panes, until FILE exists | review round 2 of Part 1 (R2-B2) |
 | `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` | restore waits after winning `F → F.used` (T2), before that pane's respawn | 1.12 |
 | `ROOST_TEST_REVIVE_HOLD=FILE` | `revive` waits after its rename to `%N.launching`, its `origin` line and its claim, before step 7 | 3.8 |
