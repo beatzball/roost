@@ -938,6 +938,21 @@ roost_shape__claim() {
     first=0
     if ln -s "$me" "$path" 2>/dev/null; then return "$took"; fi
     if ! cur="$(readlink "$path" 2>/dev/null)"; then
+      # Something that is not a symbolic link: no restore wrote it, and no
+      # pid can be read from it, so it is named once, not spun on (review
+      # round 2, Fable N2).
+      if [ -e "$path" ]; then
+        ROOST_SHAPE_OWNER_FAULT="$path is not an owner record (not a symbolic link); remove it when no restore is running"
+        return 3
+      fi
+      # The directory itself is gone: another owner's drop removed it
+      # between this taker's mkdir and its link (ENOENT). A free directory,
+      # so make it again (Fable N2).
+      if [ ! -d "${path%/*}" ]; then
+        ( umask 077; mkdir -p "${path%/*}" ) 2>/dev/null || {
+          ROOST_SHAPE_OWNER_FAULT="cannot create ${path%/*}"; return 3; }
+        continue
+      fi
       # `ln -s` failed and nothing is there: either the record went between
       # the two calls (the next turn wins), or the name cannot be made at
       # all. Three in a row is the second: a clear refusal, never a loop

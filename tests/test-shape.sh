@@ -346,6 +346,22 @@ assert_eq "$rgb|$rga" "2|1" "B links first after the dead record: 2; A is refuse
 assert_eq "$(readlink "$D4/owner" | cut -d' ' -f1)" "$(cat "$OD/GB.pid" 2>/dev/null)" "...and the record names B"
 : > "$OD/stop"; wait 2>/dev/null
 
+echo "== an owner that is not a record, and a directory removed under a taker (review round 2, Fable N2) =="
+# A plain file at DIR/owner was read as an owner with no pid: every restore
+# was refused, "pid ?", after 100 quick turns. It is named instead.
+D5="$OD/plain"; mkdir -p "$D5"; : > "$D5/owner"
+out="$(bash -c '. scripts/lib/roost-shape.sh; roost_shape_owner_take "$1"; echo "$?|$ROOST_SHAPE_OWNER_FAULT"' _ "$D5")"
+assert_eq "$out" "3|$D5/owner is not an owner record (not a symbolic link); remove it when no restore is running" \
+  "a plain file at owner: refused once, naming the path"
+# Another owner's drop can remove DIR between this taker's mkdir and its
+# link (ENOENT). That is a free directory, not a refusal: make it again.
+rm -f "$OD/stop"
+D6="$OD/dropped"; mkdir -p "$D6"
+taker DR "$D6" ROOST_TEST_OWNER_PAUSE_FRESH; arrived DR
+rm -rf "$D6"; : > "$OD/go.DR"
+assert_eq "$(done_rc DR)" "0" "the directory was removed before the first link: made again and owned (exit 0)"
+: > "$OD/stop"; wait 2>/dev/null
+
 echo "== a chain of takers that died holding their claim is taken over (review round 2, Codex R2-B4) =="
 # Each taker K1..K8 dies while it holds a takeover claim, one level deeper
 # than the one before it: ROOST_TEST_OWNER_PAUSE_HELD stops it right after
