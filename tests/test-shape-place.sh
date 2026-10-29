@@ -657,6 +657,10 @@ TL rename-window -t "$p" personal-second
 assert_eq "$([ -e "$SHAPE_TMP/killed" ] && echo killed):$p" "killed:%0" "the fixture: the first server died, and the second bootstrap is %0 again"
 assert_eq "$rc:$(TL display -p -t "$p" '#{window_name}')" "12:personal-second" \
   "a split second bootstrap is skipped (exit 12) and keeps the person's window name ($(TL display -p '#{version}'))"
+# The first server died with its window's panes not yet listed: on bash 4.4
+# and later an array declared and never set is unbound under `set -u`, and
+# restore stopped there (exit 1) before it reached the second session.
+assert_eq "$(grep -c 'unbound variable' "$SHAPE_TMP/err")" "0" "...and restore did not stop on an unbound variable when the first server died"
 stop_server; rm -f "$H"
 
 echo "== a name record in the environment is not a record (review round 8, Fable N1) =="

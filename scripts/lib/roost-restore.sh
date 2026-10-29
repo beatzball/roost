@@ -497,7 +497,10 @@ roost_restore__key() {
 #   5. names re-stamped on the panes restore placed.
 roost_restore__build_window() {
   local wid="$1" wf="$2" waddr layout map count k i f out tgt dir best bw bh pw ph id rc=0 act zp
-  local -a blocks panes
+  # Empty, not just declared: on bash 4.4 and later `${#panes[@]}` of an
+  # array never set is unbound under `set -u`, and a window whose server
+  # died before its panes were listed stopped the whole run (review round 8).
+  local -a blocks=() panes=()
   waddr="$(roost_restore__addr "$wf")"
   while IFS= read -r f; do [ -n "$f" ] && blocks+=("$f"); done <<< "$(roost_restore__panes "$waddr")"
   k="${#blocks[@]}"
@@ -584,7 +587,7 @@ roost_restore__build_window() {
 roost_restore__make_session() {
   local blk="$1" boot="$2" name wfirst wname pfirst cwd size w h f out sid wid pane npanes rc=0 r
   local wf idx pre="" act=""
-  local -a wins
+  local -a wins=()
   name="$(roost_restore__addr "$blk")"
   while IFS= read -r wf; do [ -n "$wf" ] && wins+=("$wf"); done <<< "$(roost_restore__windows "$name")"
   [ "${#wins[@]}" -gt 0 ] || return 0
