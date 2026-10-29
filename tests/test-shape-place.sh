@@ -911,7 +911,14 @@ assert_contains "$(printf '%s\n' "$lst" | grep "$stamp")" "save  2 sessions, 2 w
 echo "== --from STAMP-GEN, --from FILE, another host =="
 stop_server
 R restore --from "$stamp" >/dev/null 2>&1; rc=$?
-assert_eq "$rc:$(TL list-windows -t '=beta:' -F '#{window_name}')" "0:d3" "--from STAMP-GEN restores that save from history/"
+# Not the window's NAME: in that save beta's window is named automatically
+# (from its pane's directory), and tmux sets an automatic name on its own
+# timer, so a read right after restore found it empty once in about ten
+# runs on 3.8 (review round 7, Codex NOTE). What the save holds is read
+# instead: the window, its pane's directory, and that its name is left
+# automatic (the newer shape names it `changed`, which turns that off).
+assert_eq "$rc:$(TL list-windows -t '=beta:' -F '#{window_index}|#{automatic-rename}'):$(TL display -p -t "$(first_pane beta)" '#{pane_current_path}')" \
+  "0:1|1:$SHAPE_TMP/d3" "--from STAMP-GEN restores that save from history/"
 stop_server
 sed 's/^host .*/host elsewhere.example/' "$SD/shape" > "$SHAPE_TMP/copy.shape"
 R restore --from "$SHAPE_TMP/copy.shape" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
