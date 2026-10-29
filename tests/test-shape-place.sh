@@ -460,19 +460,41 @@ shells_wait "$bp"; assert_eq "$(TL display -p -t "$bp" '#{pane_current_path}')" 
 assert_eq "$(TL list-sessions -F '#{session_name}' | sort | tr '\n' ' ')" "first second " "...and the other saved session is placed"
 
 echo "== dotted and numeric session names (probe 1.4) =="
+# Up to tmux 3.7a a session name's `.` and `:` are stored as `_` (probe 1.4),
+# so a saved v3.69-x IS the session v3_69-x. From 3.7b both are kept
+# (docs/airig/probes/persist-1-tmux38.md), and those are two sessions.
+case "$(TL display -p '#{version}')" in [0-2].*|3.[0-6]*|3.7|3.7a) maps=1 ;; *) maps=0 ;; esac
 TL new-session -d -s v3.69-x 'ENV= exec /bin/sh'
 mkshape "v3_69-x:$SHAPE_TMP/d1" "v3.69-x:$SHAPE_TMP/d1" "1:$SHAPE_TMP/d2" 2>/dev/null
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc" "12" "a saved v3_69-x that exists is skipped (exit 12)"
-assert_eq "$(TL list-sessions -F '#{session_name}' | grep -c '^v3_69-x$')" "1" "...never made twice (the dotted saved name is the same session)"
-assert_eq "$(grep -cF "session 'v3.69-x' exists — skipped" "$SHAPE_TMP/err")" "1" \
-  "...and restore knew it existed (not a new-session that tmux happened to refuse)"
+if [ "$maps" = 1 ]; then
+  assert_eq "$rc" "12" "a saved v3_69-x that exists is skipped (exit 12)"
+  assert_eq "$(TL list-sessions -F '#{session_name}' | grep -c '^v3_69-x$')" "1" "...never made twice (the dotted saved name is the same session)"
+  assert_eq "$(grep -cF "session 'v3.69-x' exists — skipped" "$SHAPE_TMP/err")" "1" \
+    "...and restore knew it existed (not a new-session that tmux happened to refuse)"
+else
+  assert_eq "$rc" "12" "tmux $(TL display -p '#{version}') keeps the dot: the saved v3.69-x exists and is skipped (exit 12)"
+  assert_eq "$(TL list-sessions -F '#{session_name}' | grep -c '^v3_69-x$'):$(grep -cF "session 'v3_69-x' exists" "$SHAPE_TMP/err")" "1:0" \
+    "...and the saved v3_69-x, another session there, is made"
+fi
 assert_eq "$(TL display -p -t "$(first_pane 1)" '#{pane_current_path}')" "$SHAPE_TMP/d2" "a session named 1 is placed, its pane in its saved directory"
-TL kill-session -t '=v3_69-x'; TL kill-session -t '=1'
-mkshape "v3.69-x:$SHAPE_TMP/d1"
-R restore >/dev/null 2>&1; rc=$?
-assert_eq "$rc:$(TL display -p -t "$(first_pane v3_69-x)" '#{pane_current_path}')" "0:$SHAPE_TMP/d1" \
-  "a saved dotted name that does not exist is placed (tmux stores it with _)"
+# A trailing `:` keeps the target exact: without it tmux reads the `.` as a
+# pane separator (probe 1.4), and on 3.8 the session was never killed.
+if [ "$maps" = 1 ]; then TL kill-session -t '=v3_69-x:'; else TL kill-session -t '=v3.69-x:'; fi
+TL kill-session -t '=1:'
+if [ "$maps" = 1 ]; then
+  mkshape "v3.69-x:$SHAPE_TMP/d1"
+  R restore >/dev/null 2>&1; rc=$?
+  assert_eq "$rc:$(TL display -p -t "$(first_pane v3_69-x)" '#{pane_current_path}')" "0:$SHAPE_TMP/d1" \
+    "a saved dotted name that does not exist is placed (tmux stores it with _)"
+else
+  # v3_69-x is still there; the saved v3.69-x is not it.
+  mkshape "v3.69-x:$SHAPE_TMP/d1"
+  R restore >/dev/null 2>&1; rc=$?
+  assert_eq "$rc:$(TL display -p -t "$(first_pane v3.69-x)" '#{pane_current_path}')" "0:$SHAPE_TMP/d1" \
+    "a saved v3.69-x is placed though v3_69-x exists (tmux keeps the dot)"
+fi
+TL kill-session -t '=v3_69-x:' 2>/dev/null; TL kill-session -t '=v3.69-x:' 2>/dev/null
 
 echo "== session names with a backslash or \$ do not drift (R8.3) =="
 stop_server

@@ -42,9 +42,12 @@ that changes one of these breaks the rule quietly.
   name as `\\`, and a `$` in one as `\$` on 3.2a and 3.4. Restore undoes that
   for a session name before `new-session -s`, and passes a window name to
   `new-window -n` as saved (which stores it as given); both measured to come
-  back the same over two save-and-restore cycles. A dotted session name
-  cannot exist (tmux stores `.` as `_`); restore matches a saved dotted name
-  to the `_` one and never makes it twice.
+  back the same over two save-and-restore cycles. Up to tmux 3.7a a dotted
+  session name cannot exist (tmux stores `.` and `:` as `_`), and restore
+  matches a saved dotted name to the `_` one and never makes it twice; from
+  3.7b tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
+  and restore asks the server's version which rule holds (a test session
+  would run a person's hooks).
 - **Exact targets.** `=NAME:INDEX` falls back to a window NAMED like the
   index when that index does not exist, on all three builds, and `display -p`
   on a missing target exits 0 with empty output. Restore therefore targets

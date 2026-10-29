@@ -85,15 +85,46 @@ roost_restore__names() {
     roost_shape__clean "$n" || true
     ROOST_RESTORE_NAMES="$ROOST_RESTORE_NAMES$ROOST_SHAPE_V"$'\n'
   done <<< "$(t -u list-sessions -F '#{session_name}' 2>/dev/null || true)"
+  # The names are this server's, and so is the rule for reading them: learned
+  # again with each listing, so a server the bootstrap started is asked too.
+  roost_restore__learn_dots
+}
+
+# roost_restore__stored NAME -> prints the name tmux stores for a saved
+# session NAME. Up to tmux 3.7a, `.` and `:` are stored as `_` (probe 1.4),
+# so a hand-edited `v3.69-x` is the session `v3_69-x`; from 3.7b both are
+# kept (CHANGES 3.7b; measured on 3.8, docs/airig/probes/persist-1-tmux38.md),
+# and `v3.69-x` and `v3_69-x` are two sessions. The rule is the server's
+# version, read once: a test session made only to see how its name is stored
+# would run a person's session-created hooks. A version this cannot read
+# (`master`, `next-3.9`) is a newer tmux, which keeps them. Learned by
+# roost_restore__learn_dots, in the caller's own shell: this one runs inside
+# $(...), where a value it set would be lost.
+roost_restore__stored() {
+  [ -n "${ROOST_RESTORE_MAPDOTS:-}" ] || roost_restore__learn_dots
+  if [ "$ROOST_RESTORE_MAPDOTS" = 1 ]; then
+    local m="${1//./_}"
+    printf '%s' "${m//:/_}"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# roost_restore__learn_dots -> ROOST_RESTORE_MAPDOTS, 1 when this server
+# stores `.` and `:` in a session name as `_` (roost_restore__stored).
+roost_restore__learn_dots() {
+  case "$(t -u display-message -p '#{version}' 2>/dev/null || true)" in
+    [0-2].*|3.[0-6]|3.[0-6][a-z]|3.7|3.7a) ROOST_RESTORE_MAPDOTS=1 ;;
+    *) ROOST_RESTORE_MAPDOTS=0 ;;
+  esac
 }
 
 # roost_restore__exists NAME -> exit 0 when a session of that saved name is on
-# the server. tmux stores `.` and `:` in a session name as `_` (probe 1.4), so
-# a hand-edited `v3.69-x` is the session `v3_69-x`: compared both ways, it is
-# never made a second time.
+# the server: by the name itself, and by the name tmux would store for it
+# (roost_restore__stored), so a dotted name is never made a second time.
 roost_restore__exists() {
-  local m="${1//./_}"
-  m="${m//:/_}"
+  local m
+  m="$(roost_restore__stored "$1")"
   case "$ROOST_RESTORE_NAMES" in *$'\n'"$1"$'\n'*|*$'\n'"$m"$'\n'*) return 0 ;; esac
   return 1
 }
@@ -103,8 +134,8 @@ roost_restore__exists() {
 # back to a window NAMED like the index when the index is missing); every
 # target after this is the id.
 roost_restore__sid() {
-  local id n m="${1//./_}"
-  m="${m//:/_}"
+  local id n m
+  m="$(roost_restore__stored "$1")"
   # Split at the FIRST space by hand: `read id n` would trim a name's own
   # leading and trailing spaces, and a group's first member named ` lead `
   # was then never found (review round 1, Codex B6).
