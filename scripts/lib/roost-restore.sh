@@ -198,7 +198,7 @@ roost_restore__new_file() {
 # ignores default-command (measured on tmux 3.6). Empty (wiring off) →
 # default-shell and `-l` as argv, what tmux runs for an empty default-command.
 roost_restore__shell_cmd() {
-  local dc ds
+  local dc ds bad=0
   dc="$(t -u show-options -gqv default-command 2>/dev/null || true)"
   # R6 for the person's own command too: tmux 3.4 prints `$` as `\$`, and a
   # `"$HOME/x"` read back raw stopped expanding (review round 1, Codex B7).
@@ -207,9 +207,35 @@ roost_restore__shell_cmd() {
   # written to a file.
   roost_shape__clean "$dc" || true
   dc="$ROOST_SHAPE_V"
-  if [ -n "$dc" ]; then ROOST_RESTORE_SHELL_ARGS=("$dc"); return 0; fi
+  # And for default-shell: read raw on 3.4, a path holding `$` named a file
+  # that does not exist, and the respawned pane died at once (review round
+  # 2, Codex R2-B3).
   ds="$(t -u show-options -gqv default-shell 2>/dev/null || true)"
-  ROOST_RESTORE_SHELL_ARGS=("${ds:-${SHELL:-/bin/sh}}" -l)
+  roost_shape__clean "$ds" || true
+  ds="$ROOST_SHAPE_V"
+  # A shell that cannot be run loses every pane restore respawns into it,
+  # with nothing said: tmux checks default-shell only when it is set, and
+  # the file can be gone since. Said once, and $SHELL (or /bin/sh) instead,
+  # so the panes are kept (Codex R2-B3).
+  if [ -n "$ds" ] && [ ! -x "$ds" ]; then
+    printf 'roost restore: default-shell %s cannot be run; panes get %s instead\n' \
+      "$ds" "$(roost_restore__fallback_shell)" >&2
+    ds="" bad=1
+  fi
+  [ -n "$ds" ] || ds="$(roost_restore__fallback_shell)"
+  if [ -n "$dc" ]; then
+    # tmux runs a one-string command through default-shell -c: with that
+    # shell unrunnable, the replacement runs it instead.
+    if [ "$bad" = 1 ]; then ROOST_RESTORE_SHELL_ARGS=("$ds" -c "$dc")
+    else ROOST_RESTORE_SHELL_ARGS=("$dc"); fi
+    return 0
+  fi
+  ROOST_RESTORE_SHELL_ARGS=("$ds" -l)
+}
+
+# roost_restore__fallback_shell -> $SHELL when it can be run, else /bin/sh.
+roost_restore__fallback_shell() {
+  if [ -n "${SHELL:-}" ] && [ -x "$SHELL" ]; then printf '%s\n' "$SHELL"; else printf '/bin/sh\n'; fi
 }
 
 # roost_restore__placing STARTCOMMAND BASE -> exit 0 when a pane's start

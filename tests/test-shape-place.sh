@@ -369,6 +369,39 @@ i=0; while [ "$i" -lt 30 ] && [ ! -e "$HOME/landed-key" ]; do sleep 0.1; i=$((i+
 [ -e "$HOME/landed-key" ]; assert_true $? "...and so does the shell a placeholder hands over at a key"
 TL set -gu default-command
 
+echo "== a default-shell with \$ in its path runs as the person set it (review round 2, Codex R2-B3) =="
+# The same R6 correction, for default-shell: read back raw on 3.4, its path
+# named a file that does not exist, the respawned pane died at once and the
+# pane was gone. Red on 3.4 only.
+stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"
+SHD="$SHAPE_TMP/sh\$ell"; mkdir -p "$SHD"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$BASH_BIN" > "$SHD/bash"; chmod +x "$SHD/bash"
+TL -f /dev/null new-session -d -s other -c "$SHAPE_TMP/d1" 'sleep 600'
+TL new-session -d -s victim -c "$SHAPE_TMP/d1" 'sleep 600'
+R save >/dev/null 2>&1; TL kill-session -t '=victim'
+TL set -g default-shell "$SHD/bash"; TL set -gu default-command
+R restore --only victim >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+vp="$(first_pane victim)"
+assert_eq "$rc:$([ -n "$vp" ] && echo kept)" "0:kept" "restore exits 0 and the victim's pane is there ($(TL display -p '#{version}'))"
+shells_wait "$vp"; assert_eq "$(shells_for "$vp" | wc -l | tr -d ' ')" "1" "...running a shell started through that default-shell"
+
+echo "== a default-shell that cannot be run is said, and the pane kept (review round 2, Codex R2-B3) =="
+# A pane whose shell cannot start dies at once, and restore said nothing and
+# exited 0. tmux checks default-shell only when it is set, so a shell removed
+# since is the way to reach this on every build.
+stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"
+cp "$SHD/bash" "$SHAPE_TMP/gone-shell"
+TL -f /dev/null new-session -d -s other -c "$SHAPE_TMP/d1" 'sleep 600'
+TL new-session -d -s victim -c "$SHAPE_TMP/d1" 'sleep 600'
+R save >/dev/null 2>&1; TL kill-session -t '=victim'
+TL set -g default-shell "$SHAPE_TMP/gone-shell"; TL set -gu default-command
+rm -f "$SHAPE_TMP/gone-shell"
+R restore --only victim >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_contains "$(cat "$SHAPE_TMP/err")" "default-shell $SHAPE_TMP/gone-shell cannot be run" "restore says the default-shell cannot be run"
+vp="$(first_pane victim)"
+assert_eq "$rc:$([ -n "$vp" ] && echo kept)" "0:kept" "...and the pane is kept, a shell from \$SHELL instead"
+TL set -g default-shell "$BASH_BIN"
+
 echo "== the owner rule (§3.5): restoring/ held by a live restore =="
 # A running server with the saved session in it, so a run that is let through
 # skips it (exit 12) and one that is refused says so (exit 1).
