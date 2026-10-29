@@ -290,6 +290,24 @@ assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane re
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...and the bootstrap pane is a shell, not a placeholder no key can free"
 TL display -p -t "$bp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" "...no longer running the placeholder"
 
+echo "== a bootstrap replaced and split after its claim is left alone (review round 2, Codex R2-B2) =="
+# The split-session fallback respawned the bootstrap with no second look. A
+# person who replaced it (and split the session) after the claim's check
+# lost that process. ROOST_TEST_BOOT_HOLD_AFTER_CLAIM holds restore right
+# after the claim returned, before it counts the session's panes.
+stop_server; rm -rf "$SD/restoring"; rm -f "$H"
+mkshape "first:$SHAPE_TMP/d1"
+ROOST_TEST_BOOT_HOLD_AFTER_CLAIM="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+wait_boot .used 50; sleep 1
+bp="$(first_pane first)"
+TL respawn-pane -k -t "$bp" 'sleep 600'; TL split-window -d -t "$bp" 'sleep 600'; sleep 0.3
+bpid="$(TL display -p -t "$bp" '#{pane_pid}')"
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane restore made"
+assert_eq "$(TL display -p -t "$bp" '#{pane_pid}:#{pane_current_command}')" "$bpid:sleep" \
+  "...and the person's process in the bootstrap pane survives: same pane_pid, still sleep"
+
 echo "== a pane a person took in one restore is left alone by the next (review round 2, Codex R2-B1) =="
 # A shell a key took keeps the placeholder's start command, which names its
 # placing file. Every run used to count from place.1 again, so the next

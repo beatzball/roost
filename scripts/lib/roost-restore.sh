@@ -258,6 +258,24 @@ roost_restore__claim() {
   return 0
 }
 
+# roost_restore__respawn_claimed PANE FILE CWD -> the respawn of a pane this
+# run claimed EARLIER (FILE is FILE.used), with the claim's step (iii) done
+# again right before it: 0 respawned; 2 the pane no longer runs its placing
+# line — a person replaced it since — so FILE.used becomes FILE.taken and the
+# pane is left. The bootstrap is claimed long before its respawn (before its
+# window is built, and before its session's panes are counted), and both of
+# its respawns go through here: without the second look, restore killed the
+# person's process (review round 1, Codex B1; review round 2, Codex R2-B2,
+# the split-session fallback).
+roost_restore__respawn_claimed() {
+  if roost_restore__placing "$(t -u display-message -p -t "$1" '#{pane_start_command}' 2>/dev/null || true)" "${2##*/}"; then
+    roost_restore__respawn "$1" "$3"
+    return 0
+  fi
+  mv "$2.used" "$2.taken" 2>/dev/null || true
+  return 2
+}
+
 # roost_restore__respawn PANE CWD -> step (iv): a shell in CWD.
 roost_restore__respawn() {
   t set-option -pu -t "$1" remain-on-exit 2>/dev/null || true
@@ -399,15 +417,8 @@ roost_restore__build_window() {
     if [ "$id" = "$5" ]; then
       # The bootstrap was claimed before this window was built, so a person
       # had all of that time to respawn it by hand: look again, right before
-      # the respawn, exactly as roost_restore__claim does (review round 1,
-      # Codex B1 — without this, restore killed the person's process).
-      zp=0
-      if roost_restore__placing "$(t -u display-message -p -t "$id" '#{pane_start_command}' 2>/dev/null || true)" "${f##*/}"; then
-        roost_restore__respawn "$id" "$out"
-      else
-        mv "$f.used" "$f.taken" 2>/dev/null || true
-        zp=2
-      fi
+      # the respawn (roost_restore__respawn_claimed).
+      zp=0; roost_restore__respawn_claimed "$id" "$f" "$out" || zp=$?
     else
       zp=0; roost_restore_place_pane "$id" "$f" "$out" || zp=$?
     fi
@@ -492,13 +503,16 @@ roost_restore__make_session() {
     # holds the one pane restore made (§4.3). Lost: a key took it, the pane
     # is the person's, and the saved session is skipped by name.
     r=0; roost_restore__claim "$pane" "$f" || r=$?
+    roost_restore__hold ROOST_TEST_BOOT_HOLD_AFTER_CLAIM
     if [ "$r" = 0 ] && [ "$(t -u list-panes -s -t "$sid" -F x 2>/dev/null | grep -c .)" != 1 ]; then
       # Won, but a person split the session meanwhile: it is not
       # replaceable, and the saved session is skipped. The bootstrap pane is
       # still restore's — it won the rename, so no key reached it — and it
       # becomes a shell now: a placeholder left with its file gone could
-      # never be freed by a key (review round 1, Fable N1).
-      roost_restore__respawn "$pane" "$cwd"
+      # never be freed by a key (review round 1, Fable N1). Unless the person
+      # replaced it too, after the claim looked: then it is theirs, left as
+      # it is, and its file becomes .taken (roost_restore__respawn_claimed).
+      roost_restore__respawn_claimed "$pane" "$f" "$cwd" || true
       r=2
     fi
     if [ "$r" != 0 ]; then
