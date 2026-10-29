@@ -538,13 +538,21 @@ roost_restore__make_session() {
       # never be freed by a key (review round 1, Fable N1). Unless the person
       # replaced it too, after the claim looked: then it is theirs, left as
       # it is, and its file becomes .taken (roost_restore__respawn_claimed).
-      roost_restore__respawn_claimed "$pane" "$f" "$cwd" || true
-      r=2
+      r=3; roost_restore__respawn_claimed "$pane" "$f" "$cwd" || r=2
     fi
-    if [ "$r" != 0 ]; then
-      printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --only NAME)\n" "$name" "$npanes" >&2
-      return 12
-    fi
+    # Each way the bootstrap is lost has its own line (review round 3,
+    # Fable N1): only a key's earns the advice to kill the session and try
+    # again. Changed or split by hand, the session holds a person's work, and
+    # killing it would lose that.
+    case "$r" in
+      0) ;;
+      1) printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --only NAME)\n" "$name" "$npanes" >&2
+         return 12 ;;
+      *) [ "$r" = 2 ] && printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is\n' \
+           "$(roost_restore__addr "$pfirst")" "$pane" >&2
+         printf "roost restore: session '%s' skipped: it was changed by hand during placement — %s panes not restored\n" "$name" "$npanes" >&2
+         return 12 ;;
+    esac
     pre="$pane"
   fi
   roost_restore__window_first "$sid" "$wid" "$(roost_restore__addr "$wfirst" | sed 's/.*://')"

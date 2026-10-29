@@ -289,6 +289,11 @@ TL split-window -d -t "$bp" "$BASH_BIN"; sleep 0.3
 assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane restore made"
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...and the bootstrap pane is a shell, not a placeholder no key can free"
 TL display -p -t "$bp" '#{pane_start_command}' | grep -q roost-placeholder; assert_eq "$?" "1" "...no longer running the placeholder"
+# No key was pressed, and the session now holds a person's pane: the line
+# must not say a key took it, nor advise killing the session (review round
+# 3, Fable N1).
+assert_contains "$(cat "$SHAPE_TMP/err")" "session 'first' skipped: it was changed by hand during placement" "...and restore says the session was changed by hand"
+assert_eq "$(grep -c 'taken by a key\|kill-session' "$SHAPE_TMP/err")" "0" "...not that a key took it, and no advice to kill it"
 
 echo "== each pane is a shell by its own step, not by the final sweep =="
 # The final sweep turns any pane of the run still placing into a shell, so a
@@ -324,6 +329,8 @@ bpid="$(TL display -p -t "$bp" '#{pane_pid}')"
 assert_eq "$rc" "12" "the session is skipped: it no longer holds the one pane restore made"
 assert_eq "$(TL display -p -t "$bp" '#{pane_pid}:#{pane_current_command}')" "$bpid:sleep" \
   "...and the person's process in the bootstrap pane survives: same pane_pid, still sleep"
+assert_contains "$(cat "$SHAPE_TMP/err")" "pane first:1.0 ($bp) was changed by hand during placement; left as it is" "...restore names the pane it left (review round 3, Fable N1)"
+assert_eq "$(grep -c 'taken by a key\|kill-session' "$SHAPE_TMP/err")" "0" "...not that a key took it, and no advice to kill it"
 
 echo "== a pane a person took in one restore is left alone by the next (review round 2, Codex R2-B1) =="
 # A shell a key took keeps the placeholder's start command, which names its
