@@ -37,7 +37,8 @@ that changes one of these breaks the rule quietly.
   again pane by pane. A name holding a control byte is not saved (one stderr
   line); a directory holding one is saved as `$HOME` (one stderr line). A
   session or window name with a control byte is stored by tmux itself as
-  escape text, on every build.
+  escape text up to tmux 3.6; from 3.7 tmux refuses such a window name
+  (`invalid window name`), so none can be saved.
 - **Names tmux rewrites.** tmux stores a backslash in a session or window
   name as `\\`, and a `$` in one as `\$` on 3.2a and 3.4. Restore undoes that
   for a session name before `new-session -s`, and passes a window name to

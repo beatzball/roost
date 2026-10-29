@@ -282,7 +282,7 @@ cbpane() { # VALUE -> pane id; its shell entered $O/VALUE and @roost-name is VAL
   printf '%s\n' "$p"
 }
 cbe="$(cbpane "e${esc}c")"; cbt="$(cbpane "t${tab}b")"; cbn="$(cbpane "$nl")"
-TL rename-window -t "$cbe" "w${esc}x"
+TL rename-window -t "$cbe" "w${esc}x" 2>/dev/null; esc_rc=$?
 sleep 0.5
 R save --to "$SHAPE_TMP/cb.shape" >/dev/null 2>"$SHAPE_TMP/cb.err"; rc=$?
 assert_eq "$rc" "0" "a fleet with control bytes still saves, exit 0"
@@ -295,7 +295,15 @@ for pair in "$cbe:ESC" "$cbt:tab" "$cbn:newline (R8.1)"; do
 done
 assert_eq "$(grep -c "pane $cbn:" "$SHAPE_TMP/cb.err")" "2" "the newline pane gets one line for its cwd and one for its name"
 w="$(blk "$SHAPE_TMP/cb.shape" "$(TL display -p -t "$cbe" '#{window_id}')")"
-assert_eq "$(val "$w" name)" 'w\033x' "a window name: tmux itself stores the ESC as text on every build (probe 1.3)"
+# Up to tmux 3.6 tmux itself stores the ESC as the text `\033` (probe 1.3).
+# From 3.7 it refuses the name ("invalid window name", CHANGES 3.7; measured
+# on 3.8, docs/airig/probes/persist-1-tmux38.md): the window keeps its
+# automatic name, and the file has no name for it.
+if [ "$esc_rc" = 0 ]; then
+  assert_eq "$(val "$w" name)" 'w\033x' "a window name: tmux itself stores the ESC as text ($(TL display -p '#{version}'), probe 1.3)"
+else
+  has "$w" name; assert_eq "$esc_rc:$?" "1:1" "a window name holding ESC: tmux $(TL display -p '#{version}') refuses it, and no name is saved"
+fi
 
 echo "== a failed read of the server's rules publishes nothing =="
 # Every listing that fails returns before its arrays are set, so bin/roost's
