@@ -35,10 +35,25 @@ The old form is given only to a control-mode client (`format.c`,
 `LAYOUT_CUSTOM_OLD_FORMAT`), so a plain `display`/`list-windows` reads JSON.
 **Rule (spec §3.2 `layout`):** save the layout as printed; restore gives it
 to `select-layout` unchanged and reads the root cell's size from either form
-(the first `"w"` and `"h"`, which tmux writes first). Before the fix restore
-found no size in a JSON layout, made the session 80x24, and the saved layout
-could not apply: "every layout is the saved one" and the zoomed-window case
-failed.
+(the first `"w"` and `"h"`, which tmux writes first).
+
+What the size changes, measured on 3.6 and 3.8 alike:
+
+| | result |
+|---|---|
+| `select-layout` of a 200x50 layout onto a window made 80x24 | applies; the window becomes 200x50 |
+| panes restore's split rule (the largest side, across it) can build in 80x24 | 288 |
+| `new-session -d -x 200 -y 50`, then `show default-size` | `200x50`; a later `new-window` is 200x50 |
+| `new-session -d` with no `-x`/`-y` | no default-size; a later `new-window` is 80x24 |
+
+So a wrong size does not show in the windows restore builds. It shows in
+the session's default-size: a window the person makes before a client
+attaches. Before the fix, a 3.8 layout gave no size, and a restored session
+was 80x24 for those windows. The CI cases "every layout is the saved one"
+and "unzoomed after restore" did not fail from this: they failed because
+the test stripped the old form's pane ids only, not the JSON `"I"` ids. The
+case that fails from it is "a window made after restore is the saved
+200x50" in `tests/test-shape-place.sh`.
 
 ## 2. `.` and `:` stay in a session name (3.7b by CHANGES; measured on 3.8)
 

@@ -630,6 +630,23 @@ R save >/dev/null 2>&1; TL kill-session -t '=mini'
 R restore --only mini >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc:$(TL list-panes -t '=mini:' -F x | wc -l | tr -d ' ')" "0:4" "restored: exit 0 and all four panes"
 
+echo "== a restored session keeps its saved size for the windows after it, in either layout form (tmux 3.8) =="
+# Restore makes each session at its largest saved layout (-x/-y), and tmux
+# keeps that as the session's default-size: a window made in it later, by
+# the person before a client attaches, is that size. select-layout widens a
+# window to its saved layout whatever size it was made at (measured on 3.6
+# and 3.8), so the windows restore builds cannot tell a wrong size; this
+# can. tmux 3.8 prints the layout as JSON (docs/airig/probes/persist-1-tmux38.md),
+# and a size read in the old form only fell back to 80x24 there. Same server
+# as above.
+TL new-session -d -s tall -x 200 -y 50 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+TL split-window -v -d -t '=tall:' -c "$SHAPE_TMP/d1" "$BASH_BIN"
+R save >/dev/null 2>&1; TL kill-session -t '=tall'
+R restore --only tall >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+TL new-window -d -t '=tall:' "$BASH_BIN"
+assert_eq "$rc:$(TL list-windows -t '=tall:' -F '#{window_width}x#{window_height}' | tr '\n' ' ')" "0:200x50 200x50 " \
+  "a window made after restore is the saved 200x50, not 80x24 ($(TL display -p '#{version}'))"
+
 echo "== odd names come back exactly, twice (probe 1.3, R8.3) =="
 fresh_server
 ODDN=('sp ace' 'a$b' "a'b" 'a"b' 'a#b' 'trail ' 'a🐓b' 'a\b')

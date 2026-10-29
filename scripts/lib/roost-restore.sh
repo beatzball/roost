@@ -199,8 +199,12 @@ roost_restore__panes() {
 # (docs/airig/probes/persist-1-tmux38.md): `CSUM,WxH,X,Y...` up to 3.7, and
 # from 3.8 JSON, `{"V":2,"L":{"t":"h","w":200,"h":50,...}}`, whose first
 # "w" and "h" are the root cell's (tmux writes t, w, h, x, y first). Read
-# only as the old form, a 3.8 layout gave no size, the session was made
-# 80x24, and its saved layout could not apply.
+# only as the old form, a 3.8 layout gave no size and the session was made
+# 80x24. select-layout still widens each window it builds to the saved
+# size, and roost_restore__build_window's split rule fits 288 panes in
+# 80x24, so that showed only in the session's default-size, which tmux
+# takes from -x/-y: a window the person made before a client attached was
+# 80x24 (measured on 3.6 and 3.8).
 roost_restore__size() {
   local f l c w=0 h=0 cw ch
   while IFS= read -r f; do
