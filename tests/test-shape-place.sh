@@ -535,7 +535,11 @@ TL new-session -d -s gamma -x 200 -y 10 -c "$SHAPE_TMP/d1" "$BASH_BIN"
 TL rename-window -t '=gamma:1' wide
 g1="$(first_pane gamma)"
 for d in d2 d3 d4 d5 d6; do TL split-window -h -d -t "$g1" -c "$SHAPE_TMP/$d" "$BASH_BIN"; TL select-layout -t '=gamma:1' even-horizontal; done
-TL link-window -s '=alpha:1' -t '=gamma:9'
+# The link goes into beta, never gamma: restore makes a session at the size
+# of its LARGEST saved window, so a 200x50 window linked into gamma made it
+# 200x50 and its splits never ran out of rows, which hid a build that splits
+# by area in tmux's default direction (review round 3, Codex R3-B1, Fable N3).
+TL link-window -s '=alpha:1' -t '=beta:9'
 sleep 1
 F1="$(fleet)"; L1="$(layouts)"; J1="$(json5)"
 R save >/dev/null 2>&1
@@ -544,26 +548,27 @@ R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "0" "restore exits 0"
 sleep 1
 F2="$(fleet)"
-assert_eq "$(printf '%s\n' "$F2" | grep -v '^gamma|9|')" "$(printf '%s\n' "$F1" | grep -v '^gamma|9|')" \
+assert_eq "$(printf '%s\n' "$F2" | grep -v '^beta|9|')" "$(printf '%s\n' "$F1" | grep -v '^beta|9|')" \
   "every pane is back: session, window index and name, pane index, name, directory (the first pane's included)"
-# The linked window (alpha:1, linked as gamma:9) is left out of THIS compare
+# The linked window (alpha:1, linked as beta:9) is left out of THIS compare
 # under both names: before restore its panes are listed twice, and status
 # --json files each pane once, under whichever context it read — under a C
 # locale tmux 3.4 prints a tab as `_` (docs/known-gaps.md), status falls back
-# to reading each pane by id, and the two copies land under gamma:9. The tmux
+# to reading each pane by id, and the two copies land under beta:9. The tmux
 # listing compare above covers those panes byte for byte.
 assert_eq "$(json5 | grep -v ' left-right ')" "$(printf '%s\n' "$J1" | grep -v ' left-right ')" "status --json agrees on session, window_name, window_index, pane_index, name"
 L2="$(layouts)"
-assert_eq "$(printf '%s\n' "$L2" | grep -v '^gamma:9 ')" "$(printf '%s\n' "$L1" | grep -v '^gamma:9 ')" \
+assert_eq "$(printf '%s\n' "$L2" | grep -v '^beta:9 ')" "$(printf '%s\n' "$L1" | grep -v '^beta:9 ')" \
   "every layout is the saved one (checksum and pane ids stripped); the zoomed window is zoomed"
 assert_eq "$(TL list-panes -t '=beta:1' -F x | wc -l | tr -d ' ')" "6" "six stacked panes in a 200x50 window"
 assert_eq "$(TL list-panes -t '=gamma:1' -F x | wc -l | tr -d ' ')" "6" "six side-by-side panes in a 200x10 window (the largest side, across it)"
+assert_eq "$(TL display -p -t '=gamma:1' '#{window_width}x#{window_height}')" "200x10" "...gamma holds no taller window, so it was made 200x10"
 zl="$(TL display -p -t '=alpha:5' '#{window_layout}')"
 TL resize-pane -Z -t '=alpha:5'
 assert_eq "$(strip "$(TL display -p -t '=alpha:5' '#{window_layout}')")" "$(strip "$(sed -n '/^window alpha:5$/,/^$/s/^layout //p' "$SD/shape")")" \
   "unzoomed after restore, the zoomed window's layout is the saved one (probe 1.1)"
 assert_eq "$(TL display -p -t "$(first_pane alpha)" '#{window_width}x#{window_height}')" "200x50" "the first window is 200x50"
-assert_eq "$(TL list-panes -t '=gamma:9' -F x | wc -l | tr -d ' '):$(TL display -p -t '=gamma:9' '#{window_linked}')" "2:0" \
+assert_eq "$(TL list-panes -t '=beta:9' -F x | wc -l | tr -d ' '):$(TL display -p -t '=beta:9' '#{window_linked}')" "2:0" \
   "a window linked into two sessions comes back as two windows (§3.2)"
 assert_eq "$(TL display -p -t "$(TL list-panes -t '=beta:1' -F '#{pane_id}' | tail -1)" '#{pane_current_path}')" "$SHAPE_TMP/d6" \
   "a keyed pane is a shell in its directory (agents are not resumed in this part)"
@@ -571,6 +576,27 @@ npl="$(TL list-panes -a -F x | wc -l | tr -d ' ')"
 assert_eq "$(cut -d' ' -f1 "$HOME/shells.log" | sort -u | wc -l | tr -d ' ')" "$npl" "every pane, the first included, started a shell"
 assert_eq "$(grep -c ' wired$' "$HOME/env.log")" "$npl" "...and every one of them is wired (ROOST_TMUX set)"
 assert_eq "$(TL list-panes -a -F '#{pane_start_command}' | grep -vc roost-pane-shell)" "0" "every pane's start command is roost-pane-shell (§8.1 test 1, wired)"
+
+echo "== four panes in a 4x4 window: the largest side, not the largest area (review round 3, Codex R3-B1) =="
+# Splitting a 4x4 window three times leaves 2x2, 2x1 and 1x4. The largest
+# AREA is a tie of 2x2 and 1x4, and the first of them, 2x2, cannot be split
+# again (two columns, one goes to the border): a build that picks by area
+# stops at three panes even across the right side. The largest SIDE is the
+# 1x4, which splits. Pane headers are off (tmux's own default, set here on
+# purpose): a header row would change every size above.
+stop_server; rm -rf "$SD/restoring"
+TL -f /dev/null new-session -d -s keep -c "$SHAPE_TMP/d1" 'sleep 600'
+TL set -g default-shell "$BASH_BIN"; TL setw -g pane-border-status off
+TL new-session -d -s mini -x 4 -y 4 -c "$SHAPE_TMP/d1" "$BASH_BIN"
+m1="$(first_pane mini)"
+m2="$(TL split-window -h -d -P -F '#{pane_id}' -t "$m1" -c "$SHAPE_TMP/d2" "$BASH_BIN")"
+TL split-window -v -d -t "$m1" -c "$SHAPE_TMP/d3" "$BASH_BIN"
+TL split-window -v -d -t "$m2" -c "$SHAPE_TMP/d4" "$BASH_BIN"
+assert_eq "$(TL list-panes -t '=mini:' -F x | wc -l | tr -d ' '):$(TL display -p -t "$m1" '#{window_width}x#{window_height}')" "4:4x4" \
+  "the fixture: four panes in a 4x4 window"
+R save >/dev/null 2>&1; TL kill-session -t '=mini'
+R restore --only mini >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc:$(TL list-panes -t '=mini:' -F x | wc -l | tr -d ' ')" "0:4" "restored: exit 0 and all four panes"
 
 echo "== odd names come back exactly, twice (probe 1.3, R8.3) =="
 fresh_server
