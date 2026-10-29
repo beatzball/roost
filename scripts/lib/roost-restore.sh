@@ -765,6 +765,10 @@ roost_restore_run() {
   if [ -n "$sdir" ]; then ROOST_RESTORE_RD="$sdir/restoring"
   else ROOST_RESTORE_RD="$(mktemp -d)/restoring"; fi
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
+  # The bootstrap's name record (roost_restore__respawn_claimed) is this
+  # run's alone: a value from the environment is never one (review round 8,
+  # Fable N1).
+  ROOST_RESTORE_BOOT_NAME_PANE="" ROOST_RESTORE_BOOT_NAME_WID="" ROOST_RESTORE_BOOT_NAME=""
   # This run's token for its file names (roost_restore__new_file): pid,
   # clock and a random number, digits and `-` only, so it never holds the
   # `.` the names are split on. Unique enough across runs: a repeat needs the

@@ -659,6 +659,24 @@ assert_eq "$rc:$(TL display -p -t "$p" '#{window_name}')" "12:personal-second" \
   "a split second bootstrap is skipped (exit 12) and keeps the person's window name ($(TL display -p '#{version}'))"
 stop_server; rm -f "$H"
 
+echo "== a name record in the environment is not a record (review round 8, Fable N1) =="
+# restore's own run state starts empty: a ROOST_RESTORE_BOOT_NAME_PANE that
+# reaches it from the environment is not taken as a record. Split after the
+# claim (the split fallback reads the record): the session is skipped,
+# restore ends cleanly, and restoring/ is gone.
+stop_server; rm -rf "$SD/restoring"
+TL -f /dev/null new-session -d -s envsplit -n 'saved\name' -x 200 -y 50 -c "$SHAPE_TMP/d1" 'ENV= exec /bin/sh'
+R save >/dev/null 2>&1; stop_server
+H="$SHAPE_TMP/hold"; rm -f "$H"
+ROOST_RESTORE_BOOT_NAME_PANE=%0 ROOST_TEST_BOOT_HOLD_AFTER_CLAIM="$H" R restore --only envsplit >/dev/null 2>"$SHAPE_TMP/err" &
+rpid=$!
+i=0; while [ "$i" -lt 100 ] && ! ls "$SD"/restoring/bootstrap.*.used >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+TL split-window -d -t "$(first_pane envsplit)" 'exec sleep 300'
+: > "$H"; wait "$rpid"; rc=$?
+assert_eq "$rc:$(grep -c 'unbound variable' "$SHAPE_TMP/err"):$([ -e "$SD/restoring" ] && echo left || echo gone)" "12:0:gone" \
+  "exported ROOST_RESTORE_BOOT_NAME_PANE=%0, split after the claim: exit 12, no unbound variable, restoring/ gone"
+stop_server; rm -f "$H"
+
 echo "== a session group comes back as a group (R7) =="
 stop_server
 TL -f /dev/null new-session -d -s gm -c "$SHAPE_TMP/d1" -x 200 -y 50 'ENV= exec /bin/sh'
