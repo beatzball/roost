@@ -53,6 +53,9 @@ shard_weight() {
     test-turn-over-interrupt.sh) echo 20 ;;
     test-turn-over-hold.sh) echo 13 ;;
     test-turn-over-edges.sh) echo 29 ;;
+    # Added for persistent sessions Part 1 (#191), timed once on the dev Mac,
+    # not off a CI log: 34 s at Task 1.13, 40 s with Task 1.14's cases.
+    test-shape-place.sh) echo 40 ;;
     *) echo 5 ;;
   esac
 }

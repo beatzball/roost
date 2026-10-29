@@ -72,7 +72,12 @@ roost_close_exit_command() {
 #
 # pi and copilot are Node programs, so their process may read "node"; that
 # alone names neither, and a Node process under any other name is unknown —
-# a dev server is a Node process too.
+# a dev server is a Node process too. Measured (#191, probe 1.6,
+# docs/airig/probes/persist-1-command-names.md, once each on this Mac): pi
+# 0.81.1 reads `node` at its prompt, mid-turn and in a tool call, so `pi` in
+# the case below never matches it; copilot 1.0.103 reads `copilot` in all
+# three, so it does. scripts/lib/roost-shape.sh (roost_shape_agree) relies on
+# this table, so a name is added here only when it is distinctive.
 roost_close_harness() {
   ROOST_CLOSE_HARNESS=""
   if [ -n "$1" ]; then ROOST_CLOSE_HARNESS="$1"; return 0; fi

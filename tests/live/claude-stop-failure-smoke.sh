@@ -88,6 +88,11 @@ guard_check() {
 }
 
 D="$(mktemp -d /tmp/amx.XXXX)"
+# Saved shapes (#191) go under this run's temp dir: saving is always on for a
+# real user, so a roost verb here would otherwise write the fleet shape into
+# the real ~/.local/state/roost/shapes. Exported before the server starts, so
+# its panes inherit it too.
+export ROOST_SHAPE_DIR="$D/shapes"
 S="$D/roost"
 FAKE_PID=""
 trap 'tmux -S "$S" kill-server 2>/dev/null; [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null; rm -rf "$D"; guard_check || exit 1' EXIT

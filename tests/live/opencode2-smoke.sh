@@ -56,6 +56,11 @@ esac
 command -v perl >/dev/null 2>&1 || skip "perl is needed to bound the binary's commands"
 
 D="$(mktemp -d /tmp/amx.XXXX)"
+# Saved shapes (#191) go under this run's temp dir: saving is always on for a
+# real user, so a roost verb here would otherwise write the fleet shape into
+# the real ~/.local/state/roost/shapes. Exported before the server starts, so
+# its panes inherit it too.
+export ROOST_SHAPE_DIR="$D/shapes"
 # The socket path MUST end in /roost -- roost state is a no-op on any other
 # socket, which is exactly what keeps it safe to wire into global hooks.
 S="$D/roost"

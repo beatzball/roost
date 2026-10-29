@@ -13,6 +13,71 @@ Keep it short. When an entry is fixed, delete it.
 
 ## Live risks
 
+### `roost save` and `roost restore` (placement only): what the shape rests on (#51, #191)
+
+Live risk, small. Part 1 of persistent sessions ships `save` and a `restore`
+that places panes and resumes nothing. Each rule below rests on a probe in
+`docs/airig/probes/persist-1-*.md` (tmux 3.2a, 3.4 and 3.6, once each); a tmux
+that changes one of these breaks the rule quietly.
+
+- **A zoomed window** is saved with `#{window_layout}` as read — the unzoomed
+  layout on all three builds — and `zoomed 1`. Nothing is ever unzoomed to
+  save it. `#{window_visible_layout}` is the one-pane view and is not used.
+- **A session group** (`new-session -t`) is saved as its first member (lowest
+  session id) in full and each other member as a block with a `group` line,
+  keyed on `#{session_group}`. `#{window_linked}` is NOT a signal for a group:
+  it reads 0 for a group's windows on 3.2a and 3.4 and 1 on 3.6. A window
+  linked by `link-window` outside a group still comes back as two windows.
+- **Odd values, the writer's rule for each.** tmux 3.4 prints every `$` in a
+  value as `\$` and every control byte in an option or path as `\NNN`; the
+  writer learns both once per save by setting and reading back one pane
+  option, then undoes the first and treats the second as a control byte (so
+  a name holding the four characters `\033` is dropped on 3.4 — the safe
+  side). A newline in a value cuts tmux's line listing; a cut line is read
+  again pane by pane. A name holding a control byte is not saved (one stderr
+  line); a directory holding one is saved as `$HOME` (one stderr line). A
+  session or window name with a control byte is stored by tmux itself as
+  escape text up to tmux 3.6; from 3.7 tmux refuses such a window name
+  (`invalid window name`), so none can be saved.
+- **Names tmux rewrites.** tmux stores a backslash in a session or window
+  name as `\\`, and a `$` in one as `\$` on 3.2a and 3.4. Restore undoes that
+  for a session name before `new-session -s`, and passes a window name to
+  `new-window -n` as saved (which stores it as given up to tmux 3.6); from
+  3.7 tmux escapes a window name too, and restore reads each named window
+  back and renames it with the escaping undone when it differs. All measured
+  to come back the same over two save-and-restore cycles (3.8 included). Up to tmux 3.7 a dotted
+  session name cannot exist (up to 3.6 tmux stores `.` and `:` as `_`; 3.7
+  refuses them), and restore matches a saved dotted name to the `_` one,
+  makes it under that name, and never makes it twice; from
+  3.7a tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
+  and restore asks the server's version which rule holds (a test session
+  would run a person's hooks). A version that is neither a release nor a git
+  build (OpenBSD's tmux prints `openbsd-7.6`) is given the old rule; OpenBSD
+  7.6 maps the dots, a later OpenBSD tmux that keeps them would be matched
+  wrongly. roost does not support those builds (doctor refuses them).
+- **Exact targets.** `=NAME:INDEX` falls back to a window NAMED like the
+  index when that index does not exist, on all three builds, and `display -p`
+  on a missing target exits 0 with empty output. Restore therefore targets
+  everything after `new-session` by the id tmux printed.
+- **A headless Claude in a pane's shell** (`claude -p` run by the pane's own
+  agent) fired the pane's SessionStart hook and took over its key (Claude
+  Code 2.1.312). The hook now skips the identity when
+  `CLAUDE_CODE_ENTRYPOINT=sdk-cli` or `CLAUDE_CODE_SESSION_ATTENDED=0`, the
+  child's measured values (R4). A Claude that stops setting them reopens it.
+- **Presence alone for pi and opencode.** A pane's key is saved as live only
+  when its command agrees with its harness. pi reads `node` (not
+  distinctive) and opencode was not measured (its 2.x service could not be
+  stopped on the dev machine), so for those two a key is trusted on presence
+  alone: an exited pi under a Node dev server would be saved as live.
+- **The owner rule needs `ps` where there is no `/proc`.** A restore records
+  its pid and start time in `restoring/owner`: on Linux the start ticks from
+  `/proc/PID/stat`, which a clock step does not move; elsewhere
+  `ps -o lstart=`. With neither, every recorded owner reads as gone, so two
+  restores could run at once. Every machine roost runs on has one.
+- **History has no ring yet.** Every changed save adds a file to `history/`
+  until Part 4 adds `ROOST_SHAPE_KEEP`; nothing saves automatically yet, so it
+  grows only with each `roost save`.
+
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-

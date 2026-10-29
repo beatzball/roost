@@ -1,0 +1,130 @@
+#!/bin/sh
+# roost-placeholder — a pane roost can prove untouched (#51, #191).
+#
+#   usage: roost-placeholder FILE --placing
+#
+# A pane `roost restore` places, and may still replace, runs THIS instead of a
+# shell until either restore claims it or a person presses a key in it. The
+# design is docs/airig/specs/2026-10-24-persistent-sessions-design.md §4.7
+# (who owns a pane), §4.3 (placement) and §2.10 (what it rests on, measured).
+# Part 3 adds the pending modes (`FILE HARNESS`); this is placing mode only.
+#
+# WHY NOT A SHELL. A live shell cannot be proven unused from outside: what a
+# person typed is inside the shell, the cursor moves by itself when the prompt
+# draws or an attach resizes the window, and typed text followed by Ctrl-A
+# puts the cursor back where it was (§4.7: both reviewers broke every outside
+# proof). So the pane runs this, which owns its terminal and decides by ONE
+# RENAME who the pane belongs to:
+#
+#   restore's per-pane step   mv FILE FILE.used    (T2)  -> restore replaces it
+#   a person's first key      mv FILE FILE.taken   (T4)  -> the person's shell
+#
+# rename(2) is atomic, so exactly one of the two wins. Who owns the pane is
+# then read from the FILE'S NAME, never from the pane: #{pane_start_command}
+# survives the `exec` below, and #{pane_current_command} reads `bash` for this
+# program too on macOS, whose /bin/sh is bash (§2.10).
+#
+# POSIX sh on purpose: it must run under macOS /bin/sh and Ubuntu's dash.
+# Started by its OWN PATH, as argv — never through default-command's value,
+# which is shell syntax and, used as argv[0], left every placeholder dead with
+# status 1 (§2.10, measured with the value wiring really writes).
+
+FILE="${1:-}"
+MODE="${2:-}"
+if [ -z "$FILE" ] || [ "$MODE" != --placing ]; then
+  echo "usage: roost-placeholder FILE --placing" >&2
+  exit 2
+fi
+
+# The line for the state FILE is in now (§4.7's table, the placing rows).
+# Re-read at every wake, so a pane restore claimed while it waited says so.
+line_now() {
+  if [ -e "$FILE" ]; then
+    printf '%s\n' 'roost restore is placing this session - press any key for a shell'
+  else
+    # FILE.used (claimed by restore), or a name this run does not know: an
+    # owner is about to replace the pane either way.
+    printf '%s\n' 'roost restore is placing this pane'
+  fi
+}
+
+# The terminal as it was, put back before anything is printed and before the
+# handover, so the person's shell gets an ordinary terminal.
+SAVED_TTY="$(stty -g 2>/dev/null)"
+restore_tty() { [ -n "$SAVED_TTY" ] && stty "$SAVED_TTY" 2>/dev/null; }
+
+shown=""
+show() {
+  l="$(line_now)"
+  if [ "$l" != "$shown" ]; then
+    printf '%s\n' "$l"
+    shown="$l"
+  fi
+}
+
+show
+while :; do
+  # Wait for ONE byte, waking every 5 s (probe 1.7, measured on macOS: `min 0
+  # time 50` makes dd return with no byte about every 5 s, at once on a key,
+  # with no busy loop). The wake is how the line follows the file without a
+  # respawn. Nothing else ends the wait: no rc file runs (this is not a
+  # shell), and a resize or an attach is not input (§2.10).
+  stty raw -echo min 0 time 50 2>/dev/null
+  # Counted with wc rather than captured: $(...) drops a NUL byte, and a NUL
+  # is a key like any other.
+  n="$(dd bs=1 count=1 2>/dev/null | wc -c | tr -d ' ')"
+  if [ "${n:-0}" = 0 ]; then
+    restore_tty
+    show
+    continue
+  fi
+  # A key. Read and throw away whatever else was already typed: half a word
+  # reaching a fresh shell would run as a different command (§4.7 step 2;
+  # §2.10 measured `echo keep-me` + C-a arriving as an EMPTY line).
+  stty -icanon min 0 time 0 2>/dev/null
+  dd bs=4096 count=1 >/dev/null 2>&1
+  restore_tty
+  if mv "$FILE" "$FILE.taken" 2>/dev/null; then
+    # Won: the pane is the person's. Its remain-on-exit is cleared so the
+    # shell behaves like any other (restore set `failed` so a crashed
+    # placeholder leaves a dead pane saying why, not a vanished one). Only
+    # with $TMUX set: a bare `tmux` without it would talk to the DEFAULT
+    # server, never this one.
+    if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+      tmux set-option -pu -t "$TMUX_PANE" remain-on-exit 2>/dev/null
+      # What tmux would start in this pane NOW: read at this moment, so a
+      # bootstrap started before `roost wiring apply` hands over a wired
+      # shell, and a user's own default-command is what that user gets (both
+      # measured, §2.10).
+      # -u: under a C or unset locale the client prints non-ASCII bytes as
+      # `_`, which would hand over a different command (review round 1, B4).
+      dshell="$(tmux -u show-options -gv default-shell 2>/dev/null)"
+      dcmd="$(tmux -u show-options -gv default-command 2>/dev/null)"
+      # tmux 3.4 prints every `$` in a value as `\$` (R6, probe 1.3), so a
+      # person's `"$HOME/x"` would come back as `"\$HOME/x"` and stop
+      # expanding (review round 1, Codex B7). Learn it the way the writer
+      # does — set one pane option holding `$`, read it back, unset it — and
+      # take exactly one backslash off each `$` when this server adds one.
+      probe="$(tmux -u set-option -p -t "$TMUX_PANE" @roost-shape-probe 'a$b' \; \
+        show-options -pv -t "$TMUX_PANE" @roost-shape-probe \; \
+        set-option -pu -t "$TMUX_PANE" @roost-shape-probe 2>/dev/null)"
+      case "$probe" in
+        *'\$'*)
+          dcmd="$(printf '%s' "$dcmd" | sed 's/\\\$/$/g')"
+          dshell="$(printf '%s' "$dshell" | sed 's/\\\$/$/g')" ;;
+      esac
+      [ -n "$dshell" ] || dshell="${SHELL:-/bin/sh}"
+      if [ -n "$dcmd" ]; then
+        exec "$dshell" -c "$dcmd"
+      fi
+      exec "$dshell" -l
+    fi
+    exec "${SHELL:-/bin/sh}" -l
+  fi
+  # Lost: an owner renamed FILE first (restore's FILE.used). Say so and keep
+  # waiting; NEVER start a shell after a lost rename, because the owner is
+  # about to replace this pane and would kill that shell (§4.7 step 2,
+  # revision 4 item 2).
+  shown=""
+  show
+done

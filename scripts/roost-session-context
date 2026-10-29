@@ -134,10 +134,27 @@ esac
 # Nothing it does may reach stdout, which is the context JSON below, and
 # nothing may fail this script — every exit here is 0, for the reasons given
 # above. A tty on stdin means a human ran this by hand; `cat` would wait for ^D.
+#
+# R4 (#191, coordinator ruling R4; probe 1.5,
+# docs/airig/probes/persist-1-nested-claude.md): a HEADLESS Claude run from
+# this pane's own shell — the pane's agent calling `claude -p` through its
+# Bash tool — fires this hook in this pane too, and without this check its
+# throwaway session id replaced the pane's own (measured on Claude Code
+# 2.1.312: @roost-session moved to the child's id, and a later restore would
+# resume the wrong conversation). §3.2's agreement check cannot see it: the
+# child is the same harness, so the pane's command still reads Claude. What
+# tells them apart is the child's environment, measured once: the child had
+# CLAUDE_CODE_ENTRYPOINT=sdk-cli and CLAUDE_CODE_SESSION_ATTENDED=0, the
+# interactive session cli and 1, on a first start and on a `--resume` alike.
+# Either marker skips the identity stamp, and ONLY that: the child still gets
+# its context below. With neither variable set (an older Claude), nothing
+# changes.
 if [ ! -t 0 ]; then
   payload="$(cat 2>/dev/null || true)"
-  . "$ROOST_HOME/scripts/lib/roost-identity.sh"
-  roost_identity_from_payload "$ROOST_SELF_SOCK" "$pane" claude "$payload" >/dev/null 2>&1 || true
+  if [ "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk-cli ] && [ "${CLAUDE_CODE_SESSION_ATTENDED:-}" != 0 ]; then
+    . "$ROOST_HOME/scripts/lib/roost-identity.sh"
+    roost_identity_from_payload "$ROOST_SELF_SOCK" "$pane" claude "$payload" >/dev/null 2>&1 || true
+  fi
 fi
 
 # The injected text. Keep it SHORT: this is prepended to every session on this

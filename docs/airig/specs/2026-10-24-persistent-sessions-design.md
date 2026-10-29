@@ -871,6 +871,21 @@ Rules, each with its reason:
   were mid-turn (§4.3).
 - **`zoomed 1`** on a window block when `#{window_zoomed_flag}` is set; the
   layout string does not carry it (§2.7).
+- **A dotted session name** is the `_` one up to tmux 3.6, which stores
+  `.` and `:` as `_` (probe 1.4); tmux 3.7 refuses it ("invalid session
+  name"); from 3.7a it is its own name, which tmux keeps (CHANGES 3.7 ->
+  3.7a; 3.7, 3.7a and 3.8 measured, `persist-1-tmux38.md`). Restore's
+  "this session exists" test takes the rule from the server's version, and
+  where tmux does not keep the dots restore makes the session under the `_`
+  form, so a dotted saved name is made on 3.7 too.
+- **`layout`** is `#{window_layout}` exactly as the server prints it: the
+  `CSUM,WxH,X,Y...` form up to tmux 3.7, and from tmux 3.8 a JSON form,
+  `{"V":2,"L":{"t":"h","w":200,"h":50,...}}` (built, measured:
+  `docs/airig/probes/persist-1-tmux38.md`). Restore gives it to
+  `select-layout` unchanged and reads the root cell's size from either form
+  (§4.3 Server). tmux 3.8 still takes the older form, so a shape saved on
+  an older tmux restores there; a 3.8 shape on an older tmux gets tmux's
+  default layout and the one stderr line of §4.3 Windows.
 - **`parent`** (reserved, #99): `@roost-parent` when that lands. Not written
   until then.
 - **Nothing a harness owns is in the file**: no transcript bytes, no replies,
@@ -890,6 +905,54 @@ Rules, each with its reason:
 - Field names reuse the pane record's reserved names (`name`, `session`,
   `cwd`, `state`, `harness`, `session_id`), so the two never say one thing
   with two words.
+
+**A read rule for `$` (2026-10-27, coordinator ruling R6, probe 1.3).** tmux
+3.4 prints every `$` in a value with one backslash put before it — in
+`show-options -v`, `display -p` and `list-panes -F` alike, with or without
+`#{q:}` — so a pane in `a$b` reads `pane_current_path` `a\$b`, and
+`@roost-name` and `@roost-cwd` the same; a backslash already there is not
+doubled (`a\$b` reads `a\\$b`). tmux 3.2a and 3.6 print `$` bare. Measured
+once on each build and re-run by the coordinator on 3.4
+(docs/airig/probes/persist-1-control-bytes.md). So before it lists, the writer
+learns once per run whether this server does it: it sets one pane option to
+a known value holding `$`, reads it back, and unsets it. When the read comes
+back with the backslash, the writer removes exactly one backslash before every
+`$` in every value it reads, before any other rule of this section applies.
+Without this a save on 3.4 would write a `cwd` that does not exist and a
+`name` the person never typed.
+
+**A session group (2026-10-28, coordinator ruling R7, the human's decision,
+probe 1.2).** tmux lists a group (`new-session -t`) once per member, every
+window and pane under each member's name with the same ids, on 3.2a, 3.4 and
+3.6 (docs/airig/probes/persist-1-session-group.md); saved as a linked window,
+it would come back as one independent copy per member. So a group is keyed
+on `#{session_group}` — never `#{window_linked}`, which reads 0 for a group's
+windows on 3.2a and 3.4 and 1 on 3.6 — and its **first member**, the lowest
+session id, is saved in full; each **later member** is a `session` block
+with only its own keys (`id`, `active`, and `active_window INDEX`, its own
+current window) and one `group <first member's name>` line, and no window or
+pane blocks. Restore makes the first member, then each later one with
+`new-session -d -t =FIRST -s NAME`. A `group` line naming a session with no
+full block in the file is an address with no parent: the whole file is
+refused (exit 16), the rule above; `--only` of a later member alone joins a
+first member already on the server, and is otherwise the same refusal. The
+linked-window rule above still holds for a window linked by `link-window`
+outside a group.
+
+**What a listing cannot carry (2026-10-28, coordinator ruling R8, probe
+1.3).** A newline in a free-text value cuts tmux's line-based listing on
+every build; a listing line that does not start with its id (`%N`, `@N`,
+`$N`) is a fault of that round, and the writer reads that object's values
+one at a time with `display -p -t ID`, applying the control-byte rule to a
+newline. tmux 3.4 also prints ESC and other control bytes in an option or
+path as `\NNN` text; the writer learns this once per run as it does for `$`
+(R6) and then treats any `\NNN` octal sequence in a free-text value as a
+control byte — a literal `\033` a person typed is dropped too, the safe side.
+A backslash in a session or window name is doubled by tmux at creation, and a
+`$` stored as `\$` on 3.2a and 3.4; restore undoes that rewrite before
+`new-session -s` and `new-window -n` where it can be undone exactly, and the
+writer drops such a name (one stderr line) on a build where it cannot, so a
+name never grows from one save and restore to the next.
 
 ### 3.3 Why a file of its own and not the pane records
 
@@ -1480,7 +1543,10 @@ the hidden form the service runs (§4.4).
   by path as argv: `new-session … <checkout>/scripts/roost-placeholder
   restoring/place.<n> --placing`, the same for `new-window` and
   `split-window`. Every such pane is in §4.7's state **placing** until the
-  per-pane step claims it.
+  per-pane step claims it. Built, each name carries its run's token
+  (`place.<run>.<n>`, `bootstrap.<run>`; review round 2 of Part 1): a
+  key's shell keeps its placing line for as long as the pane lives, and a
+  later run's own `place.1` once matched it.
 - **Windows.** `new-window -d -t SESSION:INDEX -n NAME -c CWD` at the saved
   index (a sparse set and `base-index` come back as saved; `renumber-windows`
   on the user's conf would move them and is noted in `--dry-run`); then

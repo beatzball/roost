@@ -27,6 +27,7 @@ export const siteConfig = {
         { label: 'Using roost',     slug: 'using-roost' },
         { label: 'Driving a Fleet', slug: 'driving-a-fleet' },
         { label: 'Notifications',   slug: 'notifications' },
+        { label: 'Persistent Sessions', slug: 'persistent-sessions' },
         { label: 'Extensions',      slug: 'extensions' },
         { label: 'Writing an Extension', slug: 'writing-an-extension' },
       ],

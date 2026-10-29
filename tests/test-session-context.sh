@@ -220,4 +220,38 @@ assert_eq "$r" "sandboxed" "doctor read nothing through an inherited home"
 assert_eq "$(find "$CANARY" -mindepth 1 2>/dev/null)" "" "doctor wrote nothing outside its sandbox"
 
 rm -rf "$cfgdir" "$setdir"
+
+# --- R4: a headless Claude in the pane's own shell keeps out of its key ------
+# Probe 1.5 (docs/airig/probes/persist-1-nested-claude.md, Claude Code
+# 2.1.312, measured once): a `claude -p` the pane's own Claude ran through its
+# Bash tool fired this same SessionStart hook in the same pane, and the pane's
+# @roost-session moved to the child's throwaway id. The child's environment
+# had CLAUDE_CODE_ENTRYPOINT=sdk-cli and CLAUDE_CODE_SESSION_ATTENDED=0; the
+# interactive session's had cli and 1. Records are on for these cases, so the
+# pane record is checked as well as the option.
+recdir="$(mktemp -d)"
+sboot="$(tmux -S "$s" display -p '#{start_time}-#{pid}')"
+payload() { printf '{"hook_event_name":"SessionStart","source":"%s","session_id":"%s","transcript_path":"/tmp/r4/%s.jsonl","cwd":"/tmp"}' "$1" "$2" "$2"; }
+hook() { # ENV... -- SOURCE ID : runs the hook in the roost pane with that environment
+  local -a e=(); while [ "$1" != -- ]; do e+=("$1"); shift; done; shift
+  payload "$1" "$2" | in_roost env -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SESSION_ATTENDED \
+    ROOST_RECORD_DIR="$recdir" ${e[@]+"${e[@]}"} "$SC" 2>/dev/null
+}
+sess() { tmux -S "$s" show -pqv -t "$spane" @roost-session; }
+recsess() { cat "$recdir/$sboot/${spane#%}/session_id" 2>/dev/null; }
+hook CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 -- startup aaaa-1 >/dev/null
+assert_eq "$(sess)|$(recsess)" "aaaa-1|aaaa-1" "(control) the interactive session identifies the pane as A"
+out="$(hook CLAUDE_CODE_ENTRYPOINT=sdk-cli CLAUDE_CODE_SESSION_ATTENDED=0 -- startup bbbb-2)"; rc=$?
+assert_eq "$(sess)|$(recsess)" "aaaa-1|aaaa-1" "R4: a headless child (sdk-cli, unattended) does not take over the pane's key or its record"
+assert_eq "$rc" "0" "...the hook still exits 0"
+assert_contains "$out" "additionalContext" "...and still gives the child its context"
+hook CLAUDE_CODE_ENTRYPOINT=sdk-cli -- resume bbbb-2 >/dev/null
+assert_eq "$(sess)" "aaaa-1" "R4: CLAUDE_CODE_ENTRYPOINT=sdk-cli alone is enough (a child's --resume)"
+hook CLAUDE_CODE_SESSION_ATTENDED=0 -- startup bbbb-2 >/dev/null
+assert_eq "$(sess)" "aaaa-1" "R4: CLAUDE_CODE_SESSION_ATTENDED=0 alone is enough"
+hook CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ATTENDED=1 -- clear cccc-3 >/dev/null
+assert_eq "$(sess)|$(recsess)" "cccc-3|cccc-3" "the interactive values still re-identify (a /clear or a resume)"
+hook -- startup dddd-4 >/dev/null
+assert_eq "$(sess)" "dddd-4" "neither variable set (an older Claude): today's behaviour, it re-identifies"
+rm -rf "$recdir"
 exit 0

@@ -108,6 +108,86 @@ rules, or left out.
   `ensure_session` starts from a terminal is. Part 5 probe with its "if
   confirmed, do Y" table: Task 5.3; the build, only if confirmed: Task 5.10.
 
+## Coordinator ruling R6: a read rule from probe 1.3
+
+- **R6 — tmux 3.4 prints `$` as `\$`** (extends spec §3.2; found by Task
+  1.3's probe, docs/airig/probes/persist-1-control-bytes.md, and re-run by
+  the coordinator on `ubuntu:24.04`). On tmux 3.4 every value tmux prints
+  holding `$` comes out with one backslash before each `$`, whatever the
+  read (`show-options -v`, `display -p`, `list-panes -F`, with or without
+  `#{q:}`); a backslash already there is not doubled. 3.2a and 3.6 print `$`
+  bare. Rule: before a save lists, the writer learns once per run whether
+  this server does it — set one pane option to a known value holding `$`,
+  read it back, unset it — and if it does, removes exactly one backslash
+  before every `$` in every value it reads. Red tests, run on the CI tmux
+  (3.4) as well as this Mac: a round trip of `a$b`, `a\$b`, `$HOME`-shaped
+  text (`a$HOME` and `a${HOME}b`, never expanded) and a no-`$` control `ab`,
+  each as a directory (`cwd`, `session_cwd`) and as a `name`. The writer half
+  is in Task 1.9, the round trip through the reader in Task 1.10.
+
+## Coordinator ruling R7 (human decision): a session group is one block per later member
+
+- **R7 — a group-aware block** (extends spec §3.2; decided by the human on
+  2026-10-28 after Task 1.2's probe, docs/airig/probes/persist-1-session-group.md,
+  showed a group listed once per member with the same window and pane ids).
+  Groups are keyed on `#{session_group}`, never `#{window_linked}` (it reads
+  0 on tmux 3.2a and 3.4 and 1 on 3.6 for the same group). The **first
+  member** — the lowest session id, so the choice is stable — is saved in
+  full. Each **later member** is a `session` block holding only its own
+  keys (`id`, `active` when set, `active_window INDEX` — its own current
+  window, since it has no window blocks to carry an `active 1`) and one
+  `group <first member's name>` line, and **no** window or pane blocks.
+  Restore makes the first member as usual, then each later member with
+  `new-session -d -t =<first> -s <name>`. **Refusal** (the checker, the
+  spec's existing rule "an address with no parent is a named refusal of
+  the whole file"): a `group` line naming a session that has no full
+  `session` block in the file, naming itself, naming another later member,
+  or a later member that also has window or pane blocks → exit 16, nothing
+  done. **`--only`** of a later member alone: it joins its first member when
+  that session already exists on the server; otherwise it is the same
+  "no parent" refusal, exit 16, nothing done. `--only` of the first member
+  brings its later members with it. The addressing, `--only`, `--dry-run`
+  and `--list` output name a later member once, as joining its group
+  (`session view (joins main's group)`). Red tests: round trip of a two- and
+  a three-member group; no pane id appears twice in the save; restore makes
+  one copy of each pane; a window made in one member after restore is
+  visible in the other; `--only` of a later member alone (joins a live first
+  member; refused without one); a bad `group` line refused; on tmux 3.2a,
+  3.4 and this Mac. The writer half in Task 1.9, the checker and round trip
+  in 1.10, the restore half in 1.12, the output in 1.14.
+
+## Coordinator ruling R8: the other probe 1.3 facts, probe 1.4, the test server name
+
+1. **A newline cuts a listing line.** A listing line that does not start
+   with its id field (`%N`, `@N`, `$N`) is a fault of that round, not data.
+   The writer then reads that object's free-text values one at a time with
+   `display -p -t <id>`, and a value holding a newline gets the control-byte
+   rule (drop `name`; `cwd` → home; one stderr line). Task 1.9 cases: a
+   newline in `@roost-name` and in a directory.
+2. **ESC/SOH read as `\NNN` text on tmux 3.4.** R6's shape: once per run,
+   set a known value holding ESC, read it back; if this server prints a
+   backslash and three octal digits, any `\NNN` (octal) sequence in a read
+   free-text value is treated as a control byte under the existing rule. A
+   literal `\033` a person typed is then dropped too: the safe side, said
+   in the docs. Task 1.9's odd-value test expects the same result on every
+   build.
+3. **Backslash and `$` in session and window names drift on restore.**
+   Test first: save and restore sessions and windows named `a\b` and `a$b`
+   on tmux 3.2a, 3.4 and this Mac; the name after restore equals the one
+   before, and does not grow over two cycles. Measure tmux's rewrite; if
+   restore can undo it exactly on every build, do that before `new-session
+   -s` / `new-window -n`; if not exact on some build, the writer drops such
+   a name on that build (default name, one stderr line). Tasks 1.12
+   (sessions) and 1.13 (windows).
+4. **Probe 1.4 applies in Tasks 1.12 and 1.13:** every target after the
+   session comes from the id the creating command prints (`-P -F`); a
+   dotted session name is stored by tmux with `_`, so restore reads the
+   created name back.
+5. **The shape test server is `-L roost`** under a guarded temp
+   `TMUX_TMPDIR` (Task 1.8's finding: roost's hooks and `identify` act only
+   on a socket path ending in `/roost`), driven and killed by its full
+   socket path.
+
 ## Probes
 
 Each part's first tasks are its probes: those §6 names, and in Part 1 also the
@@ -235,12 +315,18 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_NOW=EPOCH` | the clock for every stamp `save` and `close` write, and the offer's "ago" | 1.9 (`save`), 4.7 (`close`), 7.4 |
 | `ROOST_TEST_RESTORE_HOLD=FILE` | restore waits right after `new-session`, holding `restoring/`, until FILE exists | 1.12 |
 | `ROOST_TEST_PLACE_HOLD=FILE` | restore waits after a window's panes exist and its layout is applied, before the per-pane step | 1.13 |
+| `ROOST_TEST_HOLD_BEFORE_SWEEP=FILE` | restore waits after every session is placed, before its final sweep, until FILE exists | review round 2 of Part 1 (a mutant the sweep hid) |
+| `ROOST_TEST_BOOT_HOLD_AFTER_CLAIM=FILE` | restore waits right after the bootstrap's claim returned, before it counts that session's panes, until FILE exists | review round 2 of Part 1 (R2-B2) |
 | `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` | restore waits after winning `F → F.used` (T2), before that pane's respawn | 1.12 |
 | `ROOST_TEST_REVIVE_HOLD=FILE` | `revive` waits after its rename to `%N.launching`, its `origin` line and its claim, before step 7 | 3.8 |
 | `ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN=FILE` | `revive` waits right after that rename, before its `origin` line | 3.8 |
 | `ROOST_TEST_LOOP_HOLD=FILE` | a hand restore waits after placement, before its resume loop (this plan's seam, not the spec's: it lets Task 3.3 read the placed state before Task 3.5's loop exists) | 3.3 |
 | `ROOST_TEST_RESUME_HOLD=FILE` | the engine waits after its rename to `.launching` and its claim, before the respawn | 3.5 |
 | `ROOST_TEST_RESUME_HOLD_AFTER_FAILED=FILE` | the engine waits right after T7 | 3.5 |
+| `ROOST_TEST_OWNER_PAUSE_DEAD=FILE` | the owner rule waits right after it sees a dead owner's record, before its takeover claim (marks `FILE.at.<pid>`) | review round 1 of Part 1 (B2) |
+| `ROOST_TEST_OWNER_PAUSE_FRESH=FILE` | the owner rule waits right before its first claim (marks `FILE.at.<pid>`) | review round 1 of Part 1 (B2) |
+| `ROOST_TEST_OWNER_PAUSE_GAP=FILE` | the owner rule waits right after it removed a dead record, before its own link (marks `FILE.at.<pid>`) | review round 2 of Part 1 (Fable N1) |
+| `ROOST_TEST_OWNER_PAUSE_HELD=FILE` | the owner rule waits right after its takeover claim is held, before it removes the dead record (marks `FILE.at.<pid>`) | review round 2 of Part 1 (R2-B4) |
 | `ROOST_TEST_SAVE_HOLD=FILE` | the saver holds `lock/` until FILE exists | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_DRAIN=FILE` | the saver waits after `mv want want.<pid>` | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_LIST=FILE` | the saver waits after listing, before publishing | 4.5 |
@@ -300,6 +386,11 @@ only reads.
 - on some version `#{window_layout}` is the one-pane view while zoomed:
   **stop** — §2.7's "the zoomed state is not in the string" would not hold,
   and the only way round is the unzoom the field shows to be harmful.
+
+Built, tmux 3.8 (CI's macOS runner, after the PR): `#{window_layout}` prints
+a JSON form there, and while zoomed it is still the unzoomed layout; saved
+as read, its size read from either form (spec §3.2 `layout`;
+`docs/airig/probes/persist-1-tmux38.md`).
 
 **Check:** `test -s docs/airig/probes/persist-1-zoom-layout.md`, with three version columns and one outcome named.
 **Commit:** `probe: a zoomed window's layout string on tmux 3.2, 3.4 and this Mac (#51)`
@@ -504,8 +595,10 @@ after each. Also do it for a background session if the version offers one
    `roost_test_tmux_named_guard`; every home in Global constraints at a temp
    dir; the canary; `ROOST_SHAPE_DIR=$TMP/shapes`; a redirected `HOME` whose
    `.bash_profile` and `.bashrc` each append `"$TMUX_PANE $$"` to
-   `$HOME/shells.log`; `ROOST_SOCKET=shp$$` (a `-L` name). `shape_test_teardown`
-   kills only that named server. Helpers `shells_for %N` (lines in
+   `$HOME/shells.log`; `ROOST_SOCKET=roost` (a `-L` name under the guarded
+   temp `TMUX_TMPDIR`; ruling R8 item 5: roost's hooks and `identify` act only
+   on a socket path ending in `/roost`). `shape_test_teardown` kills only that
+   server, by its full socket path. Helpers `shells_for %N` (lines in
    `shells.log` for a pane) and `canary_check`. The stub harnesses (§8.1's
    opening). **The foreground name must be the harness's**, because
    `roost_shape_agree` classifies by `#{pane_current_command}` and a stub that
@@ -603,6 +696,13 @@ after each. Also do it for a background session if the version offers one
    with its stderr line, and no control byte anywhere in the file (`LC_ALL=C
    grep -c '[[:cntrl:]]'` on it, tabs included, prints 0). That the file also
    passes the reader is Task 1.10's case, since the reader lands there.
+   **R6, the writer half:** panes whose shells `cd` into `a$b`, `a\$b`,
+   `a$HOME`, `a${HOME}b` and `ab`, each with `@roost-cwd` set to the same
+   directory and `@roost-name` set to the same last part → the file's `cwd`,
+   `session_cwd` and `name` hold each value byte for byte (no `$` expanded,
+   no backslash added or lost); after the save no pane carries the
+   writer's test option. The suite runs this on tmux 3.4 in CI and on the
+   Mac, so both branches of the rule are exercised.
 2. `bin/roost` `spawn` and `split`: set `@roost-launch` on the new pane to the
    command as handed (before `roost-pane-shell` wraps it), beside the
    `@roost-name` stamp (`spawn` and `split` each have one `set-option -p …
@@ -622,7 +722,10 @@ after each. Also do it for a background session if the version offers one
    those harnesses stay on presence alone); a harness that names a different one → `nested`; the same →
    `ok`; no harness from the command, and HARNESS is pi/copilot/opencode with
    no measured name → `ok` on presence (§3.2); anything else → `other`.
-4. The writer: one `list-sessions`, one `list-windows -a`, one `list-panes -a`
+4. The writer: first R6's test (set one pane option to a known value holding
+   `$`, read it back, unset it; when it reads `\$`, remove exactly one
+   backslash before every `$` in every value read below, before any other
+   rule); then one `list-sessions`, one `list-windows -a`, one `list-panes -a`
    with space-separated `#{q:}` fields (no tab); the consistency check of §3.5
    step 2 (every pane's window and session in the other listings, else list
    again, at most 3 times); `printf` the blocks; redact `launch`; a value
@@ -656,7 +759,11 @@ after each. Also do it for a background session if the version offers one
    ignored. A name with leading and trailing spaces parses byte for byte.
    **The writer's files pass the reader** (moved here from Task 1.9, whose
    writer lands first): every file Task 1.9's cases write, the odd-value ones
-   included, passes `roost_shape_check`.
+   included, passes `roost_shape_check`. **R6, the round trip:** the file
+   Task 1.9's R6 case writes passes `roost_shape_check`, and
+   `roost_shape_parse` + `roost_shape_get` give back `a$b`, `a\$b`, `a$HOME`,
+   `a${HOME}b` and `ab` byte for byte for `cwd`, `session_cwd` and `name`
+   (on tmux 3.4 in CI and on the Mac).
    A zero-byte file and a file cut off inside its header are named refusals
    (exit 16 at restore), never "nothing to restore". **The kept shape:**
    `tests/fixtures/shape-v1.txt` is a shape this task's own test writes with
@@ -735,7 +842,8 @@ because the bootstrap cases need it, and Task 1.13 reuses it for every pane.
    pane`; released: exit 0, a line only from restore's own respawn. Plus the
    owner rule: `restoring/` with a live pid makes a second restore refuse
    (exit 1, naming the pid); a dead pid, or a live pid with another start time
-   (`ps -o lstart=`), is taken over (and T2b settles the dead run's bootstrap
+   (`ps -o lstart=`; on Linux the start ticks of `/proc/PID/stat`, review
+   round 5), is taken over (and T2b settles the dead run's bootstrap
    into a shell, its session then skipped, exit 12). **Dotted and numeric
    names** (Task 1.4): a saved session `v3.69-x` that exists is skipped and
    named, not made again; one that does not exist is placed (its one pane in
@@ -2710,6 +2818,7 @@ A deferred check that fails is a new task in a new part, not a rewind.
 | 4 siblings, duplicate, stale, store miss, mid-turn line | 3.5 |
 | 5 parse refusals, unknown block, whitespace | 1.10 |
 | 5 deleted block, renamed session, linked window | 1.13 |
+| 5 a session group (R7): one block per later member, round trip, `--only`, a bad `group` line | 1.9 (writer), 1.10 (checker), 1.12 (restore), 1.14 (output) |
 | 5 "create nothing" on a refusal | 1.14 |
 | 6 live pane, own key, exited, nested, other (revive), release only one's own | 2.6 |
 | 6 `other` — saved with `stale_reason other` | 1.9 |
@@ -2772,7 +2881,7 @@ A deferred check that fails is a new task in a new part, not a rewind.
 ## Coverage: plan additions beyond §8.1 → the task that lands each
 
 Field lessons from other tools, written as test cases inside the spec's rules,
-and the coordinator's rulings R2–R5. Each is red before its code.
+and the coordinator's rulings R2–R8. Each is red before its code.
 
 | addition | task |
 |---|---|
@@ -2795,6 +2904,11 @@ and the coordinator's rulings R2–R5. Each is red before its code.
 | odd names and directories round-trip (space, `$`, quotes, `#`, trailing space, UTF-8) | 1.13 |
 | the K-pane fallback names every unplaced block with its key | 1.13 |
 | R4: a headless Claude child does not re-identify the pane | 1.15 |
+| R6: `$` read back as `\$` on tmux 3.4 — the read test and the round trip | 1.9, 1.10 |
+| R7: a session group saved as one full member and later-member blocks; restored with `new-session -t` | 1.9, 1.10, 1.12, 1.14 |
+| R8.1: a newline cuts a listing line — re-read by id, the control-byte rule | 1.9 |
+| R8.2: ESC/SOH read as `\NNN` on tmux 3.4 — the read test, same result on every build | 1.9 |
+| R8.3: backslash and `$` in session and window names do not drift over two cycles | 1.12, 1.13 |
 | launch-flag, harness-home and live-registry reads (recorded only) | 2.1 |
 | the worktree-relocated transcript (probe, and its fixture) | 2.2, 3.5 |
 | a listing that fails mid-round publishes nothing | 4.5 |
