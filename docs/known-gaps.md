@@ -45,10 +45,10 @@ that changes one of these breaks the rule quietly.
   `new-window -n` as saved (which stores it as given up to tmux 3.6); from
   3.7 tmux escapes a window name too, and restore reads each named window
   back and renames it with the escaping undone when it differs. All measured
-  to come back the same over two save-and-restore cycles (3.8 included). Up to tmux 3.7a a dotted
+  to come back the same over two save-and-restore cycles (3.8 included). Up to tmux 3.7 a dotted
   session name cannot exist (tmux stores `.` and `:` as `_`), and restore
   matches a saved dotted name to the `_` one and never makes it twice; from
-  3.7b tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
+  3.7a tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
   and restore asks the server's version which rule holds (a test session
   would run a person's hooks).
 - **Exact targets.** `=NAME:INDEX` falls back to a window NAMED like the

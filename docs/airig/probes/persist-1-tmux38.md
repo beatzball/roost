@@ -4,8 +4,9 @@ CI's macOS runner moved to tmux 3.8 (Homebrew stable) after Part 1 was
 built on 3.2a, 3.4 and 3.6, and six cases in `tests/test-shape.sh` and
 `tests/test-shape-place.sh` went red there. Each change below was measured
 on a throwaway `-S` server under `/tmp/amx.*`, with tmux 3.8 and, as the
-control, tmux 3.6, on the same Mac. No 3.7 build was measured; where a
-change is dated 3.7 or 3.7b, that is from CHANGES alone.
+control, tmux 3.6, on the same Mac. No 3.7 build was measured here; where
+a change is dated 3.7, that is from CHANGES alone. Review round 5 built 3.7a
+from its release tarball and measured §2 on it.
 
 How the 3.8 binary was had without touching the installed tmux (the live
 server runs on it): `brew fetch tmux` downloads the bottle without
@@ -55,16 +56,21 @@ the test stripped the old form's pane ids only, not the JSON `"I"` ids. The
 case that fails from it is "a window made after restore is the saved
 200x50" in `tests/test-shape-place.sh`.
 
-## 2. `.` and `:` stay in a session name (3.7b by CHANGES; measured on 3.8)
+## 2. `.` and `:` stay in a session name (3.7a; measured on 3.7a and 3.8)
 
-CHANGES 3.7b: "Only forbid #( in names, allow #[, empty names, : and ."
+CHANGES, "CHANGES FROM 3.7 TO 3.7a": "Only forbid #( in names, allow #[,
+empty names, : and .". This note first dated it 3.7b, a misreading of
+which heading the line sits under; review round 5 (Codex B1) built 3.7a and
+measured that a fresh `v3.69-x` there is a session of its own beside
+`v3_69-x`. What 3.7 itself does was not measured: by CHANGES it does not
+allow `.` or `:`, so restore treats it as mapping them to `_`, as before.
 
 | `new-session -s` | tmux 3.6 | tmux 3.8 |
 |---|---|---|
 | `v3.69-x` | stored `v3_69-x` | stored `v3.69-x` |
 | `a:b`, `p.q:r` | not made | stored as given |
 
-Probe 1.4's rule (tmux stores `.` and `:` as `_`) holds up to 3.7a only.
+Probe 1.4's rule (tmux stores `.` and `:` as `_`) holds up to 3.7 only.
 Restore used it to decide that a saved `v3.69-x` is the session `v3_69-x`;
 on 3.8 those are two sessions.
 

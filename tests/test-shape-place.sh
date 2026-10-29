@@ -459,11 +459,26 @@ assert_eq "$rc" "12" "a dead owner: taken over; the dead run's session exists, s
 shells_wait "$bp"; assert_eq "$(TL display -p -t "$bp" '#{pane_current_path}')" "$SHAPE_TMP/d3" "...its bootstrap is now a shell in that pane's directory"
 assert_eq "$(TL list-sessions -F '#{session_name}' | sort | tr '\n' ' ')" "first second " "...and the other saved session is placed"
 
+echo "== which tmux versions store a session name's dots as _ (review round 5, Codex B1) =="
+# roost_restore__learn_dots reads #{version} and nothing else; `t` here
+# prints a version, so each row is the rule alone. 1: `.` and `:` stored as
+# `_`; 0: kept. CHANGES puts the change in 3.7 -> 3.7a (Codex measured 3.7a
+# on a real build); a git build (next-3.8, master) is past it.
+dots_rule() { ( . scripts/lib/roost-shape.sh; . scripts/lib/roost-restore.sh
+  t() { printf '%s\n' "$V"; }; roost_restore__learn_dots; printf '%s' "$ROOST_RESTORE_MAPDOTS" ) 2>/dev/null; }
+got="" want=""
+for row in 3.2a:1 3.4:1 3.6:1 3.7:1 3.7a:0 3.7b:0 3.8:0 3.10:0 next-3.8:0 master:0; do
+  got="$got ${row%:*}=$(V="${row%:*}" dots_rule)"; want="$want $row"
+done
+assert_eq "$got" "$(printf '%s' "$want" | tr ':' '=')" "the version table: up to 3.7 maps, 3.7a and later and git builds keep"
+
 echo "== dotted and numeric session names (probe 1.4) =="
-# Up to tmux 3.7a a session name's `.` and `:` are stored as `_` (probe 1.4),
-# so a saved v3.69-x IS the session v3_69-x. From 3.7b both are kept
-# (docs/airig/probes/persist-1-tmux38.md), and those are two sessions.
-case "$(TL display -p '#{version}')" in [0-2].*|3.[0-6]*|3.7|3.7a) maps=1 ;; *) maps=0 ;; esac
+# Up to tmux 3.7 a session name's `.` and `:` are stored as `_` (probe 1.4),
+# so a saved v3.69-x IS the session v3_69-x. From 3.7a both are kept
+# (docs/airig/probes/persist-1-tmux38.md), and those are two sessions. The
+# test asks THIS tmux how it stores one, never the rule under test.
+TL new-session -d -s p.q 'ENV= exec /bin/sh'
+if TL has-session -t '=p_q:' 2>/dev/null; then maps=1; TL kill-session -t '=p_q:'; else maps=0; TL kill-session -t '=p.q:'; fi
 TL new-session -d -s v3.69-x 'ENV= exec /bin/sh'
 mkshape "v3_69-x:$SHAPE_TMP/d1" "v3.69-x:$SHAPE_TMP/d1" "1:$SHAPE_TMP/d2" 2>/dev/null
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?

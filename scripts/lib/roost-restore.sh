@@ -110,9 +110,10 @@ roost_restore__names() {
 }
 
 # roost_restore__stored NAME -> prints the name tmux stores for a saved
-# session NAME. Up to tmux 3.7a, `.` and `:` are stored as `_` (probe 1.4),
-# so a hand-edited `v3.69-x` is the session `v3_69-x`; from 3.7b both are
-# kept (CHANGES 3.7b; measured on 3.8, docs/airig/probes/persist-1-tmux38.md),
+# session NAME. Up to tmux 3.7, `.` and `:` are stored as `_` (probe 1.4),
+# so a hand-edited `v3.69-x` is the session `v3_69-x`; from 3.7a both are
+# kept (CHANGES 3.7 -> 3.7a; 3.7a measured in review round 5, 3.8 here,
+# docs/airig/probes/persist-1-tmux38.md),
 # and `v3.69-x` and `v3_69-x` are two sessions. The rule is the server's
 # version, read once: a test session made only to see how its name is stored
 # would run a person's session-created hooks. A version this cannot read
@@ -133,7 +134,7 @@ roost_restore__stored() {
 # stores `.` and `:` in a session name as `_` (roost_restore__stored).
 roost_restore__learn_dots() {
   case "$(t -u display-message -p '#{version}' 2>/dev/null || true)" in
-    [0-2].*|3.[0-6]|3.[0-6][a-z]|3.7|3.7a) ROOST_RESTORE_MAPDOTS=1 ;;
+    [0-2].*|3.[0-6]|3.[0-6][a-z]|3.7) ROOST_RESTORE_MAPDOTS=1 ;;
     *) ROOST_RESTORE_MAPDOTS=0 ;;
   esac
 }
