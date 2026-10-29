@@ -329,6 +329,23 @@ assert_eq "$(printf '%s\n%s\n' "$rc_c" "$rc_e" | sort | tr '\n' ' ')" "0 1 " \
   "a directory with no owner yet, two claims at once: exactly one owns it"
 : > "$OD/stop"; wait 2>/dev/null
 
+echo "== a taker that links first after a dead record says so (review round 2, Fable N1) =="
+# B has seen the dead record (paused at PAUSE_DEAD). A takes it over and is
+# paused in the gap after it removed the dead record and before its own
+# link (PAUSE_GAP). B, let go, finds A's takeover claim held, waits, and then
+# links first. B owns the directory, and the dead run it replaced is still
+# there to settle, so B must say 2 (taken over), not 0 (fresh): restore
+# settles a dead run's panes only on 2.
+rm -f "$OD/stop"
+D4="$OD/gap"; mkdir -p "$D4"; ln -s "$deadpid Thu Jan  1 00:00:00 1970" "$D4/owner"
+taker GB "$D4" ROOST_TEST_OWNER_PAUSE_DEAD; arrived GB
+taker GA "$D4" ROOST_TEST_OWNER_PAUSE_GAP; arrived GA
+: > "$OD/go.GB"; rgb="$(done_rc GB)"
+: > "$OD/go.GA"; rga="$(done_rc GA)"
+assert_eq "$rgb|$rga" "2|1" "B links first after the dead record: 2; A is refused while B lives"
+assert_eq "$(readlink "$D4/owner" | cut -d' ' -f1)" "$(cat "$OD/GB.pid" 2>/dev/null)" "...and the record names B"
+: > "$OD/stop"; wait 2>/dev/null
+
 echo "== a chain of takers that died holding their claim is taken over (review round 2, Codex R2-B4) =="
 # Each taker K1..K8 dies while it holds a takeover claim, one level deeper
 # than the one before it: ROOST_TEST_OWNER_PAUSE_HELD stops it right after

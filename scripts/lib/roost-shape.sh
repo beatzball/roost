@@ -951,6 +951,11 @@ roost_shape__claim() {
     fi
     miss=0
     roost_shape__alive "$cur" && return 1
+    # A dead record was seen: whoever links PATH from here on replaces a dead
+    # owner, even when another taker removed the record and this one linked
+    # first, so it must report 2 and settle what the dead owner left (review
+    # round 2, Fable N1: it reported 0, fresh, and skipped the settling).
+    took=2
     roost_shape__seam ROOST_TEST_OWNER_PAUSE_DEAD
     sub="$(roost_shape__takeover "$path" "$cur")"
     r=0; roost_shape__claim "$sub" "$me" || r=$?
@@ -961,7 +966,7 @@ roost_shape__claim() {
     # remove it, a dead owner releases nothing, and a fresh `ln -s` fails
     # while it exists), so remove it and claim; whoever links first owns it.
     [ "$(readlink "$path" 2>/dev/null)" = "$cur" ] && rm -f "$path"
-    took=2
+    roost_shape__seam ROOST_TEST_OWNER_PAUSE_GAP
     if ln -s "$me" "$path" 2>/dev/null; then rm -f "$sub"; return 2; fi
     rm -f "$sub"
   done

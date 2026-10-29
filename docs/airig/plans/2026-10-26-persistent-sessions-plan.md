@@ -323,6 +323,7 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_RESUME_HOLD_AFTER_FAILED=FILE` | the engine waits right after T7 | 3.5 |
 | `ROOST_TEST_OWNER_PAUSE_DEAD=FILE` | the owner rule waits right after it sees a dead owner's record, before its takeover claim (marks `FILE.at.<pid>`) | review round 1 of Part 1 (B2) |
 | `ROOST_TEST_OWNER_PAUSE_FRESH=FILE` | the owner rule waits right before its first claim (marks `FILE.at.<pid>`) | review round 1 of Part 1 (B2) |
+| `ROOST_TEST_OWNER_PAUSE_GAP=FILE` | the owner rule waits right after it removed a dead record, before its own link (marks `FILE.at.<pid>`) | review round 2 of Part 1 (Fable N1) |
 | `ROOST_TEST_OWNER_PAUSE_HELD=FILE` | the owner rule waits right after its takeover claim is held, before it removes the dead record (marks `FILE.at.<pid>`) | review round 2 of Part 1 (R2-B4) |
 | `ROOST_TEST_SAVE_HOLD=FILE` | the saver holds `lock/` until FILE exists | 4.5 |
 | `ROOST_TEST_SAVE_HOLD_AFTER_DRAIN=FILE` | the saver waits after `mv want want.<pid>` | 4.5 |
