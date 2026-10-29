@@ -36,10 +36,29 @@
 # escaping (`\\` `\$` `\t` `\n` `\NNN`) gave the same stored name over two
 # cycles on all three builds, for every name tried.
 #
-# A WINDOW name is the opposite case and never goes through this: `new-window
-# -n` stores what it is given (3.4 escapes only a raw control byte, which a
-# saved name cannot hold), so the saved name is passed as it is — measured
-# exact on all three builds; undoing it there made it drift.
+# A WINDOW name was the opposite case up to tmux 3.6: `new-window -n` stores
+# what it is given (3.4 escapes only a raw control byte, which a saved name
+# cannot hold), so the saved name is passed as it is — measured exact on all
+# three builds; undoing it there made it drift. From tmux 3.7 (CHANGES; measured
+# on 3.8, docs/airig/probes/persist-1-tmux38.md) a window name is escaped
+# like a session name, and passed as saved it grew at every cycle.
+# roost_restore__window_name tells the two apart on the window itself.
+# roost_restore__window_name WID SAVED — a window made with `-n SAVED` is
+# read back. The same name: this tmux stores a window name as given, and it
+# is left. Another name: this tmux escaped it (3.7 on), so the window is
+# renamed with that escaping undone, which this tmux stores as SAVED. Asked
+# of each named window rather than of the version, because it is one read
+# and it measures the thing itself. The read gets R6's correction, as every
+# read does.
+roost_restore__window_name() {
+  local u
+  roost_shape__clean "$(t -u display-message -p -t "$1" '#{window_name}' 2>/dev/null || true)" || true
+  [ "$ROOST_SHAPE_V" = "$2" ] && return 0
+  u="$(roost_restore__unvis "$2")"
+  [ "$u" != "$2" ] || return 0
+  t rename-window -t "$1" "$u" 2>/dev/null || true
+}
+
 roost_restore__unvis() {
   local s="$1" out="" d o
   while [ -n "$s" ]; do
@@ -563,6 +582,7 @@ roost_restore__make_session() {
         return 12; }
   fi
   sid="${out%% *}" out="${out#* }" wid="${out%% *}" pane="${out#* }"
+  [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
   t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
   if [ "$boot" = 1 ]; then
     roost_restore__hold ROOST_TEST_RESTORE_HOLD
@@ -608,14 +628,16 @@ roost_restore__make_session() {
       pfirst="$(roost_restore__panes "$(roost_restore__addr "$wf")" | head -1)"
       [ -n "$pfirst" ] || continue
       roost_restore__new_file; f="$ROOST_RESTORE_F"
-      # The window name goes in as saved: `new-window -n` stores it as given,
-      # where undoing tmux's escaping would make it drift (R8.3, measured).
+      # The window name goes in as saved: `new-window -n` stores it as given
+      # up to tmux 3.6, where undoing tmux's escaping would make it drift
+      # (R8.3, measured); from 3.7 roost_restore__window_name puts it right.
       out="$(t new-window -d -P -F '#{window_id} #{pane_id}' -t "$sid:$idx" ${nf[@]+"${nf[@]}"} \
         -c "$(roost_restore__cwd "$pfirst" 2>/dev/null)" \
         "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || {
           printf 'roost restore: window %s could not be made; its panes are not restored\n' "$(roost_restore__addr "$wf")" >&2
           rc=13; continue; }
       wid="${out%% *}" pane="${out#* }"
+      [ "${#nf[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
       t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
     fi
     r=0; roost_restore__build_window "$wid" "$wf" "$pane" "$f" "$pre" || r=$?

@@ -41,8 +41,10 @@ that changes one of these breaks the rule quietly.
 - **Names tmux rewrites.** tmux stores a backslash in a session or window
   name as `\\`, and a `$` in one as `\$` on 3.2a and 3.4. Restore undoes that
   for a session name before `new-session -s`, and passes a window name to
-  `new-window -n` as saved (which stores it as given); both measured to come
-  back the same over two save-and-restore cycles. Up to tmux 3.7a a dotted
+  `new-window -n` as saved (which stores it as given up to tmux 3.6); from
+  3.7 tmux escapes a window name too, and restore reads each named window
+  back and renames it with the escaping undone when it differs. All measured
+  to come back the same over two save-and-restore cycles (3.8 included). Up to tmux 3.7a a dotted
   session name cannot exist (tmux stores `.` and `:` as `_`), and restore
   matches a saved dotted name to the `_` one and never makes it twice; from
   3.7b tmux keeps both, so there `v3.69-x` and `v3_69-x` are two sessions,
