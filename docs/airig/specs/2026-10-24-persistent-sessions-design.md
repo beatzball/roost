@@ -871,6 +871,14 @@ Rules, each with its reason:
   were mid-turn (§4.3).
 - **`zoomed 1`** on a window block when `#{window_zoomed_flag}` is set; the
   layout string does not carry it (§2.7).
+- **`layout`** is `#{window_layout}` exactly as the server prints it: the
+  `CSUM,WxH,X,Y...` form up to tmux 3.7, and from tmux 3.8 a JSON form,
+  `{"V":2,"L":{"t":"h","w":200,"h":50,...}}` (built, measured:
+  `docs/airig/probes/persist-1-tmux38.md`). Restore gives it to
+  `select-layout` unchanged and reads the root cell's size from either form
+  (§4.3 Server). tmux 3.8 still takes the older form, so a shape saved on
+  an older tmux restores there; a 3.8 shape on an older tmux gets tmux's
+  default layout and the one stderr line of §4.3 Windows.
 - **`parent`** (reserved, #99): `@roost-parent` when that lands. Not written
   until then.
 - **Nothing a harness owns is in the file**: no transcript bytes, no replies,

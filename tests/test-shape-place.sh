@@ -501,7 +501,10 @@ stop_server
 # --- restore: windows, splits, the saved layout (Task 1.13) -------------------
 # strip LAYOUT -> the layout with its checksum and every pane id removed, so a
 # layout compares by its cells alone (§8.1 test 1).
-strip() { printf '%s\n' "$1" | sed -E 's/^[0-9a-f]{4},//; s/([0-9]+x[0-9]+,[0-9]+,[0-9]+),[0-9]+/\1/g'; }
+# strip LAYOUT -> the layout without what restore cannot keep: the pane ids,
+# and the old form's checksum (which covers them). Both forms: CSUM,WxH,...
+# up to tmux 3.7, JSON from 3.8, whose pane ids are its "I" members.
+strip() { printf '%s\n' "$1" | sed -E 's/^[0-9a-f]{4},//; s/([0-9]+x[0-9]+,[0-9]+,[0-9]+),[0-9]+/\1/g; s/,"I":"%[0-9]+"//g'; }
 # fleet -> one line per pane: session|window index|window name|pane index|@roost-name|directory
 fleet() { TL list-panes -a -F '#{session_name}|#{window_index}|#{window_name}|#{pane_index}|#{@roost-name}|#{pane_current_path}' | sort; }
 layouts() { TL list-windows -a -F '#{session_name}:#{window_index} #{window_layout} #{window_zoomed_flag}' | while read -r w l z; do printf '%s %s %s\n' "$w" "$(strip "$l")" "$z"; done | sort; }

@@ -144,13 +144,26 @@ roost_restore__panes() {
 # roost_restore__size SESSION -> "W H", the largest root cell of the
 # session's saved layouts. A detached server is otherwise 80x24, and a window
 # of six stacked panes cannot be built in 24 lines (§2.7).
+#
+# A layout is in one of two forms, the one its tmux prints
+# (docs/airig/probes/persist-1-tmux38.md): `CSUM,WxH,X,Y...` up to 3.7, and
+# from 3.8 JSON, `{"V":2,"L":{"t":"h","w":200,"h":50,...}}`, whose first
+# "w" and "h" are the root cell's (tmux writes t, w, h, x, y first). Read
+# only as the old form, a 3.8 layout gave no size, the session was made
+# 80x24, and its saved layout could not apply.
 roost_restore__size() {
   local f l c w=0 h=0 cw ch
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     l="$(roost_shape_get "$f" layout)" || continue
-    c="${l#*,}"; c="${c%%,*}"
-    cw="${c%x*}" ch="${c#*x}"
+    case "$l" in
+      '{'*)
+        cw="${l#*\"w\":}"; cw="${cw%%[!0-9]*}"
+        ch="${l#*\"h\":}"; ch="${ch%%[!0-9]*}" ;;
+      *)
+        c="${l#*,}"; c="${c%%,*}"
+        cw="${c%x*}" ch="${c#*x}" ;;
+    esac
     case "$cw$ch" in ''|*[!0-9]*) continue ;; esac
     [ "$cw" -gt "$w" ] && w="$cw"
     [ "$ch" -gt "$h" ] && h="$ch"

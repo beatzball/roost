@@ -387,6 +387,11 @@ only reads.
   **stop** — §2.7's "the zoomed state is not in the string" would not hold,
   and the only way round is the unzoom the field shows to be harmful.
 
+Built, tmux 3.8 (CI's macOS runner, after the PR): `#{window_layout}` prints
+a JSON form there, and while zoomed it is still the unzoomed layout; saved
+as read, its size read from either form (spec §3.2 `layout`;
+`docs/airig/probes/persist-1-tmux38.md`).
+
 **Check:** `test -s docs/airig/probes/persist-1-zoom-layout.md`, with three version columns and one outcome named.
 **Commit:** `probe: a zoomed window's layout string on tmux 3.2, 3.4 and this Mac (#51)`
 
