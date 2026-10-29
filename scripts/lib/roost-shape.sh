@@ -1009,7 +1009,13 @@ roost_shape__claim() {
 # (ROOST_SHAPE_OWNER_FAULT says why, naming the path). DIR itself is made by
 # anyone (mkdir -p): what is exclusive is the owner record in it.
 roost_shape_owner_take() {
-  ( umask 077; mkdir -p "$1" ) 2>/dev/null || return 1
+  # A directory that cannot be made is no one's: exit 3 naming it, never 1,
+  # which the caller reports as another restore holding it (review round 3,
+  # Fable N2: an unwritable shape directory read "pid ?").
+  if ! ( umask 077; mkdir -p "$1" ) 2>/dev/null; then
+    ROOST_SHAPE_OWNER_FAULT="cannot create $1"
+    return 3
+  fi
   roost_shape__claim "$1/owner" "$$ $(roost_shape__lstart "$$")"
 }
 

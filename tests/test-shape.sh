@@ -378,6 +378,16 @@ D5="$OD/plain"; mkdir -p "$D5"; : > "$D5/owner"
 out="$(bash -c '. scripts/lib/roost-shape.sh; roost_shape_owner_take "$1"; echo "$?|$ROOST_SHAPE_OWNER_FAULT"' _ "$D5")"
 assert_eq "$out" "3|$D5/owner is not an owner record (not a symbolic link); remove it when no restore is running" \
   "a plain file at owner: refused once, naming the path"
+# A directory that cannot be made is a refusal naming it, not "another
+# restore (pid ?) is placing panes" (review round 3, Fable N2).
+if [ "$(id -u)" != 0 ]; then
+  RO="$OD/ro"; mkdir -p "$RO"; chmod 500 "$RO"
+  out="$(bash -c '. scripts/lib/roost-shape.sh; roost_shape_owner_take "$1"; echo "$?|$ROOST_SHAPE_OWNER_FAULT"' _ "$RO/restoring")"
+  chmod 700 "$RO"
+  assert_eq "$out" "3|cannot create $RO/restoring" "an unwritable parent: refused (exit 3), naming the directory"
+else
+  printf '  SKIP: an unwritable parent directory (running as root, which writes into it anyway)\n'
+fi
 # Another owner's drop can remove DIR between this taker's mkdir and its
 # link (ENOENT). That is a free directory, not a refusal: make it again.
 rm -f "$OD/stop"
