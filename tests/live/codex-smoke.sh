@@ -252,6 +252,12 @@ fi
 tmux -S "$S" kill-pane -t "$c0" 2>/dev/null
 
 printf '\n== granting hook trust, through the real TUI prompt ==\n'
+# The rollouts before this TUI opens, so the revive case at the end can pin
+# the one this pane writes (whether codex writes it at start or at case 1's
+# turn). The newest rollout at the end is not it: case 2 and case 3 write
+# later ones (review round 1, Codex N1).
+rollouts() { find "$CODEX_HOME/sessions" -name 'rollout-*.jsonl' 2>/dev/null | sort; }
+rollouts_before1="$(rollouts)"
 trustpane="$(newpane codex "codex 2>$L/trust-err.txt; sleep 600")"
 [ -n "$trustpane" ] || die "trust: new-window produced no pane id"
 wait_screen "$trustpane" "Hooks need review" 60 || {
@@ -299,6 +305,10 @@ if wait_state "$trustpane" done 1800; then
 else
   no "the pane never reached done (badge was '$(pstate "$trustpane")')"
 fi
+# Case 1's own rollout: the one file this pane added (none, or more than one,
+# leaves it empty, and the revive case says so instead of guessing).
+case1_rollout="$(comm -13 <(printf '%s\n' "$rollouts_before1") <(rollouts) | grep . || true)"
+case "$case1_rollout" in *$'\n'*) case1_rollout="" ;; esac
 reply="$(rread "$trustpane")"
 case "$reply" in
   *alpha*) ok "roost read returns the agent's own answer ($(printf '%s' "$reply" | head -c 40))" ;;
@@ -403,8 +413,8 @@ printf '\n== revive: /quit, then roost revive the pane (#57, #191 Part 2) ==\n'
 # pane and brings the conversation back.
 rid="$(tmux -S "$S" show-options -pqv -t "$trustpane" @roost-session)"
 if [ -z "$rid" ]; then
-  roll="$(find "$CODEX_HOME/sessions" -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)"
-  rid="$(basename "$roll" .jsonl)"; rid="${rid: -36}"
+  [ -n "$case1_rollout" ] || die "revive: case 1 added no single rollout of its own, so there is no key to set"
+  rid="$(basename "$case1_rollout" .jsonl)"; rid="${rid: -36}"
   note "identity is empty under the shared app-server (#145); the key is set from the rollout: $rid"
   tmux -S "$S" set-option -p -t "$trustpane" @roost-harness codex \; \
     set-option -p -t "$trustpane" @roost-session "$rid" \; set-option -p -t "$trustpane" @roost-cwd "$D/proj"
