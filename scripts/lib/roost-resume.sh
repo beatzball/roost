@@ -209,17 +209,22 @@ roost_resume_dir() {
   esac
 }
 
-# roost_resume__one_file GLOB — set ROOST_RESUME_FILE to the one existing path
-# GLOB matches; 1 when it matches none, or more than one. Exactly one, never
-# "the newest": a key is a conversation's own id, so two files carrying it are
-# two conversations roost cannot tell apart, and picking one is a guess.
-# The glob is the caller's, built from a checked UUID, so it holds no
-# metacharacter of the id's making.
+# roost_resume__one_file HOME SUBDIR PREFIX SUFFIX — set ROOST_RESUME_FILE to
+# the one existing path HOME/SUBDIR/*/PREFIX…SUFFIX names; 1 when there are
+# none, or more than one. Exactly one, never "the newest": a key is a
+# conversation's own id, so two files carrying it are two conversations roost
+# cannot tell apart, and picking one is a guess.
+#
+# Only the `*` parts are a glob. HOME, SUBDIR and SUFFIX (which holds the id)
+# are QUOTED, so they are taken byte for byte: a home with a space was split
+# into two words, and one with a `[` read as a character class — either way a
+# conversation the store holds read as a miss (review round 1, Codex B6,
+# Fable N6). PREFIX is the glob before the id (`*_` for pi, empty for Claude).
 roost_resume__one_file() {
   local f n=0
   ROOST_RESUME_FILE=""
-  # Unquoted on purpose: this is the one place a glob expands.
-  for f in $1; do
+  # The one place a glob expands: the two `*`, and PREFIX when it is `*_`.
+  for f in "$1/$2"/*/$3"$4"; do
     [ -e "$f" ] || continue
     n=$((n + 1))
     ROOST_RESUME_FILE="$f"
@@ -239,8 +244,8 @@ roost_resume__one_file() {
 roost_resume_exact_id() {
   roost_resume__uuid "$2" || return 1
   case "$1" in
-    claude) roost_resume__one_file "$(roost_resume__claude_home)/projects/*/$2.jsonl" || return 1 ;;
-    pi)     roost_resume__one_file "$(roost_resume__pi_home)/sessions/*/*_$2.jsonl" || return 1 ;;
+    claude) roost_resume__one_file "$(roost_resume__claude_home)" projects "" "$2.jsonl" || return 1 ;;
+    pi)     roost_resume__one_file "$(roost_resume__pi_home)" sessions '*_' "$2.jsonl" || return 1 ;;
     *) return 1 ;;
   esac
   printf '%s\n' "$ROOST_RESUME_FILE"

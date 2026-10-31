@@ -156,6 +156,19 @@ mkdir -p "${pf2%/*}"; : > "$pf2"
 roost_resume_store_check pi "$PI" ""; rc=$?
 assert_eq "$rc" "1" "pi: two files carrying one id: a miss"
 
+# A home holding a space, or a `[` (a glob character), is a path like any
+# other: only the pattern part is globbed (review round 1, Codex B6).
+for odd in "claude home" "cl[aude] home"; do
+  CH="$SHAPE_TMP/$odd"
+  mkdir -p "$CH/projects/-p"; : > "$CH/projects/-p/$U1.jsonl"
+  got="$(CLAUDE_CONFIG_DIR="$CH" roost_resume_exact_id claude "$U1")"; rc=$?
+  assert_eq "$rc|$got" "0|$CH/projects/-p/$U1.jsonl" "claude exact-id lookup in a home named '$odd'"
+  PH="$SHAPE_TMP/pi $odd"
+  mkdir -p "$PH/sessions/--p--"; : > "$PH/sessions/--p--/2026-10-31T08-00-00-000Z_$PI.jsonl"
+  got="$(PI_CODING_AGENT_DIR="$PH" roost_resume_exact_id pi "$PI")"; rc=$?
+  assert_eq "$rc|$got" "0|$PH/sessions/--p--/2026-10-31T08-00-00-000Z_$PI.jsonl" "pi exact-id lookup in a home named 'pi $odd'"
+done
+
 roost_resume_store_check opencode ses_abc ""; rc=$?
 assert_eq "$rc" "3" "opencode: not checked (returns 3)"
 
