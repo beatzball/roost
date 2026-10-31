@@ -27,6 +27,36 @@ roost_resume__codex_home()  { printf '%s' "${CODEX_HOME:-$HOME/.codex}"; }
 roost_resume__copilot_home() { printf '%s' "${COPILOT_HOME:-$HOME/.copilot}"; }
 roost_resume__pi_home()     { printf '%s' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; }
 
+# roost_resume_env_argv HARNESS -> prints, one word per line, the `env` words
+# that go in front of the resume argv so the harness reads the SAME store the
+# check read (review round 1, Codex B5). The store check reads the harness's
+# home variable in revive's own environment; the respawned process takes its
+# environment from the tmux server, which may have been started with another
+# home, or none. So the launch says it outright: the home variable as revive
+# saw it — `VAR=value` when set, `-u VAR` when not, since then the check read
+# the default under HOME and the server's value must not win — and HOME
+# itself, which every default is built on.
+#
+# `env` in the argv rather than tmux's `-e`: `-e` can only SET a variable,
+# and the unset case is the one a server-wide value would otherwise win.
+roost_resume_env_argv() {
+  local v
+  case "$1" in
+    claude) v=CLAUDE_CONFIG_DIR ;;
+    codex) v=CODEX_HOME ;;
+    copilot) v=COPILOT_HOME ;;
+    pi) v=PI_CODING_AGENT_DIR ;;
+    *) return 0 ;;
+  esac
+  printf '%s\n' env
+  # `-u` first: `env` reads options only before the first NAME=value, and
+  # takes a later `-u` as the command to run (measured on macOS).
+  [ -n "${!v+set}" ] || printf -- '-u\n%s\n' "$v"
+  [ -n "${HOME:-}" ] && printf 'HOME=%s\n' "$HOME"
+  if [ -n "${!v+set}" ]; then printf '%s=%s\n' "$v" "${!v}"; fi
+  return 0
+}
+
 # roost_resume__uuid ID — a UUID, 8-4-4-4-12 hex digits. Four harnesses use
 # one (§2.1–2.4: Claude's session id, codex's rollout uuid, copilot's session,
 # pi's UUIDv7). Checked letter by letter: a glob below is built from the id, so
@@ -910,7 +940,9 @@ roost_revive() {
   fi
   # Step 6: the argv, never a string for a shell; through roost-pane-shell on
   # a wired server, so roost's claude shim is first on PATH (#58).
-  argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
+  # The harness's home goes with it (roost_resume_env_argv): the store just
+  # checked is the store it is launched with.
+  argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_env_argv "$h"; roost_resume_command "$h" "$sid" "$tr")
   if pane_cmd_wired; then argv=("$ROOST_HOME/scripts/roost-pane-shell" "${argv[@]}"); fi
   if [ "$mode" != place ]; then
     # A new window, `new-window -d` so no client's focus moves, in the old

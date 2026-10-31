@@ -401,6 +401,39 @@ for h in codex copilot; do
   TL kill-pane -t "$P"
 done
 
+# The store revive checked is the store the harness is launched with (review
+# round 1, Codex B5): the harness takes its environment from the tmux server,
+# which may name another home than the caller's. A codex stub that logs the
+# CODEX_HOME and HOME it was given.
+CXB="$SHAPE_TMP/cx-bin"; mkdir -p "$CXB"
+printf '#!/bin/sh\nprintf "%%s %%s codex-home=[%%s] home=[%%s]\\n" "$(date +%%s)" "$PWD" "${CODEX_HOME-unset}" "$HOME" >> "$STUB_LOG"\nexec sleep 600\n' > "$CXB/codex"; chmod +x "$CXB/codex"
+CXA="$SHAPE_TMP/cx-checked"; CXS="$SHAPE_TMP/cx-server"
+mkdir -p "$CXA/sessions/2026/10/31" "$CXS/sessions"
+CX3=019a0f0f-6a8b-7c71-9d2e-0000000000c3
+: > "$CXA/sessions/2026/10/31/rollout-2026-10-31T09-00-00-$CX3.jsonl"
+TL set-environment -g CODEX_HOME "$CXS"
+reset
+P="$(shpane "$D1R")"; wait_cmd "$P" sh
+setid "$P" codex "$CX3" "$D1R"
+env PATH="$CXB:$PATH" CODEX_HOME="$CXA" ROOST_SOCKET=roost "$ROOST" revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+wait_log "codex-home="
+assert_eq "$rc|$(grep -o 'codex-home=\[[^]]*\]' "$STUB_LOG" | head -n 1)" "0|codex-home=[$CXA]" "codex: the caller's CODEX_HOME (the one checked) reaches the harness, not the server's"
+TL kill-pane -t "$P"
+# The caller has none: the harness must not get the server's either — it
+# reads the default under HOME, which is where the check looked.
+reset
+mkdir -p "$HOME/.codex/sessions/2026/10/31"
+: > "$HOME/.codex/sessions/2026/10/31/rollout-2026-10-31T09-00-00-$CX3.jsonl"
+P="$(shpane "$D1R")"; wait_cmd "$P" sh
+setid "$P" codex "$CX3" "$D1R"
+env -u CODEX_HOME PATH="$CXB:$PATH" ROOST_SOCKET=roost "$ROOST" revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+wait_log "codex-home="
+assert_eq "$rc|$(grep -o 'codex-home=\[[^]]*\] home=\[[^]]*\]' "$STUB_LOG" | head -n 1)" "0|codex-home=[unset] home=[$HOME]" "codex, the caller has no CODEX_HOME: the harness gets none (not the server's), and the caller's HOME"
+TL kill-pane -t "$P"
+TL set-environment -gu CODEX_HOME
+# The rollout under the sandbox HOME stays: no later case reads a codex store
+# there (CODEX_HOME is exported), and the file's sandbox is removed at exit.
+
 # The recorded transcript was deleted (Claude's 30-day cleanup, or a person):
 # the store miss, said as one, not a directory the transcript cannot name.
 reset
