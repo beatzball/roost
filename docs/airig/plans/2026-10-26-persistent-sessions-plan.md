@@ -1337,6 +1337,13 @@ Part 5's.
 **Probe.** §6 step 3 names one measurement, which needs the engine; it is Task
 3.12, not first.
 
+**One agreement table, before the engine (from Part 2's review round 1, Fable
+N3).** Save's `roost_shape_agree` still calls a shell pane running a job
+(`sleep 60` typed at its prompt) `other`, while `revive` calls it `exited` by
+reading the pane's own process (`#{pane_pid}`, `roost_revive` in
+`scripts/lib/roost-resume.sh`). Part 3 must make one table decide both, or a
+restore will refuse a pane that `revive` would resume.
+
 **After this part merges, a user can:** after a reboot, run `roost restore` and
 get the fleet back with every agent resumed 2 s apart in its own directory;
 press a key in a waiting pane to keep it as a shell; `roost restore --resume
