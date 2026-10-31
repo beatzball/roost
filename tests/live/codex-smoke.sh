@@ -97,7 +97,31 @@ keep_logs() {
 }
 # The proxy is killed by pid, never by name: `pkill -f codex-tool-proxy` on a
 # developer's machine is a pattern that can match more than it means to.
-trap 'tmux -S "$S" kill-server 2>/dev/null; [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null; rm -rf "$D"; keep_logs' EXIT
+#
+# The app-servers too (#191 Part 2's revive case), by THIS run's own files,
+# never by name: `codex app-server` processes outlive the TUI that started
+# them and the tmux server (spec §2.2, docs/known-gaps.md), and a `pkill -f
+# app-server` would take the developer's own codex with them. The spec's
+# probe found them by CODEX_HOME in their environment; on this macOS `ps eww`
+# no longer prints another process's environment (measured: nothing), so
+# they are found instead by the files they hold open under $D — CODEX_HOME
+# and the project directory are both in it, and $D is this run's own
+# mktemp directory — and only those whose command names app-server are
+# killed. SIGTERM, then SIGKILL for one that outlives it (known-gaps: it
+# needed SIGKILL once).
+kill_own_app_servers() {
+  local pid pids=""
+  command -v lsof >/dev/null 2>&1 || return 0
+  for pid in $(lsof -t +D "$D" 2>/dev/null | sort -u); do
+    case "$(ps -o command= -p "$pid" 2>/dev/null)" in
+      *app-server*) pids="$pids $pid"; kill "$pid" 2>/dev/null ;;
+    esac
+  done
+  [ -n "$pids" ] || return 0
+  sleep 1
+  for pid in $pids; do kill -9 "$pid" 2>/dev/null; done
+}
+trap 'tmux -S "$S" kill-server 2>/dev/null; [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null; kill_own_app_servers; rm -rf "$D"; keep_logs' EXIT
 
 export XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" XDG_CACHE_HOME="$D/cache"
 # CODEX_HOME is codex's own home variable and the only one that moves its
@@ -363,6 +387,57 @@ else
     skipped "$BIGMODEL never requested escalation, so blocked was not exercised — see $L/c3-err.txt"
   fi
   tmux -S "$S" kill-pane -t "$c3" 2>/dev/null
+fi
+
+printf '\n== revive: /quit, then roost revive the pane (#57, #191 Part 2) ==\n'
+# The pane of case 1, at rest after its turn. Its command is "codex ...; sleep
+# 600", so after /quit the pane is a shell running `sleep` — a person's job by
+# revive's rule (spec §4.1 step 7) — and the revive is --force, which skips
+# only that shell check: the store check and the claim still run.
+#
+# The key. Under codex's shared app-server the hooks' parent is the
+# app-server, so identity may be EMPTY (spec §2.2, #145). When it is, the key
+# is set by hand from the rollout this turn wrote — the id is the last 36
+# characters of its name (§2.2) — standing in for the identity #145 will
+# land; what this case proves is that `codex resume ID` is launched in the
+# pane and brings the conversation back.
+rid="$(tmux -S "$S" show-options -pqv -t "$trustpane" @roost-session)"
+if [ -z "$rid" ]; then
+  roll="$(find "$CODEX_HOME/sessions" -name 'rollout-*.jsonl' 2>/dev/null | sort | tail -n 1)"
+  rid="$(basename "$roll" .jsonl)"; rid="${rid: -36}"
+  note "identity is empty under the shared app-server (#145); the key is set from the rollout: $rid"
+  tmux -S "$S" set-option -p -t "$trustpane" @roost-harness codex \; \
+    set-option -p -t "$trustpane" @roost-session "$rid" \; set-option -p -t "$trustpane" @roost-cwd "$D/proj"
+fi
+case "$rid" in
+  ????????-????-????-????-????????????) ok "the pane has a codex key to resume: $rid" ;;
+  *) die "revive: no rollout id to resume (got '$rid') — see $CODEX_HOME/sessions" ;;
+esac
+tmux -S "$S" send-keys -t "$trustpane" "/quit"; sleep 1; tmux -S "$S" send-keys -t "$trustpane" Enter
+for _ in $(seq 1 20); do
+  [ "$(tmux -S "$S" display -p -t "$trustpane" '#{pane_current_command}')" = sleep ] && break; sleep 1
+done
+[ "$(tmux -S "$S" display -p -t "$trustpane" '#{pane_current_command}')" = sleep ] \
+  || { dump "$trustpane"; die "revive: codex did not leave on /quit"; }
+out="$(ROOST_SOCKET="$S" "$HERE/bin/roost" revive --force "$trustpane" 2>"$L/revive.err")"; rc=$?
+if [ "$rc:$out" = "0:$trustpane" ]; then ok "roost revive exits 0 and keeps the same %N ($trustpane)"
+else no "roost revive exited $rc, printed '$out': $(cat "$L/revive.err")"; fi
+case "$(tmux -S "$S" display -p -t "$trustpane" '#{pane_start_command}')" in
+  *"codex resume $rid"*) ok "the resume command ran: codex resume <id>" ;;
+  *) no "the pane was not started with codex resume $rid (start command: $(tmux -S "$S" display -p -t "$trustpane" '#{pane_start_command}'))" ;;
+esac
+if wait_screen "$trustpane" "Reply with exactly one word: alpha" 60; then
+  ok "the old prompt is on screen: the conversation came back"
+else
+  dump "$trustpane"; no "the old prompt is not on screen after the resume"
+fi
+nid="$(tmux -S "$S" show-options -pqv -t "$trustpane" @roost-session)"
+if [ -z "$nid" ]; then
+  note "no identity re-stamped after the resume (expected under the shared app-server, #145)"
+elif [ "$nid" = "$rid" ]; then
+  ok "the pane re-identified under the same id"
+else
+  no "the pane re-identified under ANOTHER id: $nid"
 fi
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"

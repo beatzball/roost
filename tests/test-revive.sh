@@ -354,6 +354,26 @@ assert_contains "$(cat "$SHAPE_TMP/err")" "claude no longer holds $U2; the pane 
 assert_eq "$(cat "$STUB_LOG")" "" "...and nothing was launched"
 TL kill-pane -t "$P"
 
+# A store miss for a harness whose directory does not come from its store
+# (codex, copilot): the store check is the ONLY thing between this revive and
+# a resume that exits 1 at once and takes the pane with it (§5.1a).
+# A copilot stub first on PATH: should this check ever be skipped (a mutant
+# does exactly that), the launch must reach a stub, never a real copilot.
+CPB="$SHAPE_TMP/cp-bin"; mkdir -p "$CPB"
+printf '#!/bin/sh\nprintf "%%s %%s %%s\\n" "$(date +%%s)" "$PWD" "copilot $*" >> "$STUB_LOG"\nexec sleep 600\n' > "$CPB/copilot"
+chmod +x "$CPB/copilot"
+for h in codex copilot; do
+  id="${CX%?}9"; [ "$h" = copilot ] && id="${CP%?}9"
+  reset
+  P="$(shpane "$D1R")"; wait_cmd "$P" sh
+  setid "$P" "$h" "$id" "$D1R"
+  pid0="$(ppid_of "$P")"
+  env PATH="$CPB:$PATH" ROOST_SOCKET=roost "$ROOST" revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+  assert_eq "$rc|$(ppid_of "$P")|$(cat "$STUB_LOG")" "13|$pid0|" "$h, an id its store does not hold: exit 13, the pane untouched, nothing launched"
+  assert_contains "$(cat "$SHAPE_TMP/err")" "$h no longer holds $id" "...said as a store miss"
+  TL kill-pane -t "$P"
+done
+
 # The recorded transcript was deleted (Claude's 30-day cleanup, or a person):
 # the store miss, said as one, not a directory the transcript cannot name.
 reset

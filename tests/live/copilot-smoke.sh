@@ -426,5 +426,63 @@ else
     *)              no "the reply channel still works after a dead turn (got '$(reply "$p2")')" ;;
   esac
 fi
+printf '\n== revive: /exit, then roost revive the pane (#57, #191 Part 2) ==\n'
+# A fresh pane, so the case does not depend on what the cases above left in
+# theirs. One plain turn, then the harness's own exit, then `roost revive %N`:
+# the pane must come back in the SAME %N with the old prompt on screen,
+# re-identified under the SAME id (spec §2.8).
+#
+# remain-on-exit keeps the pane after the exit: its command IS the harness,
+# so without it the pane would close, and a revive of a gone pane is a new
+# window (a different case, covered by tests/test-revive.sh). A dead pane is a
+# revive target in place.
+#
+# THE ENVIRONMENT. `revive` respawns the pane with the resume argv alone, and
+# the new process takes its environment from the tmux SERVER, not from the
+# launch line above, which set this harness's home and provider inline. So
+# they are put into the server's global environment first, and the home is
+# read back: a resume that fell back to the default home would read and write
+# the developer's real one.
+start_pane revive http://localhost:11434/v1; rv="$PANE"
+ask "$rv" 'Say exactly: PLUM-REVIVE'
+if ! wait_state "$rv" done 240; then
+  no "revive: the turn before the exit never reached done (got '$(state "$rv")')"
+else
+  rid="$(tmux -S "$S" show-options -pqv -t "$rv" @roost-session)"
+  case "$rid" in
+    ????????-????-????-????-????????????) ok "the pane carries a copilot session id: $rid" ;;
+    *) die "revive: no session id on the pane (got '$rid') — did the adapter's identify move?" ;;
+  esac
+  tmux -S "$S" set-option -p -t "$rv" remain-on-exit on
+  tmux -S "$S" send-keys -t "$rv" "/exit"; sleep 1; tmux -S "$S" send-keys -t "$rv" Enter
+  for _ in $(seq 1 30); do [ "$(tmux -S "$S" display -p -t "$rv" '#{pane_dead}')" = 1 ] && break; sleep 1; done
+  [ "$(tmux -S "$S" display -p -t "$rv" '#{pane_dead}')" = 1 ] || die "revive: copilot did not leave on /exit"
+  for kv in "PATH=$HERE/bin:$PATH" "ROOST_SOCKET=$S" "ROOST_EVENT_LOG=$L/revive.jsonl" \
+            "COPILOT_HOME=$COPILOT_HOME" "COPILOT_PROVIDER_BASE_URL=http://localhost:11434/v1" \
+            "COPILOT_MODEL=$MODEL" "COPILOT_OFFLINE=true"; do
+    tmux -S "$S" set-environment -g "${kv%%=*}" "${kv#*=}"
+  done
+  [ "$(tmux -S "$S" show-environment -g COPILOT_HOME 2>/dev/null)" = "COPILOT_HOME=$COPILOT_HOME" ] \
+    || die "revive: the server's COPILOT_HOME is not this run's — refusing to resume into a real home"
+  out="$(ROOST_SOCKET="$S" "$HERE/bin/roost" revive "$rv" 2>"$L/revive.err")"; rc=$?
+  if [ "$rc:$out" = "0:$rv" ]; then ok "roost revive exits 0 and keeps the same %N ($rv)"
+  else no "roost revive exited $rc, printed '$out': $(cat "$L/revive.err")"; fi
+  # The two consents are asked again on a resume (spec §2.8, "folder trust and
+  # extension permission on a home that has not answered them": this run
+  # answered each for one session only). revive leaves them on screen; this
+  # test answers them as the person would, with the same first choice.
+  if wait_screen "$rv" "Do you trust" 30; then tmux -S "$S" send-keys -t "$rv" Enter; sleep 3; fi
+  if wait_screen "$rv" "wants elevated" 30; then tmux -S "$S" send-keys -t "$rv" Enter; sleep 3; fi
+  if wait_screen "$rv" "PLUM-REVIVE" 60; then ok "the old prompt is on screen: the conversation came back"
+  else no "the old prompt is not on screen after the resume"; tmux -S "$S" capture-pane -p -t "$rv" | grep -v '^$' | tail -15 | sed 's/^/    /'; fi
+  nid=""
+  for _ in $(seq 1 60); do
+    nid="$(tmux -S "$S" show-options -pqv -t "$rv" @roost-session)"
+    [ "$nid" = "$rid" ] && break; sleep 1
+  done
+  [ "$nid" = "$rid" ] && ok "the pane re-identified under the same id" \
+    || no "the pane reads @roost-session '$nid' after the resume, not $rid"
+fi
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
