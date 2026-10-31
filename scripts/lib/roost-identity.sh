@@ -120,9 +120,19 @@ roost_identity_valid() {
   return 0
 }
 
-# roost_identity__record BOOT PANE SOCK SESSION CWD HARNESS — write the three
-# reserved names into the pane's record. Fails soft: a record that cannot be
-# written leaves the pane options to do their job, as every record write does.
+# roost_identity__record BOOT PANE SOCK SESSION CWD HARNESS [TRANSCRIPT] —
+# write the reserved names into the pane's record. Fails soft: a record that
+# cannot be written leaves the pane options to do their job, as every record
+# write does.
+#
+# TRANSCRIPT (#57) is the fourth: a GONE pane has no options left to read, and
+# `roost revive` of one reads its resume directory from the transcript's own
+# first `cwd` line. It is additive under the record's schema rule — a reader
+# that does not know the file never opens it, so the schema does not move. It
+# is written only when non-empty, and an empty one REMOVES the file: a reader
+# tests for the file, and a transcript left from the previous session would
+# name a conversation this pane is no longer having (the same reason the
+# @roost-transcript-path option is unset below).
 #
 # The directory is created the way roost_record_append creates it — 0700 on the
 # root when this makes it, on the boot directory and on the pane directory; the
@@ -174,6 +184,12 @@ roost_identity__record() {
 " || return 1
   roost_record__put "$dir/harness" "$6
 " || return 1
+  if [ -n "${7:-}" ]; then
+    roost_record__put "$dir/transcript" "$7
+" || return 1
+  else
+    rm -f "$dir/transcript" 2>/dev/null || true
+  fi
   if [ "$created" = 1 ]; then
     roost_record_sweep
   fi
@@ -213,7 +229,7 @@ roost_identity_stamp() {
   # The record first, for the reason the reply is recorded before its pane
   # option: a reader that sees the new option should find the record that goes
   # with it.
-  roost_identity__record "$boot" "$pane" "$sock" "$sid" "$cwd" "$harness" || true
+  roost_identity__record "$boot" "$pane" "$sock" "$sid" "$cwd" "$harness" "$tr" || true
   # `;` as its own argument is tmux's command separator in argv form — the
   # shape roost_stamp_blocked in scripts/roost-agent-state uses.
   wr=(set-option -p -t "$pane" @roost-session "$sid"

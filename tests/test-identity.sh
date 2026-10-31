@@ -151,6 +151,25 @@ assert_eq "$(cat "$d/session_id" 2>/dev/null)" "rec-2" "a new session id replace
 ls "$d" | grep -q '^\.tmp' && no_tmp=1 || no_tmp=0
 assert_eq "$no_tmp" "0" "no temp file is left in the record"
 
+# `transcript` (#57): a GONE pane has no options left to read, so `roost revive`
+# reads its resume directory from the transcript the record names. Absent, not
+# empty, when the harness reported none — a reader tests for the file.
+[ -e "$d/transcript" ] && tr_file=present || tr_file=absent
+assert_eq "$tr_file" "absent" "without --transcript the record has no transcript file"
+env ROOST_RECORD_DIR="$rec" TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/bin/roost" identify --session rec-3 --cwd /r/one --harness claude --transcript /abs/x.jsonl
+assert_eq "$(cat "$d/transcript" 2>/dev/null)" "/abs/x.jsonl" "the record holds transcript beside session_id"
+assert_eq "$(cat "$d/session_id" 2>/dev/null)|$(cat "$d/cwd" 2>/dev/null)|$(cat "$d/harness" 2>/dev/null)" "rec-3|/r/one|claude" "...and the other three with it"
+# A new session that reports no transcript must not inherit the old one: the
+# record would name another conversation's file, and revive would resume in
+# that file's directory. The pane option is unset for the same reason.
+env ROOST_RECORD_DIR="$rec" TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/bin/roost" identify --session rec-4 --cwd /r/one --harness claude
+[ -e "$d/transcript" ] && tr_file=present || tr_file=absent
+assert_eq "$tr_file" "absent" "a new session with no transcript removes the old session's transcript from the record"
+env ROOST_RECORD_DIR="$rec" TMUX="$s,0,0" TMUX_PANE="$pane" "$HERE/bin/roost" identify --session rec-5 --cwd /r/one --harness claude --transcript rel/x.jsonl 2>/dev/null; rc=$?
+assert_eq "$rc|$(cat "$d/session_id" 2>/dev/null)" "2|rec-4" "a relative transcript is refused as before, and the record is unchanged"
+[ -e "$d/transcript" ] && tr_file=present || tr_file=absent
+assert_eq "$tr_file" "absent" "...and no transcript file is written for it"
+
 # The 30-day sweep (ROOST_RECORD_DAYS) runs when a pane's record directory is
 # CREATED. Identity now creates it, at session start, before the pane's first
 # turn — so identity must run the sweep, or no identified pane ever would.
