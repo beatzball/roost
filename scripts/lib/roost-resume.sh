@@ -651,7 +651,12 @@ roost_revive() {
   # Step 4 (§5.1). A Claude or pi pane whose transcript option is unset gets
   # the exact-id lookup, the one store file whose NAME carries the id (§4.1
   # step 1): the key's own file, not a guess.
-  if [ -z "$tr" ]; then
+  #
+  # A recorded transcript that no longer exists gets the same lookup: Claude
+  # deletes a transcript after 30 days, and a person may delete one. Found by
+  # the live smoke (tests/live/revive-smoke.sh): a deleted transcript reached
+  # step 4 as "names no usable directory" instead of the store miss it is.
+  if [ -z "$tr" ] || [ ! -f "$tr" ]; then
     case "$h" in claude|pi) tr="$(roost_resume_exact_id "$h" "$sid" || true)" ;; esac
   fi
   # A Claude pane with no transcript recorded and none in the store under its

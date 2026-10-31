@@ -354,6 +354,25 @@ assert_contains "$(cat "$SHAPE_TMP/err")" "claude no longer holds $U2; the pane 
 assert_eq "$(cat "$STUB_LOG")" "" "...and nothing was launched"
 TL kill-pane -t "$P"
 
+# The recorded transcript was deleted (Claude's 30-day cleanup, or a person):
+# the store miss, said as one, not a directory the transcript cannot name.
+reset
+P="$(stubpane claude)"; wait_cmd "$P" claude
+setid "$P" claude "$U2" "$D1R" "$SHAPE_TMP/deleted/$U2.jsonl"
+pid0="$(ppid_of "$P")"
+R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(ppid_of "$P")" "13|$pid0" "a recorded transcript that was deleted, none in the store: exit 13, untouched"
+assert_contains "$(cat "$SHAPE_TMP/err")" "claude no longer holds $U2" "...said as the store miss it is"
+TL kill-pane -t "$P"
+# ...and when the store still has the id under another folder, that file is used.
+reset
+P="$(stubpane claude)"; wait_cmd "$P" claude
+setid "$P" claude "$U4" "$D1R" "$SHAPE_TMP/deleted/$U4.jsonl"
+out="$(R revive "$P" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "0|$P" "a recorded transcript gone, but the store holds the id: the exact-id lookup finds it (exit 0)"
+wait_log "claude --resume $U4"; assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$D1R" "...resumed in the found transcript's cwd"
+TL kill-pane -t "$P"
+
 # Another live pane carries the id.
 reset
 P="$(stubpane claude)"; wait_cmd "$P" claude; setid "$P" claude "$U5" "$D1R"
