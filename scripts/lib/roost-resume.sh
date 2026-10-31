@@ -349,6 +349,59 @@ roost_resume__pane_of() {
   return 0
 }
 
+# roost_resume_claims_dir FLAG SOCKET BOOT -> sets ROOST_RESUME_CLAIMS to the
+# directory this boot's claims live in, made 0700 (and prints it); exit 1,
+# ROOST_RESUME_WHY naming the directory and what failed, when there is none
+# to use. Call it without a $(...) so the reason reaches the caller.
+#
+# CLAIMS DO NOT DEPEND ON SAVING (review round 1, Codex B4 and Fable N2). With
+# saving on they live in the shape directory, `<shape dir>/claims/<boot>/`, as
+# §3.1 lays out. With saving off (ROOST_SHAPE_DIR empty, or no usable root)
+# there is no shape directory, and the first version took no claim at all —
+# two revives of one gone record then both launched. §4.1 step 5a and §5.1a
+# have no saving-off exemption, so claims move to a directory of their own,
+# with the same layout and the same boot key:
+#
+#   ${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/
+#
+# under the state directory beside the pane records, so `rm -rf
+# ~/.local/state/roost` still forgets them. When neither can be made or
+# secured, the caller REFUSES (exit 1): launching with no claim is what this
+# exists to stop, and the message names the storage error, never "saving is
+# off".
+roost_resume_claims_dir() {
+  local base st key d
+  ROOST_RESUME_WHY="" ROOST_RESUME_CLAIMS=""
+  if roost_shape_saving >/dev/null 2>&1; then
+    if ! base="$(roost_shape_dir "$1" "$2" 2>/dev/null)"; then
+      ROOST_RESUME_WHY="cannot make or secure the shape directory $(roost_shape_saving)/$(roost_shape_key "$1" "$2")"
+      return 1
+    fi
+  else
+    st="${XDG_STATE_HOME:-}"
+    case "$st" in
+      /*) ;;
+      *) case "${HOME:-}" in
+           /*) st="$HOME/.local/state" ;;
+           *) ROOST_RESUME_WHY="no state directory for launch claims (neither XDG_STATE_HOME nor HOME is an absolute path)"; return 1 ;;
+         esac ;;
+    esac
+    key="$(roost_shape_key "$1" "$2")"
+    base="$st/roost/launch-claims/$key"
+    if ! ( umask 077; mkdir -p "$base" ) 2>/dev/null || ! chmod go-rwx "$base" 2>/dev/null; then
+      ROOST_RESUME_WHY="cannot make or secure $base"
+      return 1
+    fi
+  fi
+  d="$base/claims/$3"
+  if ! ( umask 077; mkdir -p "$d" ) 2>/dev/null; then
+    ROOST_RESUME_WHY="cannot make $d"
+    return 1
+  fi
+  ROOST_RESUME_CLAIMS="$d"
+  printf '%s\n' "$d"
+}
+
 # roost_resume_claim_held CLAIM — the owner link is this run's.
 roost_resume_claim_held() {
   [ -n "${1:-}" ] && [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ]
@@ -786,24 +839,26 @@ roost_revive() {
     echo "roost revive: $h $sid is open in $ROOST_RESUME_HOLDER; one conversation is never open in two panes — nothing resumed" >&2
     return 13
   fi
-  # Step 5a: claim, before anything is launched. With saving off
-  # (ROOST_SHAPE_DIR empty) there is no shape directory to hold claims: the
-  # store check and the live-pane check above still stand, and the claim —
-  # the net for a launch still sitting in a dialog with no identity — is not
-  # taken. Said on stderr, so a person who turned saving off knows.
+  # Step 5a: claim, before anything is launched — always, saving on or off
+  # (roost_resume_claims_dir says where, and why there is no exemption).
   boot="$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
-  if sd="$(roost_shape_dir "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" 2>/dev/null)" && [ -n "$boot" ]; then
-    # In place the claim names the pane now; a new window's pane is named
-    # once `new-window` has made it (roost_resume_claim_pane, below).
-    rc=0; roost_resume_claim "$sd/claims/$boot" "$h" "$sid" "$exempt" || rc=$?
-    case "$rc" in
-      0) claim="$ROOST_RESUME_CLAIM" ;;
-      1) echo "roost revive: $h $sid is already being launched in $ROOST_RESUME_HOLDER — nothing resumed" >&2; return 13 ;;
-      *) echo "roost revive: cannot claim $h $sid: $ROOST_RESUME_HOLDER" >&2; return 1 ;;
-    esac
-  else
-    echo "roost revive: saving is off (ROOST_SHAPE_DIR is empty), so no launch claim is taken" >&2
+  if [ -z "$boot" ]; then
+    echo "roost revive: cannot read the server's boot key, so no launch claim can be taken — nothing resumed" >&2
+    return 1
   fi
+  if ! roost_resume_claims_dir "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" "$boot" >/dev/null; then
+    echo "roost revive: no launch claim can be taken: $ROOST_RESUME_WHY — nothing resumed" >&2
+    return 1
+  fi
+  # In place the claim names the pane now; a new window's pane is named
+  # once `new-window` has made it (roost_resume_claim_pane, below).
+  sd="$ROOST_RESUME_CLAIMS"
+  rc=0; roost_resume_claim "$sd" "$h" "$sid" "$exempt" || rc=$?
+  case "$rc" in
+    0) claim="$ROOST_RESUME_CLAIM" ;;
+    1) echo "roost revive: $h $sid is already being launched in $ROOST_RESUME_HOLDER — nothing resumed" >&2; return 13 ;;
+    *) echo "roost revive: cannot claim $h $sid: $ROOST_RESUME_HOLDER" >&2; return 1 ;;
+  esac
   # The plan's seam (its table, ROOST_TEST_REVIVE_HOLD): hold here, after the
   # claim and before step 7, so a test can change the pane in between.
   roost_shape__seam ROOST_TEST_REVIVE_HOLD

@@ -111,16 +111,20 @@ conversation. What it does NOT know:
   below), and `revive` of such a pane says it has no recorded conversation
   (13). The live smoke sets the key by hand to test the resume itself.
 - **A launch claim is released only by a pane that is gone, until Part 4.**
-  Every launch takes `claims/<boot>/<harness>-<id>/` in the shape directory
-  and keeps it after a successful launch. The spec releases it when identity
+  Every launch takes `claims/<boot>/<harness>-<id>/` (in the shape directory,
+  or the saving-off directory below) and keeps it after a successful launch. The spec releases it when identity
   lands with the same id or the pane dies, through hooks Part 4 adds; until
   then a claim naming a pane that still exists refuses another pane's revive
   of the same conversation (13, naming that pane), even after the agent in
   it has moved on. Closing that pane frees it.
-- **With saving off** (`ROOST_SHAPE_DIR=`) there is no shape directory, so no
-  claim is taken: two revives of one gone pane started together can both
-  launch. `revive` says so on stderr. The store check and the live-pane
-  check still run.
+- **With saving off** (`ROOST_SHAPE_DIR=`) there is no shape directory, so
+  claims live in a directory of their own with the same layout,
+  `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`.
+  Part 3's worker and a hand restore must use the same place
+  (`roost_resume_claims_dir`), or a revive and a worker would not see each
+  other's claims with saving off. When neither directory can be made,
+  `revive` refuses (exit 1, naming the directory) rather than launch
+  unclaimed.
 - **A shell pane running a job.** `#{pane_current_command}` names the
   foreground job, so a shell running `vim` would read as "another program"
   by save's agreement table. `revive` instead asks what the pane's OWN

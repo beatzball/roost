@@ -639,6 +639,33 @@ assert_eq "$n0|$(grep -c "claude --resume $U7" "$STUB_LOG")" "1|1" "two launcher
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null; LIVEPID=""
 for o in "$SHAPE_TMP/a.out" "$SHAPE_TMP/b.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
 
+# Saving off (ROOST_SHAPE_DIR empty) still claims (review round 1, Codex B4):
+# claims keep the same layout in a directory of their own under roost's state
+# directory, so two revives of one gone record still launch once.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+first="$(ROOST_SHAPE_DIR="" R revive "$G" 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc" "0" "saving off: the first revive of a gone record launches"
+FB="$XDG_STATE_HOME/roost/launch-claims/roost/claims/$BOOT/claude-$U7"
+assert_eq "$(head -n 1 "$FB/pane" 2>/dev/null)" "$first" "...its claim is under the state directory's launch-claims/<server>/claims/<boot>/"
+wait_log "claude --resume $U7"
+ROOST_SHAPE_DIR="" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(grep -c "claude --resume $U7" "$STUB_LOG")" "13|1" "...the second is refused (13), one launch"
+TL kill-pane -t "$first" 2>/dev/null
+# No claim directory at all: refused, naming the storage error, nothing run.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+: > "$SHAPE_TMP/not-a-dir"
+n0="$(nwin)"
+ROOST_SHAPE_DIR="$SHAPE_TMP/not-a-dir/shapes" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving on, its directory cannot be made: exit 1, no window, nothing launched"
+assert_contains "$(cat "$SHAPE_TMP/err")" "not-a-dir/shapes" "...naming the directory"
+case "$(cat "$SHAPE_TMP/err")" in *"saving is off"*) said=yes ;; *) said=no ;; esac
+assert_eq "$said" "no" "...and not calling it saving off"
+ROOST_SHAPE_DIR="" XDG_STATE_HOME="$SHAPE_TMP/not-a-dir" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving off, the fallback cannot be made either: exit 1, nothing launched"
+assert_contains "$(cat "$SHAPE_TMP/err")" "not-a-dir/roost/launch-claims" "...naming the directory"
+
 # --new-window of a live pane that carries its own key: no exemption.
 reset
 P="$(stubpane claude)"; wait_cmd "$P" claude; setid "$P" claude "$U4" "$D1R"
