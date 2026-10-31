@@ -134,7 +134,9 @@ roost_resume_first_cwd() {
 }
 
 # roost_resume_dir HARNESS TRANSCRIPT SESSION_CWD CWD -> prints the directory a
-# resume runs in (§5.1); 1, ROOST_RESUME_WHY set, when there is none to use.
+# resume runs in (§5.1), and sets ROOST_RESUME_DIR to it, so a caller that
+# needs ROOST_RESUME_WHY can call it without a $(...) subshell, which would
+# lose the reason; 1, ROOST_RESUME_WHY set, when there is none to use.
 # It CHOOSES; it does not ask whether the directory exists — that is the
 # caller's exit 15, said in the caller's words.
 #
@@ -157,7 +159,7 @@ roost_resume_first_cwd() {
 #            SESSION_CWD, else CWD.
 roost_resume_dir() {
   local h="$1" tr="${2:-}" scwd="${3:-}" cwd="${4:-}" d
-  ROOST_RESUME_WHY=""
+  ROOST_RESUME_WHY="" ROOST_RESUME_DIR=""
   case "$h" in
     claude)
       if [ -z "$tr" ]; then
@@ -166,13 +168,13 @@ roost_resume_dir() {
       if ! d="$(roost_resume_first_cwd "$tr")"; then
         ROOST_RESUME_WHY="the transcript $tr names no usable directory"; return 1
       fi
-      printf '%s\n' "$d" ;;
+      ROOST_RESUME_DIR="$d"; printf '%s\n' "$d" ;;
     pi|codex|copilot|opencode)
       d="$scwd"; [ -n "$d" ] || d="$cwd"
       if [ -z "$d" ] || ! roost_resume__path_ok "$d"; then
         ROOST_RESUME_WHY="no directory recorded"; return 1
       fi
-      printf '%s\n' "$d" ;;
+      ROOST_RESUME_DIR="$d"; printf '%s\n' "$d" ;;
     *) ROOST_RESUME_WHY="no resume rule for harness '$h'"; return 1 ;;
   esac
 }
@@ -406,4 +408,280 @@ roost_resume_release() {
   [ -n "${1:-}" ] || return 0
   [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ] || return 0
   roost_shape_owner_drop "$1"
+}
+
+# ---------------------------------------------------------------------------
+# `roost revive` (§4.1): the verb's core. bin/roost's arm parses the flags and
+# calls roost_revive; everything it decides is here.
+
+# roost_resume__opt PANE OPTION -> ROOST_RESUME_V, one PANE-scope option as the
+# person set it; exit 1 when it holds a control character (then
+# ROOST_RESUME_V is empty). `show-options -p`, never a #{@…} format: a format
+# falls back to window and global scope, and a global value is not this pane's
+# key. Read the way Part 1's writer reads (roost_shape__clean): ruling R6's
+# `\$` undone on a server that prints it, and a control byte refused.
+roost_resume__opt() {
+  local v
+  v="$(roost_resume__t show-options -pqv -t "$1" "$2" 2>/dev/null; printf .)"
+  v="${v%.}"; v="${v%$'\n'}"
+  ROOST_RESUME_V=""
+  roost_shape__clean "$v" octal || return 1
+  ROOST_RESUME_V="$ROOST_SHAPE_V"
+}
+
+# roost_resume__fmt PANE FORMAT -> ROOST_RESUME_V, a pane format (not an
+# option), cleaned the same way.
+roost_resume__fmt() {
+  roost_shape__d "$1" "$2"
+  ROOST_RESUME_V=""
+  roost_shape__clean "$ROOST_SHAPE_D" octal || return 1
+  ROOST_RESUME_V="$ROOST_SHAPE_V"
+}
+
+# roost_resume__row PANE -> 0 when PANE is on the server now. Matched by id
+# out of `list-panes -a`, the way `close` does and for its reason: tmux 3.6
+# answers display-message for a gone pane with exit 0 and every format empty.
+roost_resume__row() {
+  local all r
+  all="$(roost_resume__t list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
+  while IFS= read -r r; do [ "$r" = "$1" ] && return 0; done <<< "$all"
+  return 1
+}
+
+# roost_resume__dup PANE ID -> 0 and ROOST_RESUME_HOLDER=%M when ANOTHER live
+# pane on this server carries ID in its own @roost-session (§4.1 step 5): one
+# conversation is never open in two panes. PANE is exempt — the in-place
+# target, which step 7 ends before the resume starts — and empty for none.
+# Pane scope is read per pane with show-options, for roost_resume__opt's
+# reason; a pane carrying no id costs one call, so the listing first narrows
+# to the panes whose format value (which may fall back) holds the id at all.
+roost_resume__dup() {
+  local all p v
+  ROOST_RESUME_HOLDER=""
+  all="$(roost_resume__t list-panes -a -F '#{pane_id} #{@roost-session}' 2>/dev/null)" || return 1
+  while read -r p v; do
+    [ "$v" = "$2" ] || continue
+    [ "$p" = "$1" ] && continue
+    roost_resume__opt "$p" @roost-session || continue
+    [ "$ROOST_RESUME_V" = "$2" ] || continue
+    ROOST_RESUME_HOLDER="$p"
+    return 0
+  done <<< "$all"
+  return 1
+}
+
+# The options the old process owned, cleared before a respawn (§4.1 step 7):
+# `respawn-pane` keeps pane options (§2.7), and a resume into a trust dialog
+# fires no hook that would overwrite an old `done` — so without this the pane
+# would read as the old agent's last turn, under the old identity, while the
+# new one sits in a dialog. The identity four; @agent_state; the reply, turn,
+# dialog and background options roost-agent-state and roost-unblock.sh write
+# (the set roost_unblock_pane clears when a turn is abandoned); the job the
+# hook recorded. @roost-name is KEPT: it is the person's name for the pane.
+# @agent_since and @roost-turn-reserved are kept too: the badge's stamp, and a
+# turn number already promised to a `send` (roost-record.sh, line "the release
+# writes @roost-turn-reserved"), are not the old process's to take away.
+ROOST_RESUME_CLEAR="@roost-session @roost-cwd @roost-harness @roost-transcript-path @agent_state @roost-reply @roost-reply-turn @roost-transcript @roost-blocked-on @roost-stop-swallowed @roost-dialog @roost-answered @roost-answer-nonce @roost-background @roost-background-types @roost-background-session @roost-agent-job"
+
+# roost_revive RAW TGT FORCE JSON — the verb. Returns its exit code:
+#   0  launched (NOT resumed: §4.1 step 8 — roost does not wait for the
+#      harness's prompt and answers nothing it opens)
+#   1  refused by step 7's checks (a working or blocked agent, a shell running
+#      a person's job), or tmux failed
+#   2  the target is gone and nothing records it
+#  13  not resumed, the reason printed: no key, a stale key, the store does
+#      not hold it, another pane holds it, opencode (printed, not run)
+#  14  the harness is not on PATH
+#  15  the directory is gone
+# Needs ROOST_RESUME_TFLAG / ROOST_RESUME_TSOCK and ROOST_HOME; `t`,
+# `pane_cmd_wired` and `roost_unblock_pane` come from bin/roost.
+roost_revive() {
+  local raw="$1" tgt="$2" force="$3" json="$4"
+  local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
+  local sd boot claim="" kid kids o
+  local -a argv clear
+  ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
+  if ! roost_shape__read_rules; then
+    echo "roost revive: no roost server is running" >&2; return 1
+  fi
+  # Step 1: one pane. A window with more than one pane is refused, `close`'s
+  # rule: guessing its active pane would replace the wrong agent.
+  case "$tgt" in
+    %*) pane="$tgt" ;;
+    *)
+      panes="$(roost_resume__t list-panes -t "$tgt" -F '#{pane_id}' 2>/dev/null || true)"
+      if [ -z "$panes" ]; then
+        echo "roost revive: '$raw' is gone: no such pane or window" >&2; return 2
+      fi
+      case "$panes" in
+        *$'\n'*)
+          n="$(printf '%s\n' "$panes" | grep -c .)"
+          echo "roost revive: '$raw' names a window with $n panes, and revive takes one — pass the %N of the pane (roost status lists them)" >&2
+          return 1 ;;
+      esac
+      pane="$panes" ;;
+  esac
+  if ! roost_resume__row "$pane"; then
+    echo "roost revive: '$raw' is gone: no such pane or window" >&2; return 2
+  fi
+  roost_resume__opt "$pane" @roost-harness; h="$ROOST_RESUME_V"
+  roost_resume__opt "$pane" @roost-session; sid="$ROOST_RESUME_V"
+  roost_resume__opt "$pane" @roost-cwd; scwd="$ROOST_RESUME_V"
+  roost_resume__opt "$pane" @roost-transcript-path; tr="$ROOST_RESUME_V"
+  roost_resume__opt "$pane" @agent_state; state="$ROOST_RESUME_V"
+  roost_resume__fmt "$pane" '#{pane_current_path}'; pcwd="$ROOST_RESUME_V"
+  roost_resume__fmt "$pane" '#{pane_current_command}'; cmd="$ROOST_RESUME_V"
+  roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
+  roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
+
+  # Step 2: does the identity agree with what the pane runs (§3.2's rule,
+  # roost_shape_agree)? A dead pane (remain-on-exit: an earlier revive whose
+  # resume exited non-zero) runs nothing, so there is nothing to disagree;
+  # its last screen said why, and this revive replaces it.
+  #
+  # One addition to §3.2's table, for a SHELL pane: #{pane_current_command}
+  # names the foreground job, so a shell running `sleep 60` reads `sleep`,
+  # which the table calls `other` (13, nothing anyone can do). But the agent
+  # has left and a person is using the shell — §4.1 step 7's case, "a shell
+  # pane whose shell has a child process", refused with exit 1 and replaced
+  # under --force. So when the pane's OWN process (#{pane_pid}) is a shell and
+  # the foreground is not a harness, the pane is `exited` and step 7's shell
+  # check decides. A harness in the foreground (a person typed `claude` at
+  # the prompt) is still judged by the table: ok or nested. `other` is left
+  # for a pane whose own process is neither — an editor or a `sleep` started
+  # as the pane's command.
+  agree=dead
+  if [ "$dead" != 1 ] && [ -n "$h" ]; then
+    agree="$(roost_shape_agree "$h" "$cmd")"
+    if [ "$agree" = other ]; then
+      o="$(ps -o comm= -p "$ppid" 2>/dev/null || true)"
+      o="${o##*/}"; o="${o#-}"; o="${o%% *}"
+      case "$o" in sh|bash|zsh|fish|dash) agree=exited ;; esac
+    fi
+  fi
+  case "$agree" in
+    nested|other)
+      echo "roost revive: '$raw' runs '$cmd', not $h: its $h key ${sid:-(none)} is stale — nothing resumed" >&2
+      return 13 ;;
+  esac
+  if [ -z "$h" ] || [ -z "$sid" ]; then
+    if [ -n "$h" ]; then
+      echo "roost revive: '$raw' has no recorded conversation (harness $h, no session id)" >&2
+    else
+      echo "roost revive: '$raw' has no recorded conversation (no harness, no session id)" >&2
+    fi
+    return 13
+  fi
+  rc=0; roost_resume_command "$h" "$sid" "$tr" >/dev/null || rc=$?
+  if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+    echo "roost revive: '$raw': $ROOST_RESUME_WHY — nothing resumed" >&2; return 13
+  fi
+  # Step 3.
+  if ! command -v "$h" >/dev/null 2>&1; then
+    echo "roost revive: '$raw' ran $h, and $h is not on PATH — nothing resumed" >&2; return 14
+  fi
+  # Step 4 (§5.1). A Claude or pi pane whose transcript option is unset gets
+  # the exact-id lookup, the one store file whose NAME carries the id (§4.1
+  # step 1): the key's own file, not a guess.
+  if [ -z "$tr" ]; then
+    case "$h" in claude|pi) tr="$(roost_resume_exact_id "$h" "$sid" || true)" ;; esac
+  fi
+  # A Claude pane with no transcript recorded and none in the store under its
+  # id: that is the store check's miss (step 5) reached early — Claude's
+  # directory comes from the transcript, so there is nothing to choose from —
+  # and it is said in step 5's words.
+  if [ "$h" = claude ] && [ -z "$tr" ]; then
+    echo "roost revive: $h no longer holds $sid; the pane is untouched" >&2; return 13
+  fi
+  if ! roost_resume_dir "$h" "$tr" "$scwd" "$pcwd" >/dev/null; then
+    echo "roost revive: '$raw': $ROOST_RESUME_WHY — $h $sid not resumed" >&2; return 13
+  fi
+  dir="$ROOST_RESUME_DIR"
+  if [ ! -d "$dir" ]; then
+    echo "roost revive: '$raw': directory $dir no longer exists; not resuming elsewhere" >&2; return 15
+  fi
+  # Step 5 (§5.1a): the store, then another live pane carrying the key.
+  rc=0; roost_resume_store_check "$h" "$sid" "$tr" || rc=$?
+  if [ "$rc" = 3 ]; then
+    argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
+    echo "roost revive: '$raw': opencode resume is not checked (it creates a session it does not find); run: cd $(roost_sq "$dir") && ${argv[*]}" >&2
+    return 13
+  fi
+  if [ "$rc" != 0 ]; then
+    echo "roost revive: $h no longer holds $sid; the pane is untouched" >&2; return 13
+  fi
+  if roost_resume__dup "$pane" "$sid"; then
+    echo "roost revive: $h $sid is open in $ROOST_RESUME_HOLDER; one conversation is never open in two panes — nothing resumed" >&2
+    return 13
+  fi
+  # Step 5a: claim, before anything is launched. With saving off
+  # (ROOST_SHAPE_DIR empty) there is no shape directory to hold claims: the
+  # store check and the live-pane check above still stand, and the claim —
+  # the net for a launch still sitting in a dialog with no identity — is not
+  # taken. Said on stderr, so a person who turned saving off knows.
+  boot="$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  if sd="$(roost_shape_dir "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" 2>/dev/null)" && [ -n "$boot" ]; then
+    rc=0; roost_resume_claim "$sd/claims/$boot" "$h" "$sid" "$pane" || rc=$?
+    case "$rc" in
+      0) claim="$ROOST_RESUME_CLAIM" ;;
+      1) echo "roost revive: $h $sid is already being launched in $ROOST_RESUME_HOLDER — nothing resumed" >&2; return 13 ;;
+      *) echo "roost revive: cannot claim $h $sid: $ROOST_RESUME_HOLDER" >&2; return 1 ;;
+    esac
+  else
+    echo "roost revive: saving is off (ROOST_SHAPE_DIR is empty), so no launch claim is taken" >&2
+  fi
+  # Step 7's checks, from here on every refusal releases this run's claim.
+  if [ "$dead" != 1 ]; then
+    case "$state" in
+      working|blocked)
+        if [ "$state" = blocked ] && roost_unblock_pane "$pane"; then
+          :
+        elif [ "$force" != 1 ]; then
+          roost_resume_release "$claim"
+          echo "roost revive: '$raw' is $state — replacing it now would end its agent mid-turn; wait for it, or pass --force" >&2
+          return 1
+        fi ;;
+    esac
+    # A shell pane whose shell has a child is running a person's job.
+    if [ "$agree" = exited ] && [ "$force" != 1 ]; then
+      kids="$(pgrep -P "$ppid" 2>/dev/null || true)"
+      if [ -n "$kids" ]; then
+        kid="$(ps -o comm= -p "${kids%%$'\n'*}" 2>/dev/null | sed 's/^ *//' || true)"
+        roost_resume_release "$claim"
+        echo "roost revive: '$raw' is a shell running ${kid:-a job}; that is a person's work — pass --force to replace it" >&2
+        return 1
+      fi
+    fi
+  fi
+  # Step 6: the argv, never a string for a shell; through roost-pane-shell on
+  # a wired server, so roost's claude shim is first on PATH (#58).
+  argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
+  if pane_cmd_wired; then argv=("$ROOST_HOME/scripts/roost-pane-shell" "${argv[@]}"); fi
+  # Step 7: clear, keep the pane on a failed exit, respawn with the command
+  # always passed (a bare respawn-pane re-runs the pane's creation command,
+  # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
+  clear=()
+  for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
+  # One tmux call for all of them; the list ends in a no-op so the last `;`
+  # has a command after it.
+  roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
+  # Its own call, as restore sets it: a tmux that refuses `failed`
+  # refuses only this, and the resume still runs, without the net.
+  roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
+  if ! roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
+    roost_resume_release "$claim"
+    echo "roost revive: tmux could not respawn '$raw'" >&2
+    return 1
+  fi
+  # Step 8.
+  argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
+  if [ "$json" = 1 ]; then
+    . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+    roost_jsonout_emit revive pane s "$pane" was s "$pane" harness s "$h" \
+      session_id s "$sid" command s "${argv[*]}" cwd s "$dir" || roost_jsonout_fail revive
+  else
+    printf '%s\n' "$pane"
+  fi
+  echo "roost revive: $pane: launched ${argv[*]} in $dir" >&2
+  return 0
 }
