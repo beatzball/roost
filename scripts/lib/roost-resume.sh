@@ -816,6 +816,23 @@ roost_revive() {
     roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
     roost_resume__opt "$pane" @roost-name; rname="$ROOST_RESUME_V"
     rsess="$(roost_resume__t display -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+    # A DEAD pane with no key (review round 2, Fable N1). A revive clears the
+    # pane's identity before its respawn, so when that resume exits non-zero
+    # the dead pane it leaves has no key, and §4.1 step 7's "the next revive
+    # on it clears it" could not happen: exit 13, "no recorded conversation".
+    # The pane's own record on this boot still holds the key (revive never
+    # touches records), so it is read as the gone path reads it — all four
+    # fields from the record, never mixed with what the options still hold.
+    if [ "$dead" = 1 ] && { [ -z "$h" ] || [ -z "$sid" ]; }; then
+      if record_for "$pane" "$pane" && [ "$RF_STATE" = 0 ]; then
+        roost_resume__record_get "$RF_DIR/harness"; h="$ROOST_RESUME_V"
+        roost_resume__record_get "$RF_DIR/session_id"; sid="$ROOST_RESUME_V"
+        roost_resume__record_get "$RF_DIR/cwd"; scwd="$ROOST_RESUME_V"
+        roost_resume__record_get "$RF_DIR/transcript"; tr="$ROOST_RESUME_V"
+      else
+        [ "${RF_STATE:-1}" -ge 2 ] && record_warn revive "$raw"
+      fi
+    fi
   fi
 
   # Step 2: does the identity agree with what the pane runs (§3.2's rule,

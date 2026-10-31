@@ -805,6 +805,36 @@ assert_eq "$rc|$(nwin)|$(ppid_of "$P")" "13|$n0|$pid0" "--new-window of a live p
 assert_contains "$(cat "$SHAPE_TMP/err")" "is open in $P" "...naming the pane itself"
 TL kill-pane -t "$P"
 
+# A dead pane left by a resume that exited non-zero can be revived again in
+# place (review round 2, Fable N1; §4.1 step 7: "the next revive ... on it
+# clears it"). Revive cleared the pane's identity before the respawn, so the
+# dead pane has no key: the pane's own record on this boot supplies it, as for
+# a gone pane.
+reset
+X1="$SHAPE_TMP/exit1-bin"; mkdir -p "$X1"; cp "$STUB_WRAP/claude-exit1" "$X1/claude"
+W="$(TL new-window -d -P -F '#{window_id}' -t shp: "$STUB_BIN/claude 600")"
+P="$(TL display -p -t "$W" '#{pane_id}')"
+TL split-window -d -t "$P" "$STUB_BIN/claude 600"
+wait_cmd "$P" claude; setid "$P" claude "$U4" "$D1R"; plant_record "$P" claude "$U4" "$D1R"
+env PATH="$X1:$PATH" ROOST_SOCKET=roost "$ROOST" revive "$P" >/dev/null 2>&1; rc=$?
+i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$P" '#{pane_dead}')" != 1 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$rc|$(TL display -p -t "$P" '#{pane_dead}')|$(popt "$P" @roost-session)" "0|1|" "(setup) a resume that exits 1 leaves a dead pane with no key"
+: > "$STUB_LOG"
+out="$(R revive "$P" 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc|$out" "0|$P" "the dead pane revived again: exit 0, the same %N (its key from its record)"
+wait_log "claude --resume $U4"; assert_true $? "...and the conversation launched"
+TL kill-window -t "$W"
+# A dead pane with no key and no record: nothing to go on, as before.
+W="$(TL new-window -d -P -F '#{window_id}' -t shp: "$STUB_BIN/claude 600")"
+P="$(TL display -p -t "$W" '#{pane_id}')"
+TL split-window -d -t "$P" "$STUB_BIN/claude 600"
+TL set-option -p -t "$P" remain-on-exit on; TL respawn-pane -k -t "$P" 'exit 1'
+i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$P" '#{pane_dead}')" != 1 ]; do sleep 0.1; i=$((i+1)); done
+R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "13" "a dead pane with no key and no record: exit 13"
+assert_contains "$(cat "$SHAPE_TMP/err")" "has no recorded conversation" "...says so"
+TL kill-window -t "$W"
+
 # Gone with nothing to go on.
 reset
 G="$(gone_pane)"
