@@ -277,9 +277,12 @@ roost_resume_store_check() {
 #     owner   a symbolic link to "PID LSTART": the launcher's pid and start
 #             time, exactly Part 1's owner record (roost-shape.sh,
 #             roost_shape__claim)
-#     pane    the pane the launch is aimed at, one line; empty until the
-#             launcher knows it (a new window's id exists only once
-#             `new-window` has made it)
+#     pane    two lines: the pane the launch is aimed at (empty until the
+#             launcher knows it: a new window's id exists only once
+#             `new-window` has made it), then the owner record it was
+#             written under. A reader uses the pane only when that second
+#             line is the CURRENT owner link; any other pane file is a
+#             previous owner's and names nothing (review round 1, B1)
 #
 # WHY A LINK AND NOT `pid` AND `lstart` FILES. The plan names two files, and
 # that is mkdir-then-write: between the two a second launcher finds a claim
@@ -291,6 +294,19 @@ roost_resume_store_check() {
 # rather than writing a second one. The `pane` file is written after the link,
 # so a reader that sees a link with no pane yet judges by the owner's
 # liveness — and that owner is live, which is the right answer.
+#
+# WHY THE PANE FILE NAMES ITS OWNER (review round 1, B1, both reviewers,
+# reproduced: two launches of one conversation). A takeover of a stale claim
+# links its owner record first and writes its pane after; in between, the
+# PREVIOUS owner's pane file — naming a gone pane — sat beside the new live
+# link, and a second launcher read the pair as "stale, take it over", removed
+# the new link and launched too. Deleting the old pane file first (the
+# reviewer's fix) narrows that but still lets a slow launcher delete the new
+# owner's fresh pane file. So the pane file is tagged with the owner record
+# it was written under, and a mismatched tag is simply not a pane: the new
+# owner reads as "no pane yet", and its liveness refuses the second
+# launcher. And every write is checked afterwards: a launcher that no longer
+# holds the owner link stops before it launches anything.
 #
 # Needs roost-shape.sh (the owner record) and ROOST_RESUME_TFLAG /
 # ROOST_RESUME_TSOCK, bin/roost's own pair, for the server the panes are on.
@@ -309,10 +325,51 @@ roost_resume__pane_exists() {
   [ "$(roost_resume__t display -p -t "$1" '#{pane_id}' 2>/dev/null)" = "$1" ]
 }
 
-# roost_resume__put_pane CLAIM %N — the pane file, whole or not at all.
+# roost_resume__put_pane CLAIM %N — the pane file, whole or not at all, tagged
+# with this run's owner record; then the claim is checked to be still this
+# run's. Exit 1 when the write failed or the owner link is no longer this
+# run's — the caller must not launch.
 roost_resume__put_pane() {
-  local tmp="$1/.pane.$$"
-  ( umask 077; printf '%s\n' "$2" > "$tmp" ) 2>/dev/null && mv -f "$tmp" "$1/pane" 2>/dev/null
+  local tmp="$1/.pane.$$" me
+  me="$(roost_resume__me)"
+  ( umask 077; printf '%s\n%s\n' "$2" "$me" > "$tmp" ) 2>/dev/null \
+    && mv -f "$tmp" "$1/pane" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  roost_resume_claim_held "$1"
+}
+
+# roost_resume__pane_of CLAIM OWNER -> ROOST_RESUME_P, the pane the claim names
+# for that owner record; empty when there is no pane file, it names none, or
+# it was written under another owner (a previous holder's leftover).
+roost_resume__pane_of() {
+  local p="" g=""
+  ROOST_RESUME_P=""
+  [ -f "$1/pane" ] || return 0
+  { IFS= read -r p; IFS= read -r g; } < "$1/pane" 2>/dev/null || true
+  [ "$g" = "$2" ] && ROOST_RESUME_P="$p"
+  return 0
+}
+
+# roost_resume_claim_held CLAIM — the owner link is this run's.
+roost_resume_claim_held() {
+  [ -n "${1:-}" ] && [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ]
+}
+
+# roost_resume__take_stale CLAIM OWNER — remove the owner link judged stale,
+# and only that one. A `readlink`, then an `rm`, removed whatever link was
+# there at the rm — a launcher that took the claim over in between lost its
+# link to this one. So the link is moved aside in one rename, THEN read: the
+# judged record is deleted; any other record is put back with `ln -s`, which
+# fails only when yet another launcher linked meanwhile. Exit 1 then, and the
+# caller refuses: two launchers holding one claim is the one outcome this
+# exists to stop, and refusing is the safe side.
+roost_resume__take_stale() {
+  local aside="$1/owner.stale.$$" got
+  mv "$1/owner" "$aside" 2>/dev/null || return 0
+  got="$(readlink "$aside" 2>/dev/null)"
+  if [ "$got" = "$2" ]; then rm -f "$aside"; return 0; fi
+  if ln -s "$got" "$1/owner" 2>/dev/null; then rm -f "$aside"; return 0; fi
+  rm -f "$aside"
+  return 1
 }
 
 # roost_resume_claim DIR HARNESS ID PANE — claim the conversation.
@@ -353,14 +410,17 @@ roost_resume_claim() {
       # No claim, or a fault roost_shape__claim names (a plain file there).
       r=0; roost_shape__claim "$c/owner" "$me" || r=$?
       case "$r" in
-        0|2) roost_resume__put_pane "$c" "$pane"; ROOST_RESUME_CLAIM="$c"; return 0 ;;
+        0|2) roost_shape__seam ROOST_TEST_CLAIM_HOLD_AFTER_LINK
+             if roost_resume__put_pane "$c" "$pane"; then ROOST_RESUME_CLAIM="$c"; return 0; fi ;;
         3) ROOST_RESUME_HOLDER="$ROOST_SHAPE_OWNER_FAULT"; return 3 ;;
       esac
       continue
     fi
-    [ "$cur" = "$me" ] && { roost_resume__put_pane "$c" "$pane"; ROOST_RESUME_CLAIM="$c"; return 0; }
-    p=""
-    [ -f "$c/pane" ] && IFS= read -r p < "$c/pane" 2>/dev/null
+    if [ "$cur" = "$me" ]; then
+      if roost_resume__put_pane "$c" "$pane"; then ROOST_RESUME_CLAIM="$c"; return 0; fi
+      continue
+    fi
+    roost_resume__pane_of "$c" "$cur"; p="$ROOST_RESUME_P"
     if [ -n "$p" ]; then
       if [ -n "$pane" ] && [ "$p" = "$pane" ]; then
         :   # this pane's own earlier launch: take it over
@@ -368,23 +428,27 @@ roost_resume_claim() {
         ROOST_RESUME_HOLDER="$p"; return 1
       fi
       # The same pane, or a gone one: stale whatever its claimer's
-      # liveness. Remove that record — only if it is still the one judged —
-      # and link this run's; a launcher that linked first wins, and this one
-      # judges what it left.
-      [ "$(readlink "$c/owner" 2>/dev/null)" = "$cur" ] && rm -f "$c/owner"
+      # liveness. Remove that record — only that one, in one rename
+      # (roost_resume__take_stale) — and link this run's; a launcher that
+      # linked first wins, and this one judges what it left.
+      if ! roost_resume__take_stale "$c" "$cur"; then
+        ROOST_RESUME_HOLDER="another launcher (the claim $c changed while it was taken over)"
+        return 1
+      fi
       continue
     fi
     # No pane named: the owner's liveness decides. roost_shape__claim does
     # exactly that — refuses a live owner, takes over a dead or reused one.
     r=0; roost_shape__claim "$c/owner" "$me" || r=$?
     case "$r" in
-      0|2) roost_resume__put_pane "$c" "$pane"; ROOST_RESUME_CLAIM="$c"; return 0 ;;
+      0|2) if roost_resume__put_pane "$c" "$pane"; then ROOST_RESUME_CLAIM="$c"; return 0; fi
+           continue ;;
       3) ROOST_RESUME_HOLDER="$ROOST_SHAPE_OWNER_FAULT"; return 3 ;;
     esac
     # A live owner. If it has named a pane since, judge that instead.
-    p=""
-    [ -f "$c/pane" ] && IFS= read -r p < "$c/pane" 2>/dev/null
-    [ -n "$p" ] && continue
+    cur="$(readlink "$c/owner" 2>/dev/null || true)"
+    roost_resume__pane_of "$c" "$cur"
+    [ -n "$ROOST_RESUME_P" ] && continue
     ROOST_RESUME_HOLDER="pid ${ROOST_SHAPE_OWNER_PID:-?}"
     return 1
   done
@@ -393,9 +457,10 @@ roost_resume_claim() {
 }
 
 # roost_resume_claim_pane CLAIM %N — name the pane once it exists (a new
-# window). Only on a claim this run holds.
+# window). Only on a claim this run holds; exit 1 when it is not (any more),
+# and the caller stops before launching.
 roost_resume_claim_pane() {
-  [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ] || return 1
+  roost_resume_claim_held "$1" || return 1
   roost_resume__put_pane "$1" "$2"
 }
 
@@ -749,7 +814,12 @@ roost_revive() {
       echo "roost revive: tmux could not open a window for '$raw'" >&2
       return 1
     fi
-    [ -n "$claim" ] && roost_resume_claim_pane "$claim" "$new"
+    if [ -n "$claim" ] && ! roost_resume_claim_pane "$claim" "$new"; then
+      # Another launcher took the claim over: it launches, this one does not.
+      roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+      echo "roost revive: $h $sid was claimed by another launcher meanwhile — nothing resumed" >&2
+      return 13
+    fi
     roost_resume__t set-option -p -t "$new" remain-on-exit failed 2>/dev/null || true
     roost_resume__t set-option -p -t "$new" @roost-was "$pane" 2>/dev/null || true
     [ -n "$rname" ] && { roost_resume__t set-option -p -t "$new" @roost-name "$rname" 2>/dev/null || true; }
@@ -764,6 +834,10 @@ roost_revive() {
     # always passed (a bare respawn-pane re-runs the pane's creation command,
     # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
     new="$pane"
+    if [ -n "$claim" ] && ! roost_resume_claim_held "$claim"; then
+      echo "roost revive: $h $sid was claimed by another launcher meanwhile — the pane is untouched" >&2
+      return 13
+    fi
     clear=()
     for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
     # One tmux call for all of them; the list ends in a no-op so the last `;`

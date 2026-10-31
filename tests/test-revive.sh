@@ -175,7 +175,7 @@ sleep 0.1 >/dev/null 2>&1 & DEADPID=$!; DEADLST="$(roost_shape__lstart "$DEADPID
 # holding this file's stdout keeps a `| grep` reader waiting for 600 s.
 sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
 plant() { # ID PID LSTART PANE — a claim another launcher left
-  mkdir -p "$CL/claude-$1"; ln -s "$2 $3" "$CL/claude-$1/owner"; printf '%s\n' "$4" > "$CL/claude-$1/pane"
+  mkdir -p "$CL/claude-$1"; ln -s "$2 $3" "$CL/claude-$1/owner"; printf '%s\n%s\n' "$4" "$2 $3" > "$CL/claude-$1/pane"
 }
 snap() { (cd "$CL/claude-$1" 2>/dev/null && for f in owner pane; do printf '%s=' "$f"; if [ -L "$f" ]; then readlink "$f"; else cat "$f" 2>/dev/null; fi; done); }
 ME="$$ $(roost_shape__lstart "$$")"
@@ -183,11 +183,11 @@ ME="$$ $(roost_shape__lstart "$$")"
 roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
 assert_eq "$rc|$ROOST_RESUME_CLAIM" "0|$CL/claude-$U1" "a free conversation is claimed: claims/<boot>/<harness>-<id>"
 assert_eq "$(readlink "$CL/claude-$U1/owner")" "$ME" "...its owner record is this run's pid and start time"
-assert_eq "$(cat "$CL/claude-$U1/pane")" "$PA" "...and it names the target pane"
+assert_eq "$(head -n 1 "$CL/claude-$U1/pane")" "$PA" "...and it names the target pane"
 roost_resume_claim "$CL" claude "$U2" ""; rc=$?
-assert_eq "$rc|$(cat "$CL/claude-$U2/pane" 2>/dev/null)" "0|" "a claim may name no pane yet (empty until the launcher knows it)"
+assert_eq "$rc|$(head -n 1 "$CL/claude-$U2/pane" 2>/dev/null)" "0|" "a claim may name no pane yet (empty until the launcher knows it)"
 roost_resume_claim_pane "$CL/claude-$U2" "$PB"
-assert_eq "$(cat "$CL/claude-$U2/pane")" "$PB" "roost_resume_claim_pane fills it in once the pane exists"
+assert_eq "$(head -n 1 "$CL/claude-$U2/pane")" "$PB" "roost_resume_claim_pane fills it in once the pane exists"
 rm -rf "$CL"
 
 plant "$U1" "$DEADPID" "$DEADLST" "$PB"; before="$(snap "$U1")"
@@ -205,7 +205,7 @@ assert_eq "$rc|$(readlink "$CL/claude-$U1/owner")" "0|$ME" "the SAME pane as thi
 rm -rf "$CL"
 plant "$U1" "$LIVEPID" "$LIVELST" "$PG"
 roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
-assert_eq "$rc|$(readlink "$CL/claude-$U1/owner")|$(cat "$CL/claude-$U1/pane")" "0|$ME|$PA" "a GONE pane with a LIVE claimer: stale, taken over"
+assert_eq "$rc|$(readlink "$CL/claude-$U1/owner")|$(head -n 1 "$CL/claude-$U1/pane")" "0|$ME|$PA" "a GONE pane with a LIVE claimer: stale, taken over"
 rm -rf "$CL"
 plant "$U1" "$DEADPID" "$DEADLST" ""
 roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
@@ -215,6 +215,14 @@ plant "$U1" "$LIVEPID" "$LIVELST" ""; before="$(snap "$U1")"
 roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
 assert_eq "$rc|$ROOST_RESUME_HOLDER" "1|pid $LIVEPID" "no pane and a LIVE claimer: refused, naming the claimer"
 assert_eq "$(snap "$U1")" "$before" "...the refused claim left byte for byte"
+rm -rf "$CL"
+# A pane file written under ANOTHER owner record (a previous holder's
+# leftover) names nothing: the live owner beside it is judged by its liveness,
+# and refused — never "stale, take it over" (review round 1, B1).
+mkdir -p "$CL/claude-$U1"; ln -s "$LIVEPID $LIVELST" "$CL/claude-$U1/owner"
+printf '%s\n%s\n' "$PG" "$DEADPID $DEADLST" > "$CL/claude-$U1/pane"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$ROOST_RESUME_HOLDER|$(readlink "$CL/claude-$U1/owner")" "1|pid $LIVEPID|$LIVEPID $LIVELST" "a gone pane in a pane file of ANOTHER owner: not a pane — the live owner is refused, not taken over"
 rm -rf "$CL"
 # A reused pid: the pid runs, but not with the recorded start time.
 plant "$U1" "$LIVEPID" "Thu Jan  1 00:00:00 1970" ""
@@ -293,7 +301,7 @@ assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$D1R" "...in the transc
 assert_eq "$(four "$P")|$(popt "$P" @agent_state)" "||||" "...@agent_state and the identity four were cleared before it"
 assert_eq "$(popt "$P" remain-on-exit)" "failed" "...remain-on-exit failed is set on the pane"
 assert_contains "$(cat "$SHAPE_TMP/err")" "launched claude --resume $U4" "...one stderr line names the command"
-assert_eq "$(readlink "$SD/claims/$BOOT/claude-$U4/owner" >/dev/null && cat "$SD/claims/$BOOT/claude-$U4/pane")" "$P" "...and its claim names the pane (kept: the launch succeeded)"
+assert_eq "$(readlink "$SD/claims/$BOOT/claude-$U4/owner" >/dev/null && head -n 1 "$SD/claims/$BOOT/claude-$U4/pane")" "$P" "...and its claim names the pane (kept: the launch succeeded)"
 
 # working: untouched.
 reset
@@ -458,13 +466,13 @@ stub_store_add "$U6" "$D1R"
 Q="$(shpane)"; wait_cmd "$Q" sh
 sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
 mkdir -p "$SD/claims/$BOOT/claude-$U6"; ln -s "$LIVEPID $LIVELST" "$SD/claims/$BOOT/claude-$U6/owner"
-printf '%s\n' "$Q" > "$SD/claims/$BOOT/claude-$U6/pane"
-cl_before="$(readlink "$SD/claims/$BOOT/claude-$U6/owner")|$(cat "$SD/claims/$BOOT/claude-$U6/pane")"
+printf '%s\n%s\n' "$Q" "$LIVEPID $LIVELST" > "$SD/claims/$BOOT/claude-$U6/pane"
+cl_before="$(readlink "$SD/claims/$BOOT/claude-$U6/owner")|$(head -n 1 "$SD/claims/$BOOT/claude-$U6/pane")"
 P="$(stubpane claude)"; wait_cmd "$P" claude; setid "$P" claude "$U6" "$D1R"
 R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "13" "a live claim for $Q: a second pane carrying the key is refused (exit 13)"
 assert_contains "$(cat "$SHAPE_TMP/err")" "already being launched in $Q" "...naming the claim's pane"
-assert_eq "$(readlink "$SD/claims/$BOOT/claude-$U6/owner")|$(cat "$SD/claims/$BOOT/claude-$U6/pane")" "$cl_before" "...and the claim is left byte for byte"
+assert_eq "$(readlink "$SD/claims/$BOOT/claude-$U6/owner")|$(head -n 1 "$SD/claims/$BOOT/claude-$U6/pane")" "$cl_before" "...and the claim is left byte for byte"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null; LIVEPID=""
 TL kill-pane -t "$P"; TL kill-pane -t "$Q"
 
@@ -558,7 +566,7 @@ reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 first="$(R revive "$G" 2>/dev/null)"; rc=$?
 assert_eq "$rc" "0" "two revives of one gone record: the first launches (exit 0)"
-assert_eq "$(cat "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "$first" "...its claim names the new pane"
+assert_eq "$(head -n 1 "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "$first" "...its claim names the new pane"
 wait_log "claude --resume $U7"
 n0="$(nwin)"
 R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
@@ -569,8 +577,31 @@ TL kill-pane -t "$first"
 third="$(R revive "$G" 2>/dev/null)"; rc=$?
 assert_eq "$rc" "0" "...the first new pane killed, a third launches (a claim naming a gone pane is stale)"
 i=0; while [ "$i" -lt 50 ] && [ "$(grep -c "claude --resume $U7" "$STUB_LOG")" != 2 ]; do sleep 0.1; i=$((i+1)); done
-assert_eq "$(grep -c "claude --resume $U7" "$STUB_LOG")|$(cat "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "2|$third" "...a second launch, and the claim now names the third's pane"
+assert_eq "$(grep -c "claude --resume $U7" "$STUB_LOG")|$(head -n 1 "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "2|$third" "...a second launch, and the claim now names the third's pane"
 TL kill-pane -t "$third" 2>/dev/null
+
+# Two launchers overlap on a STALE claim (it names a gone pane): exactly one
+# may launch (review round 1, B1). Launcher A is held right after it links its
+# owner record, before it writes its pane, while B runs to the end.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+G2="$(gone_pane)"
+sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
+mkdir -p "$SD/claims/$BOOT/claude-$U7"
+ln -s "$LIVEPID $LIVELST" "$SD/claims/$BOOT/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "$LIVEPID $LIVELST" > "$SD/claims/$BOOT/claude-$U7/pane"
+HOLD="$SHAPE_TMP/hold-link"; rm -f "$HOLD" "$HOLD".at.*
+( ROOST_TEST_CLAIM_HOLD_AFTER_LINK="$HOLD" R revive "$G" > "$SHAPE_TMP/a.out" 2>"$SHAPE_TMP/a.err"; echo $? > "$SHAPE_TMP/a.rc" ) &
+APID=$!
+i=0; while [ "$i" -lt 100 ] && ! ls "$HOLD".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+ls "$HOLD".at.* >/dev/null 2>&1; assert_true $? "(seam) launcher A is held after linking its owner record"
+R revive "$G" > "$SHAPE_TMP/b.out" 2>"$SHAPE_TMP/b.err"; rcB=$?
+: > "$HOLD"; wait "$APID"; rcA="$(cat "$SHAPE_TMP/a.rc")"
+sleep 1
+n0=0; [ "$rcA" = 0 ] && n0=$((n0+1)); [ "$rcB" = 0 ] && n0=$((n0+1))
+assert_eq "$n0|$(grep -c "claude --resume $U7" "$STUB_LOG")" "1|1" "two launchers overlapping on a stale claim: exactly one exits 0, and one launch (A $rcA, B $rcB)"
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null; LIVEPID=""
+for o in "$SHAPE_TMP/a.out" "$SHAPE_TMP/b.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
 
 # --new-window of a live pane that carries its own key: no exemption.
 reset
