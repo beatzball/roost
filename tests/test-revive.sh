@@ -712,6 +712,23 @@ ROOST_SHAPE_DIR="" XDG_STATE_HOME="$SHAPE_TMP/not-a-dir" R revive "$G" >/dev/nul
 assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving off, the fallback cannot be made either: exit 1, nothing launched"
 assert_contains "$(cat "$SHAPE_TMP/err")" "not-a-dir/roost/launch-claims" "...naming the directory"
 
+# The caller's session is believed only when the caller is a pane of THIS
+# server (review round 1, Fable N5): the user's everyday tmux sets TMUX and
+# TMUX_PANE too, and a %N from there may exist here as another pane.
+TL new-session -d -s zz-other 'ENV= exec /bin/sh'
+QO="$(TL display -p -t '=zz-other:' '#{pane_id}')"
+SPID="$(TL display -p '#{pid}')"
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+out="$(env TMUX="/tmp/not-this-server/default,999999,0" TMUX_PANE="$QO" ROOST_SOCKET=roost "$ROOST" revive "$G" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$(TL display -p -t "$out" '#{session_name}' 2>/dev/null)" "0|shp" "a TMUX_PANE from another tmux server is not the caller's session here (the window goes to the fallback)"
+TL kill-pane -t "$out" 2>/dev/null
+reset
+out="$(env TMUX="$SHAPE_SOCK,$SPID,0" TMUX_PANE="$QO" ROOST_SOCKET=roost "$ROOST" revive "$G" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$(TL display -p -t "$out" '#{session_name}' 2>/dev/null)" "0|zz-other" "(control) a caller that IS a pane of this server: its session"
+TL kill-pane -t "$out" 2>/dev/null
+TL kill-session -t '=zz-other'
+
 # --new-window of a live pane that carries its own key: no exemption.
 reset
 P="$(stubpane claude)"; wait_cmd "$P" claude; setid "$P" claude "$U4" "$D1R"

@@ -654,16 +654,25 @@ roost_resume__record_get() {
 # exists, else the first session tmux lists. A session that does not exist is
 # never made: a revive does not start sessions.
 roost_resume__home_session() {
-  local s
+  local s cpid
   s="${1:-}"
-  if [ -n "$s" ] && roost_resume__t has-session -t "=$s" 2>/dev/null; then printf '%s
-' "$s"; return 0; fi
-  if [ -n "${TMUX_PANE:-}" ] && s="$(roost_resume__t display -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)" && [ -n "$s" ]; then
-    printf '%s
-' "$s"; return 0
-  fi
-  if roost_resume__t has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s
-' "${DEFAULT_SESSION:-main}"; return 0; fi
+  if [ -n "$s" ] && roost_resume__t has-session -t "=$s" 2>/dev/null; then printf '%s\n' "$s"; return 0; fi
+  # The caller's pane counts only when the caller IS a pane of this server:
+  # $TMUX's pid is this server's and $TMUX_PANE is a pane it has — the two
+  # checks `reply` and `send --from` make before they trust $TMUX_PANE. The
+  # user's everyday tmux sets both variables too, and its %N may exist here
+  # as a stranger's pane in another session (review round 1, Fable N5).
+  case "${TMUX_PANE:-}" in
+    %[0-9]*)
+      if [ -n "${TMUX:-}" ]; then
+        cpid="${TMUX#*,}"; cpid="${cpid%%,*}"
+        s="$(roost_resume__t display -p -t "$TMUX_PANE" '#{pid} #{pane_id} #{session_name}' 2>/dev/null || true)"
+        case "$s" in
+          "$cpid $TMUX_PANE "?*) printf '%s\n' "${s#"$cpid $TMUX_PANE "}"; return 0 ;;
+        esac
+      fi ;;
+  esac
+  if roost_resume__t has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s\n' "${DEFAULT_SESSION:-main}"; return 0; fi
   roost_resume__t list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
 }
 
