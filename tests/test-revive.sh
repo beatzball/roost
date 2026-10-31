@@ -11,7 +11,8 @@ set -u
 cd "$(dirname "$0")/.."
 . tests/lib.sh
 . tests/lib-shape.sh
-shape_test_setup; trap shape_test_teardown EXIT
+LIVEPID=""
+shape_test_setup; trap '[ -n "$LIVEPID" ] && kill "$LIVEPID" 2>/dev/null; shape_test_teardown' EXIT
 
 # The stub stores. lib-shape.sh points the harness homes at the canary, which
 # nothing may write to; a revive test READS a store, so each harness gets a
@@ -157,6 +158,85 @@ assert_eq "$rc" "1" "pi: two files carrying one id: a miss"
 
 roost_resume_store_check opencode ses_abc ""; rc=$?
 assert_eq "$rc" "3" "opencode: not checked (returns 3)"
+
+echo "== claims: one per conversation, released only by its taker (§4.1 step 5a) =="
+. scripts/lib/roost-shape.sh
+ROOST_RESUME_TFLAG=-S ROOST_RESUME_TSOCK="$SHAPE_SOCK"
+export ROOST_RESUME_TFLAG ROOST_RESUME_TSOCK
+CL="$SHAPE_TMP/claims/boot-1"
+# Two live panes on the test server, and one that is gone.
+PA="$(TL new-window -d -P -F '#{pane_id}' -t shp: 'exec sleep 600')"
+PB="$(TL new-window -d -P -F '#{pane_id}' -t shp: 'exec sleep 600')"
+PG="$(TL new-window -d -P -F '#{pane_id}' -t shp: 'exec sleep 600')"; TL kill-pane -t "$PG"
+# A dead claimer: a process that has exited, so its pid is not running with
+# its recorded start time. A live one: a sleep of this file's own.
+sleep 0.1 >/dev/null 2>&1 & DEADPID=$!; DEADLST="$(roost_shape__lstart "$DEADPID")"; wait "$DEADPID" 2>/dev/null
+# Its fds go to /dev/null, and the EXIT trap kills it: a background sleep
+# holding this file's stdout keeps a `| grep` reader waiting for 600 s.
+sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
+plant() { # ID PID LSTART PANE — a claim another launcher left
+  mkdir -p "$CL/claude-$1"; ln -s "$2 $3" "$CL/claude-$1/owner"; printf '%s\n' "$4" > "$CL/claude-$1/pane"
+}
+snap() { (cd "$CL/claude-$1" 2>/dev/null && for f in owner pane; do printf '%s=' "$f"; if [ -L "$f" ]; then readlink "$f"; else cat "$f" 2>/dev/null; fi; done); }
+ME="$$ $(roost_shape__lstart "$$")"
+
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$ROOST_RESUME_CLAIM" "0|$CL/claude-$U1" "a free conversation is claimed: claims/<boot>/<harness>-<id>"
+assert_eq "$(readlink "$CL/claude-$U1/owner")" "$ME" "...its owner record is this run's pid and start time"
+assert_eq "$(cat "$CL/claude-$U1/pane")" "$PA" "...and it names the target pane"
+roost_resume_claim "$CL" claude "$U2" ""; rc=$?
+assert_eq "$rc|$(cat "$CL/claude-$U2/pane" 2>/dev/null)" "0|" "a claim may name no pane yet (empty until the launcher knows it)"
+roost_resume_claim_pane "$CL/claude-$U2" "$PB"
+assert_eq "$(cat "$CL/claude-$U2/pane")" "$PB" "roost_resume_claim_pane fills it in once the pane exists"
+rm -rf "$CL"
+
+plant "$U1" "$DEADPID" "$DEADLST" "$PB"; before="$(snap "$U1")"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$ROOST_RESUME_HOLDER" "1|$PB" "another EXISTING pane, a DEAD claimer: refused, naming the pane"
+assert_eq "$(snap "$U1")" "$before" "...and the refused claim is left byte for byte"
+rm -rf "$CL"
+plant "$U1" "$LIVEPID" "$LIVELST" "$PB"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$ROOST_RESUME_HOLDER" "1|$PB" "another existing pane, a live claimer: refused"
+rm -rf "$CL"
+plant "$U1" "$LIVEPID" "$LIVELST" "$PA"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$(readlink "$CL/claude-$U1/owner")" "0|$ME" "the SAME pane as this claim: taken over (an in-place revive whose launch never identified)"
+rm -rf "$CL"
+plant "$U1" "$LIVEPID" "$LIVELST" "$PG"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$(readlink "$CL/claude-$U1/owner")|$(cat "$CL/claude-$U1/pane")" "0|$ME|$PA" "a GONE pane with a LIVE claimer: stale, taken over"
+rm -rf "$CL"
+plant "$U1" "$DEADPID" "$DEADLST" ""
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$(readlink "$CL/claude-$U1/owner")" "0|$ME" "no pane and a DEAD claimer: taken over"
+rm -rf "$CL"
+plant "$U1" "$LIVEPID" "$LIVELST" ""; before="$(snap "$U1")"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc|$ROOST_RESUME_HOLDER" "1|pid $LIVEPID" "no pane and a LIVE claimer: refused, naming the claimer"
+assert_eq "$(snap "$U1")" "$before" "...the refused claim left byte for byte"
+rm -rf "$CL"
+# A reused pid: the pid runs, but not with the recorded start time.
+plant "$U1" "$LIVEPID" "Thu Jan  1 00:00:00 1970" ""
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+assert_eq "$rc" "0" "no pane and the claimer's pid reused (other start time): taken over"
+rm -rf "$CL"
+
+echo "== release: only what this run took =="
+plant "$U1" "$LIVEPID" "$LIVELST" "$PB"; before="$(snap "$U1")"
+roost_resume_release "$CL/claude-$U1"
+assert_eq "$(snap "$U1")" "$before" "a claim this run did not take is never removed"
+rm -rf "$CL"
+roost_resume_claim "$CL" claude "$U1" "$PA"
+roost_resume_release "$CL/claude-$U1"
+[ -e "$CL/claude-$U1" ] && left=yes || left=no
+assert_eq "$left" "no" "a claim this run took is removed"
+plant "$U1" "$LIVEPID" "$LIVELST" "$PB"; before="$(snap "$U1")"
+roost_resume_claim "$CL" claude "$U1" "$PA"; rc=$?
+roost_resume_release "$CL/claude-$U1"
+assert_eq "$rc|$(snap "$U1")" "1|$before" "a refused claim, then release: left byte for byte"
+rm -rf "$CL"
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

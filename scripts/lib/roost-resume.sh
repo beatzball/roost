@@ -261,3 +261,149 @@ roost_resume_store_check() {
   esac
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# Claims (§4.1 step 5a, §4.6): one per conversation being launched, by ANY
+# launcher — `revive` in place, `revive` of a gone pane or into a new window,
+# and from Part 3 a hand restore and the first-attach worker. A store check
+# only LOOKS for another owner; revision 2 stopped there, and two revives of
+# one gone record — the second while the first sat in a trust dialog with no
+# identity yet — both launched. So every launcher takes this claim before it
+# launches, and releases only a claim it took itself.
+#
+#   <shape dir>/claims/<boot>/<harness>-<session_id>/
+#     owner   a symbolic link to "PID LSTART": the launcher's pid and start
+#             time, exactly Part 1's owner record (roost-shape.sh,
+#             roost_shape__claim)
+#     pane    the pane the launch is aimed at, one line; empty until the
+#             launcher knows it (a new window's id exists only once
+#             `new-window` has made it)
+#
+# WHY A LINK AND NOT `pid` AND `lstart` FILES. The plan names two files, and
+# that is mkdir-then-write: between the two a second launcher finds a claim
+# with no owner in it, and has to guess whether it is being written or was
+# left by a launcher that died between the steps. Part 1 met exactly this in
+# its owner record and replaced it with one `ln -s`, which exists with its
+# content or not at all (review round 1, Codex B2). The claim reuses that
+# record and its takeover of a dead holder, which nine review rounds tested,
+# rather than writing a second one. The `pane` file is written after the link,
+# so a reader that sees a link with no pane yet judges by the owner's
+# liveness — and that owner is live, which is the right answer.
+#
+# Needs roost-shape.sh (the owner record) and ROOST_RESUME_TFLAG /
+# ROOST_RESUME_TSOCK, bin/roost's own pair, for the server the panes are on.
+. "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-shape.sh"
+
+roost_resume__t() { tmux -u "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" "$@"; }
+
+# roost_resume__me -> this run's owner record, "PID LSTART".
+roost_resume__me() { printf '%s %s' "$$" "$(roost_shape__lstart "$$")"; }
+
+# roost_resume__pane_exists %N — the pane is on this server now. Asked of tmux,
+# never of a record: a claim's pane is judged by whether it still exists.
+roost_resume__pane_exists() {
+  case "$1" in %[0-9]*) ;; *) return 1 ;; esac
+  case "${1#%}" in *[!0-9]*) return 1 ;; esac
+  [ "$(roost_resume__t display -p -t "$1" '#{pane_id}' 2>/dev/null)" = "$1" ]
+}
+
+# roost_resume__put_pane CLAIM %N — the pane file, whole or not at all.
+roost_resume__put_pane() {
+  local tmp="$1/.pane.$$"
+  ( umask 077; printf '%s\n' "$2" > "$tmp" ) 2>/dev/null && mv -f "$tmp" "$1/pane" 2>/dev/null
+}
+
+# roost_resume_claim DIR HARNESS ID PANE — claim the conversation.
+#   DIR    <shape dir>/claims/<boot>, made 0700 when missing
+#   PANE   the target pane, or empty when it does not exist yet
+#   0  claimed: fresh, or a stale claim taken over. ROOST_RESUME_CLAIM is its
+#      path, for roost_resume_claim_pane and roost_resume_release
+#   1  refused: ROOST_RESUME_HOLDER is the other pane (`%M`), or `pid N` for a
+#      claimer that names no pane yet. The claim found is not touched
+#   3  cannot claim at all: ROOST_RESUME_HOLDER says why
+#
+# A claim found is judged in TWO STAGES (§4.1 step 5a):
+#   it names a pane   the same pane as this claim -> taken over (an in-place
+#                     revive of a pane whose earlier launch never identified);
+#                     another pane that EXISTS -> refused, whatever the
+#                     claimer's liveness: the claimer is usually a short-lived
+#                     `revive` that has already exited while its pane sits in
+#                     a dialog; a pane that is gone -> stale, taken over
+#   it names none     the claimer's liveness decides: a live owner (pid
+#                     running with its recorded start time) -> refused; a dead
+#                     one, or its pid reused -> taken over
+roost_resume_claim() {
+  local dir="$1" h="$2" id="$3" pane="${4:-}" c me cur p r try=0
+  ROOST_RESUME_CLAIM="" ROOST_RESUME_HOLDER=""
+  if ! roost_resume__id_ok "$h" "$id"; then
+    ROOST_RESUME_HOLDER="'$id' is not a $h session id"; return 3
+  fi
+  c="$dir/$h-$id"
+  if ! ( umask 077; mkdir -p "$c" ) 2>/dev/null; then
+    ROOST_RESUME_HOLDER="cannot create $c"; return 3
+  fi
+  me="$(roost_resume__me)"
+  # Bounded: each turn either claims, refuses, or saw the claim change under
+  # it (another launcher linked or released in between) and judges again.
+  while [ "$try" -lt 5 ]; do
+    try=$((try + 1))
+    if ! cur="$(readlink "$c/owner" 2>/dev/null)"; then
+      # No claim, or a fault roost_shape__claim names (a plain file there).
+      r=0; roost_shape__claim "$c/owner" "$me" || r=$?
+      case "$r" in
+        0|2) roost_resume__put_pane "$c" "$pane"; ROOST_RESUME_CLAIM="$c"; return 0 ;;
+        3) ROOST_RESUME_HOLDER="$ROOST_SHAPE_OWNER_FAULT"; return 3 ;;
+      esac
+      continue
+    fi
+    [ "$cur" = "$me" ] && { roost_resume__put_pane "$c" "$pane"; ROOST_RESUME_CLAIM="$c"; return 0; }
+    p=""
+    [ -f "$c/pane" ] && IFS= read -r p < "$c/pane" 2>/dev/null
+    if [ -n "$p" ]; then
+      if [ -n "$pane" ] && [ "$p" = "$pane" ]; then
+        :   # this pane's own earlier launch: take it over
+      elif roost_resume__pane_exists "$p"; then
+        ROOST_RESUME_HOLDER="$p"; return 1
+      fi
+      # The same pane, or a gone one: stale whatever its claimer's
+      # liveness. Remove that record — only if it is still the one judged —
+      # and link this run's; a launcher that linked first wins, and this one
+      # judges what it left.
+      [ "$(readlink "$c/owner" 2>/dev/null)" = "$cur" ] && rm -f "$c/owner"
+      continue
+    fi
+    # No pane named: the owner's liveness decides. roost_shape__claim does
+    # exactly that — refuses a live owner, takes over a dead or reused one.
+    r=0; roost_shape__claim "$c/owner" "$me" || r=$?
+    case "$r" in
+      0|2) roost_resume__put_pane "$c" "$pane"; ROOST_RESUME_CLAIM="$c"; return 0 ;;
+      3) ROOST_RESUME_HOLDER="$ROOST_SHAPE_OWNER_FAULT"; return 3 ;;
+    esac
+    # A live owner. If it has named a pane since, judge that instead.
+    p=""
+    [ -f "$c/pane" ] && IFS= read -r p < "$c/pane" 2>/dev/null
+    [ -n "$p" ] && continue
+    ROOST_RESUME_HOLDER="pid ${ROOST_SHAPE_OWNER_PID:-?}"
+    return 1
+  done
+  ROOST_RESUME_HOLDER="the claim $c kept changing"
+  return 1
+}
+
+# roost_resume_claim_pane CLAIM %N — name the pane once it exists (a new
+# window). Only on a claim this run holds.
+roost_resume_claim_pane() {
+  [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ] || return 1
+  roost_resume__put_pane "$1" "$2"
+}
+
+# roost_resume_release CLAIM — remove a claim, only when its owner record is
+# this run's (§4.1 step 5a, "release only what this run took"). A claim found
+# and refused is never touched; neither is one another launcher took over
+# after this run's pane went away. Renamed aside first (roost_shape_owner_drop),
+# so a reader never finds half of it.
+roost_resume_release() {
+  [ -n "${1:-}" ] || return 0
+  [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ] || return 0
+  roost_shape_owner_drop "$1"
+}
