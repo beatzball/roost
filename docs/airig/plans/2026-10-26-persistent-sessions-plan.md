@@ -320,6 +320,8 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` | restore waits after winning `F → F.used` (T2), before that pane's respawn | 1.12 |
 | `ROOST_TEST_REVIVE_HOLD=FILE` | `revive` waits after its rename to `%N.launching`, its `origin` line and its claim, before step 7 (in Part 2, with no pending file: after its claim, before step 7) | 3.8; added early in Part 2's review round 1 (B3) |
 | `ROOST_TEST_CLAIM_HOLD_AFTER_LINK=FILE` | `roost_resume_claim` waits right after it links its owner record, before it writes its pane file | review round 1 of Part 2 (B1) |
+| `ROOST_TEST_CLAIM_PAUSE_STALE=FILE` | `roost_resume_claim` waits after it judged a claim stale (its pane is gone, or is this run's own), before it takes the takeover claim | review round 2 of Part 2 (R2-B1) |
+| `ROOST_TEST_CLAIM_PAUSE_TAKEN=FILE` | `roost_resume__take_stale` waits after it removed the judged record, before it links its own | review round 2 of Part 2 (R2-B1) |
 | `ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN=FILE` | `revive` waits right after that rename, before its `origin` line | 3.8 |
 | `ROOST_TEST_LOOP_HOLD=FILE` | a hand restore waits after placement, before its resume loop (this plan's seam, not the spec's: it lets Task 3.3 read the placed state before Task 3.5's loop exists) | 3.3 |
 | `ROOST_TEST_RESUME_HOLD=FILE` | the engine waits after its rename to `.launching` and its claim, before the respawn | 3.5 |

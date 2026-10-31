@@ -442,22 +442,62 @@ roost_resume_claim_held() {
   [ -n "${1:-}" ] && [ "$(readlink "$1/owner" 2>/dev/null)" = "$(roost_resume__me)" ]
 }
 
-# roost_resume__take_stale CLAIM OWNER — remove the owner link judged stale,
-# and only that one. A `readlink`, then an `rm`, removed whatever link was
-# there at the rm — a launcher that took the claim over in between lost its
-# link to this one. So the link is moved aside in one rename, THEN read: the
-# judged record is deleted; any other record is put back with `ln -s`, which
-# fails only when yet another launcher linked meanwhile. Exit 1 then, and the
-# caller refuses: two launchers holding one claim is the one outcome this
-# exists to stop, and refusing is the safe side.
+# roost_resume__stale CLAIM OWNER PANE -> exit 0 when the claim's pane file,
+# written under OWNER, names a pane that makes the claim stale: this run's
+# own PANE (an in-place revive whose earlier launch never identified), or a
+# pane that is gone.
+roost_resume__stale() {
+  roost_resume__pane_of "$1" "$2"
+  [ -n "$ROOST_RESUME_P" ] || return 1
+  [ -n "$3" ] && [ "$ROOST_RESUME_P" = "$3" ] && return 0
+  ! roost_resume__pane_exists "$ROOST_RESUME_P"
+}
+
+# roost_resume__take_stale CLAIM OWNER PANE — remove the owner link judged
+# stale, and only that one; then link this run's, unless another launcher
+# links first. Exit 0 to judge the claim again (whoever holds it now), 1 when
+# another launcher kept the takeover of this record for too long (the caller
+# refuses), 3 when it cannot be taken at all (ROOST_SHAPE_OWNER_FAULT).
+#
+# NEVER MOVE OR REMOVE A LINK THAT HAS NOT BEEN JUDGED (review round 2, Opus
+# R2-B1). The round-1 version moved the link aside in one rename and read it
+# after. Between that rename and its put-back there was no owner link at all,
+# and a third launcher arriving then linked and launched while the put-back
+# failed: two launches, measured. So it uses Part 1's sub-claim instead, the
+# one roost_shape__claim takes for a dead record: a claim on a name derived
+# from exactly this (path, record) pair (roost_shape__takeover). Only its
+# holder may remove the record, and it judges again WHILE it holds it — the
+# link is still that record, and its pane file still names a pane that makes
+# it stale. A launcher that judged the same record and comes later finds the
+# link changed and removes nothing. The one gap left is between the `rm` and
+# this run's `ln -s`, and it is safe: whoever links there owns the claim and
+# this run judges it like any other (Opus R2-N2 goes with it: no run loses
+# its link to a takeover that never judged it).
 roost_resume__take_stale() {
-  local aside="$1/owner.stale.$$" got
-  mv "$1/owner" "$aside" 2>/dev/null || return 0
-  got="$(readlink "$aside" 2>/dev/null)"
-  if [ "$got" = "$2" ]; then rm -f "$aside"; return 0; fi
-  if ln -s "$got" "$1/owner" 2>/dev/null; then rm -f "$aside"; return 0; fi
-  rm -f "$aside"
-  return 1
+  local path="$1/owner" sub me r i=0
+  me="$(roost_resume__me)"
+  sub="$(roost_shape__takeover "$path" "$2")"
+  while :; do
+    r=0; roost_shape__claim "$sub" "$me" || r=$?
+    [ "$r" = 1 ] || break
+    # Another launcher holds the takeover of this same record. When the link
+    # is no longer that record, there is nothing left here to take; else wait
+    # for it, bounded.
+    [ "$(readlink "$path" 2>/dev/null)" = "$2" ] || return 0
+    i=$((i + 1))
+    [ "$i" -ge 40 ] && return 1
+    sleep 0.05
+  done
+  [ "$r" = 3 ] && return 3
+  if [ "$(readlink "$path" 2>/dev/null)" = "$2" ] && roost_resume__stale "$1" "$2" "$3"; then
+    rm -f "$path"
+    roost_shape__seam ROOST_TEST_CLAIM_PAUSE_TAKEN
+    # Linked here, the pane file still the previous owner's: the same point
+    # the fresh-claim path holds at (the round-1 two-launcher test's seam).
+    ln -s "$me" "$path" 2>/dev/null && roost_shape__seam ROOST_TEST_CLAIM_HOLD_AFTER_LINK
+  fi
+  rm -f "$sub"
+  return 0
 }
 
 # roost_resume_claim DIR HARNESS ID PANE — claim the conversation.
@@ -510,19 +550,22 @@ roost_resume_claim() {
     fi
     roost_resume__pane_of "$c" "$cur"; p="$ROOST_RESUME_P"
     if [ -n "$p" ]; then
-      if [ -n "$pane" ] && [ "$p" = "$pane" ]; then
-        :   # this pane's own earlier launch: take it over
-      elif roost_resume__pane_exists "$p"; then
+      # Another pane that exists: refused, whatever its claimer's liveness.
+      if ! roost_resume__stale "$c" "$cur" "$pane"; then
         ROOST_RESUME_HOLDER="$p"; return 1
       fi
-      # The same pane, or a gone one: stale whatever its claimer's
-      # liveness. Remove that record — only that one, in one rename
-      # (roost_resume__take_stale) — and link this run's; a launcher that
-      # linked first wins, and this one judges what it left.
-      if ! roost_resume__take_stale "$c" "$cur"; then
-        ROOST_RESUME_HOLDER="another launcher (the claim $c changed while it was taken over)"
-        return 1
-      fi
+      # This pane's own earlier launch, or a gone pane: stale whatever its
+      # claimer's liveness. Remove that record — only that one, judged again
+      # under its takeover claim (roost_resume__take_stale) — and link this
+      # run's; a launcher that linked first wins, and this one judges what
+      # it left.
+      roost_shape__seam ROOST_TEST_CLAIM_PAUSE_STALE
+      r=0; roost_resume__take_stale "$c" "$cur" "$pane" || r=$?
+      case "$r" in
+        1) ROOST_RESUME_HOLDER="another launcher (the claim $c changed while it was taken over)"
+           return 1 ;;
+        3) ROOST_RESUME_HOLDER="$ROOST_SHAPE_OWNER_FAULT"; return 3 ;;
+      esac
       continue
     fi
     # No pane named: the owner's liveness decides. roost_shape__claim does

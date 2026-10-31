@@ -685,6 +685,53 @@ assert_eq "$n0|$(grep -c "claude --resume $U7" "$STUB_LOG")" "1|1" "two launcher
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null; LIVEPID=""
 for o in "$SHAPE_TMP/a.out" "$SHAPE_TMP/b.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
 
+# Three launchers of one stale claim (review round 2, Opus R2-B1): the
+# first version moved the owner link aside BEFORE it knew whose link it was,
+# so a third launcher in that gap found no owner, linked and launched — two
+# launches. B is held after it judged the dead record stale; C runs to the
+# end; then B goes on, and if it removes a link (the old code did, C's) it is
+# held again while D runs to the end. Exactly one launch.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+G2="$(gone_pane)"
+mkdir -p "$SD/claims/$BOOT/claude-$U7"
+ln -s "999999 Thu Jan  1 00:00:00 1970" "$SD/claims/$BOOT/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$SD/claims/$BOOT/claude-$U7/pane"
+HS="$SHAPE_TMP/hold-stale"; HT="$SHAPE_TMP/hold-taken"; rm -f "$HS" "$HS".at.* "$HT" "$HT".at.* "$SHAPE_TMP/b.rc"
+( ROOST_TEST_CLAIM_PAUSE_STALE="$HS" ROOST_TEST_CLAIM_PAUSE_TAKEN="$HT" R revive "$G" > "$SHAPE_TMP/b.out" 2>"$SHAPE_TMP/b.err"; echo $? > "$SHAPE_TMP/b.rc" ) &
+BPID=$!
+i=0; while [ "$i" -lt 100 ] && ! ls "$HS".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+ls "$HS".at.* >/dev/null 2>&1; assert_true $? "(seam) launcher B is held after judging the dead record stale"
+R revive "$G" > "$SHAPE_TMP/c.out" 2>"$SHAPE_TMP/c.err"; rcC=$?
+: > "$HS"
+# B either removes a link (then it is held at the second seam) or finishes.
+i=0; while [ "$i" -lt 100 ] && ! ls "$HT".at.* >/dev/null 2>&1 && [ ! -s "$SHAPE_TMP/b.rc" ]; do sleep 0.1; i=$((i+1)); done
+R revive "$G" > "$SHAPE_TMP/d.out" 2>"$SHAPE_TMP/d.err"; rcD=$?
+: > "$HT"; wait "$BPID"; rcB="$(cat "$SHAPE_TMP/b.rc")"
+sleep 1
+n0=0; for x in "$rcB" "$rcC" "$rcD"; do [ "$x" = 0 ] && n0=$((n0+1)); done
+assert_eq "$n0|$(grep -c "claude --resume $U7" "$STUB_LOG")" "1|1" "three launchers of one stale claim: exactly one exits 0, and one launch (B $rcB, C $rcC, D $rcD)"
+for o in "$SHAPE_TMP/b.out" "$SHAPE_TMP/c.out" "$SHAPE_TMP/d.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
+# The one gap left is safe: B removed the judged record and is held before it
+# links its own; D links first and launches, and B, whose link then fails,
+# launches nothing.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+G2="$(gone_pane)"
+mkdir -p "$SD/claims/$BOOT/claude-$U7"
+ln -s "999999 Thu Jan  1 00:00:00 1970" "$SD/claims/$BOOT/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$SD/claims/$BOOT/claude-$U7/pane"
+rm -f "$HT" "$HT".at.* "$SHAPE_TMP/b.rc"
+( ROOST_TEST_CLAIM_PAUSE_TAKEN="$HT" R revive "$G" > "$SHAPE_TMP/b.out" 2>"$SHAPE_TMP/b.err"; echo $? > "$SHAPE_TMP/b.rc" ) &
+BPID=$!
+i=0; while [ "$i" -lt 100 ] && ! ls "$HT".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+ls "$HT".at.* >/dev/null 2>&1; assert_true $? "(seam) launcher B is held after removing the stale record, before it links its own"
+R revive "$G" > "$SHAPE_TMP/d.out" 2>"$SHAPE_TMP/d.err"; rcD=$?
+: > "$HT"; wait "$BPID"; rcB="$(cat "$SHAPE_TMP/b.rc")"
+sleep 1
+assert_eq "$rcD|$rcB|$(grep -c "claude --resume $U7" "$STUB_LOG")" "0|13|1" "...a launcher that links in that gap wins; the held one is refused, one launch"
+for o in "$SHAPE_TMP/b.out" "$SHAPE_TMP/d.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
+
 # Saving off (ROOST_SHAPE_DIR empty) still claims (review round 1, Codex B4):
 # claims keep the same layout in a directory of their own under roost's state
 # directory, so two revives of one gone record still launch once.
