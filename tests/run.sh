@@ -56,6 +56,11 @@ shard_weight() {
     # Added for persistent sessions Part 1 (#191), timed once on the dev Mac,
     # not off a CI log: 34 s at Task 1.13, 40 s with Task 1.14's cases.
     test-shape-place.sh) echo 40 ;;
+    # Added for persistent sessions Part 2 (#57), not off a CI log: a
+    # reviewer timed 60 s on the dev Mac (tmux 3.6) and 61 s on 3.8 at 146
+    # cases; review round 1 added 23 more. 151 s was seen once on a loaded
+    # machine (load 10), so it is not the figure.
+    test-revive.sh) echo 70 ;;
     *) echo 5 ;;
   esac
 }
