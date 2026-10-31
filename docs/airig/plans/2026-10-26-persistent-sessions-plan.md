@@ -1060,7 +1060,9 @@ Unattended: yes
 
 No pending record exists yet, so `revive` meets only panes with **no file**
 (§4.7's last row) and gone panes. Part 3 teaches it the pending states.
-`claims/<boot>/` ships here.
+`claims/<boot>/` ships here, under
+`${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/`, not the shape
+directory (coordinator ruling, Part 2 review round 2; Task 2.5 says why).
 
 **After this part merges, a user can:** `roost revive %N` a pane whose agent
 crashed or was `/exit`ed and get the same conversation back in the same `%N`;
@@ -1199,6 +1201,12 @@ from which of R and the worktree `claude --resume ID` finds the conversation.
    beside a new live link read as "stale, take it over" — two launches of
    one conversation (Part 2 review round 1, B1). A pane file whose second
    line is not the current owner names nothing. Do not change either back.
+   **Where:** `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`,
+   whatever the saving setting, never the shape directory (coordinator ruling, Part 2 review round 2,
+   Opus R2-N1 and Fable N2): a claim placed by the caller's
+   `ROOST_SHAPE_DIR` was invisible to a launcher with another setting, and
+   one gone record launched twice. Every launcher finds it through
+   `roost_resume_claims_dir`.
    When the link exists, the existing claim is judged in **two stages**,
    §4.1 step 5a's rule:
    - **it names a pane** — the same pane as this claim → taken over (an
@@ -2337,8 +2345,8 @@ a new session (`setsid` where present). Once each. Never the live server.
    save (no `persist-on` save in between), the job places both. `--at-login`
    writes `restoring/` first, waits up to 60 s for
    the socket directory, writes `login/<os-boot>` and `login.log` (0600,
-   halved past 1 MB), removes other boots' `pending/` and `claims/` after its
-   own files, and always exits 0. **`closed/` is not swept with them** (§3.6a,
+   halved past 1 MB), removes other boots' `pending/` and `claims/` (the latter under
+   `launch-claims/<server>/`, Task 2.5) after its own files, and always exits 0. **`closed/` is not swept with them** (§3.6a,
    §4.6): `closed/<boot>/` is removed only when **no** save in `shape` or
    `history/`, not `declined`, and not a live offer's `offer/save` names that
    boot. **Ring case (red):** a B1 save kept in `history/`,

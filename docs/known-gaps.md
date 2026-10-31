@@ -111,20 +111,22 @@ conversation. What it does NOT know:
   below), and `revive` of such a pane says it has no recorded conversation
   (13). The live smoke sets the key by hand to test the resume itself.
 - **A launch claim is released only by a pane that is gone, until Part 4.**
-  Every launch takes `claims/<boot>/<harness>-<id>/` (in the shape directory,
-  or the saving-off directory below) and keeps it after a successful launch. The spec releases it when identity
+  Every launch takes `claims/<boot>/<harness>-<id>/` (in the directory
+  below) and keeps it after a successful launch. The spec releases it when identity
   lands with the same id or the pane dies, through hooks Part 4 adds; until
   then a claim naming a pane that still exists refuses another pane's revive
   of the same conversation (13, naming that pane), even after the agent in
   it has moved on. Closing that pane frees it.
-- **With saving off** (`ROOST_SHAPE_DIR=`) there is no shape directory, so
-  claims live in a directory of their own with the same layout,
-  `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`.
-  Part 3's worker and a hand restore must use the same place
-  (`roost_resume_claims_dir`), or a revive and a worker would not see each
-  other's claims with saving off. When neither directory can be made,
-  `revive` refuses (exit 1, naming the directory) rather than launch
-  unclaimed.
+- **Claims live in one place, saving on or off:**
+  `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`,
+  never the shape directory (coordinator ruling, Part 2 review round 2). Round 1 put them in the shape
+  directory with saving on and here with it off, so two launchers with
+  different `ROOST_SHAPE_DIR` settings did not see each other's claims and
+  one gone record launched twice. Two launchers still need the same
+  `XDG_STATE_HOME` (or `HOME`) to share claims; Part 3's worker and a hand
+  restore must find the place through `roost_resume_claims_dir`. When it
+  cannot be made, `revive` refuses (exit 1, naming the directory) rather
+  than launch unclaimed.
 - **A shell pane running a job.** `#{pane_current_command}` names the
   foreground job, so a shell running `vim` would read as "another program"
   by save's agreement table. `revive` instead asks what the pane's OWN

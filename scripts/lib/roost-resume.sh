@@ -308,7 +308,7 @@ roost_resume_store_check() {
 # identity yet — both launched. So every launcher takes this claim before it
 # launches, and releases only a claim it took itself.
 #
-#   <shape dir>/claims/<boot>/<harness>-<session_id>/
+#   ${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/<harness>-<session_id>/
 #     owner   a symbolic link to "PID LSTART": the launcher's pid and start
 #             time, exactly Part 1's owner record (roost-shape.sh,
 #             roost_shape__claim)
@@ -389,44 +389,40 @@ roost_resume__pane_of() {
 # ROOST_RESUME_WHY naming the directory and what failed, when there is none
 # to use. Call it without a $(...) so the reason reaches the caller.
 #
-# CLAIMS DO NOT DEPEND ON SAVING (review round 1, Codex B4 and Fable N2). With
-# saving on they live in the shape directory, `<shape dir>/claims/<boot>/`, as
-# §3.1 lays out. With saving off (ROOST_SHAPE_DIR empty, or no usable root)
-# there is no shape directory, and the first version took no claim at all —
-# two revives of one gone record then both launched. §4.1 step 5a and §5.1a
-# have no saving-off exemption, so claims move to a directory of their own,
-# with the same layout and the same boot key:
+# CLAIMS LIVE IN ONE PLACE, WHATEVER THE SAVING SETTING (coordinator ruling,
+# review round 2, Opus R2-N1 and Fable N2):
 #
 #   ${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/
 #
-# under the state directory beside the pane records, so `rm -rf
-# ~/.local/state/roost` still forgets them. When neither can be made or
-# secured, the caller REFUSES (exit 1): launching with no claim is what this
-# exists to stop, and the message names the storage error, never "saving is
-# off".
+# Round 1 kept them in the shape directory, `<shape dir>/claims/<boot>/` as
+# §3.1 laid out, and moved them here only when saving was off (before that,
+# saving off took no claim at all: Codex B4). But the place then followed the
+# CALLER's ROOST_SHAPE_DIR, so two launchers with different settings — a
+# person who turned saving off in one shell, a revive started in another, or
+# from Part 3 a worker running with the server's environment beside a hand
+# `revive` with the person's — did not see each other's claims, and one gone
+# record launched twice, measured. A claim is keyed by server and boot, not by
+# a shape, so it needs no shape directory: always here, under the state
+# directory beside the pane records, so `rm -rf ~/.local/state/roost` still
+# forgets them. When it cannot be made or secured, the caller REFUSES (exit
+# 1): launching with no claim is what this exists to stop, and the message
+# names the storage error, never "saving is off".
 roost_resume_claims_dir() {
   local base st key d
   ROOST_RESUME_WHY="" ROOST_RESUME_CLAIMS=""
-  if roost_shape_saving >/dev/null 2>&1; then
-    if ! base="$(roost_shape_dir "$1" "$2" 2>/dev/null)"; then
-      ROOST_RESUME_WHY="cannot make or secure the shape directory $(roost_shape_saving)/$(roost_shape_key "$1" "$2")"
-      return 1
-    fi
-  else
-    st="${XDG_STATE_HOME:-}"
-    case "$st" in
-      /*) ;;
-      *) case "${HOME:-}" in
-           /*) st="$HOME/.local/state" ;;
-           *) ROOST_RESUME_WHY="no state directory for launch claims (neither XDG_STATE_HOME nor HOME is an absolute path)"; return 1 ;;
-         esac ;;
-    esac
-    key="$(roost_shape_key "$1" "$2")"
-    base="$st/roost/launch-claims/$key"
-    if ! ( umask 077; mkdir -p "$base" ) 2>/dev/null || ! chmod go-rwx "$base" 2>/dev/null; then
-      ROOST_RESUME_WHY="cannot make or secure $base"
-      return 1
-    fi
+  st="${XDG_STATE_HOME:-}"
+  case "$st" in
+    /*) ;;
+    *) case "${HOME:-}" in
+         /*) st="$HOME/.local/state" ;;
+         *) ROOST_RESUME_WHY="no state directory for launch claims (neither XDG_STATE_HOME nor HOME is an absolute path)"; return 1 ;;
+       esac ;;
+  esac
+  key="$(roost_shape_key "$1" "$2")"
+  base="$st/roost/launch-claims/$key"
+  if ! ( umask 077; mkdir -p "$base" ) 2>/dev/null || ! chmod go-rwx "$base" 2>/dev/null; then
+    ROOST_RESUME_WHY="cannot make or secure $base"
+    return 1
   fi
   d="$base/claims/$3"
   if ! ( umask 077; mkdir -p "$d" ) 2>/dev/null; then
@@ -501,7 +497,7 @@ roost_resume__take_stale() {
 }
 
 # roost_resume_claim DIR HARNESS ID PANE — claim the conversation.
-#   DIR    <shape dir>/claims/<boot>, made 0700 when missing
+#   DIR    roost_resume_claims_dir's directory for this boot
 #   PANE   the target pane, or empty when it does not exist yet
 #   0  claimed: fresh, or a stale claim taken over. ROOST_RESUME_CLAIM is its
 #      path, for roost_resume_claim_pane and roost_resume_release

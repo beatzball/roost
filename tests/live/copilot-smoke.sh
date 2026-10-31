@@ -464,7 +464,10 @@ else
   done
   [ "$(tmux -S "$S" show-environment -g COPILOT_HOME 2>/dev/null)" = "COPILOT_HOME=$COPILOT_HOME" ] \
     || die "revive: the server's COPILOT_HOME is not this run's — refusing to resume into a real home"
-  out="$(ROOST_SOCKET="$S" "$HERE/bin/roost" revive "$rv" 2>"$L/revive.err")"; rc=$?
+  # Launch claims live under the state directory (review round 2), and this
+  # file keeps the real one for the harness's own sake: the revive's claim
+  # goes to this run's temp directory instead.
+  out="$(XDG_STATE_HOME="$D/state" ROOST_SOCKET="$S" "$HERE/bin/roost" revive "$rv" 2>"$L/revive.err")"; rc=$?
   if [ "$rc:$out" = "0:$rv" ]; then ok "roost revive exits 0 and keeps the same %N ($rv)"
   else no "roost revive exited $rc, printed '$out': $(cat "$L/revive.err")"; fi
   # The two consents are asked again on a resume (spec §2.8, "folder trust and

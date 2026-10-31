@@ -267,6 +267,8 @@ ROOST="$PWD/bin/roost"
 R() { env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST" "$@"; }
 SD="$ROOST_SHAPE_DIR/roost"
 BOOT="$(TL display -p '#{start_time}-#{pid}')"
+# Every claim, saving on or off (review round 2): launch-claims/<server>/claims/<boot>/.
+CLB="$XDG_STATE_HOME/roost/launch-claims/roost/claims/$BOOT"
 popt() { TL show-options -pqv -t "$1" "$2" 2>/dev/null; }
 ppid_of() { TL display -p -t "$1" '#{pane_pid}'; }
 # setid PANE HARNESS ID CWD [TRANSCRIPT] — the identity a harness's adapter
@@ -283,7 +285,7 @@ four() { printf '%s|%s|%s|%s' "$(popt "$1" @roost-session)" "$(popt "$1" @roost-
 # writes nothing to the stub log and the log holds only what revive launched.
 stubpane() { TL new-window -d -P -F '#{pane_id}' -t shp: -c "${2:-$SHAPE_TMP}" "$STUB_BIN/${1:-claude} 600"; }
 shpane() { TL new-window -d -P -F '#{pane_id}' -t shp: -c "${1:-$SHAPE_TMP}" 'ENV= exec /bin/sh'; }
-reset() { rm -rf "$SD/claims"; : > "$STUB_LOG"; }
+reset() { rm -rf "$XDG_STATE_HOME/roost/launch-claims"; : > "$STUB_LOG"; }
 wait_log() { # PATTERN — up to 5 s for a launch line
   local i=0
   while [ "$i" -lt 50 ]; do grep -q -- "$1" "$STUB_LOG" 2>/dev/null && return 0; sleep 0.1; i=$((i+1)); done
@@ -314,7 +316,7 @@ assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$D1R" "...in the transc
 assert_eq "$(four "$P")|$(popt "$P" @agent_state)" "||||" "...@agent_state and the identity four were cleared before it"
 assert_eq "$(popt "$P" remain-on-exit)" "failed" "...remain-on-exit failed is set on the pane"
 assert_contains "$(cat "$SHAPE_TMP/err")" "launched claude --resume $U4" "...one stderr line names the command"
-assert_eq "$(readlink "$SD/claims/$BOOT/claude-$U4/owner" >/dev/null && head -n 1 "$SD/claims/$BOOT/claude-$U4/pane")" "$P" "...and its claim names the pane (kept: the launch succeeded)"
+assert_eq "$(readlink "$CLB/claude-$U4/owner" >/dev/null && head -n 1 "$CLB/claude-$U4/pane")" "$P" "...and its claim names the pane (kept: the launch succeeded)"
 
 # working: untouched.
 reset
@@ -323,7 +325,7 @@ setid "$P" claude "$U4" "$D1R"; TL set-option -p -t "$P" @agent_state working
 pid0="$(ppid_of "$P")"
 R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc|$(ppid_of "$P")|$(popt "$P" @roost-session)" "1|$pid0|$U4" "a working pane: exit 1, untouched"
-[ -e "$SD/claims/$BOOT/claude-$U4" ] && left=yes || left=no
+[ -e "$CLB/claude-$U4" ] && left=yes || left=no
 assert_eq "$left" "no" "...and the claim it took is released"
 TL kill-pane -t "$P"
 
@@ -342,7 +344,7 @@ ls "$HOLD".at.* >/dev/null 2>&1; assert_true $? "(seam) revive is held after its
 TL set-option -p -t "$P" @agent_state working
 : > "$HOLD"; wait "$HPID"
 assert_eq "$(cat "$SHAPE_TMP/h.rc")|$(ppid_of "$P")|$(popt "$P" @agent_state)|$(popt "$P" @roost-session)" "1|$pid0|working|$U4" "a pane that went working after revive first read it: exit 1, untouched (badge and identity kept)"
-[ -e "$SD/claims/$BOOT/claude-$U4" ] && left=yes || left=no
+[ -e "$CLB/claude-$U4" ] && left=yes || left=no
 assert_eq "$left" "no" "...and the claim it took is released"
 TL kill-pane -t "$P"
 
@@ -547,14 +549,14 @@ U6=3fa3c0de-6666-4abc-8def-000000000006
 stub_store_add "$U6" "$D1R"
 Q="$(shpane)"; wait_cmd "$Q" sh
 sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
-mkdir -p "$SD/claims/$BOOT/claude-$U6"; ln -s "$LIVEPID $LIVELST" "$SD/claims/$BOOT/claude-$U6/owner"
-printf '%s\n%s\n' "$Q" "$LIVEPID $LIVELST" > "$SD/claims/$BOOT/claude-$U6/pane"
-cl_before="$(readlink "$SD/claims/$BOOT/claude-$U6/owner")|$(head -n 1 "$SD/claims/$BOOT/claude-$U6/pane")"
+mkdir -p "$CLB/claude-$U6"; ln -s "$LIVEPID $LIVELST" "$CLB/claude-$U6/owner"
+printf '%s\n%s\n' "$Q" "$LIVEPID $LIVELST" > "$CLB/claude-$U6/pane"
+cl_before="$(readlink "$CLB/claude-$U6/owner")|$(head -n 1 "$CLB/claude-$U6/pane")"
 P="$(stubpane claude)"; wait_cmd "$P" claude; setid "$P" claude "$U6" "$D1R"
 R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "13" "a live claim for $Q: a second pane carrying the key is refused (exit 13)"
 assert_contains "$(cat "$SHAPE_TMP/err")" "already being launched in $Q" "...naming the claim's pane"
-assert_eq "$(readlink "$SD/claims/$BOOT/claude-$U6/owner")|$(head -n 1 "$SD/claims/$BOOT/claude-$U6/pane")" "$cl_before" "...and the claim is left byte for byte"
+assert_eq "$(readlink "$CLB/claude-$U6/owner")|$(head -n 1 "$CLB/claude-$U6/pane")" "$cl_before" "...and the claim is left byte for byte"
 kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null; LIVEPID=""
 TL kill-pane -t "$P"; TL kill-pane -t "$Q"
 
@@ -648,7 +650,7 @@ reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 first="$(R revive "$G" 2>/dev/null)"; rc=$?
 assert_eq "$rc" "0" "two revives of one gone record: the first launches (exit 0)"
-assert_eq "$(head -n 1 "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "$first" "...its claim names the new pane"
+assert_eq "$(head -n 1 "$CLB/claude-$U7/pane" 2>/dev/null)" "$first" "...its claim names the new pane"
 wait_log "claude --resume $U7"
 n0="$(nwin)"
 R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
@@ -659,7 +661,7 @@ TL kill-pane -t "$first"
 third="$(R revive "$G" 2>/dev/null)"; rc=$?
 assert_eq "$rc" "0" "...the first new pane killed, a third launches (a claim naming a gone pane is stale)"
 i=0; while [ "$i" -lt 50 ] && [ "$(grep -c "claude --resume $U7" "$STUB_LOG")" != 2 ]; do sleep 0.1; i=$((i+1)); done
-assert_eq "$(grep -c "claude --resume $U7" "$STUB_LOG")|$(head -n 1 "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "2|$third" "...a second launch, and the claim now names the third's pane"
+assert_eq "$(grep -c "claude --resume $U7" "$STUB_LOG")|$(head -n 1 "$CLB/claude-$U7/pane" 2>/dev/null)" "2|$third" "...a second launch, and the claim now names the third's pane"
 TL kill-pane -t "$third" 2>/dev/null
 
 # Two launchers overlap on a STALE claim (it names a gone pane): exactly one
@@ -669,9 +671,9 @@ reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 G2="$(gone_pane)"
 sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
-mkdir -p "$SD/claims/$BOOT/claude-$U7"
-ln -s "$LIVEPID $LIVELST" "$SD/claims/$BOOT/claude-$U7/owner"
-printf '%s\n%s\n' "$G2" "$LIVEPID $LIVELST" > "$SD/claims/$BOOT/claude-$U7/pane"
+mkdir -p "$CLB/claude-$U7"
+ln -s "$LIVEPID $LIVELST" "$CLB/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "$LIVEPID $LIVELST" > "$CLB/claude-$U7/pane"
 HOLD="$SHAPE_TMP/hold-link"; rm -f "$HOLD" "$HOLD".at.*
 ( ROOST_TEST_CLAIM_HOLD_AFTER_LINK="$HOLD" R revive "$G" > "$SHAPE_TMP/a.out" 2>"$SHAPE_TMP/a.err"; echo $? > "$SHAPE_TMP/a.rc" ) &
 APID=$!
@@ -694,9 +696,9 @@ for o in "$SHAPE_TMP/a.out" "$SHAPE_TMP/b.out"; do [ -s "$o" ] && TL kill-pane -
 reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 G2="$(gone_pane)"
-mkdir -p "$SD/claims/$BOOT/claude-$U7"
-ln -s "999999 Thu Jan  1 00:00:00 1970" "$SD/claims/$BOOT/claude-$U7/owner"
-printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$SD/claims/$BOOT/claude-$U7/pane"
+mkdir -p "$CLB/claude-$U7"
+ln -s "999999 Thu Jan  1 00:00:00 1970" "$CLB/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$CLB/claude-$U7/pane"
 HS="$SHAPE_TMP/hold-stale"; HT="$SHAPE_TMP/hold-taken"; rm -f "$HS" "$HS".at.* "$HT" "$HT".at.* "$SHAPE_TMP/b.rc"
 ( ROOST_TEST_CLAIM_PAUSE_STALE="$HS" ROOST_TEST_CLAIM_PAUSE_TAKEN="$HT" R revive "$G" > "$SHAPE_TMP/b.out" 2>"$SHAPE_TMP/b.err"; echo $? > "$SHAPE_TMP/b.rc" ) &
 BPID=$!
@@ -718,9 +720,9 @@ for o in "$SHAPE_TMP/b.out" "$SHAPE_TMP/c.out" "$SHAPE_TMP/d.out"; do [ -s "$o" 
 reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 G2="$(gone_pane)"
-mkdir -p "$SD/claims/$BOOT/claude-$U7"
-ln -s "999999 Thu Jan  1 00:00:00 1970" "$SD/claims/$BOOT/claude-$U7/owner"
-printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$SD/claims/$BOOT/claude-$U7/pane"
+mkdir -p "$CLB/claude-$U7"
+ln -s "999999 Thu Jan  1 00:00:00 1970" "$CLB/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$CLB/claude-$U7/pane"
 rm -f "$HT" "$HT".at.* "$SHAPE_TMP/b.rc"
 ( ROOST_TEST_CLAIM_PAUSE_TAKEN="$HT" R revive "$G" > "$SHAPE_TMP/b.out" 2>"$SHAPE_TMP/b.err"; echo $? > "$SHAPE_TMP/b.rc" ) &
 BPID=$!
@@ -732,31 +734,49 @@ sleep 1
 assert_eq "$rcD|$rcB|$(grep -c "claude --resume $U7" "$STUB_LOG")" "0|13|1" "...a launcher that links in that gap wins; the held one is refused, one launch"
 for o in "$SHAPE_TMP/b.out" "$SHAPE_TMP/d.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
 
-# Saving off (ROOST_SHAPE_DIR empty) still claims (review round 1, Codex B4):
-# claims keep the same layout in a directory of their own under roost's state
-# directory, so two revives of one gone record still launch once.
+# Saving off (ROOST_SHAPE_DIR empty) still claims (review round 1, Codex B4),
+# in the same directory as with saving on (round 2), so two revives of one
+# gone record still launch once.
 reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 first="$(ROOST_SHAPE_DIR="" R revive "$G" 2>"$SHAPE_TMP/err")"; rc=$?
 assert_eq "$rc" "0" "saving off: the first revive of a gone record launches"
-FB="$XDG_STATE_HOME/roost/launch-claims/roost/claims/$BOOT/claude-$U7"
-assert_eq "$(head -n 1 "$FB/pane" 2>/dev/null)" "$first" "...its claim is under the state directory's launch-claims/<server>/claims/<boot>/"
+assert_eq "$(head -n 1 "$CLB/claude-$U7/pane" 2>/dev/null)" "$first" "...its claim is under the state directory's launch-claims/<server>/claims/<boot>/"
 wait_log "claude --resume $U7"
 ROOST_SHAPE_DIR="" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc|$(grep -c "claude --resume $U7" "$STUB_LOG")" "13|1" "...the second is refused (13), one launch"
 TL kill-pane -t "$first" 2>/dev/null
-# No claim directory at all: refused, naming the storage error, nothing run.
+# Saving on, then off, for one gone record (review round 2, Opus R2-N1 and
+# Fable N2): claims live in ONE place whatever the saving setting, so the
+# second revive sees the first's claim. Before, saving on put it in the shape
+# directory and saving off under launch-claims/, and both launched.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+first="$(R revive "$G" 2>/dev/null)"; rc=$?
+wait_log "claude --resume $U7"
+ROOST_SHAPE_DIR="" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc2=$?
+assert_eq "$rc|$rc2|$(grep -c "claude --resume $U7" "$STUB_LOG")" "0|13|1" "saving on, then off, one gone record: the second is refused (13), one launch"
+assert_contains "$(cat "$SHAPE_TMP/err")" "$first" "...naming the first pane"
+TL kill-pane -t "$first" 2>/dev/null
+# A shape directory that cannot be made does not stop a claim: claims never
+# live there (review round 2).
 reset
 G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
 : > "$SHAPE_TMP/not-a-dir"
+out="$(ROOST_SHAPE_DIR="$SHAPE_TMP/not-a-dir/shapes" R revive "$G" 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc|$(head -n 1 "$CLB/claude-$U7/pane" 2>/dev/null)" "0|$out" "saving on, its directory cannot be made: the claim is under launch-claims/ all the same, and it launches"
+TL kill-pane -t "$out" 2>/dev/null
+# No claim directory at all: refused, naming the storage error, nothing run —
+# saving on or off.
+reset
 n0="$(nwin)"
-ROOST_SHAPE_DIR="$SHAPE_TMP/not-a-dir/shapes" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving on, its directory cannot be made: exit 1, no window, nothing launched"
-assert_contains "$(cat "$SHAPE_TMP/err")" "not-a-dir/shapes" "...naming the directory"
+XDG_STATE_HOME="$SHAPE_TMP/not-a-dir" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving on, launch-claims/ cannot be made: exit 1, no window, nothing launched"
+assert_contains "$(cat "$SHAPE_TMP/err")" "not-a-dir/roost/launch-claims" "...naming the directory"
 case "$(cat "$SHAPE_TMP/err")" in *"saving is off"*) said=yes ;; *) said=no ;; esac
 assert_eq "$said" "no" "...and not calling it saving off"
 ROOST_SHAPE_DIR="" XDG_STATE_HOME="$SHAPE_TMP/not-a-dir" R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving off, the fallback cannot be made either: exit 1, nothing launched"
+assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "1|$n0|" "saving off, the same: exit 1, nothing launched"
 assert_contains "$(cat "$SHAPE_TMP/err")" "not-a-dir/roost/launch-claims" "...naming the directory"
 
 # The caller's session is believed only when the caller is a pane of THIS

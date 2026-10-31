@@ -429,7 +429,10 @@ for _ in $(seq 1 20); do
 done
 [ "$(tmux -S "$S" display -p -t "$trustpane" '#{pane_current_command}')" = sleep ] \
   || { dump "$trustpane"; die "revive: codex did not leave on /quit"; }
-out="$(ROOST_SOCKET="$S" "$HERE/bin/roost" revive --force "$trustpane" 2>"$L/revive.err")"; rc=$?
+# Launch claims live under the state directory (review round 2), and this
+# file keeps the real one for the harness's own sake: the revive's claim
+# goes to this run's temp directory instead.
+out="$(XDG_STATE_HOME="$D/state" ROOST_SOCKET="$S" "$HERE/bin/roost" revive --force "$trustpane" 2>"$L/revive.err")"; rc=$?
 if [ "$rc:$out" = "0:$trustpane" ]; then ok "roost revive exits 0 and keeps the same %N ($trustpane)"
 else no "roost revive exited $rc, printed '$out': $(cat "$L/revive.err")"; fi
 case "$(tmux -S "$S" display -p -t "$trustpane" '#{pane_start_command}')" in

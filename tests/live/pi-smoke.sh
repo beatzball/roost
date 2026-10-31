@@ -509,7 +509,10 @@ else
   [ "$(tmux -S "$S" show-environment -g PI_CODING_AGENT_DIR 2>/dev/null)" = "PI_CODING_AGENT_DIR=$D/pi-ok" ] \
     || die "revive: the server's PI_CODING_AGENT_DIR is not this run's — refusing to resume into a real home"
   # revive's own store check reads PI_CODING_AGENT_DIR too, so it is passed here.
-  out="$(PI_CODING_AGENT_DIR="$D/pi-ok" ROOST_SOCKET="$S" "$HERE/bin/roost" revive "$rv" 2>"$L/revive.err")"; rc=$?
+  # Launch claims live under the state directory (review round 2), and this
+  # file keeps the real one for the harness's own sake: the revive's claim
+  # goes to this run's temp directory instead.
+  out="$(XDG_STATE_HOME="$D/state" PI_CODING_AGENT_DIR="$D/pi-ok" ROOST_SOCKET="$S" "$HERE/bin/roost" revive "$rv" 2>"$L/revive.err")"; rc=$?
   if [ "$rc:$out" = "0:$rv" ]; then ok "roost revive exits 0 and keeps the same %N ($rv)"
   else no "roost revive exited $rc, printed '$out': $(cat "$L/revive.err")"; fi
   if wait_screen "$rv" "Trust" 5; then tmux -S "$S" send-keys -t "$rv" Enter; sleep 2; fi
