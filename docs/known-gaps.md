@@ -78,6 +78,56 @@ that changes one of these breaks the rule quietly.
   until Part 4 adds `ROOST_SHAPE_KEEP`; nothing saves automatically yet, so it
   grows only with each `roost save`.
 
+### `roost revive`: what it rests on, and what it does not check (#57, #191 Part 2)
+
+Live risk, small. `revive` launches a harness's own resume command and
+checks, before it kills anything, that the harness still holds the
+conversation. What it does NOT know:
+
+- **opencode is never resumed, only printed.** `opencode -s ID` creates a new
+  empty session when the id is unknown (its own `--help`, spec §2.5), and
+  roost has no measured way to ask opencode which ids it holds. So `revive`
+  prints `cd DIR && opencode -s ID` and exits 13. Running it is the person's
+  call.
+- **A resumed Claude keeps its model and permission mode**, measured once on
+  Claude Code 2.1.316 (docs/airig/probes/persist-2-resume-flags.md): a
+  flag-less `claude --resume ID` came back with `--model haiku` and
+  `--permission-mode plan`, against a control that starts on Opus in auto
+  mode. Not a contract; `revive` passes no launch flags, so a Claude that
+  stops keeping them would resume on its defaults, silently.
+- **Claude's resume directory is the transcript's first `cwd`.** Measured on
+  2.1.316 (docs/airig/probes/persist-2-refiled-cwd.md): a resume from another
+  directory no longer re-files the transcript (2.1.310 did, spec §2.1); it
+  appends to the same file, whose first `cwd` stays the original. A session
+  that moved into a worktree with `EnterWorktree` is filed under the
+  directory it started in, first `cwd` that directory, and `revive` resumes
+  it there. Claude's own exit hint for such a session is `claude --worktree
+  NAME --resume ID`; `revive` runs a plain `--resume` from the start
+  directory, which found the conversation. Which directory the resumed
+  session then works in — the start directory or back in the worktree — was
+  not measured.
+- **codex panes usually have no key.** Under codex's shared app-server the
+  hooks' parent is the app-server, so identity is skipped (#145, the entry
+  below), and `revive` of such a pane says it has no recorded conversation
+  (13). The live smoke sets the key by hand to test the resume itself.
+- **A launch claim is released only by a pane that is gone, until Part 4.**
+  Every launch takes `claims/<boot>/<harness>-<id>/` in the shape directory
+  and keeps it after a successful launch. The spec releases it when identity
+  lands with the same id or the pane dies, through hooks Part 4 adds; until
+  then a claim naming a pane that still exists refuses another pane's revive
+  of the same conversation (13, naming that pane), even after the agent in
+  it has moved on. Closing that pane frees it.
+- **With saving off** (`ROOST_SHAPE_DIR=`) there is no shape directory, so no
+  claim is taken: two revives of one gone pane started together can both
+  launch. `revive` says so on stderr. The store check and the live-pane
+  check still run.
+- **A shell pane running a job.** `#{pane_current_command}` names the
+  foreground job, so a shell running `vim` would read as "another program"
+  by save's agreement table. `revive` instead asks what the pane's OWN
+  process is: a shell with a job is refused with exit 1 (a person's work)
+  and `--force` replaces it; a pane whose own process is not a shell or the
+  harness is a stale key (13).
+
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-
