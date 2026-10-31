@@ -804,9 +804,33 @@ roost_revive() {
   else
     echo "roost revive: saving is off (ROOST_SHAPE_DIR is empty), so no launch claim is taken" >&2
   fi
+  # The plan's seam (its table, ROOST_TEST_REVIVE_HOLD): hold here, after the
+  # claim and before step 7, so a test can change the pane in between.
+  roost_shape__seam ROOST_TEST_REVIVE_HOLD
   # Step 7's checks, from here on every refusal releases this run's claim.
   # Only in place: a gone pane runs nothing, and --new-window leaves the
   # target running.
+  #
+  # READ AGAIN HERE, not at the start (review round 1, Codex B3): between the
+  # first read and this point revive checked the PATH, the store, every other
+  # pane and took its claim, and an agent that started a turn meanwhile was
+  # replaced without --force on the strength of an `idle` read long before.
+  # So the badge, the pane's process and its foreground are read again now;
+  # a process or foreground that changed is a pane that is no longer the one
+  # judged, refused like a busy one. What remains is the instant between this
+  # read and the respawn, which no check can close.
+  if [ "$mode" = place ]; then
+    o="$dead|$ppid|$cmd"
+    roost_resume__opt "$pane" @agent_state; state="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_current_command}'; cmd="$ROOST_RESUME_V"
+    if [ "$o" != "$dead|$ppid|$cmd" ] && [ "$force" != 1 ]; then
+      roost_resume_release "$claim"
+      echo "roost revive: '$raw' changed while revive checked it (now running '$cmd') — nothing resumed; run it again, or pass --force" >&2
+      return 1
+    fi
+  fi
   if [ "$mode" = place ] && [ "$dead" != 1 ]; then
     case "$state" in
       working|blocked)

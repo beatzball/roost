@@ -314,6 +314,25 @@ assert_eq "$rc|$(ppid_of "$P")|$(popt "$P" @roost-session)" "1|$pid0|$U4" "a wor
 assert_eq "$left" "no" "...and the claim it took is released"
 TL kill-pane -t "$P"
 
+# The badge turns working AFTER revive first read it — while it checked the
+# store and took its claim. The busy check must see the pane as it is at the
+# respawn, not as it was at the start (review round 1, Codex B3).
+reset
+P="$(stubpane claude)"; wait_cmd "$P" claude
+setid "$P" claude "$U4" "$D1R"; TL set-option -p -t "$P" @agent_state idle
+pid0="$(ppid_of "$P")"
+HOLD="$SHAPE_TMP/hold-revive"; rm -f "$HOLD" "$HOLD".at.*
+( ROOST_TEST_REVIVE_HOLD="$HOLD" R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; echo $? > "$SHAPE_TMP/h.rc" ) &
+HPID=$!
+i=0; while [ "$i" -lt 100 ] && ! ls "$HOLD".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+ls "$HOLD".at.* >/dev/null 2>&1; assert_true $? "(seam) revive is held after its claim"
+TL set-option -p -t "$P" @agent_state working
+: > "$HOLD"; wait "$HPID"
+assert_eq "$(cat "$SHAPE_TMP/h.rc")|$(ppid_of "$P")|$(popt "$P" @agent_state)|$(popt "$P" @roost-session)" "1|$pid0|working|$U4" "a pane that went working after revive first read it: exit 1, untouched (badge and identity kept)"
+[ -e "$SD/claims/$BOOT/claude-$U4" ] && left=yes || left=no
+assert_eq "$left" "no" "...and the claim it took is released"
+TL kill-pane -t "$P"
+
 # No key.
 reset
 P="$(stubpane claude)"; wait_cmd "$P" claude
