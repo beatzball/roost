@@ -161,7 +161,8 @@ example, deletes transcripts after 30 days by default.
   will not resume it somewhere else.
 - **Exit `1`:** the pane is ⏳ working or 🛑 blocked, or it is a shell
   running something of yours (an editor, a build). `--force` replaces it
-  anyway.
+  anyway. A shell sitting at its prompt is **not** refused: it is replaced,
+  and a command you typed there but did not run is lost.
 - **Exit `2`:** the target is gone, and nothing about it was kept.
 
 **A pane that is gone.** `roost revive %5` of a pane you closed brings the
