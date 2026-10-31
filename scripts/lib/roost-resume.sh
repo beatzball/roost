@@ -483,7 +483,38 @@ roost_resume__dup() {
 # writes @roost-turn-reserved"), are not the old process's to take away.
 ROOST_RESUME_CLEAR="@roost-session @roost-cwd @roost-harness @roost-transcript-path @agent_state @roost-reply @roost-reply-turn @roost-transcript @roost-blocked-on @roost-stop-swallowed @roost-dialog @roost-answered @roost-answer-nonce @roost-background @roost-background-types @roost-background-session @roost-agent-job"
 
-# roost_revive RAW TGT FORCE JSON — the verb. Returns its exit code:
+# roost_resume__record_get FILE -> ROOST_RESUME_V, the first line of one
+# record file, cleaned; empty when it is missing or holds a control byte.
+roost_resume__record_get() {
+  local v=""
+  ROOST_RESUME_V=""
+  [ -f "$1" ] || return 0
+  IFS= read -r v < "$1" 2>/dev/null || true
+  roost_shape__clean "$v" octal || return 0
+  ROOST_RESUME_V="$ROOST_SHAPE_V"
+}
+
+# roost_resume__home_session PANE -> prints the session a gone pane's new
+# window goes into (§4.1 step 7): the record's reserved `session` when it is
+# written and still exists, else the caller's own session when the caller is
+# a pane on this server, else `main` (bin/roost's DEFAULT_SESSION) when it
+# exists, else the first session tmux lists. A session that does not exist is
+# never made: a revive does not start sessions.
+roost_resume__home_session() {
+  local s
+  s="${1:-}"
+  if [ -n "$s" ] && roost_resume__t has-session -t "=$s" 2>/dev/null; then printf '%s
+' "$s"; return 0; fi
+  if [ -n "${TMUX_PANE:-}" ] && s="$(roost_resume__t display -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)" && [ -n "$s" ]; then
+    printf '%s
+' "$s"; return 0
+  fi
+  if roost_resume__t has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s
+' "${DEFAULT_SESSION:-main}"; return 0; fi
+  roost_resume__t list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
+}
+
+# roost_revive RAW TGT FORCE JSON NEWWIN — the verb. Returns its exit code:
 #   0  launched (NOT resumed: §4.1 step 8 — roost does not wait for the
 #      harness's prompt and answers nothing it opens)
 #   1  refused by step 7's checks (a working or blocked agent, a shell running
@@ -493,12 +524,24 @@ ROOST_RESUME_CLEAR="@roost-session @roost-cwd @roost-harness @roost-transcript-p
 #      not hold it, another pane holds it, opencode (printed, not run)
 #  14  the harness is not on PATH
 #  15  the directory is gone
+#
+# THREE WAYS IT LAUNCHES (§4.1 step 7):
+#   in place     a live pane: its process is ended and the resume respawned
+#                in it, the same %N
+#   gone         a %N that is gone, on this boot, whose pane record (#74)
+#                still names its harness and id: a new window, `@roost-was
+#                %OLD` on its pane
+#   --new-window a live pane, left running: a new window beside it. With no
+#                exemption from step 5 — the target keeps running, so its own
+#                key counts as another owner — which is 13 for any pane whose
+#                key is its own @roost-session (Part 3's pending record is the
+#                case this exists for)
 # Needs ROOST_RESUME_TFLAG / ROOST_RESUME_TSOCK and ROOST_HOME; `t`,
-# `pane_cmd_wired` and `roost_unblock_pane` come from bin/roost.
+# `pane_cmd_wired`, `roost_unblock_pane` and `record_for` come from bin/roost.
 roost_revive() {
-  local raw="$1" tgt="$2" force="$3" json="$4"
+  local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
-  local sd boot claim="" kid kids o
+  local sd boot claim="" kid kids o mode=place rsess="" rname="" exempt new sess
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
   if ! roost_shape__read_rules; then
@@ -522,17 +565,41 @@ roost_revive() {
       pane="$panes" ;;
   esac
   if ! roost_resume__row "$pane"; then
-    echo "roost revive: '$raw' is gone: no such pane or window" >&2; return 2
+    # A gone pane: only a %N can name one (a window id or name of a window
+    # that is gone names no pane), and only on this boot (pane ids restart at
+    # %0, so a %N of an earlier boot is another pane — record_for's rule).
+    case "$pane" in %[0-9]*) ;; *)
+      echo "roost revive: '$raw' is gone: no such pane or window" >&2; return 2 ;;
+    esac
+    if ! record_for "$pane" "$pane" || [ "$RF_STATE" != 0 ]; then
+      [ "${RF_STATE:-1}" -ge 2 ] && record_warn revive "$raw"
+      echo "roost revive: '$raw' is gone, and no record of it is kept on this boot" >&2; return 2
+    fi
+    mode=gone
+    roost_resume__record_get "$RF_DIR/harness"; h="$ROOST_RESUME_V"
+    roost_resume__record_get "$RF_DIR/session_id"; sid="$ROOST_RESUME_V"
+    roost_resume__record_get "$RF_DIR/cwd"; scwd="$ROOST_RESUME_V"
+    roost_resume__record_get "$RF_DIR/transcript"; tr="$ROOST_RESUME_V"
+    # The reserved `session` and `name` (§1), read when a later part writes
+    # them; today they are absent and the fallbacks below apply.
+    roost_resume__record_get "$RF_DIR/session"; rsess="$ROOST_RESUME_V"
+    roost_resume__record_get "$RF_DIR/name"; rname="$ROOST_RESUME_V"
+    pcwd="" cmd="" ppid="" dead=0 state=""
   fi
-  roost_resume__opt "$pane" @roost-harness; h="$ROOST_RESUME_V"
-  roost_resume__opt "$pane" @roost-session; sid="$ROOST_RESUME_V"
-  roost_resume__opt "$pane" @roost-cwd; scwd="$ROOST_RESUME_V"
-  roost_resume__opt "$pane" @roost-transcript-path; tr="$ROOST_RESUME_V"
-  roost_resume__opt "$pane" @agent_state; state="$ROOST_RESUME_V"
-  roost_resume__fmt "$pane" '#{pane_current_path}'; pcwd="$ROOST_RESUME_V"
-  roost_resume__fmt "$pane" '#{pane_current_command}'; cmd="$ROOST_RESUME_V"
-  roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
-  roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
+  [ "$mode" = place ] && [ "$newwin" = 1 ] && mode=newwin
+  if [ "$mode" != gone ]; then
+    roost_resume__opt "$pane" @roost-harness; h="$ROOST_RESUME_V"
+    roost_resume__opt "$pane" @roost-session; sid="$ROOST_RESUME_V"
+    roost_resume__opt "$pane" @roost-cwd; scwd="$ROOST_RESUME_V"
+    roost_resume__opt "$pane" @roost-transcript-path; tr="$ROOST_RESUME_V"
+    roost_resume__opt "$pane" @agent_state; state="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_current_path}'; pcwd="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_current_command}'; cmd="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
+    roost_resume__opt "$pane" @roost-name; rname="$ROOST_RESUME_V"
+    rsess="$(roost_resume__t display -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+  fi
 
   # Step 2: does the identity agree with what the pane runs (§3.2's rule,
   # roost_shape_agree)? A dead pane (remain-on-exit: an earlier revive whose
@@ -551,7 +618,8 @@ roost_revive() {
   # for a pane whose own process is neither — an editor or a `sleep` started
   # as the pane's command.
   agree=dead
-  if [ "$dead" != 1 ] && [ -n "$h" ]; then
+  [ "$mode" = gone ] && agree=gone
+  if [ "$mode" != gone ] && [ "$dead" != 1 ] && [ -n "$h" ]; then
     agree="$(roost_shape_agree "$h" "$cmd")"
     if [ "$agree" = other ]; then
       o="$(ps -o comm= -p "$ppid" 2>/dev/null || true)"
@@ -610,7 +678,10 @@ roost_revive() {
   if [ "$rc" != 0 ]; then
     echo "roost revive: $h no longer holds $sid; the pane is untouched" >&2; return 13
   fi
-  if roost_resume__dup "$pane" "$sid"; then
+  # The target itself is exempt only in place: there step 7 ends its process
+  # before the resume starts. With --new-window it keeps running.
+  exempt=""; [ "$mode" = place ] && exempt="$pane"
+  if roost_resume__dup "$exempt" "$sid"; then
     echo "roost revive: $h $sid is open in $ROOST_RESUME_HOLDER; one conversation is never open in two panes — nothing resumed" >&2
     return 13
   fi
@@ -621,7 +692,9 @@ roost_revive() {
   # taken. Said on stderr, so a person who turned saving off knows.
   boot="$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
   if sd="$(roost_shape_dir "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" 2>/dev/null)" && [ -n "$boot" ]; then
-    rc=0; roost_resume_claim "$sd/claims/$boot" "$h" "$sid" "$pane" || rc=$?
+    # In place the claim names the pane now; a new window's pane is named
+    # once `new-window` has made it (roost_resume_claim_pane, below).
+    rc=0; roost_resume_claim "$sd/claims/$boot" "$h" "$sid" "$exempt" || rc=$?
     case "$rc" in
       0) claim="$ROOST_RESUME_CLAIM" ;;
       1) echo "roost revive: $h $sid is already being launched in $ROOST_RESUME_HOLDER — nothing resumed" >&2; return 13 ;;
@@ -631,7 +704,9 @@ roost_revive() {
     echo "roost revive: saving is off (ROOST_SHAPE_DIR is empty), so no launch claim is taken" >&2
   fi
   # Step 7's checks, from here on every refusal releases this run's claim.
-  if [ "$dead" != 1 ]; then
+  # Only in place: a gone pane runs nothing, and --new-window leaves the
+  # target running.
+  if [ "$mode" = place ] && [ "$dead" != 1 ]; then
     case "$state" in
       working|blocked)
         if [ "$state" = blocked ] && roost_unblock_pane "$pane"; then
@@ -657,31 +732,60 @@ roost_revive() {
   # a wired server, so roost's claude shim is first on PATH (#58).
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
   if pane_cmd_wired; then argv=("$ROOST_HOME/scripts/roost-pane-shell" "${argv[@]}"); fi
-  # Step 7: clear, keep the pane on a failed exit, respawn with the command
-  # always passed (a bare respawn-pane re-runs the pane's creation command,
-  # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
-  clear=()
-  for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
-  # One tmux call for all of them; the list ends in a no-op so the last `;`
-  # has a command after it.
-  roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
-  # Its own call, as restore sets it: a tmux that refuses `failed`
-  # refuses only this, and the resume still runs, without the net.
-  roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
-  if ! roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
-    roost_resume_release "$claim"
-    echo "roost revive: tmux could not respawn '$raw'" >&2
-    return 1
+  if [ "$mode" != place ]; then
+    # A new window, `new-window -d` so no client's focus moves, in the old
+    # pane's session (roost_resume__home_session). Made holding a `sleep`,
+    # then given `remain-on-exit failed`, then respawned with the resume: set
+    # on a pane already running the resume, the option would come too late
+    # for a resume that exits non-zero at once — the case it is the net for.
+    sess="$(roost_resume__home_session "$rsess")"
+    if [ -z "$sess" ] || ! new="$(roost_resume__t new-window -d -P -F '#{pane_id}' -t "=$sess:" -c "$dir" 'exec sleep 60' 2>/dev/null)" || [ -z "$new" ]; then
+      roost_resume_release "$claim"
+      echo "roost revive: tmux could not open a window for '$raw'" >&2
+      return 1
+    fi
+    [ -n "$claim" ] && roost_resume_claim_pane "$claim" "$new"
+    roost_resume__t set-option -p -t "$new" remain-on-exit failed 2>/dev/null || true
+    roost_resume__t set-option -p -t "$new" @roost-was "$pane" 2>/dev/null || true
+    [ -n "$rname" ] && { roost_resume__t set-option -p -t "$new" @roost-name "$rname" 2>/dev/null || true; }
+    if ! roost_resume__t respawn-pane -k -t "$new" -c "$dir" "${argv[@]}" 2>/dev/null; then
+      roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+      roost_resume_release "$claim"
+      echo "roost revive: tmux could not start the resume for '$raw'" >&2
+      return 1
+    fi
+  else
+    # Step 7: clear, keep the pane on a failed exit, respawn with the command
+    # always passed (a bare respawn-pane re-runs the pane's creation command,
+    # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
+    new="$pane"
+    clear=()
+    for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
+    # One tmux call for all of them; the list ends in a no-op so the last `;`
+    # has a command after it.
+    roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
+    # Its own call, as restore sets it: a tmux that refuses `failed`
+    # refuses only this, and the resume still runs, without the net.
+    roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
+    if ! roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
+      roost_resume_release "$claim"
+      echo "roost revive: tmux could not respawn '$raw'" >&2
+      return 1
+    fi
   fi
   # Step 8.
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
   if [ "$json" = 1 ]; then
     . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-    roost_jsonout_emit revive pane s "$pane" was s "$pane" harness s "$h" \
+    roost_jsonout_emit revive pane s "$new" was s "$pane" harness s "$h" \
       session_id s "$sid" command s "${argv[*]}" cwd s "$dir" || roost_jsonout_fail revive
   else
-    printf '%s\n' "$pane"
+    printf '%s\n' "$new"
   fi
-  echo "roost revive: $pane: launched ${argv[*]} in $dir" >&2
+  if [ "$new" = "$pane" ]; then
+    echo "roost revive: $new: launched ${argv[*]} in $dir" >&2
+  else
+    echo "roost revive: $new (was $pane): launched ${argv[*]} in $dir" >&2
+  fi
   return 0
 }

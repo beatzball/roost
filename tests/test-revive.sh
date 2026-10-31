@@ -465,6 +465,94 @@ assert_eq "$rc" "2" "no target: usage, exit 2"
 R revive %1 %2 >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "2" "two targets: usage, exit 2"
 
+echo "== a gone pane comes back in a new window, from its record (§4.1 step 1, step 7) =="
+# Records on, for this section: tests/lib.sh turns them off for the suite.
+REC="$SHAPE_TMP/records"; mkdir -p "$REC"; export ROOST_RECORD_DIR="$REC"
+# gone_pane — a %N that existed on this boot and is gone now.
+gone_pane() { local g; g="$(TL new-window -d -P -F '#{pane_id}' -t shp: 'exec sleep 600')"; TL kill-pane -t "$g"; printf '%s\n' "$g"; }
+# plant_record %N HARNESS ID CWD [TRANSCRIPT] — the record identity writes.
+plant_record() {
+  local d="$REC/$BOOT/${1#%}"
+  mkdir -p "$d"; printf '1\n' > "$d/schema"; printf '%s\n' "$SHAPE_SOCK" > "$d/socket"
+  printf '%s\n' "$2" > "$d/harness"; printf '%s\n' "$3" > "$d/session_id"; printf '%s\n' "$4" > "$d/cwd"
+  [ -n "${5:-}" ] && printf '%s\n' "$5" > "$d/transcript"
+  return 0
+}
+nwin() { TL list-windows -a | wc -l | tr -d ' '; }
+U7=3fa3c0de-7777-4abc-8def-000000000007
+U8=3fa3c0de-8888-4abc-8def-000000000008
+
+# A record with its transcript: used, and the store not searched — the store
+# is moved away to prove it.
+reset
+TRF="$SHAPE_TMP/kept/$U8.jsonl"; mkdir -p "${TRF%/*}"
+printf '{"type":"user","cwd":"%s"}\n' "$WT" > "$TRF"
+G="$(gone_pane)"; plant_record "$G" claude "$U8" /old/identity/cwd "$TRF"
+mv "$CLAUDE_CONFIG_DIR/projects" "$SHAPE_TMP/projects.away"
+out="$(R revive "$G" 2>"$SHAPE_TMP/err")"; rc=$?
+mv "$SHAPE_TMP/projects.away" "$CLAUDE_CONFIG_DIR/projects"
+case "$out" in %[0-9]*) [ "$out" != "$G" ]; okn=$? ;; *) okn=1 ;; esac
+assert_eq "$rc|$okn" "0|0" "a gone %N with a record: exit 0, a NEW %N printed"
+assert_eq "$(popt "$out" @roost-was)" "$G" "...@roost-was names the old pane"
+assert_eq "$(TL display -p -t "$out" '#{session_name}')" "shp" "...in the caller's session (no record session, no main: the first session)"
+wait_log "claude --resume $U8"; assert_true $? "...the stub launched"
+assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$WT" "...in the recorded transcript's cwd, with the store emptied (the record's transcript was used, not searched for)"
+assert_contains "$(cat "$SHAPE_TMP/err")" "(was $G)" "...stderr names both panes"
+TL kill-pane -t "$out"
+
+# No transcript in the record: the exact-id lookup, one file in a dotted folder.
+reset
+stub_store_add "$U7" "$WT"
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+out="$(R revive "$G" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "gone, no transcript in the record, one <id>.jsonl in a dotted-path folder: exit 0"
+wait_log "claude --resume $U7"; assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$WT" "...resumed in that transcript's cwd"
+TL kill-pane -t "$out" 2>/dev/null
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U3" /old/cwd
+n0="$(nwin)"
+R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(nwin)|$(cat "$STUB_LOG")" "13|$n0|" "gone, two <id>.jsonl files: exit 13, no window, nothing launched"
+
+# Two revives of one gone record; the stub never identifies.
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+first="$(R revive "$G" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "two revives of one gone record: the first launches (exit 0)"
+assert_eq "$(cat "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "$first" "...its claim names the new pane"
+wait_log "claude --resume $U7"
+n0="$(nwin)"
+R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(nwin)" "13|$n0" "...the second is refused (exit 13), no window"
+assert_contains "$(cat "$SHAPE_TMP/err")" "$first" "...naming the first pane"
+assert_eq "$(grep -c "claude --resume $U7" "$STUB_LOG")" "1" "...one launch in the stub log"
+TL kill-pane -t "$first"
+third="$(R revive "$G" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "...the first new pane killed, a third launches (a claim naming a gone pane is stale)"
+i=0; while [ "$i" -lt 50 ] && [ "$(grep -c "claude --resume $U7" "$STUB_LOG")" != 2 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(grep -c "claude --resume $U7" "$STUB_LOG")|$(cat "$SD/claims/$BOOT/claude-$U7/pane" 2>/dev/null)" "2|$third" "...a second launch, and the claim now names the third's pane"
+TL kill-pane -t "$third" 2>/dev/null
+
+# --new-window of a live pane that carries its own key: no exemption.
+reset
+P="$(stubpane claude)"; wait_cmd "$P" claude; setid "$P" claude "$U4" "$D1R"
+n0="$(nwin)"; pid0="$(ppid_of "$P")"
+R revive --new-window "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(nwin)|$(ppid_of "$P")" "13|$n0|$pid0" "--new-window of a live pane with its own key: exit 13, no new window, the pane untouched"
+assert_contains "$(cat "$SHAPE_TMP/err")" "is open in $P" "...naming the pane itself"
+TL kill-pane -t "$P"
+
+# Gone with nothing to go on.
+reset
+G="$(gone_pane)"
+R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "2" "a gone %N with no record: exit 2"
+G="$(gone_pane)"; plant_record "$G" claude "" /old/cwd
+R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "13" "a gone %N whose record has no session id: exit 13"
+assert_contains "$(cat "$SHAPE_TMP/err")" "has no recorded conversation" "...says so"
+unset ROOST_RECORD_DIR; export ROOST_RECORD_DIR=""
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
