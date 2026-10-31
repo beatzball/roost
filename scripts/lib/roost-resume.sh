@@ -579,6 +579,22 @@ roost_resume__home_session() {
   roost_resume__t list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
 }
 
+# roost_resume__fg_is HARNESS COMMAND — the foreground COMMAND can be this
+# harness itself. roost_close_harness's names (Claude's version string, the
+# five names), plus the two that table cannot claim because they are not
+# distinctive: pi runs as `node` (probe 1.6), and opencode — not measured —
+# as `node` or `bun` besides its own name. A shell running one of those for
+# this harness is the agent at work, judged by the table; a shell running
+# anything else is a person's job.
+roost_resume__fg_is() {
+  roost_close_harness "" "$2" ""
+  [ "$ROOST_CLOSE_HARNESS" = "$1" ] && return 0
+  case "$1:$2" in
+    pi:node|opencode:node|opencode:bun) return 0 ;;
+  esac
+  return 1
+}
+
 # roost_revive RAW TGT FORCE JSON NEWWIN — the verb. Returns its exit code:
 #   0  launched (NOT resumed: §4.1 step 8 — roost does not wait for the
 #      harness's prompt and answers nothing it opens)
@@ -682,15 +698,30 @@ roost_revive() {
   # the prompt) is still judged by the table: ok or nested. `other` is left
   # for a pane whose own process is neither — an editor or a `sleep` started
   # as the pane's command.
+  #
+  # The pane's own process is asked FIRST, for every harness (review round 1,
+  # Codex B2): asked only after the table said `other`, it never ran for pi
+  # and opencode, which the table admits on presence alone — a shell left by
+  # pi and running `sleep 600` read `ok`, and the person's job was killed
+  # without --force. For a shell-owned pane: the foreground is this harness
+  # (roost_resume__fg_is) → the table decides (ok); another harness's
+  # distinctive command → the table decides (nested); anything else → exited,
+  # and step 7's shell check decides.
   agree=dead
   [ "$mode" = gone ] && agree=gone
   if [ "$mode" != gone ] && [ "$dead" != 1 ] && [ -n "$h" ]; then
-    agree="$(roost_shape_agree "$h" "$cmd")"
-    if [ "$agree" = other ]; then
-      o="$(ps -o comm= -p "$ppid" 2>/dev/null || true)"
-      o="${o##*/}"; o="${o#-}"; o="${o%% *}"
-      case "$o" in sh|bash|zsh|fish|dash) agree=exited ;; esac
-    fi
+    o="$(ps -o comm= -p "$ppid" 2>/dev/null || true)"
+    o="${o##*/}"; o="${o#-}"; o="${o%% *}"
+    case "$o" in
+      sh|bash|zsh|fish|dash)
+        roost_close_harness "" "$cmd" ""
+        if roost_resume__fg_is "$h" "$cmd" || [ -n "$ROOST_CLOSE_HARNESS" ]; then
+          agree="$(roost_shape_agree "$h" "$cmd")"
+        else
+          agree=exited
+        fi ;;
+      *) agree="$(roost_shape_agree "$h" "$cmd")" ;;
+    esac
   fi
   case "$agree" in
     nested|other)

@@ -444,6 +444,23 @@ assert_eq "$rc|$out" "0|$P" "--force then launches"
 wait_log "claude --resume $U4"; assert_true $? "...the conversation, in that pane"
 TL kill-pane -t "$P"
 
+# The same for a harness the agreement table admits on presence alone (pi
+# reads `node`, so the table says `ok` for anything): the shell is the pane's
+# own process and its job is a person's (review round 1, Codex B2).
+reset
+PI2=019a0f0f-6a8b-7c71-9d2e-0000000000f2
+pf3="$PI_CODING_AGENT_DIR/sessions/--work--three--/2026-10-31T10-00-00-000Z_$PI2.jsonl"
+mkdir -p "${pf3%/*}"; : > "$pf3"
+PIB="$SHAPE_TMP/pi-bin"; mkdir -p "$PIB"
+printf '#!/bin/sh\nprintf "%%s %%s %%s\\n" "$(date +%%s)" "$PWD" "pi $*" >> "$STUB_LOG"\nexec sleep 600\n' > "$PIB/pi"; chmod +x "$PIB/pi"
+P="$(shpane "$D1R")"; wait_cmd "$P" sh
+setid "$P" pi "$PI2" "$D1R" "$pf3"
+TL send-keys -t "$P" 'sleep 600' Enter; wait_cmd "$P" sleep
+pid0="$(ppid_of "$P")"
+env PATH="$PIB:$PATH" PI_CODING_AGENT_DIR="$PI_CODING_AGENT_DIR" ROOST_SOCKET=roost "$ROOST" revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(ppid_of "$P")|$(TL display -p -t "$P" '#{pane_current_command}')|$(cat "$STUB_LOG")" "1|$pid0|sleep|" "a pi identity on a shell running a job (sleep 600): exit 1, the shell and its job untouched, nothing launched"
+TL kill-pane -t "$P"
+
 echo "== nested and other: a key the pane is not running =="
 reset
 P="$(stubpane claude)"; wait_cmd "$P" claude
