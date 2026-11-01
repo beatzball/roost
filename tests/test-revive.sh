@@ -506,6 +506,17 @@ R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc|$(TL display -p -t "$P" '#{pane_current_command}')" "1|sleep" "a shell running a job (sleep 60): exit 1, the sleep alive"
 assert_contains "$(cat "$SHAPE_TMP/err")" "person's work" "...says it is a person's work"
 assert_eq "$(cat "$STUB_LOG")" "" "...nothing launched"
+# One agreement table for save and revive (Part 3's header, from Part 2's
+# review round 1, Fable N3): the same pane, saved now, is `exited` too —
+# never `other`, which a restore would refuse while revive resumes it.
+assert_eq "$(roost_shape_agree_pane claude sleep "$(ppid_of "$P")")" "exited" \
+  "roost_shape_agree_pane: a shell pane whose foreground is sleep is exited"
+assert_eq "$(roost_shape_agree_pane claude sleep "")" "other" \
+  "...and with no pane process to ask, the table alone: other"
+R save >/dev/null 2>&1
+sv="$(awk -v RS= -v want="id $P" '{ s = $0 "\n"; if (index(s, "\n" want "\n")) print }' "$SD/shape")"
+assert_eq "$(printf '%s\n' "$sv" | sed -n 's/^stale_reason //p')" "exited" \
+  "save calls the same pane exited, as revive does (one agreement table)"
 out="$(R revive --force "$P" 2>/dev/null)"; rc=$?
 assert_eq "$rc|$out" "0|$P" "--force then launches"
 wait_log "claude --resume $U4"; assert_true $? "...the conversation, in that pane"
