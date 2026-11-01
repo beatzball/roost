@@ -97,6 +97,60 @@ assert_eq "$(ps -o args= -p "$(TL display -p -t "$p" '#{pane_pid}')" | sed 's/^ 
   "a user's own default-command: the key hands over to it (exec, read at that moment)"
 TL set -gu default-command
 
+echo "== the pending modes: waiting, launching, failed (Task 3.2, §4.7 T6/T15) =="
+PD="$SHAPE_TMP/pend"; mkdir -p "$PD"
+WAITING='waiting to resume claude - press any key for a shell'
+RESUMING='resuming claude now'
+# pending PANE-NAME -> a planted pending file for a placeholder (the block
+# roost_pending_write writes; its keys do not matter to the placeholder).
+pending() { printf 'was %%900\nharness claude\nsession_id x\ncwd /\nsession s\nwindow 1\norder 0\n' > "$PD/$1"; printf '%s\n' "$PD/$1"; }
+# waiter FILE -> a new pane running the waiting placeholder by its own path.
+waiter() {
+  local p
+  p="$(TL new-window -d -P -F '#{pane_id}' -t shp: 'sleep 600')"
+  TL set -p -t "$p" remain-on-exit failed
+  TL respawn-pane -k -t "$p" "$PH" "$1" claude
+  printf '%s\n' "$p"
+}
+# T6: a key in waiting -> taken, the person's shell.
+F="$(pending %71)"; p="$(waiter "$F")"
+wait_screen "$p" "$WAITING"; assert_true $? "FILE HARNESS: the screen shows the waiting line"
+pid="$(TL display -p -t "$p" '#{pane_pid}')"
+printf 'origin waiting\n' >> "$F"   # planted: T6 cannot rewrite before its rename
+TL send-keys -t "$p" x
+wait_file "$F.taken"; assert_true $? "a key on FILE: the placeholder wins FILE -> FILE.taken (T6)"
+shells_wait "$p"; assert_eq "$(shells_for "$p" | wc -l | tr -d ' ')" "1" "...and a shell started (one shells.log line)"
+assert_eq "$(TL display -p -t "$p" '#{pane_pid}')" "$pid" "...in the same process"
+TL capture-pane -p -t "$p" | grep -qF 'this pane is yours; claude was not resumed (roost revive %71 to resume it)'
+assert_true $? "...after saying the pane is the person's, and how to resume it"
+assert_eq "$(grep -c '^origin ' "$F.taken")" "0" "an origin line in the file it won is removed before the shell starts"
+assert_eq "$(TL show -pqv -t "$p" remain-on-exit)" "" "...and remain-on-exit is unset"
+# Launching: the line follows the file, and a key then starts no shell.
+F="$(pending %72)"; p="$(waiter "$F")"
+wait_screen "$p" "$WAITING"
+mv "$F" "$F.launching"
+wait_screen "$p" "$RESUMING" 60; assert_true $? "renamed to .launching: within 6 s the screen says resuming claude now"
+TL send-keys -t "$p" x
+sleep 1
+assert_eq "$(shells_for "$p")" "" "...a key then starts no shell (the rename is lost)"
+[ -e "$F.launching" ] && [ ! -e "$F.taken" ]; assert_true $? "...and the file is still .launching"
+# Failed, waiting: the reason, no respawn; a key -> taken (T15).
+F="$(pending %73)"; p="$(waiter "$F")"
+wait_screen "$p" "$WAITING"
+pid="$(TL display -p -t "$p" '#{pane_pid}')"
+{ printf 'store miss\n'; cat "$F"; } > "$F.failed"; rm -f "$F"
+FAILED='claude was not resumed: store miss - press any key for a shell; roost restore --resume --retry tries again'
+wait_screen "$p" "$FAILED" 60; assert_true $? "renamed to .failed (store miss): within 6 s the screen shows the reason"
+assert_eq "$(TL display -p -t "$p" '#{pane_pid}')|$(shells_for "$p")" "$pid|" "...no respawn, no shell"
+TL send-keys -t "$p" x
+wait_file "$F.taken"; assert_true $? "a key there: FILE.failed -> FILE.taken (T15)"
+[ ! -e "$F.failed" ]; assert_true $? "...the .failed file is gone"
+shells_wait "$p"; assert_eq "$(shells_for "$p" | wc -l | tr -d ' ')" "1" "...then a shell"
+TL capture-pane -p -t "$p" | grep -qF 'claude was not resumed: store miss'
+assert_true $? "...after the reason"
+"$PH" "$F" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "2" "no harness and no --placing: usage, exit 2"
+
 # --- restore: server, sessions, the bootstrap (Task 1.12) ---------------------
 # `roost wiring apply` runs when restore starts a server, and writes under
 # XDG_CONFIG_HOME: a temp dir here, not the canary (tests/lib-shape.sh points

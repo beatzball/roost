@@ -1,13 +1,16 @@
 #!/bin/sh
 # roost-placeholder — a pane roost can prove untouched (#51, #191).
 #
-#   usage: roost-placeholder FILE --placing
+#   usage: roost-placeholder FILE --placing     placing mode (Part 1)
+#          roost-placeholder FILE HARNESS       a pending mode (Part 3)
 #
 # A pane `roost restore` places, and may still replace, runs THIS instead of a
 # shell until either restore claims it or a person presses a key in it. The
 # design is docs/airig/specs/2026-10-24-persistent-sessions-design.md §4.7
 # (who owns a pane), §4.3 (placement) and §2.10 (what it rests on, measured).
-# Part 3 adds the pending modes (`FILE HARNESS`); this is placing mode only.
+# Part 3 added the pending modes (`FILE HARNESS`): FILE is then the pane's
+# pending record, `pending/<boot>/%N` (§4.6), and the line follows its name —
+# `%N` waiting, `%N.launching` resuming, `%N.failed` not resumed and why.
 #
 # WHY NOT A SHELL. A live shell cannot be proven unused from outside: what a
 # person typed is inside the shell, the cursor moves by itself when the prompt
@@ -18,6 +21,12 @@
 #
 #   restore's per-pane step   mv FILE FILE.used    (T2)  -> restore replaces it
 #   a person's first key      mv FILE FILE.taken   (T4)  -> the person's shell
+#
+# and in a pending mode:
+#
+#   a launcher's claim        mv FILE FILE.launching         (T5)  -> it resumes
+#   a person's first key      mv FILE FILE.taken             (T6)  -> a shell
+#                             mv FILE.failed FILE.taken      (T15) -> a shell
 #
 # rename(2) is atomic, so exactly one of the two wins. Who owns the pane is
 # then read from the FILE'S NAME, never from the pane: #{pane_start_command}
@@ -31,21 +40,83 @@
 
 FILE="${1:-}"
 MODE="${2:-}"
-if [ -z "$FILE" ] || [ "$MODE" != --placing ]; then
-  echo "usage: roost-placeholder FILE --placing" >&2
+if [ -z "$FILE" ] || [ -z "$MODE" ]; then
+  echo "usage: roost-placeholder FILE --placing | FILE HARNESS" >&2
   exit 2
 fi
+# A pending mode names its harness; anything starting with `-` other than
+# --placing is a mistake, not a harness.
+case "$MODE" in
+  --placing) HARNESS="" ;;
+  -*) echo "usage: roost-placeholder FILE --placing | FILE HARNESS" >&2; exit 2 ;;
+  *) HARNESS="$MODE" ;;
+esac
+# The pane as the person will name it to `roost revive`: a pending file is
+# named by its pane's %N (§4.6).
+PANE="${FILE##*/}"
 
-# The line for the state FILE is in now (§4.7's table, the placing rows).
-# Re-read at every wake, so a pane restore claimed while it waited says so.
+# reason_of PATH -> the first line of a .failed file: its reason (§4.6 step
+# 2). The block itself starts with `was`, so a first line that does is no
+# reason at all.
+reason_of() {
+  r=""
+  [ -f "$1" ] && IFS= read -r r < "$1"
+  case "$r" in "was "*) r="" ;; esac
+  printf '%s' "${r:-unknown}"
+}
+
+# The line for the state FILE is in now (§4.7's table: the placing rows, or
+# the pending rows by the name FILE has now). Re-read at every wake, so a
+# pane restore claimed while it waited says so, and a failed, waiting pane
+# shows its reason without being respawned (§4.7 step 1, revision 4 item 2).
 line_now() {
-  if [ -e "$FILE" ]; then
-    printf '%s\n' 'roost restore is placing this session - press any key for a shell'
+  if [ -z "$HARNESS" ]; then
+    if [ -e "$FILE" ]; then
+      printf '%s\n' 'roost restore is placing this session - press any key for a shell'
+    else
+      # FILE.used (claimed by restore), or a name this run does not know: an
+      # owner is about to replace the pane either way.
+      printf '%s\n' 'roost restore is placing this pane'
+    fi
+  elif [ -e "$FILE" ]; then
+    printf 'waiting to resume %s - press any key for a shell\n' "$HARNESS"
+  elif [ -e "$FILE.failed" ]; then
+    printf '%s was not resumed: %s - press any key for a shell; roost restore --resume --retry tries again\n' \
+      "$HARNESS" "$(reason_of "$FILE.failed")"
   else
-    # FILE.used (claimed by restore), or a name this run does not know: an
-    # owner is about to replace the pane either way.
-    printf '%s\n' 'roost restore is placing this pane'
+    # FILE.launching (a launcher won T5, T14 or T16), or a name this run
+    # does not know: an owner is about to replace the pane either way.
+    printf 'resuming %s now\n' "$HARNESS"
   fi
+}
+
+# take -> exit 0 when this placeholder's rename won: the take arrow for the
+# state the file is in. `mv FILE FILE.taken` from placing (T4) or waiting
+# (T6), `mv FILE.failed FILE.taken` from failed, waiting (T15). Sets
+# TAKEN_REASON to the failed file's reason, read from the file it now owns.
+TAKEN_REASON=""
+take() {
+  if mv "$FILE" "$FILE.taken" 2>/dev/null; then return 0; fi
+  [ -n "$HARNESS" ] || return 1
+  if mv "$FILE.failed" "$FILE.taken" 2>/dev/null; then
+    TAKEN_REASON="$(reason_of "$FILE.taken")"
+    return 0
+  fi
+  return 1
+}
+
+# An `origin` line belongs to one claim only (§4.7 T5, revision 10, C B1),
+# and T6 and T15 are a race this program cannot rewrite the file before. The
+# rule means the file it won has none; should one be there, it is removed
+# from the `.taken` file this placeholder now owns, BEFORE the shell starts,
+# so a later `revive` of that shell never reads an old claim's line.
+drop_origin() {
+  t="$FILE.taken"
+  grep -q '^origin' "$t" 2>/dev/null || return 0
+  tmp="$t.tmp.$$"
+  ( umask 077 && grep -v '^origin' "$t" > "$tmp" ) && mv -f "$tmp" "$t" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  return 0
 }
 
 # The terminal as it was, put back before anything is printed and before the
@@ -84,7 +155,14 @@ while :; do
   stty -icanon min 0 time 0 2>/dev/null
   dd bs=4096 count=1 >/dev/null 2>&1
   restore_tty
-  if mv "$FILE" "$FILE.taken" 2>/dev/null; then
+  if take; then
+    # A pending mode says whose pane it is now, and how to get the agent
+    # back (§4.7 step 2), with the reason when it was a failed one.
+    if [ -n "$HARNESS" ]; then
+      drop_origin
+      [ -n "$TAKEN_REASON" ] && printf '%s was not resumed: %s\n' "$HARNESS" "$TAKEN_REASON"
+      printf 'this pane is yours; %s was not resumed (roost revive %s to resume it)\n' "$HARNESS" "$PANE"
+    fi
     # Won: the pane is the person's. Its remain-on-exit is cleared so the
     # shell behaves like any other (restore set `failed` so a crashed
     # placeholder leaves a dead pane saying why, not a vanished one). Only
@@ -121,7 +199,8 @@ while :; do
     fi
     exec "${SHELL:-/bin/sh}" -l
   fi
-  # Lost: an owner renamed FILE first (restore's FILE.used). Say so and keep
+  # Lost: an owner renamed FILE first (restore's FILE.used, or a launcher's
+  # FILE.launching). Say so and keep
   # waiting; NEVER start a shell after a lost rename, because the owner is
   # about to replace this pane and would kill that shell (§4.7 step 2,
   # revision 4 item 2).
