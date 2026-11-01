@@ -188,7 +188,9 @@ roost_pending_state() {
         interrupted) printf 'failed-interrupted\n' ;;
         "pane changed") printf 'failed-changed\n' ;;
         replaced) printf 'failed-replaced\n' ;;
-        "harness missing"|"directory gone"|"store miss"|"duplicate of %"[0-9]*) printf 'failed-waiting\n' ;;
+        # `duplicate of` names the holder: `%M`, or `pid N` / `another
+        # launcher` when the holder had named no pane yet.
+        "harness missing"|"directory gone"|"store miss"|"duplicate of "?*) printf 'failed-waiting\n' ;;
         *) printf 'failed-interrupted\n' ;;
       esac ;;
     %*)
@@ -361,4 +363,254 @@ roost_pending_cancel() {
   IFS= read -r line < "$c/pane" 2>/dev/null || return 0
   [ "$line" = "$pane" ] && roost_shape_owner_drop "$c"
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# The resume engine (Task 3.5, spec §4.6 and §4.3 Resumes): ONE loop, run by
+# a hand `roost restore` in the foreground after placement and by `roost
+# restore --resume` (the first-attach worker's form, Part 5's hook; called
+# directly until then), so the placeholder, the rename race, the store check
+# and the claim per conversation are one code path, and no id is launched
+# twice by this run or by any other launcher (§5.1a). Needs bin/roost's `t`,
+# `pane_cmd_wired`, _SOCKET_FLAG / SOCKET and ROOST_HOME, and
+# scripts/lib/roost-resume.sh (the checks, the claim, the resume command)
+# with ROOST_RESUME_TFLAG / ROOST_RESUME_TSOCK set.
+
+# roost_pending__get FILE KEY -> ROOST_PENDING_V, the value of KEY in a
+# pending file (the first such line), or empty.
+roost_pending__get() {
+  local line
+  ROOST_PENDING_V=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in "$2 "*) ROOST_PENDING_V="${line#"$2 "}"; return 0 ;; esac
+  done < "$1"
+  return 1
+}
+
+# roost_pending__selected FILE -> exit 0 when ROOST_RESTORE_ONLY is empty or
+# one of its selectors names this file's pane: its saved `session`, its
+# `session:window`, or its old `%N` (`was`) — §4.3's --only, which restricts
+# both placement and resume.
+roost_pending__selected() {
+  local sel s w was
+  [ "${#ROOST_RESTORE_ONLY[@]}" -gt 0 ] || return 0
+  roost_pending__get "$1" session; s="$ROOST_PENDING_V"
+  roost_pending__get "$1" window; w="$ROOST_PENDING_V"
+  roost_pending__get "$1" was; was="$ROOST_PENDING_V"
+  for sel in "${ROOST_RESTORE_ONLY[@]}"; do
+    case "$sel" in
+      %*) [ "$sel" = "$was" ] && return 0 ;;
+      *:*) [ "$sel" = "$s:$w" ] && return 0 ;;
+      *) [ "$sel" = "$s" ] && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# roost_pending__is_placeholder STARTCOMMAND FILE HARNESS -> exit 0 when the
+# start command is the waiting placeholder line written for FILE: by path,
+# `<checkout>/scripts/roost-placeholder FILE HARNESS`, quotes and
+# backslashes dropped as tmux prints them (roost_restore__placing's rule).
+# A bare `respawn-pane` restarts the same line and passes; a person who
+# respawned the pane with another command fails (§4.6 step 4).
+roost_pending__is_placeholder() {
+  local sc="$1" f="$2"
+  sc="${sc//\"/}"; sc="${sc//\\/}"
+  f="${f//\"/}"; f="${f//\\/}"
+  case "$sc" in *roost-placeholder\ "$f"\ "$3") return 0 ;; esac
+  return 1
+}
+
+# roost_pending__fail LAUNCHING PLAIN REASON [NOTE] [CLAIM] -> T7 (or T9 for
+# `pane changed`): the claim this run took is released, the file leaves
+# `.launching` for `.failed` with REASON first (origin removed first,
+# roost_pending_leave_launching), and the PANE IS NOT TOUCHED — it is still
+# the placeholder, which shows the reason itself at its next wake (§4.7 step
+# 1; revision 4 item 2: no respawn, so no gap a key could fall into). Then
+# the ROOST_TEST_RESUME_HOLD_AFTER_FAILED seam. Prints the reason line.
+roost_pending__fail() {
+  local l="$1" p="$2" reason="$3" note="${4:-}" claim="${5:-}" pane
+  pane="${p##*/}"
+  roost_resume_release "$claim"
+  roost_pending_leave_launching "$l" "$p.failed" "$reason" "$note" || true
+  roost_shape__seam ROOST_TEST_RESUME_HOLD_AFTER_FAILED
+  printf 'roost restore: %s (was %s): %s %s not resumed: %s%s\n' "$pane" "$ROOST_PENDING_WAS" \
+    "$ROOST_PENDING_H" "$ROOST_PENDING_ID" "$reason" "${note:+ ($note)}" >&2
+}
+
+# roost_pending__one PLAIN-FILE BOOT -> one pane through §4.6's steps:
+#   0   launched (T10). Launched, not resumed: roost does not wait for the
+#       harness and answers nothing it opens (§4.1 step 8, §5.2)
+#   2   not this run's: a key won the rename first (the pane is the
+#       person's), or the pane is gone (its file removed, T19)
+#   13  not resumed, the reason written into %N.failed (T7, T9)
+#   1   no launch claim can be taken at all: the file is put back to %N and
+#       the loop stops — launching with no claim is what claims exist to stop
+roost_pending__one() {
+  local p="$1" boot="$2" pane l h id tr cwd scwd rc dir claim="" info sc dead o
+  local -a argv clear
+  pane="${p##*/}"
+  # Step 1, claim the pane (T5): the rename the placeholder's key races.
+  # Lost: the pane is the person's, or another launcher's — move on, nothing
+  # touched.
+  roost_pending_take "$p" "$p.launching" waiting || return 2
+  l="$p.launching"
+  roost_pending__get "$l" was; ROOST_PENDING_WAS="$ROOST_PENDING_V"
+  roost_pending__get "$l" harness; h="$ROOST_PENDING_V"; ROOST_PENDING_H="$h"
+  roost_pending__get "$l" session_id; id="$ROOST_PENDING_V"; ROOST_PENDING_ID="$id"
+  roost_pending__get "$l" transcript; tr="$ROOST_PENDING_V"
+  roost_pending__get "$l" cwd; cwd="$ROOST_PENDING_V"
+  roost_pending__get "$l" session_cwd; scwd="$ROOST_PENDING_V"
+  # Step 2, the read-only checks of §4.1 steps 3 to 5, in revive's order and
+  # words. Any failure is T7 and the pane is not touched. The four reasons
+  # are §4.7's failed, waiting reasons (`harness missing`, `directory gone`,
+  # `store miss`, `duplicate of %M`), the ones `--retry` may try again; a
+  # finer cause rides along as a note.
+  rc=0; roost_resume_command "$h" "$id" "$tr" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+    roost_pending__fail "$l" "$p" "store miss" "$ROOST_RESUME_WHY"; return 13
+  fi
+  if ! command -v "$h" >/dev/null 2>&1; then
+    roost_pending__fail "$l" "$p" "harness missing" "$h is not on PATH"; return 13
+  fi
+  # A Claude or pi key whose transcript is unrecorded, or gone, gets the
+  # exact-id lookup (revive's step 4): the key's own file, not a guess.
+  if [ -z "$tr" ] || [ ! -f "$tr" ]; then
+    case "$h" in claude|pi) tr="$(roost_resume_exact_id "$h" "$id" || true)" ;; esac
+  fi
+  if [ "$h" = claude ] && [ -z "$tr" ]; then
+    roost_pending__fail "$l" "$p" "store miss"; return 13
+  fi
+  # §5.1: the conversation's own directory, or not at all. A rule that names
+  # no usable directory (a JSON escape, two keys, none) is a directory this
+  # resume cannot have: `directory gone`, with the rule's own words.
+  if ! roost_resume_dir "$h" "$tr" "$scwd" "$cwd" >/dev/null; then
+    roost_pending__fail "$l" "$p" "directory gone" "$ROOST_RESUME_WHY"; return 13
+  fi
+  dir="$ROOST_RESUME_DIR"
+  if [ ! -d "$dir" ]; then
+    roost_pending__fail "$l" "$p" "directory gone" "$dir no longer exists"; return 13
+  fi
+  rc=0; roost_resume_store_check "$h" "$id" "$tr" || rc=$?
+  if [ "$rc" = 3 ]; then
+    roost_pending__fail "$l" "$p" "store miss" "opencode resume is not checked; run it by hand in $dir"; return 13
+  fi
+  if [ "$rc" != 0 ]; then
+    roost_pending__fail "$l" "$p" "store miss"; return 13
+  fi
+  if roost_resume__dup "$pane" "$id"; then
+    roost_pending__fail "$l" "$p" "duplicate of $ROOST_RESUME_HOLDER"; return 13
+  fi
+  # Step 3, claim the conversation (§4.1 step 5a): the ONE claim every
+  # launcher takes. Held for another pane: T7, `duplicate of %M`, the pane
+  # untouched, so it shows its reason and is not left waiting for ever (F N4).
+  if ! roost_resume_claims_dir "$_SOCKET_FLAG" "$SOCKET" "$boot" >/dev/null; then
+    roost_pending_leave_launching "$l" "$p" || true
+    printf 'roost restore: no launch claim can be taken: %s — nothing more resumed\n' "$ROOST_RESUME_WHY" >&2
+    return 1
+  fi
+  rc=0; roost_resume_claim "$ROOST_RESUME_CLAIMS" "$h" "$id" "$pane" || rc=$?
+  case "$rc" in
+    0) claim="$ROOST_RESUME_CLAIM" ;;
+    1) roost_pending__fail "$l" "$p" "duplicate of ${ROOST_RESUME_HOLDER:-another launcher}" "$ROOST_RESUME_BUSY"
+       return 13 ;;
+    *) roost_pending_leave_launching "$l" "$p" || true
+       printf 'roost restore: cannot claim %s %s: %s — nothing more resumed\n' "$h" "$id" "$ROOST_RESUME_HOLDER" >&2
+       return 1 ;;
+  esac
+  # The plan's seam: after the rename to .launching and the claim, before
+  # anything is checked or replaced, so a test can press a key in between.
+  roost_shape__seam ROOST_TEST_RESUME_HOLD
+  # Step 4, the pane is what its state says — from waiting: its start
+  # command is the placeholder line written for THIS file, and it is alive.
+  # A pane that is gone was closed (T19): its file goes, its claim with it.
+  info="$(t -u display-message -p -t "$pane" '#{pane_id} #{pane_dead} #{pane_start_command}' 2>/dev/null || true)"
+  case "$info" in
+    "$pane "*) ;;
+    *) roost_resume_release "$claim"; rm -f "$l"
+       printf 'roost restore: %s (was %s) is gone; its resume is cancelled\n' "$pane" "$ROOST_PENDING_WAS" >&2
+       return 2 ;;
+  esac
+  info="${info#"$pane "}"; dead="${info%% *}"; sc="${info#* }"
+  if [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$sc" "$p" "$h"; then
+    roost_pending__fail "$l" "$p" "pane changed" "" "$claim"; return 13
+  fi
+  if ! roost_resume_claim_held "$claim"; then
+    roost_pending__fail "$l" "$p" "duplicate of another launcher" "its claim was taken over meanwhile"; return 13
+  fi
+  # Step 5, launch (T10): §4.1 steps 6 to 8. The argv, never a string for a
+  # shell, with the harness's home so it reads the store just checked, and
+  # through roost-pane-shell on a wired server (#58).
+  argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_env_argv "$h"; roost_resume_command "$h" "$id" "$tr")
+  if pane_cmd_wired; then argv=("$ROOST_HOME/scripts/roost-pane-shell" "${argv[@]}"); fi
+  clear=()
+  for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
+  t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
+  # remain-on-exit failed: a resume that exits non-zero leaves a dead pane
+  # saying why (T13), never a vanished one.
+  t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
+  if ! t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
+    roost_pending__fail "$l" "$p" "pane changed" "tmux could not respawn it" "$claim"; return 13
+  fi
+  # T10 also says "then save (--trigger respawn)". Not yet: a save today
+  # writes only live identity options, so every pane still WAITING would be
+  # written without its key and the newest shape would lose them. The
+  # overlay that writes a pending pane's keys from its file is Part 4's
+  # (§4.6 Overlay); the save after a launch comes with it.
+  argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$id" "$tr")
+  printf 'roost restore: %s (was %s): launched %s in %s\n' "$pane" "$ROOST_PENDING_WAS" "${argv[*]}" "$dir" >&2
+  return 0
+}
+
+# roost_pending_resume SHAPE-DIR BOOT PACE -> the loop over pending/<boot>/.
+#   0   every waiting pane taken was launched, or nothing was waiting
+#   13  at least one pane was not resumed, its reason in its .failed file
+#   1   another worker holds `resuming/` (nothing done), or no launch claim
+#       can be taken at all
+#
+# Holds `resuming/` under §3.5's owner rule (pid and start time, never age),
+# the worker's own lock, not the saver's `lock/`, so saves go on while it
+# paces (§4.6, revision 2 item 3). Walks the PLAIN `%N` files only, by their
+# `order` line (the shape's pane order), `--pace` seconds between LAUNCHES:
+# the wait is before the next claim, so a key pressed in a waiting pane
+# during it wins that pane's rename (§8.1 test 11 (a)). Shells come first by
+# construction: placement made them before this loop starts.
+roost_pending_resume() {
+  local sd="$1" boot="$2" pace="${3:-2}" d own rc=0 r f n launched=0
+  d="$sd/pending/$boot"
+  [ -d "$d" ] || return 0
+  own=0; roost_shape_owner_take "$sd/resuming" || own=$?
+  case "$own" in
+    1) printf 'roost restore: another resume (pid %s) is resuming this server'"'"'s agents; nothing done\n' "${ROOST_SHAPE_OWNER_PID:-?}" >&2
+       return 1 ;;
+    3) printf 'roost restore: %s; nothing resumed\n' "${ROOST_SHAPE_OWNER_FAULT:-cannot own $sd/resuming}" >&2
+       return 1 ;;
+  esac
+  # The plain files, by order. A name with a dot is another state; a file
+  # with no order sorts last. Read into a list first: the loop renames files
+  # in this directory as it goes.
+  local list=""
+  for f in "$d"/%*; do
+    [ -f "$f" ] || continue
+    case "${f##*/}" in *.*) continue ;; esac
+    case "${f##*/}" in %|%*[!0-9]*) continue ;; esac
+    roost_pending__selected "$f" || continue
+    roost_pending__get "$f" order; n="$ROOST_PENDING_V"
+    case "$n" in ''|*[!0-9]*) n=999999999 ;; esac
+    list="$list$n $f"$'\n'
+  done
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    f="${f#* }"
+    [ -e "$f" ] || continue
+    if [ "$launched" = 1 ] && [ "$pace" != 0 ]; then sleep "$pace"; fi
+    r=0; roost_pending__one "$f" "$boot" || r=$?
+    case "$r" in
+      0) launched=1 ;;
+      13) rc=13 ;;
+      1) rc=1; break ;;
+    esac
+  done <<< "$(printf '%s' "$list" | sort -n)"
+  roost_shape_owner_drop "$sd/resuming"
+  return "$rc"
 }

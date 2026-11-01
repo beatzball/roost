@@ -1012,7 +1012,9 @@ rmdir "$SHAPE_TMP/gone"
 stamp="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
 stop_server
 out="$(R restore --dry-run 2>"$SHAPE_TMP/err")"; rc=$?
-assert_eq "$rc" "0" "--dry-run with no server: exit 0, what the real run would give"
+# 13, not 0, since Part 3: a keyed pane whose directory is gone cannot be
+# resumed, a reason listed (§8.1 test 3b).
+assert_eq "$rc" "13" "--dry-run with no server: exit 13 (a keyed pane's directory is gone), what the real run would give"
 assert_prefix "$out" "from $stamp (the newest save; saved " "the first line names the save and why it was picked"
 assert_contains "$out" $'\nsession alpha\n  window 1 main\n    pane 1 promo' "sessions, two-space windows, four-space panes"
 assert_contains "$(printf '%s\n' "$out" | grep "$SHAPE_TMP/gone")" "claude" "a keyed pane shows its harness"
@@ -1022,7 +1024,7 @@ assert_contains "$out" $'\nsession beta\n' "every session is in the tree"
 TL ls >/dev/null 2>&1; assert_eq "$?" "1" "--dry-run never starts a server"
 printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"; assert_eq "$?" "1" "no colour when stdout is a pipe"
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc" "0" "the real run gives the same exit code"
+assert_eq "$rc" "13" "the real run gives the same exit code"
 assert_contains "$(cat "$SHAPE_TMP/err")" "directory $SHAPE_TMP/gone is gone; a shell in the home directory" "a gone directory: one stderr line (§8.1 test 3a)"
 assert_eq "$(TL list-panes -t '=alpha:1' -F '#{pane_current_path}' | grep -cx "$HOME")" "1" "...and that pane is a shell in the home directory"
 out="$(R restore --dry-run 2>/dev/null)"; rc=$?
@@ -1045,7 +1047,9 @@ assert_contains "$(printf '%s\n' "$lst" | grep "$stamp")" "save  2 sessions, 2 w
 
 echo "== --from STAMP-GEN, --from FILE, another host =="
 stop_server
-R restore --from "$stamp" >/dev/null 2>&1; rc=$?
+# --no-resume: this case is about which save is read; that save's keyed pane
+# has a gone directory, which a resuming restore reports as 13 (§8.1 test 3b).
+R restore --no-resume --from "$stamp" >/dev/null 2>&1; rc=$?
 # Not the window's NAME: in that save beta's window is named automatically
 # (from its pane's directory), and tmux sets an automatic name on its own
 # timer, so a read right after restore found it empty once in about ten

@@ -546,6 +546,18 @@ roost_resume_claim() {
       continue
     fi
     if [ "$cur" = "$me" ]; then
+      # This run's own claim — but for WHICH pane? A loop over many panes
+      # (Part 3's resume engine) is one process, so its owner record is the
+      # same for every launch it makes, and two pending files carrying one
+      # key both found "my claim" and both launched (found by Task 3.5's
+      # duplicate case). A claim this run already holds for ANOTHER pane
+      # that still exists is that pane's: refused, the same answer another
+      # launcher's claim gets. One that names this pane, none, or a gone pane
+      # is taken as before.
+      roost_resume__pane_of "$c" "$cur"; p="$ROOST_RESUME_P"
+      if [ -n "$p" ] && [ "$p" != "$pane" ] && roost_resume__pane_exists "$p"; then
+        ROOST_RESUME_HOLDER="$p"; return 1
+      fi
       if roost_resume__put_pane "$c" "$pane"; then ROOST_RESUME_CLAIM="$c"; return 0; fi
       continue
     fi

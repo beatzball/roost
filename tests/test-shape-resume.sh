@@ -234,7 +234,7 @@ pa="$(first_pane ka)"; pb="$(first_pane kb)"
 shells_wait "$pa"
 assert_eq "$(shells_for "$pa" | wc -l | tr -d ' ')|$( [ -e "$PEND/$pa" ] && echo file)" "1|" \
   "--recent 0: the pane whose transcript is old is a shell, with no file under pending/<boot>/"
-[ -e "$PEND/$pb" ]; assert_true $? "...a pane with no transcript path is still resumed (its file is there)"
+ls "$PEND" | grep -q -- "^$pb\(\.\|$\)"; assert_true $? "...a pane with no transcript path is still resumed (its file is there, in whatever state the loop left it)"
 R restore --recent x >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "2" "--recent needs a number of days: usage, exit 2"
 kill_saved; rm -f "$PEND"/*
@@ -442,6 +442,218 @@ for r in "%|" ".failed|store miss" ".failed|died"; do
 done
 TL kill-pane -t "$FD" 2>/dev/null; rm -f "$PEND/$FD.failed"
 TL kill-session -t '=own'
+
+# --- the resume engine (Task 3.5) ---------------------------------------------
+# A codex store for this section; the canary still guards the rest.
+export CODEX_HOME="$SHAPE_TMP/h-codex"
+mkdir -p "$CODEX_HOME/sessions/2026/10/31"
+: > "$CODEX_HOME/sessions/2026/10/31/rollout-2026-10-31T08-00-00-$CX.jsonl"
+U3=3fa3c0de-3333-4abc-8def-000000000003
+U4=3fa3c0de-4444-4abc-8def-000000000004
+U5=3fa3c0de-5555-4abc-8def-000000000005
+U6=3fa3c0de-6666-4abc-8def-000000000006
+U7=3fa3c0de-7777-4abc-8def-000000000007
+U8=3fa3c0de-8888-4abc-8def-000000000008
+U9=3fa3c0de-9999-4abc-8def-000000000009
+U10=3fa3c0de-aaaa-4abc-8def-00000000000a
+REPO="$SHAPE_TMP/w/repo.d"; WT="$REPO/.claude/worktrees/w1"; mkdir -p "$WT"
+# tfile ID -> the stub store's transcript path for ID (stub_store_add's).
+tfile() { ls "$CLAUDE_CONFIG_DIR"/projects/*/"$1.jsonl" 2>/dev/null | head -1; }
+for u in "$U1" "$U3" "$U8" "$U9" "$U10"; do stub_store_add "$u" "$D1"; done
+# U4: filed under the WORKTREE's folder, its first cwd the repository root
+# (Task 2.2's worktree case): the resume runs in the root.
+f4d="$CLAUDE_CONFIG_DIR/projects/$(printf '%s' "$WT" | tr '/.' '--')"; mkdir -p "$f4d"
+printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$REPO" "$U4" > "$f4d/$U4.jsonl"
+# U5: its first cwd removed since.
+stub_store_add "$U5" "$SHAPE_TMP/w/removed"
+# U6: a cwd holding a JSON escape: refused, not decoded.
+f6d="$CLAUDE_CONFIG_DIR/projects/-x6"; mkdir -p "$f6d"
+printf '{"cwd":"/a\\\\b","sessionId":"%s"}\n' "$U6" > "$f6d/$U6.jsonl"
+# U7: two cwd values on one line: the first.
+f7d="$CLAUDE_CONFIG_DIR/projects/-x7"; mkdir -p "$f7d"
+printf '{"cwd":"%s","parent":{"cwd":"%s"}}\n' "$D2" "$D3" > "$f7d/$U7.jsonl"
+
+# shape_of BLOCK... -> $SD/shape: one session per BLOCK, "SESSION|%OLD|CWD|K V;K V",
+# each one window (index 1) of one pane.
+shape_of() {
+  local b n=0 se id cw ex
+  { printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' \
+      'saved 2026-10-28T12:00:00Z' 'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' ''
+    for b in "$@"; do
+      IFS='|' read -r se id cw ex <<< "$b"
+      printf '%s\n' "session $se" "id \$$n" '' "window $se:1" "id @$n" "layout b25d,200x50,0,0,$n" 'active 1' '' \
+        "pane $se:1.0" "id $id" "cwd $cw"
+      [ -n "$ex" ] && printf '%s\n' "$ex" | tr ';' '\n'
+      printf '\n'
+      n=$((n+1))
+    done; } > "$SD/shape"
+}
+kill_sess() { local s; for s in "$@"; do TL kill-session -t "=$s" 2>/dev/null; done; return 0; }
+reset_run() { : > "$STUB_LOG"; : > "$HOME/shells.log"; rm -rf "$PEND" "$XDG_STATE_HOME/roost/launch-claims"; }
+logline() { grep -- "$1" "$STUB_LOG" | head -1; }
+wait_log() { local i=0; while [ "$i" -lt "${2:-100}" ]; do grep -q -- "$1" "$STUB_LOG" 2>/dev/null && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+
+echo "== §8.1 test 4: the resume runs in its directory, agents --pace apart, shells first =="
+reset_run
+shape_of "r1|%940|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")" \
+         "r2|%941|$D1|harness claude;session_id $U3;transcript $(tfile "$U3")" \
+         "r3|%942|$D3|harness codex;session_id $CX;session_cwd $D2" \
+         "r4|%943|$D3|"
+HOLD="$SHAPE_TMP/loop2.hold"; rm -f "$HOLD"
+ROOST_TEST_LOOP_HOLD="$HOLD" R restore --pace 2 >/dev/null 2>"$SHAPE_TMP/err" &
+RPID=$!
+i=0; while [ "$i" -lt 150 ]; do [ -n "$(first_pane r4)" ] && [ ! -e "$SD/restoring" ] && break; sleep 0.1; i=$((i+1)); done
+p4="$(first_pane r4)"; shells_wait "$p4"
+assert_eq "$(shells_for "$p4" | wc -l | tr -d ' ')|$(cat "$STUB_LOG")" "1|" "shells are placed before any agent: the shell pane has its shell, nothing launched yet"
+touch "$HOLD"; wait "$RPID"; rc=$?
+assert_eq "$rc" "0" "restore: exit 0 (every agent launched)"
+assert_eq "$(wc -l < "$STUB_LOG" | tr -d ' ')" "3" "three launches, one per keyed pane"
+assert_eq "$(logline "$U1" | cut -d' ' -f2-)" "$D1 claude --resume $U1" "claude: --resume <id> in the transcript's first cwd (a dotted path)"
+assert_eq "$(logline "$U3" | cut -d' ' -f2-)" "$D1 claude --resume $U3" "a sibling in the same directory gets its own --resume"
+assert_eq "$(logline "$CX" | cut -d' ' -f2-)" "$D2 codex resume $CX" "codex: codex resume <id> in its session_cwd (the shell cwd is the fallback)"
+t1="$(sed -n 1p "$STUB_LOG" | cut -d' ' -f1)"; t2="$(sed -n 2p "$STUB_LOG" | cut -d' ' -f1)"; t3="$(sed -n 3p "$STUB_LOG" | cut -d' ' -f1)"
+[ $((t2 - t1)) -ge 2 ] && [ $((t3 - t2)) -ge 2 ]; assert_true $? "--pace 2: launches at least 2 s apart ($t1 $t2 $t3)"
+assert_eq "$(sed -n 1p "$STUB_LOG" | grep -c "$U1")$(sed -n 3p "$STUB_LOG" | grep -c "$CX")" "11" "...in the shape's pane order"
+p1="$(first_pane r1)"
+assert_eq "$(TL display -p -t "$p1" '#{pane_current_command}')|$(ls "$PEND" | grep -c "^$p1.launching$")" "claude|1" \
+  "the pane now runs the resume, its file %N.launching until identity lands (Part 3's later tasks)"
+assert_eq "$(TL show -pqv -t "$p1" remain-on-exit)" "failed" "...under remain-on-exit failed"
+kill_sess r1 r2 r3 r4
+
+echo "== --no-resume, --recent, --only =="
+reset_run
+R restore --no-resume >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(cat "$STUB_LOG")" "0|" "--no-resume: exit 0, no run"
+kill_sess r1 r2 r3 r4
+reset_run
+touch -t 202001010000 "$(tfile "$U1")"
+shape_of "o1|%950|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+R restore --recent 0 >/dev/null 2>&1
+assert_eq "$(cat "$STUB_LOG")" "" "--recent 0 with an old transcript: no run"
+po="$(first_pane o1)"
+R restore --resume --pace 1 >/dev/null 2>&1; sleep 2
+assert_eq "$(cat "$STUB_LOG")|$(TL display -p -t "$po" '#{pane_current_command}')" "|bash" \
+  "--recent holds at the next attach (worker-only): restore --resume, two --pace intervals, still nothing run and the pane still that shell"
+kill_sess o1
+touch "$(tfile "$U1")"
+reset_run
+shape_of "r1|%940|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")" \
+         "r2|%941|$D1|harness claude;session_id $U3;transcript $(tfile "$U3")"
+R restore --only r2 --pace 0 >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(wc -l < "$STUB_LOG" | tr -d ' ')|$(grep -c "$U3" "$STUB_LOG")" "0|1|1" "--only SESSION: one session placed, one agent run"
+kill_sess r1 r2
+
+echo "== §5.1: the directory rule, through the engine =="
+reset_run
+shape_of "d1|%960|$D3|harness claude;session_id $U4;transcript $f4d/$U4.jsonl" \
+         "d2|%961|$D3|harness codex;session_id $CX" \
+         "d3|%962|$D3|harness claude;session_id $U5;transcript $(tfile "$U5")" \
+         "d4|%963|$D3|harness claude;session_id $U6;transcript $f6d/$U6.jsonl" \
+         "d5|%964|$D3|harness claude;session_id $U7;transcript $f7d/$U7.jsonl"
+R restore --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "13" "a pane not resumed for a listed reason: exit 13"
+assert_eq "$(logline "$U4" | cut -d' ' -f2-)" "$REPO claude --resume $U4" "a transcript filed under the worktree's folder, first cwd the repository root: run in the root"
+assert_eq "$(logline "$CX" | cut -d' ' -f2-)" "$D3 codex resume $CX" "codex with no session_cwd: the shell cwd"
+assert_eq "$(logline "$U7" | cut -d' ' -f2-)" "$D2 claude --resume $U7" "two cwd values on one line: the first"
+p3="$(first_pane d3)"; p4="$(first_pane d4)"
+assert_eq "$(grep -c "$U5\|$U6" "$STUB_LOG")" "0" "a removed directory and a refused one: not run"
+assert_eq "$(head -1 "$PEND/$p3.failed" 2>/dev/null)|$(head -1 "$PEND/$p4.failed" 2>/dev/null)" "directory gone|directory gone" \
+  "...each %N.failed directory gone"
+wait_screen "$p3" "claude was not resumed: directory gone" 70; assert_true $? "...and its placeholder shows the reason, with no respawn"
+assert_contains "$(cat "$SHAPE_TMP/err")" "$p3 (was %962): claude $U5 not resumed: directory gone" "...named on stderr"
+kill_sess d1 d2 d3 d4 d5
+
+echo "== duplicate, store miss, a gone cwd with a key, a pane saved working =="
+reset_run
+shape_of "u1|%970|$D1|harness claude;session_id $U1;transcript $(tfile "$U1");state working" \
+         "u2|%971|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")" \
+         "u3|%972|$D1|harness claude;session_id $U2;transcript $SHAPE_TMP/nope.jsonl" \
+         "u4|%973|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+R restore --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+q1="$(first_pane u1)"; q2="$(first_pane u2)"; q3="$(first_pane u3)"; q4="$(first_pane u4)"
+assert_eq "$rc" "13" "a duplicate and a store miss: exit 13"
+assert_eq "$(grep -c "$U1" "$STUB_LOG")" "1" "duplicate: the first launched, once"
+assert_eq "$(head -1 "$PEND/$q2.failed" 2>/dev/null)" "duplicate of $q1" "...the second %N.failed duplicate of %M"
+# Three panes carrying one key, in ONE run: the loop is one process with one
+# owner record, so its own claim for the first pane must refuse the third
+# too (the same-run case roost_resume_claim now judges by pane).
+assert_eq "$(head -1 "$PEND/$q4.failed" 2>/dev/null)" "duplicate of $q1" "...and a third carrying the same key, the same"
+wait_screen "$q2" "claude was not resumed: duplicate of $q1" 70; assert_true $? "...showing it"
+assert_eq "$(head -1 "$PEND/$q3.failed" 2>/dev/null)" "store miss" "store miss: %N.failed store miss"
+case "$(startcmd "$q3")" in *roost-placeholder*) r=0 ;; *) r=1 ;; esac
+assert_true $r "...still the placeholder"
+assert_contains "$(cat "$SHAPE_TMP/err")" "were working or blocked at the save — re-prompt by hand: $q1" "a pane saved state working is named in the report"
+kill_sess u1 u2 u3 u4
+reset_run
+shape_of "g1|%980|$SHAPE_TMP/w/gone|harness claude;session_id $U1;transcript $(tfile "$U1")"
+R restore --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(cat "$STUB_LOG")" "13|" "§8.1 test 3b: a gone cwd with a key: exit 13, nothing run"
+assert_contains "$(cat "$SHAPE_TMP/err")" "not resumed: directory gone" "...named"
+kill_sess g1
+
+echo "== §8.1 test 11 (a) (b) (c), worker-only: keys and a respawn during the pace =="
+# Placement with no loop: a restore held after placement is killed there, so
+# the pending files and their placeholders wait as an --at-login placement
+# leaves them (Part 5). Then `restore --resume` is the worker (no hook here).
+reset_run
+shape_of "w1|%990|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")" \
+         "w2|%991|$D1|harness claude;session_id $U3;transcript $(tfile "$U3")" \
+         "w3|%992|$D1|harness claude;session_id $U8;transcript $(tfile "$U8")" \
+         "w4|%993|$D1|harness claude;session_id $U9;transcript $(tfile "$U9")" \
+         "w5|%994|$D1|harness claude;session_id $U10;transcript $(tfile "$U10")"
+HOLD="$SHAPE_TMP/loop3.hold"; rm -f "$HOLD"
+ROOST_TEST_LOOP_HOLD="$HOLD" R restore >/dev/null 2>&1 &
+RPID=$!
+i=0; while [ "$i" -lt 150 ]; do [ "$(ls "$PEND" 2>/dev/null | wc -l | tr -d ' ')" = 5 ] && [ ! -e "$SD/restoring" ] && break; sleep 0.1; i=$((i+1)); done
+kill "$RPID" 2>/dev/null; wait "$RPID" 2>/dev/null
+v2="$(first_pane w2)"; v3="$(first_pane w3)"; v4="$(first_pane w4)"
+for v in "$v2" "$v3"; do wait_screen "$v" "waiting to resume claude"; done
+pid2="$(TL display -p -t "$v2" '#{pane_pid}')"; pid3="$(TL display -p -t "$v3" '#{pane_pid}')"
+R restore --resume --pace 6 >/dev/null 2>"$SHAPE_TMP/err" &
+WPID=$!
+wait_log "$U1" 100; assert_true $? "(the worker launched the first agent)"
+# (a) typed text then C-a; (b) a command and Enter; (c) a respawn by hand.
+TL send-keys -t "$v2" -l 'echo keep-me'; TL send-keys -t "$v2" C-a
+TL send-keys -t "$v3" -l 'sleep 60'; TL send-keys -t "$v3" Enter
+TL respawn-pane -k -t "$v4" 'sh'
+sleep 0.3
+spid4="$(TL display -p -t "$v4" '#{pane_pid}')"; scmd4="$(TL display -p -t "$v4" '#{pane_current_command}')"
+wait "$WPID"; rc=$?
+assert_eq "$rc" "13" "the worker: exit 13 (one pane changed)"
+assert_eq "$(wc -l < "$STUB_LOG" | tr -d ' ')|$(grep -c "$U3\|$U8\|$U9" "$STUB_LOG")" "2|0" "two launches: the first and the last; the taken and the changed panes never"
+[ -e "$PEND/$v2.taken" ]; assert_true $? "(a) echo keep-me + C-a: %N.taken"
+shells_wait "$v2"
+assert_eq "$(TL display -p -t "$v2" '#{pane_pid}')" "$pid2" "(a) ...the same pane_pid (the placeholder exec'd the shell)"
+TL send-keys -t "$v2" -l 'echo LINE-WAS-['; TL send-keys -t "$v2" C-e; TL send-keys -t "$v2" -l ']'; TL send-keys -t "$v2" Enter
+wait_screen "$v2" 'LINE-WAS-[]' 30; assert_true $? "(a) ...and an empty line: keep-me never reached the shell"
+[ -e "$PEND/$v3.taken" ]; assert_true $? "(b) sleep 60 + Enter: %N.taken"
+shells_wait "$v3"; sleep 0.5
+assert_eq "$(TL display -p -t "$v3" '#{pane_pid}')|$(TL display -p -t "$v3" '#{pane_current_command}')" "$pid3|bash" "(b) ...the same pane_pid, and sleep never ran"
+assert_eq "$(head -1 "$PEND/$v4.failed" 2>/dev/null)" "pane changed" "(c) respawned by hand before its turn: %N.failed pane changed"
+assert_eq "$(TL display -p -t "$v4" '#{pane_pid}')|$(TL display -p -t "$v4" '#{pane_current_command}')" "$spid4|$scmd4" "(c) ...the sh untouched (on macOS /bin/sh reads as bash)"
+kill_sess w1 w2 w3 w4 w5
+
+echo "== §8.1 test 11 (e), worker-only: a key after .launching waits to be replaced =="
+reset_run
+shape_of "e1|%995|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+HOLD="$SHAPE_TMP/loop4.hold"; rm -f "$HOLD"
+ROOST_TEST_LOOP_HOLD="$HOLD" R restore >/dev/null 2>&1 &
+RPID=$!
+i=0; while [ "$i" -lt 150 ]; do [ "$(ls "$PEND" 2>/dev/null | wc -l | tr -d ' ')" = 1 ] && [ ! -e "$SD/restoring" ] && break; sleep 0.1; i=$((i+1)); done
+kill "$RPID" 2>/dev/null; wait "$RPID" 2>/dev/null
+ve="$(first_pane e1)"; wait_screen "$ve" "waiting to resume claude"
+RH="$SHAPE_TMP/resume.hold"; rm -f "$RH"
+ROOST_TEST_RESUME_HOLD="$RH" R restore --resume >/dev/null 2>&1 &
+WPID=$!
+wait_file "$PEND/$ve.launching" 50
+TL send-keys -t "$ve" x
+wait_screen "$ve" "resuming claude now" 70; assert_true $? "(e) a key after .launching: the screen says resuming claude now"
+sleep 0.5
+assert_eq "$(shells_for "$ve")" "" "(e) ...and no shell started"
+touch "$RH"; wait "$WPID"; rc=$?
+wait_log "$U1" 50; assert_true $? "(e) the resume replaces it (exit $rc)"
+assert_eq "$(TL display -p -t "$ve" '#{pane_current_command}')" "claude" "(e) ...the pane now runs the harness"
+kill_sess e1
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

@@ -438,8 +438,19 @@ roost_restore__respawn_claimed() {
 # stderr line: a placeholder with no file could never be freed by a key, and
 # a resume with no record would be a launch nobody can see or stop.
 roost_restore__respawn() {
-  local f
+  local f st
+  # A pane whose agent was mid-turn at the save is named in the report: its
+  # resume brings back the conversation, not the turn, so a person re-prompts
+  # it (§4.3 Report). Collected here, printed by roost_restore_report_busy.
+  if [ -n "${3:-}" ] && roost_shape_get "$3" harness >/dev/null 2>&1; then
+    st="$(roost_shape_get "$3" state 2>/dev/null || true)"
+    case "$st" in working|blocked) ROOST_RESTORE_BUSY="${ROOST_RESTORE_BUSY:-}${ROOST_RESTORE_BUSY:+ }$1" ;; esac
+  fi
   if [ -n "${3:-}" ] && roost_restore__will_resume "$3"; then
+    # The boot key is read HERE, in this shell: inside the $(...) below it
+    # would be read and lost with the subshell, and the loop after placement
+    # would not know there was anything to resume.
+    roost_restore__pending_root || true
     if f="$(roost_restore__pending_write "$1" "$3")"; then
       t set-option -p -t "$1" remain-on-exit failed 2>/dev/null || true
       t respawn-pane -k -t "$1" -c "$2" "$ROOST_HOME/scripts/roost-placeholder" "$f" "$ROOST_RESTORE_WR_H" 2>/dev/null || true
@@ -447,9 +458,45 @@ roost_restore__respawn() {
     fi
     printf 'roost restore: pane %s (%s): its pending record could not be written; a shell, not resumed\n' \
       "$(roost_restore__addr "$3")" "$1" >&2
+    ROOST_RESTORE_NOTRES=1
+  elif [ -n "${3:-}" ] && [ "${ROOST_RESTORE_NORESUME:-0}" != 1 ]; then
+    roost_restore__not_resumed "$1" "$3"
   fi
   t set-option -pu -t "$1" remain-on-exit 2>/dev/null || true
   t respawn-pane -k -t "$1" -c "$2" "${ROOST_RESTORE_SHELL_ARGS[@]}" 2>/dev/null || true
+}
+
+# roost_restore__not_resumed PANE BLOCKFILE — a pane that gets a shell
+# although its block names a conversation, said on stderr with §5.6's words
+# (§4.3 Report: "one line per pane not resumed"). A live key whose directory
+# is gone is §8.1 test 3b's case and makes the run exit 13
+# (ROOST_RESTORE_NOTRES): it could not be resumed for a reason listed. A
+# stale key is named only: the save already judged it not the pane's agent,
+# so there was nothing to resume. --recent's choice is the person's, and is
+# not named.
+roost_restore__not_resumed() {
+  local h i r d
+  if h="$(roost_shape_get "$2" harness)" && i="$(roost_shape_get "$2" session_id)"; then
+    d="$(roost_shape_get "$2" cwd)"
+    if [ ! -d "$d" ]; then
+      printf 'roost restore: pane %s (%s): %s %s not resumed: directory gone (%s)\n' \
+        "$(roost_restore__addr "$2")" "$1" "$h" "$i" "$d" >&2
+      ROOST_RESTORE_NOTRES=1
+    fi
+  elif r="$(roost_shape_get "$2" stale_reason)"; then
+    printf 'roost restore: pane %s (%s): not resumed: stale (%s %s)\n' \
+      "$(roost_restore__addr "$2")" "$1" "$r" "$(roost_shape_get "$2" stale_harness 2>/dev/null || true)" >&2
+  fi
+  return 0
+}
+
+# roost_restore_report_busy — the report's "M were working or blocked at the
+# save — re-prompt by hand: %a %b" line, when there were any (§4.3 Report).
+roost_restore_report_busy() {
+  local n
+  [ -n "${ROOST_RESTORE_BUSY:-}" ] || return 0
+  n="$(printf '%s\n' $ROOST_RESTORE_BUSY | grep -c .)"
+  printf 'roost restore: %s were working or blocked at the save — re-prompt by hand: %s\n' "$n" "$ROOST_RESTORE_BUSY" >&2
 }
 
 # roost_restore__will_resume BLOCKFILE -> exit 0 when the saved pane will be
@@ -479,9 +526,13 @@ roost_restore__will_resume() {
   [ -d "$d" ] || return 1
   tr="$(roost_shape_get "$1" transcript 2>/dev/null || true)"
   if [ -n "${ROOST_RESTORE_RECENT:-}" ] && [ -n "$tr" ] && [ -f "$tr" ]; then
-    # stat's two dialects: BSD (macOS) `-f %m`, GNU `-c %Y`. A file whose
-    # mtime cannot be read is not judged old.
-    m="$(stat -f %m "$tr" 2>/dev/null || stat -c %Y "$tr" 2>/dev/null || true)"
+    # stat's two dialects: GNU `-c %Y`, BSD (macOS) `-f %m`. GNU first, and
+    # each answer must be a number: GNU stat ALSO takes `-f %m` (`-f` is its
+    # file-system mode) and prints something that is not an mtime, which
+    # left every transcript un-judged on Ubuntu (found in the container). A
+    # file whose mtime cannot be read is not judged old.
+    m="$(stat -c %Y "$tr" 2>/dev/null || true)"
+    case "$m" in ''|*[!0-9]*) m="$(stat -f %m "$tr" 2>/dev/null || true)" ;; esac
     now="${ROOST_TEST_NOW:-$(date +%s)}"
     case "$m" in
       ''|*[!0-9]*) ;;
@@ -532,6 +583,7 @@ roost_restore__pending_root() {
 roost_restore__pending_taken() {
   local f
   roost_restore__will_resume "$2" || return 1
+  roost_restore__pending_root || return 1
   f="$(roost_restore__pending_write "$1" "$2")" || return 1
   mv "$f" "$f.taken" 2>/dev/null
 }
@@ -896,7 +948,8 @@ roost_restore_run() {
   # pending/<boot>/ goes beside restoring/ (§3.1): in the shape directory,
   # or, with saving off, in this run's own directory — the loop that reads it
   # runs in this same process, and each placeholder names its file by path.
-  ROOST_RESTORE_SD="${ROOST_RESTORE_RD%/restoring}" ROOST_RESTORE_BOOT=
+  ROOST_RESTORE_SD="${ROOST_RESTORE_RD%/restoring}" ROOST_RESTORE_BOOT=""
+  ROOST_RESTORE_NOTRES=0 ROOST_RESTORE_BUSY=""
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
   # The bootstrap's name record (roost_restore__respawn_claimed) is this
   # run's alone: a value from the environment is never one (review round 8,
@@ -970,6 +1023,9 @@ roost_restore_run() {
   # placement and before its resume loop, so a test can read the placed
   # state — the pending files and their placeholders — before any launch.
   roost_restore__hold ROOST_TEST_LOOP_HOLD
+  # A keyed pane that could not get its pending record (its directory gone,
+  # §8.1 test 3b): 13, unless 12 already won (§4.3 Report).
+  [ "$ROOST_RESTORE_NOTRES" = 1 ] && [ "$rc" = 0 ] && rc=13
   return "$rc"
 }
 
@@ -1132,15 +1188,23 @@ roost_restore__block() {
 
 # roost_restore__action BLOCK -> "HARNESS|ACTION", the tree's last two columns
 # for a pane (§4.3 --dry-run; §5.6's and §5.1a's words for a reason). In
-# Part 1 every pane is placed as a shell; a key is kept for a later roost
-# that resumes.
+# Part 1 every pane was placed as a shell. From Part 3 a pane that will be
+# resumed says `resume` — decided by the same rule placement uses
+# (roost_restore__will_resume: --no-resume and --recent included) — and a
+# keyed pane whose directory is gone makes the dry run's exit 13, as the
+# real run's (ROOST_RESTORE_NOTRES). The store is not read here: a store
+# miss is the loop's, after placement.
 roost_restore__action() {
   local h r sh gone=0 d
   d="$(roost_shape_get "$1" cwd)"
   [ -d "$d" ] || gone=1
   if h="$(roost_shape_get "$1" harness)"; then
-    if [ "$gone" = 1 ]; then printf '%s|shell in ~, not resumed: directory gone\n' "$h"
-    else printf '%s|shell, not resumed: this roost places panes only\n' "$h"; fi
+    if [ "$gone" = 1 ]; then
+      printf '%s|shell in ~, not resumed: directory gone\n' "$h"
+      [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ] || ROOST_RESTORE_NOTRES=1
+    elif roost_restore__will_resume "$1"; then printf '%s|resume\n' "$h"
+    elif [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ]; then printf '%s|shell, not resumed: --no-resume\n' "$h"
+    else printf '%s|shell, not resumed: older than --recent %s days\n' "$h" "${ROOST_RESTORE_RECENT:-}"; fi
   elif r="$(roost_shape_get "$1" stale_reason)"; then
     sh="$(roost_shape_get "$1" stale_harness)"
     if [ "$gone" = 1 ]; then printf -- '-|shell in ~, not resumed: directory gone\n'
@@ -1167,6 +1231,7 @@ roost_restore__renumbers() {
 # server, and with no server running it skips nothing as existing.
 roost_restore_dry_run() {
   local f a rc=0 name g wf pf idx wn n pn h act running=0
+  ROOST_RESTORE_NOTRES=0
   server_running && running=1
   if [ "$running" = 1 ]; then
     ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
@@ -1201,7 +1266,9 @@ roost_restore_dry_run() {
       while IFS= read -r pf; do
         [ -n "$pf" ] || continue
         pn="$(roost_shape_get "$pf" name)" || pn="-"
-        act="$(roost_restore__action "$pf")"; h="${act%%|*}" act="${act#*|}"
+        # Not in a $(...): the action sets ROOST_RESTORE_NOTRES in this shell.
+        roost_restore__action "$pf" > "$ROOST_RESTORE_PD/.act"
+        act="$(cat "$ROOST_RESTORE_PD/.act")"; h="${act%%|*}" act="${act#*|}"
         printf '    pane %s %-12s %-30s %-8s %s\n' "$(roost_restore__addr "$pf" | sed 's/.*\.//')" \
           "$pn" "$(roost_shape_get "$pf" cwd)" "$h" "$act"
       done <<< "$(roost_restore__panes "$a")"
@@ -1210,6 +1277,8 @@ roost_restore_dry_run() {
   if roost_restore__renumbers; then
     printf 'note: renumber-windows is on in your tmux conf, so windows will not keep their saved indices\n'
   fi
+  # The real run's 13 for a keyed pane whose directory is gone; 12 wins.
+  [ "${ROOST_RESTORE_NOTRES:-0}" = 1 ] && [ "$rc" = 0 ] && rc=13
   return "$rc"
 }
 

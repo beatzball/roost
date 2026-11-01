@@ -49,8 +49,8 @@
 #   roost settings           change theme/glyphs/separator/notifications, live
 #   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
 #   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). `rm -rf` that shapes directory forgets every shape and nothing else
-#   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--only SEL ...]
-#                            put a saved shape back as shells in their saved directories, at their saved indices and layouts; agents are not resumed yet. A session that exists is skipped and named (exit 12); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
+#   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--resume] [--recent DAYS] [--pace SECONDS] [--only SEL ...]
+#                            put a saved shape back as shells in their saved directories, at their saved indices and layouts, then resume each agent in its own directory, --pace seconds apart (default 2). Until its turn an agent's pane waits in a placeholder; a key there keeps it as a shell (roost revive %N brings the agent back). --no-resume places only; --recent DAYS leaves out an agent whose transcript is older; --resume resumes the panes already placed and waiting. A session that exists is skipped and named (exit 12); an agent not resumed is named (exit 13); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
 #   roost revive [--new-window] [--force] [--json] TGT
 #                            bring a pane's agent conversation back, in place, with the same %N — or, for a %N that is gone, in a new window from the pane's kept record (--new-window opens one beside a pane that is still there): the harness's own resume (claude --resume ID, codex resume ID, copilot --resume=ID, pi --session FILE) in the conversation's own directory. Checked before anything is killed: exit 13 when there is no recorded conversation, its key is stale or the harness no longer holds it, or another pane has it open; 14 the harness is not on PATH; 15 its directory is gone. Refuses a ⏳ working or 🛑 blocked agent, and a shell running a job, unless --force. Exit 0 means launched, not resumed: a dialog the harness opens is left on screen. opencode's command is printed, not run
 #   roost kill [--yes] [SESSION]
@@ -663,15 +663,17 @@ case "${1:-up}" in
   restore)
     # `roost restore` (#51): put this server's saved shape back — its
     # sessions, windows, panes, names, directories and layouts — as shells.
-    # Agents are not resumed in this part. The work is in
-    # scripts/lib/roost-restore.sh; this arm finds the save and maps the
-    # result to the exit codes of spec §4.3 (0, 2, 12, 16, 1).
+    # Agents were not resumed in Part 1; from Part 3 a pane with a key waits
+    # in a placeholder and the resume engine (scripts/lib/roost-pending.sh)
+    # launches it. The placement is in scripts/lib/roost-restore.sh; this arm
+    # finds the save and maps the result to the exit codes of spec §4.3 (0,
+    # 2, 12, 13, 16, 1).
     shift
     restore_from="" restore_mode=run
     # This arm's own, never the environment's: a value inherited from a
     # caller would change which panes are resumed with nothing on the
     # command line saying so.
-    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT=""
+    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2
     ROOST_RESTORE_ONLY=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -687,11 +689,34 @@ case "${1:-up}" in
         --recent) case "${2:-}" in ''|*[!0-9]*)
                     echo "roost restore: --recent needs a number of days" >&2; exit 2 ;; esac
                   ROOST_RESTORE_RECENT="$2"; shift 2 ;;
-        *) echo "usage: roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--recent DAYS] [--only SEL ...]" >&2; exit 2 ;;
+        # The resume-only form (§4.3): no placement, straight to the loop
+        # over the panes already placed and waiting (§4.6) — the first-attach
+        # worker's form, run by hand until Part 5's hook runs it.
+        --resume) restore_mode=resume; shift ;;
+        # Seconds between launches (§5.5; default 2, the incident's number).
+        --pace) case "${2:-}" in ''|*[!0-9]*)
+                  echo "roost restore: --pace needs a whole number of seconds" >&2; exit 2 ;; esac
+                restore_pace="$2"; shift 2 ;;
+        *) echo "usage: roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--resume] [--recent DAYS] [--pace SECONDS] [--only SEL ...]" >&2; exit 2 ;;
       esac
     done
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
     . "$ROOST_HOME/scripts/lib/roost-restore.sh"
+    . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+    ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+    if [ "$restore_mode" = resume ]; then
+      # Nothing is placed, so no save is read: the pending record of THIS
+      # server's boot is the whole input (§4.6). With saving off there is no
+      # shape directory and so no pending record: nothing to resume.
+      if ! server_running; then echo "roost restore: no roost server is running; nothing to resume" >&2; exit 1; fi
+      restore_root="$(roost_shape_saving)" || exit 0
+      restore_dir="$restore_root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+      restore_boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      [ -n "$restore_boot" ] || { echo "roost restore: cannot read the server's boot key; nothing resumed" >&2; exit 1; }
+      restore_rc=0
+      roost_pending_resume "$restore_dir" "$restore_boot" "$restore_pace" || restore_rc=$?
+      exit "$restore_rc"
+    fi
     # --dry-run and --list only look: they name the shape directory without
     # making it. A real run makes it, for restoring/.
     if [ "$restore_mode" = run ]; then
@@ -714,6 +739,19 @@ case "${1:-up}" in
         roost_restore_dry_run || restore_rc=$?
       else
         roost_restore_run "$ROOST_RESTORE_FILE" "$restore_dir" || restore_rc=$?
+        # A hand restore runs THE loop in the foreground after placement
+        # (§4.3 Resumes, revision 3): the same engine as the first-attach
+        # worker, over the pending files placement just wrote. 12 wins over
+        # 13 when both (§4.3 Report); a loop that could not run at all (1)
+        # does not hide a placement code.
+        if [ "$ROOST_RESTORE_NORESUME" != 1 ] && [ -n "${ROOST_RESTORE_BOOT:-}" ] && [ "$restore_rc" != 1 ]; then
+          rr=0; roost_pending_resume "$ROOST_RESTORE_SD" "$ROOST_RESTORE_BOOT" "$restore_pace" || rr=$?
+          case "$rr" in
+            13) [ "$restore_rc" = 12 ] || restore_rc=13 ;;
+            1) [ "$restore_rc" = 0 ] && restore_rc=1 ;;
+          esac
+        fi
+        roost_restore_report_busy
       fi
     fi
     rm -rf "${ROOST_RESTORE_PD:-}"
