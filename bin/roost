@@ -792,6 +792,9 @@ case "${1:-up}" in
     fi
     case "$1" in -*) echo "usage: roost revive [--new-window] [--force] [--json] TGT" >&2; exit 2 ;; esac
     . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+    # The pending record (#191 Part 3): a pane a restore placed and has not
+    # resumed is claimed by its state (roost_revive, §4.1 step 5a).
+    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
     ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
     rv_rc=0
     roost_revive "$1" "$(target "$1")" "$rv_force" "$rv_json" "$rv_new" || rv_rc=$?

@@ -732,6 +732,28 @@ roost_resume__home_session() {
   roost_resume__t list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
 }
 
+# roost_resume__pend_back — T8 for `revive` (§4.7): a refusal after this run
+# renamed a pending file to %N.launching puts it back to the name it came
+# from — %N (waiting), %N.failed with its old first line, or %N.taken —
+# with the `origin` line removed first (roost_pending_leave_launching), and
+# releases this run's claim. Reads roost_revive's ROOST_RESUME_P* state.
+roost_resume__pend_back() {
+  roost_resume_release "${1:-}"
+  case "$ROOST_RESUME_PST" in
+    waiting) roost_pending_leave_launching "$ROOST_RESUME_PL.launching" "$ROOST_RESUME_PL" || true ;;
+    taken) roost_pending_leave_launching "$ROOST_RESUME_PL.launching" "$ROOST_RESUME_PL.taken" || true ;;
+    *) roost_pending_leave_launching "$ROOST_RESUME_PL.launching" "$ROOST_RESUME_PL.failed" "$ROOST_RESUME_PFIRST" || true ;;
+  esac
+}
+
+# roost_resume__pend_changed — T9 for `revive`: the check before `-k` failed
+# from waiting, failed, waiting or failed, dead: %N.failed pane changed,
+# this run's claim released, the pane untouched.
+roost_resume__pend_changed() {
+  roost_resume_release "${1:-}"
+  roost_pending_leave_launching "$ROOST_RESUME_PL.launching" "$ROOST_RESUME_PL.failed" "pane changed" || true
+}
+
 # roost_revive RAW TGT FORCE JSON NEWWIN — the verb. Returns its exit code:
 #   0  launched (NOT resumed: §4.1 step 8 — roost does not wait for the
 #      harness's prompt and answers nothing it opens)
@@ -759,7 +781,7 @@ roost_resume__home_session() {
 roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
-  local sd boot claim="" kid kids o mode=place rsess="" rname="" exempt new sess
+  local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
   if ! roost_shape__read_rules; then
@@ -805,6 +827,42 @@ roost_revive() {
     pcwd="" cmd="" ppid="" dead=0 state=""
   fi
   [ "$mode" = place ] && [ "$newwin" = 1 ] && mode=newwin
+  # A PANE WITH A PENDING FILE (#191 Part 3, §4.1 steps 1 and 5a, §4.7): a
+  # pane a restore placed and has not resumed. Its key is its pending
+  # record's, not its options' (a placeholder has none), and it is claimed
+  # by the `revive` arrow for the state its file is in — waiting (T5),
+  # failed, waiting or dead (T14, T16), failed, interrupted (T8c), taken
+  # (T17) — the pane first, then the conversation, the worker's order. A
+  # file `.launching` is another launcher's; a placing pane is restore's.
+  # failed, changed and failed, replaced have no revive arrow: the pane runs
+  # a person's command or another conversation, and is revived as a pane
+  # with no file. roost_pane__owner reads it (scripts/lib/roost-pending.sh).
+  ROOST_RESUME_PST="" ROOST_RESUME_PL="" ROOST_RESUME_PFIRST=""
+  if [ "$mode" != gone ]; then
+    roost_pane__owner "$pane" 2>/dev/null || true
+    case "$ROOST_PENDING_STATE" in
+      waiting|failed-waiting|failed-dead|failed-interrupted|taken)
+        if [ "$mode" = newwin ]; then
+          # Refused before any rename (revision 5, F N2): the agent would land
+          # elsewhere, and %N.launching would wait for an identity that never
+          # lands on %N.
+          echo "roost revive: '$raw' has a pending resume; revive it in place" >&2
+          return 13
+        fi
+        ROOST_RESUME_PST="$ROOST_PENDING_STATE"
+        ROOST_RESUME_PL="$ROOST_PENDING_FILE"
+        case "$ROOST_RESUME_PL" in *.failed|*.taken) ROOST_RESUME_PL="${ROOST_RESUME_PL%.*}" ;; esac
+        if [ "$ROOST_PENDING_STATE" != waiting ] && [ "$ROOST_PENDING_STATE" != taken ]; then
+          IFS= read -r ROOST_RESUME_PFIRST < "$ROOST_PENDING_FILE" 2>/dev/null || true
+        fi ;;
+      launching|launched)
+        echo "roost revive: '$raw' is already being resumed" >&2
+        return 13 ;;
+      placing|placing-claimed)
+        echo "roost revive: '$raw' is being placed by roost restore; revive it once restore is done" >&2
+        return 13 ;;
+    esac
+  fi
   if [ "$mode" != gone ]; then
     roost_resume__opt "$pane" @roost-harness; h="$ROOST_RESUME_V"
     roost_resume__opt "$pane" @roost-session; sid="$ROOST_RESUME_V"
@@ -836,6 +894,16 @@ roost_revive() {
     fi
   fi
 
+  if [ -n "$ROOST_RESUME_PST" ]; then
+    # The pending record's resume block (§4.6). The pane's own directory
+    # does not count: a placeholder runs where restore put it, and §5.1
+    # reads the saved `cwd`.
+    roost_pending__get "$ROOST_PENDING_FILE" harness; h="$ROOST_PENDING_V"
+    roost_pending__get "$ROOST_PENDING_FILE" session_id; sid="$ROOST_PENDING_V"
+    roost_pending__get "$ROOST_PENDING_FILE" session_cwd; scwd="$ROOST_PENDING_V"
+    roost_pending__get "$ROOST_PENDING_FILE" transcript; tr="$ROOST_PENDING_V"
+    roost_pending__get "$ROOST_PENDING_FILE" cwd; pcwd="$ROOST_PENDING_V"
+  fi
   # Step 2: does the identity agree with what the pane runs (§3.2's rule)?
   # A dead pane (remain-on-exit: an earlier revive whose resume exited
   # non-zero) runs nothing, so there is nothing to disagree; its last screen
@@ -851,7 +919,11 @@ roost_revive() {
   # has the whole why.
   agree=dead
   [ "$mode" = gone ] && agree=gone
-  if [ "$mode" != gone ] && [ "$dead" != 1 ] && [ -n "$h" ]; then
+  if [ -n "$ROOST_RESUME_PST" ]; then
+    # Nothing to agree with: the key is the pending record's, and the pane
+    # is checked by its state's column in step 7.
+    agree=pending
+  elif [ "$mode" != gone ] && [ "$dead" != 1 ] && [ -n "$h" ]; then
     agree="$(roost_shape_agree_pane "$h" "$cmd" "$ppid")"
   fi
   case "$agree" in
@@ -931,7 +1003,28 @@ roost_revive() {
   # In place the claim names the pane now; a new window's pane is named
   # once `new-window` has made it (roost_resume_claim_pane, below).
   sd="$ROOST_RESUME_CLAIMS"
+  # Step 5a, the PANE first (a pending pane): its rename to %N.launching,
+  # then at once its `origin` line (roost_pending_take; the
+  # ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN seam sits between the two). Lost:
+  # the worker or a key got there first, nothing touched.
+  if [ -n "$ROOST_RESUME_PST" ]; then
+    case "$ROOST_RESUME_PST" in
+      waiting) o="$ROOST_RESUME_PL"; n=waiting ;;
+      taken) o="$ROOST_RESUME_PL.taken"; n=taken ;;
+      *) o="$ROOST_RESUME_PL.failed"; n="failed $ROOST_RESUME_PFIRST" ;;
+    esac
+    if ! ROOST_PENDING_SEAM=ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN roost_pending_take "$o" "$ROOST_RESUME_PL.launching" "$n"; then
+      if [ -e "$ROOST_RESUME_PL.taken" ] && [ "$ROOST_RESUME_PST" != taken ]; then
+        echo "roost revive: '$raw' was taken by a key; roost revive it again to resume" >&2
+      else
+        echo "roost revive: '$raw' is already being resumed" >&2
+      fi
+      return 13
+    fi
+  fi
   rc=0; roost_resume_claim "$sd" "$h" "$sid" "$exempt" || rc=$?
+  # A refused conversation claim puts back this run's pane claim (T8).
+  if [ "$rc" != 0 ] && [ -n "$ROOST_RESUME_PST" ]; then roost_resume__pend_back ""; fi
   case "$rc" in
     0) claim="$ROOST_RESUME_CLAIM" ;;
     1) if [ -n "$ROOST_RESUME_BUSY" ]; then
@@ -957,7 +1050,46 @@ roost_revive() {
   # a process or foreground that changed is a pane that is no longer the one
   # judged, refused like a busy one. What remains is the instant between this
   # read and the respawn, which no check can close.
-  if [ "$mode" = place ]; then
+  if [ -n "$ROOST_RESUME_PST" ]; then
+    # Step 7's check for the state step 5a renamed FROM (§4.7's last column;
+    # revision 4 item 1) — never the badge or the foreground, which a
+    # placeholder's wait changes every five seconds:
+    #   waiting, failed, waiting   the placeholder line written for this
+    #                              file, and alive; no shell check, the
+    #                              rename proved no key arrived. Fails: T9
+    #   failed, dead               pane_dead 1. Fails: T9
+    #   taken, failed, interrupted the shell checks: no child process, else
+    #                              T8 back, exit 1, unless --force (a
+    #                              placeholder's own wait has a child, so an
+    #                              interrupted placeholder is refused too)
+    roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
+    roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
+    case "$ROOST_RESUME_PST" in
+      waiting|failed-waiting)
+        o="$(roost_resume__t display -p -t "$pane" '#{pane_start_command}' 2>/dev/null || true)"
+        if [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$o" "$ROOST_RESUME_PL" "$h"; then
+          roost_resume__pend_changed "$claim"
+          echo "roost revive: '$raw' no longer runs its placeholder — someone replaced it; nothing resumed" >&2
+          return 1
+        fi ;;
+      failed-dead)
+        if [ "$dead" != 1 ]; then
+          roost_resume__pend_changed "$claim"
+          echo "roost revive: '$raw' is no longer the dead pane it was; nothing resumed" >&2
+          return 1
+        fi ;;
+      *)
+        if [ "$force" != 1 ] && [ "$dead" != 1 ]; then
+          kids="$(pgrep -P "$ppid" 2>/dev/null || true)"
+          if [ -n "$kids" ]; then
+            kid="$(ps -o comm= -p "${kids%%$'\n'*}" 2>/dev/null | sed 's/^ *//' || true)"
+            roost_resume__pend_back "$claim"
+            echo "roost revive: '$raw' is a shell running ${kid:-a job}; that is a person's work — pass --force to replace it" >&2
+            return 1
+          fi
+        fi ;;
+    esac
+  elif [ "$mode" = place ]; then
     o="$dead|$ppid|$cmd"
     roost_resume__opt "$pane" @agent_state; state="$ROOST_RESUME_V"
     roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
@@ -969,7 +1101,7 @@ roost_revive() {
       return 1
     fi
   fi
-  if [ "$mode" = place ] && [ "$dead" != 1 ]; then
+  if [ "$mode" = place ] && [ "$dead" != 1 ] && [ -z "$ROOST_RESUME_PST" ]; then
     case "$state" in
       working|blocked)
         if [ "$state" = blocked ] && roost_unblock_pane "$pane"; then
@@ -1030,6 +1162,7 @@ roost_revive() {
     # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
     new="$pane"
     if [ -n "$claim" ] && ! roost_resume_claim_held "$claim"; then
+      [ -n "$ROOST_RESUME_PST" ] && roost_resume__pend_back ""
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — the pane is untouched" >&2
       return 13
     fi
@@ -1042,7 +1175,7 @@ roost_revive() {
     # refuses only this, and the resume still runs, without the net.
     roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
     if ! roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
-      roost_resume_release "$claim"
+      if [ -n "$ROOST_RESUME_PST" ]; then roost_resume__pend_changed "$claim"; else roost_resume_release "$claim"; fi
       echo "roost revive: tmux could not respawn '$raw'" >&2
       return 1
     fi

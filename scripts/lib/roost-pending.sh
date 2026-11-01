@@ -98,6 +98,11 @@ roost_pending_take() {
   # the rename itself: whoever renames FROM first wins, and the loser's mv
   # finds no FROM.
   mv "$1" "$2" 2>/dev/null || return 1
+  # A test seam between the rename and the append, named by the caller in
+  # ROOST_PENDING_SEAM (revive passes ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN):
+  # a launcher killed here leaves a `.launching` file with no origin line,
+  # which T8b must read as interrupted.
+  [ -n "${ROOST_PENDING_SEAM:-}" ] && roost_shape__seam "$ROOST_PENDING_SEAM"
   [ -n "${3:-}" ] && printf 'origin %s\n' "$3" >> "$2"
   return 0
 }
