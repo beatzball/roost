@@ -350,8 +350,8 @@ roost_pending_refuse() {
 roost_pending__release() {
   local f="$1" pane="$2" h="" id="" line c boot
   [ -n "$f" ] && [ -f "$f" ] || return 0
-  roost_pending__get "$f" harness && h="$ROOST_PENDING_V"
-  roost_pending__get "$f" session_id && id="$ROOST_PENDING_V"
+  roost_pending__get "$f" harness; h="$ROOST_PENDING_V"
+  roost_pending__get "$f" session_id; id="$ROOST_PENDING_V"
   [ -n "$h" ] && [ -n "$id" ] || return 0
   boot="${f%/*}"; boot="${boot##*/}"
   roost_resume_claims_dir "$3" "$4" "$boot" >/dev/null 2>&1 || return 0
@@ -386,7 +386,10 @@ roost_pending_cancel() {
 # with ROOST_RESUME_TFLAG / ROOST_RESUME_TSOCK set.
 
 # roost_pending__get FILE KEY -> ROOST_PENDING_V, the value of KEY in a
-# pending file (the first such line), or empty. Lines before `was` are a
+# pending file (the first such line), or empty. Always exit 0: bin/roost runs
+# under `set -e`, and a key that is simply absent (a codex file has no
+# transcript) must not end a caller that is not in an `||` (found by Task
+# 3.11's `--list`). An empty value is "not there". Lines before `was` are a
 # `.failed` file's reason and are never a key: `harness missing` is a reason,
 # not a harness named "missing" (Task 3.6, a retried file keeps its reason
 # line until it leaves `.launching`).
@@ -399,7 +402,7 @@ roost_pending__get() {
     fi
     case "$line" in "$2 "*) ROOST_PENDING_V="${line#"$2 "}"; return 0 ;; esac
   done < "$1"
-  return 1
+  return 0
 }
 
 # roost_pending__selected FILE -> exit 0 when ROOST_RESTORE_ONLY is empty or
@@ -676,7 +679,7 @@ roost_pending__recover() {
 # exited and interrupted have none, so a retry never meets a person's shell
 # or job.
 roost_pending_resume() {
-  local sd="$1" boot="$2" pace="${3:-2}" retry="${4:-0}" d own rc=0 r f n launched=0 st b
+  local sd="$1" boot="$2" pace="${3:-2}" retry="${4:-0}" d own rc=0 r f n launched=0 st b first
   d="$sd/pending/$boot"
   [ -d "$d" ] || return 0
   own=0; roost_shape_owner_take "$sd/resuming" || own=$?
@@ -718,9 +721,16 @@ roost_pending_resume() {
     if [ "$st" = waiting ]; then [ -e "$f" ] || continue; else [ -e "$f.failed" ] || continue; fi
     if [ "$launched" = 1 ] && [ "$pace" != 0 ]; then sleep "$pace"; fi
     r=0; roost_pending__one "$f" "$boot" "$st" || r=$?
+    # The result per pane, for restore's report (roost_restore_report):
+    # `pane|launched|reason|harness`.
+    b="${f##*/}"
     case "$r" in
-      0) launched=1 ;;
-      13) rc=13 ;;
+      0) launched=1; ROOST_PENDING_RESULTS="${ROOST_PENDING_RESULTS:-}$b|1||${ROOST_PENDING_H:-}"$'\n' ;;
+      13) rc=13
+          first=""; [ -f "$f.failed" ] && IFS= read -r first < "$f.failed"
+          ROOST_PENDING_RESULTS="${ROOST_PENDING_RESULTS:-}$b|0|${first:-not resumed}|${ROOST_PENDING_H:-}"$'\n' ;;
+      2) if [ -e "$f.taken" ]; then first="taken by a key"; else first="pane gone"; fi
+         ROOST_PENDING_RESULTS="${ROOST_PENDING_RESULTS:-}$b|0|$first|"$'\n' ;;
       1) rc=1; break ;;
     esac
   done <<< "$(printf '%s' "$list" | sort -n)"

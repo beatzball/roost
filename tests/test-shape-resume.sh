@@ -859,6 +859,60 @@ assert_eq "$rc|$(grep -c "$U1" "$STUB_LOG")|$(TL display -p -t "$py6" '#{pane_cu
   "the first pane killed: --retry launches the second"
 kill_sess y5 y6
 
+# --- the report (Task 3.11) ---------------------------------------------------
+echo "== the report: one summary, a line per pane not resumed, the codex note, exit 13 =="
+reset_run
+CX2=019a0f0f-6a8b-7c71-9d2e-0000000000c3
+: > "$CODEX_HOME/sessions/2026/10/31/rollout-2026-10-31T09-00-00-$CX2.jsonl"
+STALE=01a16c68-1111-4abc-8def-0000000000f9
+shape_of "z1|%2001|$D1|harness claude;session_id $U1;transcript $(tfile "$U1");state working" \
+         "z2|%2002|$D2|harness codex;session_id $CX" \
+         "z3|%2003|$D2|harness codex;session_id $CX2" \
+         "z4|%2004|$D3|stale_reason nested;stale_harness codex;stale_session_id $STALE" \
+         "z5|%2005|$D3|launch roost view preen README.md" \
+         "z6|%2006|$D1|harness claude;session_id $U2"
+R restore --json --pace 0 >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+z1="$(first_pane z1)"; z2="$(first_pane z2)"; z4="$(first_pane z4)"; z5="$(first_pane z5)"; z6="$(first_pane z6)"
+assert_eq "$rc" "13" "a pane not resumed for a listed reason: exit 13"
+assert_contains "$(cat "$SHAPE_TMP/err")" \
+  "restored 6 sessions, 6 windows, 6 panes; launched 3 agents; skipped 0 (existing); 2 not resumed (reasons listed above); 1 were working or blocked at the save — re-prompt by hand: $z1" \
+  "the §4.3 report line"
+assert_contains "$(cat "$SHAPE_TMP/err")" "$z5 was started as 'roost view preen README.md'" "a pane with a launch hint names it"
+assert_contains "$(cat "$SHAPE_TMP/err")" "$z4 carries a stale codex key (01a16c68…) from a nested agent; not resumed" "the §5.6 line for a stale key"
+assert_contains "$(cat "$SHAPE_TMP/err")" "2 codex panes resumed; until #145 their badges all land on the first ($z2)" "the codex note (§5.7)"
+if command -v python3 >/dev/null 2>&1; then
+  got="$(python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+r = {x["was"]: x for x in d["restored"]}
+print(len(d["restored"]), d["skipped"], r["%2001"]["launched"], r["%2001"]["pane"], r["%2006"]["launched"], r["%2006"]["reason"], r["%2001"]["session"], r["%2001"]["window"], d["from"] != "")' "$SHAPE_TMP/out" 2>&1)"
+  assert_eq "$got" "6 [] True $z1 False store miss z1 1 True" "--json: restored[] with was, pane, session, window, launched, reason; skipped; from"
+fi
+echo "== --list shows the pending record, its .launching, .failed and .taken files (§8.1 test 11) =="
+printf 'was %%1\nharness claude\nsession_id %s\ncwd /\nsession s\nwindow 1\norder 1\n' "$U9" > "$PEND/%4242.taken"
+lst="$(R restore --list 2>&1)"
+assert_contains "$lst" "$z6.failed" "--list names the .failed file (a store miss)"
+assert_contains "$(printf '%s\n' "$lst" | grep -- "$z6.failed")" "store miss" "...with its reason"
+assert_contains "$lst" "$z1.launching" "...a .launching file"
+assert_contains "$lst" "%4242.taken" "...and a .taken one"
+rm -f "$PEND/%4242.taken"
+kill_sess z1 z2 z3 z4 z5 z6
+echo "== 12 wins over 13 =="
+reset_run
+TL new-session -d -s z1 'sleep 600'
+R restore --json --pace 0 >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "12" "a session skipped as existing and a pane not resumed: exit 12"
+assert_contains "$(cat "$SHAPE_TMP/err")" "skipped 1 (existing)" "...the report counts it"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["skipped"])' "$SHAPE_TMP/out")" "['z1']" "--json: skipped names it"
+fi
+kill_sess z1 z2 z3 z4 z5 z6
+reset_run
+shape_of "z7|%2007|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+R restore --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "0" "every agent launched: exit 0"
+assert_contains "$(cat "$SHAPE_TMP/err")" "launched 1 agents; skipped 0 (existing); 0 not resumed" "...and the report says so"
+kill_sess z7
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

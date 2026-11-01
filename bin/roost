@@ -681,7 +681,7 @@ case "${1:-up}" in
     # This arm's own, never the environment's: a value inherited from a
     # caller would change which panes are resumed with nothing on the
     # command line saying so.
-    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2 restore_retry=0
+    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2 restore_retry=0 restore_json=0
     ROOST_RESTORE_ONLY=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -705,6 +705,9 @@ case "${1:-up}" in
         # waiting reason or `died` — once their cause is fixed (§4.6, §4.7
         # T14, T16). Never a taken, changed or replaced pane.
         --retry) restore_retry=1; shift ;;
+        # The report as one JSON document on stdout as well (§4.3 Report);
+        # stderr and the exit code are the same.
+        --json) restore_json=1; shift ;;
         # Seconds between launches (§5.5; default 2, the incident's number).
         --pace) case "${2:-}" in ''|*[!0-9]*)
                   echo "roost restore: --pace needs a whole number of seconds" >&2; exit 2 ;; esac
@@ -763,7 +766,8 @@ case "${1:-up}" in
             1) [ "$restore_rc" = 0 ] && restore_rc=1 ;;
           esac
         fi
-        roost_restore_report_busy
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        roost_restore_report "$(roost_restore__stampgen "$ROOST_RESTORE_FILE")" "$restore_json" || true
       fi
     fi
     rm -rf "${ROOST_RESTORE_PD:-}"

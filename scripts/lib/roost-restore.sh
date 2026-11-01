@@ -446,6 +446,7 @@ roost_restore__respawn() {
     st="$(roost_shape_get "$3" state 2>/dev/null || true)"
     case "$st" in working|blocked) ROOST_RESTORE_BUSY="${ROOST_RESTORE_BUSY:-}${ROOST_RESTORE_BUSY:+ }$1" ;; esac
   fi
+  [ -n "${3:-}" ] && roost_restore__rec "$1" "$3"
   if [ -n "${3:-}" ] && roost_restore__will_resume "$3"; then
     # The boot key is read HERE, in this shell: inside the $(...) below it
     # would be read and lost with the subshell, and the loop after placement
@@ -471,11 +472,12 @@ roost_restore__respawn() {
 # (§4.3 Report: "one line per pane not resumed"). A live key whose directory
 # is gone is §8.1 test 3b's case and makes the run exit 13
 # (ROOST_RESTORE_NOTRES): it could not be resumed for a reason listed. A
-# stale key is named only: the save already judged it not the pane's agent,
+# stale key is named by the report instead, in §5.6's words
+# (roost_restore_report): the save already judged it not the pane's agent,
 # so there was nothing to resume. --recent's choice is the person's, and is
-# not named.
+# not named here.
 roost_restore__not_resumed() {
-  local h i r d
+  local h i d
   if h="$(roost_shape_get "$2" harness)" && i="$(roost_shape_get "$2" session_id)"; then
     d="$(roost_shape_get "$2" cwd)"
     if [ ! -d "$d" ]; then
@@ -483,20 +485,114 @@ roost_restore__not_resumed() {
         "$(roost_restore__addr "$2")" "$1" "$h" "$i" "$d" >&2
       ROOST_RESTORE_NOTRES=1
     fi
-  elif r="$(roost_shape_get "$2" stale_reason)"; then
-    printf 'roost restore: pane %s (%s): not resumed: stale (%s %s)\n' \
-      "$(roost_restore__addr "$2")" "$1" "$r" "$(roost_shape_get "$2" stale_harness 2>/dev/null || true)" >&2
   fi
   return 0
 }
 
-# roost_restore_report_busy — the report's "M were working or blocked at the
-# save — re-prompt by hand: %a %b" line, when there were any (§4.3 Report).
-roost_restore_report_busy() {
-  local n
-  [ -n "${ROOST_RESTORE_BUSY:-}" ] || return 0
-  n="$(printf '%s\n' $ROOST_RESTORE_BUSY | grep -c .)"
-  printf 'roost restore: %s were working or blocked at the save — re-prompt by hand: %s\n' "$n" "$ROOST_RESTORE_BUSY" >&2
+# roost_restore__rec PANE BLOCKFILE [REASON] — one placed pane, for the
+# report (§4.3 Report) and --json. Appends to ROOST_RESTORE_RECS one line:
+#   was|pane|session|window|harness|reason|stale-id|launch hint
+# the launch hint LAST, since it is the one field that may hold a `|`.
+# REASON, when not given, is what placement decided: `pending` (a waiting
+# placeholder, settled by the loop's result), `directory gone`, `--no-resume`,
+# `older than --recent`, `stale <why>`, `no key` (a harness with no session
+# id), or empty for a pane that names no conversation.
+roost_restore__rec() {
+  local b="$2" r="${3:-}" h="" i="" sid="" addr sess win hint
+  if h="$(roost_shape_get "$b" harness)"; then
+    i="$(roost_shape_get "$b" session_id 2>/dev/null || true)"
+    if [ -z "$r" ]; then
+      if [ -z "$i" ]; then r="no key"
+      elif [ ! -d "$(roost_shape_get "$b" cwd)" ]; then r="directory gone"
+      elif [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ]; then r="--no-resume"
+      elif roost_restore__will_resume "$b"; then r=pending
+      else r="older than --recent"; fi
+    fi
+  elif h="$(roost_shape_get "$b" stale_harness)"; then
+    [ -n "$r" ] || r="stale $(roost_shape_get "$b" stale_reason 2>/dev/null || true)"
+    sid="$(roost_shape_get "$b" stale_session_id 2>/dev/null || true)"
+  fi
+  addr="$(roost_restore__addr "$b")"
+  sess="${addr%:*}"; win="${addr##*:}"; win="${win%%.*}"
+  hint="$(roost_shape_get "$b" launch 2>/dev/null || true)"
+  ROOST_RESTORE_RECS="${ROOST_RESTORE_RECS:-}$(roost_shape_get "$b" id)|$1|$sess|$win|$h|$r|$sid|$hint"$'\n'
+}
+
+# roost_restore_report FROM-STAMPGEN JSON — the report (§4.3), on stderr,
+# after placement and the loop: one line per pane not resumed that no
+# earlier line named — a launch hint (`%34 was started as '…'`), §5.6's line
+# for a stale or missing key — then the codex note of §5.7 when more than
+# one codex pane was launched, then the summary:
+#   restored S sessions, W windows, P panes; launched A agents; skipped K
+#   (existing); R not resumed (reasons listed above)[; M were working or
+#   blocked at the save — re-prompt by hand: %a %b]
+# "Launched" is the honest word (§4.1 step 8). The loop's results
+# (ROOST_PENDING_RESULTS, `pane|launched|reason|harness`) settle each
+# `pending` pane. JSON 1 also prints one document on stdout:
+# {"restored":[{"was","pane","session","window","launched","reason"}],
+#  "skipped":[…],"from":"STAMP-GEN"}.
+roost_restore_report() {
+  local from="$1" json="${2:-0}" line was pane sess win h r sid hint res l a=0 nr=0 nb=0
+  local codex="" ncodex=0 first_codex="" j="" sk="" n
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    IFS='|' read -r was pane sess win h r sid hint <<< "$line"
+    l=0
+    if [ "$r" = pending ]; then
+      res="$(printf '%s' "${ROOST_PENDING_RESULTS:-}" | grep -- "^$pane|" | tail -1 || true)"
+      if [ -n "$res" ]; then
+        l="$(printf '%s' "$res" | cut -d'|' -f2)"; r="$(printf '%s' "$res" | cut -d'|' -f3)"
+      else
+        r="not reached"
+      fi
+    fi
+    if [ "$l" = 1 ]; then
+      a=$((a + 1))
+      if [ "$h" = codex ]; then
+        ncodex=$((ncodex + 1)); [ -n "$first_codex" ] || first_codex="$pane"
+      fi
+    elif [ -n "$h" ]; then
+      nr=$((nr + 1))
+    fi
+    case "$r" in
+      "stale "*)
+        case "${r#stale }" in
+          nested) n="from a nested agent" ;;
+          exited) n="from an agent that exited" ;;
+          *) n="from another program" ;;
+        esac
+        printf 'roost restore: %s carries a stale %s key (%s…) %s; not resumed\n' "$pane" "$h" "${sid:0:8}" "$n" >&2 ;;
+      "no key")
+        printf 'roost restore: %s ran %s with no recorded conversation; roost revive %s cannot resume it\n' "$pane" "$h" "$pane" >&2 ;;
+    esac
+    [ -n "$hint" ] && printf "roost restore: %s was started as '%s'\n" "$pane" "$hint" >&2
+    if [ "$json" = 1 ]; then
+      [ "$l" = 1 ] && r=""
+      roost_jsonout_encode "$was" "$pane" "$sess" "$r" || return 1
+      case "$win" in ''|*[!0-9]*) win=null ;; esac
+      j="$j${j:+,}{\"was\":${ROOST_JSONOUT_STR[0]},\"pane\":${ROOST_JSONOUT_STR[1]},\"session\":${ROOST_JSONOUT_STR[2]},\"window\":$win,\"launched\":$( [ "$l" = 1 ] && echo true || echo false ),\"reason\":${ROOST_JSONOUT_STR[3]}}"
+    fi
+  done <<< "${ROOST_RESTORE_RECS:-}"
+  if [ "$ncodex" -gt 1 ]; then
+    printf 'roost restore: %s codex panes resumed; until #145 their badges all land on the first (%s)\n' "$ncodex" "$first_codex" >&2
+  fi
+  n="$(printf '%s' "${ROOST_RESTORE_SKIPPED:-}" | grep -c . || true)"
+  line="restored ${ROOST_RESTORE_SESSIONS:-0} sessions, ${ROOST_RESTORE_WINDOWS:-0} windows, ${ROOST_RESTORE_PANES:-0} panes; launched $a agents; skipped $n (existing); $nr not resumed (reasons listed above)"
+  if [ -n "${ROOST_RESTORE_BUSY:-}" ]; then
+    nb="$(printf '%s\n' $ROOST_RESTORE_BUSY | grep -c .)"
+    line="$line; $nb were working or blocked at the save — re-prompt by hand: $ROOST_RESTORE_BUSY"
+  fi
+  printf 'roost restore: %s\n' "$line" >&2
+  if [ "$json" = 1 ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      roost_jsonout_encode "$line" || return 1
+      sk="$sk${sk:+,}${ROOST_JSONOUT_STR[0]}"
+    done <<< "${ROOST_RESTORE_SKIPPED:-}"
+    roost_jsonout_encode "$from" || return 1
+    printf '{"restored":[%s],"skipped":[%s],"from":%s}\n' "$j" "$sk" "${ROOST_JSONOUT_STR[0]}"
+  fi
+  return 0
 }
 
 # roost_restore__will_resume BLOCKFILE -> exit 0 when the saved pane will be
@@ -734,6 +830,10 @@ roost_restore__build_window() {
     # A keyed pane left to a person keeps its key as %N.taken (§4.3 step 1),
     # and its line says how to bring the agent back — still one line.
     out=""
+    case "$zp" in
+      1) roost_restore__rec "$id" "${blocks[$i]}" "taken by a key" ;;
+      2) roost_restore__rec "$id" "${blocks[$i]}" "changed by hand" ;;
+    esac
     if [ "$zp" != 0 ] && roost_restore__pending_taken "$id" "${blocks[$i]}"; then
       out=" — its $ROOST_RESTORE_WR_H conversation was not resumed (roost revive $id to resume it)"
     fi
@@ -778,6 +878,7 @@ roost_restore__make_session() {
   done
   if [ "$boot" != 1 ] && roost_restore__exists "$name"; then
     printf "roost restore: session '%s' exists — skipped, %s panes not restored\n" "$name" "$npanes" >&2
+    ROOST_RESTORE_SKIPPED="${ROOST_RESTORE_SKIPPED:-}$name"$'\n'
     return 12
   fi
   cwd="$(roost_restore__cwd "$pfirst" 2>/dev/null)"
@@ -811,6 +912,7 @@ roost_restore__make_session() {
       -s "$(roost_restore__made "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
       "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>/dev/null)" || {
         printf "roost restore: session '%s' could not be made — skipped, %s panes not restored\n" "$name" "$npanes" >&2
+        ROOST_RESTORE_SKIPPED="${ROOST_RESTORE_SKIPPED:-}$name"$'\n'
         return 12; }
   fi
   sid="${out%% *}" out="${out#* }" wid="${out%% *}" pane="${out#* }"
@@ -848,10 +950,12 @@ roost_restore__make_session() {
     case "$r" in
       0) ;;
       1) printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --only NAME)\n" "$name" "$npanes" >&2
+         ROOST_RESTORE_SKIPPED="${ROOST_RESTORE_SKIPPED:-}$name"$'\n'
          return 12 ;;
       *) [ "$r" = 2 ] && printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is\n' \
            "$(roost_restore__addr "$pfirst")" "$pane" >&2
          printf "roost restore: session '%s' skipped: it was changed by hand during placement — %s panes not restored\n" "$name" "$npanes" >&2
+         ROOST_RESTORE_SKIPPED="${ROOST_RESTORE_SKIPPED:-}$name"$'\n'
          return 12 ;;
     esac
     # Still restore's: the claim won and the recheck passed. Its name is
@@ -903,6 +1007,7 @@ roost_restore__make_member() {
   grp="$(roost_shape_get "$blk" group)"
   if roost_restore__exists "$name"; then
     printf "roost restore: session '%s' exists — skipped (it joins %s's group)\n" "$name" "$grp" >&2
+    ROOST_RESTORE_SKIPPED="${ROOST_RESTORE_SKIPPED:-}$name"$'\n'
     return 12
   fi
   if ! gid="$(roost_restore__sid "$grp")"; then
@@ -949,7 +1054,7 @@ roost_restore_run() {
   # or, with saving off, in this run's own directory — the loop that reads it
   # runs in this same process, and each placeholder names its file by path.
   ROOST_RESTORE_SD="${ROOST_RESTORE_RD%/restoring}" ROOST_RESTORE_BOOT=""
-  ROOST_RESTORE_NOTRES=0 ROOST_RESTORE_BUSY=""
+  ROOST_RESTORE_NOTRES=0 ROOST_RESTORE_BUSY="" ROOST_RESTORE_RECS="" ROOST_RESTORE_SKIPPED=""
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
   # The bootstrap's name record (roost_restore__respawn_claimed) is this
   # run's alone: a value from the environment is never one (review round 8,
@@ -1289,10 +1394,14 @@ roost_restore_list() {
   local sdir="$1" f mark where
   if [ -z "$sdir" ] || { [ ! -f "$sdir/shape" ] && [ ! -d "$sdir/history" ]; }; then
     printf 'roost restore: no saves for this server\n'
+    roost_restore__list_pending "$sdir"
     return 0
   fi
   { [ -f "$sdir/shape" ] && printf '%s\n' "$sdir/shape"
-    ls -1 "$sdir/history" 2>/dev/null | sort -r | while IFS= read -r f; do printf '%s\n' "$sdir/history/$f"; done
+    # `|| true`: with no history/ yet `ls` fails, and under bin/roost's
+    # `set -e -o pipefail` that failure ended --list before the rest of it
+    # ran (found by Task 3.11, whose pending listing comes after this loop).
+    ls -1 "$sdir/history" 2>/dev/null | sort -r | while IFS= read -r f; do printf '%s\n' "$sdir/history/$f"; done || true
   } | while IFS= read -r f; do
     [ -f "$f" ] || continue
     if [ "$f" = "$sdir/shape" ]; then mark="*" where="shape (restore picks this)"; else mark=" " where="history"; fi
@@ -1307,5 +1416,29 @@ roost_restore_list() {
         printf "%s%s%s", (c++ ? ", " : ""), n, (g != "" ? " (joins " g "'"'"'s group)" : "")
       }' "$f")"
   done
+  roost_restore__list_pending "$sdir"
   return 0
+}
+
+# roost_restore__list_pending SHAPEDIR — the pending record (§4.3 --list,
+# §4.6): every file under pending/<boot>/, one line each with its name, its
+# state (roost_pending_state), its key and old pane, and a failed file's
+# reason — so a `.launching`, `.failed` or `.taken` file is never invisible.
+roost_restore__list_pending() {
+  local d f st first h i was
+  [ -n "${1:-}" ] && [ -d "$1/pending" ] || return 0
+  for d in "$1"/pending/*/; do
+    [ -d "$d" ] || continue
+    printf 'pending resumes (boot %s):\n' "$(basename "$d")"
+    for f in "$d"%*; do
+      [ -f "$f" ] || continue
+      st="$(roost_pending_state "$f" || printf 'unknown')"
+      roost_pending__get "$f" harness; h="$ROOST_PENDING_V"
+      roost_pending__get "$f" session_id; i="$ROOST_PENDING_V"
+      roost_pending__get "$f" was; was="$ROOST_PENDING_V"
+      first=""
+      case "$f" in *.failed) IFS= read -r first < "$f" || true ;; esac
+      printf '  %-14s %-18s %s %s (was %s)%s\n' "${f##*/}" "$st" "$h" "$i" "$was" "${first:+  $first}"
+    done
+  done
 }
