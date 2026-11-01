@@ -14,8 +14,15 @@
 # or default-command would compare wrong (scripts/lib/roost-shape.sh,
 # roost_shape__t, says what was measured).
 #
-# In Part 1 restore PLACES ONLY: every pane comes back as a shell in its saved
-# directory, and a pane's agent key stays in the shape for Part 3.
+# In Part 1 restore PLACED ONLY: every pane came back as a shell in its saved
+# directory, and a pane's agent key stayed in the shape for Part 3. From Part
+# 3 (Task 3.3) a pane that will be resumed gets its pending record
+# (scripts/lib/roost-pending.sh, §4.6) and waits in a placeholder instead of
+# a shell (roost_restore__respawn).
+#
+# roost-pending.sh is sourced by path, relative to this file, the way
+# roost-shape.sh sources roost-close.sh: it only defines functions.
+. "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-pending.sh"
 #
 # HOW A PANE IS PLACED (§4.3, §4.7 arrows T1–T4). Restore never creates a
 # shell it might later have to replace: a person may attach with a bare
@@ -357,9 +364,13 @@ roost_restore__placing() {
 #   (iv)  respawn it as a shell in CWD. remain-on-exit, set so a crashed
 #         placeholder stays as a dead pane, is cleared first: a shell should
 #         behave like any other.
+#
+# BLOCKFILE (a 4th argument) is the saved pane block placed into the pane:
+# with it, a pane that will be resumed waits in a placeholder instead of a
+# shell (roost_restore__respawn, T3).
 roost_restore_place_pane() {
   roost_restore__claim "$1" "$2" || return $?
-  roost_restore__respawn "$1" "$3"
+  roost_restore__respawn "$1" "$3" "${4:-}"
 }
 
 # roost_restore__claim PANE FILE -> steps (i)-(iii) of the per-pane step
@@ -402,7 +413,7 @@ roost_restore__respawn_claimed() {
       roost_restore__window_name "$ROOST_RESTORE_BOOT_NAME_WID" "$ROOST_RESTORE_BOOT_NAME"
     fi
     ROOST_RESTORE_BOOT_NAME_PANE=""
-    roost_restore__respawn "$1" "$3"
+    roost_restore__respawn "$1" "$3" "${4:-}"
     return 0
   fi
   [ "$1" = "${ROOST_RESTORE_BOOT_NAME_PANE:-}" ] && ROOST_RESTORE_BOOT_NAME_PANE=""
@@ -410,10 +421,119 @@ roost_restore__respawn_claimed() {
   return 2
 }
 
-# roost_restore__respawn PANE CWD -> step (iv): a shell in CWD.
+# roost_restore__respawn PANE CWD [BLOCKFILE] -> step (iv): a shell in CWD,
+# or — for a block that will be resumed — the waiting placeholder (T3).
+#
+# T3 (§4.7), the pending half (Task 3.3): a pane that will be resumed
+# (roost_restore__will_resume: a key, not stale, its directory present, not
+# --no-resume, not left out by --recent) gets its pending file written FIRST
+# (§4.6), then `respawn-pane -k -c CWD <checkout>/scripts/roost-placeholder
+# pending/<boot>/%N HARNESS` — by its own path, as argv, never through
+# default-command (§2.10, revision 4 item 5) — so it waits in a placeholder,
+# not a shell, until the resume loop or a person's key. remain-on-exit stays
+# `failed` for it, as for every placeholder: one that crashes leaves a dead
+# pane saying why (T13a), not a vanished one.
+#
+# A pending file that cannot be written leaves the pane a shell, with one
+# stderr line: a placeholder with no file could never be freed by a key, and
+# a resume with no record would be a launch nobody can see or stop.
 roost_restore__respawn() {
+  local f
+  if [ -n "${3:-}" ] && roost_restore__will_resume "$3"; then
+    if f="$(roost_restore__pending_write "$1" "$3")"; then
+      t set-option -p -t "$1" remain-on-exit failed 2>/dev/null || true
+      t respawn-pane -k -t "$1" -c "$2" "$ROOST_HOME/scripts/roost-placeholder" "$f" "$ROOST_RESTORE_WR_H" 2>/dev/null || true
+      return 0
+    fi
+    printf 'roost restore: pane %s (%s): its pending record could not be written; a shell, not resumed\n' \
+      "$(roost_restore__addr "$3")" "$1" >&2
+  fi
   t set-option -pu -t "$1" remain-on-exit 2>/dev/null || true
   t respawn-pane -k -t "$1" -c "$2" "${ROOST_RESTORE_SHELL_ARGS[@]}" 2>/dev/null || true
+}
+
+# roost_restore__will_resume BLOCKFILE -> exit 0 when the saved pane will be
+# resumed, and then ROOST_RESTORE_WR_H / _ID / _T hold its harness, id and
+# transcript. Decided HERE, at placement, for --no-resume and --recent alike
+# (§4.3, revision 10, C B2): a pane left out gets a shell and NO pending
+# file, so no later attach's worker — which runs without --recent — can
+# launch the agent the person left out. Revision 9 wrote the file and skipped
+# the pane only in the loop.
+#
+#   - a live key: `harness` and `session_id` (never `stale_*`, §5.6);
+#   - its saved directory present (§4.3 Directories: a pane whose cwd is gone
+#     gets a shell in the home directory and is never resumed);
+#   - not --no-resume (ROOST_RESTORE_NORESUME=1);
+#   - --recent DAYS (ROOST_RESTORE_RECENT): a transcript that is RECORDED and
+#     exists, and whose mtime is more than DAYS days ago, leaves the pane out.
+#     A pane with no transcript path is always resumed (§4.3); one whose
+#     recorded file is gone is the store check's business, in the loop.
+roost_restore__will_resume() {
+  local h i tr d m now
+  ROOST_RESTORE_WR_H="" ROOST_RESTORE_WR_ID="" ROOST_RESTORE_WR_T=""
+  [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ] && return 1
+  h="$(roost_shape_get "$1" harness)" || return 1
+  i="$(roost_shape_get "$1" session_id)" || return 1
+  [ -n "$h" ] && [ -n "$i" ] || return 1
+  d="$(roost_shape_get "$1" cwd)" || return 1
+  [ -d "$d" ] || return 1
+  tr="$(roost_shape_get "$1" transcript 2>/dev/null || true)"
+  if [ -n "${ROOST_RESTORE_RECENT:-}" ] && [ -n "$tr" ] && [ -f "$tr" ]; then
+    # stat's two dialects: BSD (macOS) `-f %m`, GNU `-c %Y`. A file whose
+    # mtime cannot be read is not judged old.
+    m="$(stat -f %m "$tr" 2>/dev/null || stat -c %Y "$tr" 2>/dev/null || true)"
+    now="${ROOST_TEST_NOW:-$(date +%s)}"
+    case "$m" in
+      ''|*[!0-9]*) ;;
+      *) [ $((now - m)) -gt $((ROOST_RESTORE_RECENT * 86400)) ] && return 1 ;;
+    esac
+  fi
+  ROOST_RESTORE_WR_H="$h" ROOST_RESTORE_WR_ID="$i" ROOST_RESTORE_WR_T="$tr"
+  return 0
+}
+
+# roost_restore__pending_write PANE BLOCKFILE -> prints the pending file
+# written for PANE from the block (roost_pending_write, §4.6), under
+# pending/<boot>/ of this run's directory (roost_restore__pending_root).
+# Call roost_restore__will_resume first: its ROOST_RESTORE_WR_* are the keys.
+#
+# `order` is the block file's own number: roost_shape_parse numbers every
+# block in file order, so the pane blocks' numbers follow the shape's pane
+# order, which the loop walks (§4.6). `session` and `window` are the saved
+# address's (SESSION:WINDOW.PANE; a session name may hold `:` or `.`, so the
+# LAST `:` splits it).
+roost_restore__pending_write() {
+  local addr sess win n
+  roost_restore__pending_root || return 1
+  addr="$(roost_restore__addr "$2")"
+  sess="${addr%:*}"; win="${addr##*:}"; win="${win%%.*}"
+  n="${2##*/}"; n="${n%%.*}"; n=$((10#$n))
+  roost_pending_write "$ROOST_RESTORE_SD" "$ROOST_RESTORE_BOOT" "$1" \
+    "$(roost_shape_get "$2" id)" "$ROOST_RESTORE_WR_H" "$ROOST_RESTORE_WR_ID" "$ROOST_RESTORE_WR_T" \
+    "$(roost_shape_get "$2" cwd)" "$(roost_shape_get "$2" session_cwd 2>/dev/null || true)" \
+    "$sess" "$win" "$n"
+}
+
+# roost_restore__pending_root -> sets ROOST_RESTORE_BOOT, read once, after
+# the server runs: the boot key `#{start_time}-#{pid}` that names
+# pending/<boot>/ (§3.1), the same key `save` and `revive` read. Exit 1 when
+# the server cannot say it.
+roost_restore__pending_root() {
+  [ -n "${ROOST_RESTORE_BOOT:-}" ] && return 0
+  ROOST_RESTORE_BOOT="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  [ -n "$ROOST_RESTORE_BOOT" ]
+}
+
+# roost_restore__pending_taken PANE BLOCKFILE -> for a pane a key took during
+# placement (§4.3 step 1, Lost; or T2's changed-by-hand row): when its block
+# would have been resumed, its pending file is written as %N.taken — §4.6's
+# overlay keeps the key, as for any taken pane — and the caller's line names
+# `roost revive %N`. Exit 0 when it wrote one.
+roost_restore__pending_taken() {
+  local f
+  roost_restore__will_resume "$2" || return 1
+  f="$(roost_restore__pending_write "$1" "$2")" || return 1
+  mv "$f" "$f.taken" 2>/dev/null
 }
 
 # roost_restore__settle_dead -> §4.7 arrow T2b. A restore that takes over a
@@ -555,18 +675,24 @@ roost_restore__build_window() {
       # The bootstrap was claimed before this window was built, so a person
       # had all of that time to respawn it by hand: look again, right before
       # the respawn (roost_restore__respawn_claimed).
-      zp=0; roost_restore__respawn_claimed "$id" "$f" "$out" || zp=$?
+      zp=0; roost_restore__respawn_claimed "$id" "$f" "$out" "${blocks[$i]}" || zp=$?
     else
-      zp=0; roost_restore_place_pane "$id" "$f" "$out" || zp=$?
+      zp=0; roost_restore_place_pane "$id" "$f" "$out" "${blocks[$i]}" || zp=$?
+    fi
+    # A keyed pane left to a person keeps its key as %N.taken (§4.3 step 1),
+    # and its line says how to bring the agent back — still one line.
+    out=""
+    if [ "$zp" != 0 ] && roost_restore__pending_taken "$id" "${blocks[$i]}"; then
+      out=" — its $ROOST_RESTORE_WR_H conversation was not resumed (roost revive $id to resume it)"
     fi
     # A pane restore leaves to a person is named: restoring/, with each
     # file's .taken rename, is removed when restore ends (§3.5 step 4), so
     # this line is the record of which saved pane went where.
     case "$zp" in
-      1) printf 'roost restore: pane %s (%s) was taken by a key during placement; left as it is\n' \
-           "$(roost_restore__addr "${blocks[$i]}")" "$id" >&2 ;;
-      2) printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is\n' \
-           "$(roost_restore__addr "${blocks[$i]}")" "$id" >&2 ;;
+      1) printf 'roost restore: pane %s (%s) was taken by a key during placement; left as it is%s\n' \
+           "$(roost_restore__addr "${blocks[$i]}")" "$id" "$out" >&2 ;;
+      2) printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is%s\n' \
+           "$(roost_restore__addr "${blocks[$i]}")" "$id" "$out" >&2 ;;
     esac
     if [ "$zp" = 0 ]; then
       ROOST_RESTORE_PANES=$((ROOST_RESTORE_PANES + 1))
@@ -767,6 +893,10 @@ roost_restore_run() {
   # files go to a directory of its own.
   if [ -n "$sdir" ]; then ROOST_RESTORE_RD="$sdir/restoring"
   else ROOST_RESTORE_RD="$(mktemp -d)/restoring"; fi
+  # pending/<boot>/ goes beside restoring/ (§3.1): in the shape directory,
+  # or, with saving off, in this run's own directory — the loop that reads it
+  # runs in this same process, and each placeholder names its file by path.
+  ROOST_RESTORE_SD="${ROOST_RESTORE_RD%/restoring}" ROOST_RESTORE_BOOT=
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
   # The bootstrap's name record (roost_restore__respawn_claimed) is this
   # run's alone: a value from the environment is never one (review round 8,
@@ -836,6 +966,10 @@ roost_restore_run() {
   server_running && roost_restore__settle_dead
   roost_shape_owner_drop "$ROOST_RESTORE_RD"
   rm -rf "$ROOST_RESTORE_PD"
+  # The plan's seam (ROOST_TEST_LOOP_HOLD): a hand restore waits here, after
+  # placement and before its resume loop, so a test can read the placed
+  # state — the pending files and their placeholders — before any launch.
+  roost_restore__hold ROOST_TEST_LOOP_HOLD
   return "$rc"
 }
 

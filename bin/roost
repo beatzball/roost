@@ -668,6 +668,10 @@ case "${1:-up}" in
     # result to the exit codes of spec §4.3 (0, 2, 12, 16, 1).
     shift
     restore_from="" restore_mode=run
+    # This arm's own, never the environment's: a value inherited from a
+    # caller would change which panes are resumed with nothing on the
+    # command line saying so.
+    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT=""
     ROOST_RESTORE_ONLY=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -677,7 +681,13 @@ case "${1:-up}" in
                 ROOST_RESTORE_ONLY+=("$2"); shift 2 ;;
         --dry-run) restore_mode=dry; shift ;;
         --list) restore_mode=list; shift ;;
-        *) echo "usage: roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--only SEL ...]" >&2; exit 2 ;;
+        # Both decided at PLACEMENT (§4.3, revision 10): a pane they leave
+        # out gets a shell and no pending file (roost_restore__will_resume).
+        --no-resume) ROOST_RESTORE_NORESUME=1; shift ;;
+        --recent) case "${2:-}" in ''|*[!0-9]*)
+                    echo "roost restore: --recent needs a number of days" >&2; exit 2 ;; esac
+                  ROOST_RESTORE_RECENT="$2"; shift 2 ;;
+        *) echo "usage: roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--recent DAYS] [--only SEL ...]" >&2; exit 2 ;;
       esac
     done
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"

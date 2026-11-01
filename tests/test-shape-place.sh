@@ -805,7 +805,10 @@ sleep 1
 F1="$(fleet)"; L1="$(layouts)"; J1="$(json5)"
 R save >/dev/null 2>&1
 stop_server; : > "$HOME/shells.log"; : > "$HOME/env.log"
-R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+# --no-resume: this case is placement's (§8.1 test 1), every pane a shell. Since
+# Part 3 a plain restore puts a keyed pane in a waiting placeholder and then
+# resumes it; tests/test-shape-resume.sh covers that.
+R restore --no-resume >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "0" "restore exits 0"
 sleep 1
 F2="$(fleet)"
@@ -832,7 +835,7 @@ assert_eq "$(TL display -p -t "$(first_pane alpha)" '#{window_width}x#{window_he
 assert_eq "$(TL list-panes -t '=beta:9' -F x | wc -l | tr -d ' '):$(TL display -p -t '=beta:9' '#{window_linked}')" "2:0" \
   "a window linked into two sessions comes back as two windows (§3.2)"
 assert_eq "$(TL display -p -t "$(TL list-panes -t '=beta:1' -F '#{pane_id}' | tail -1)" '#{pane_current_path}')" "$SHAPE_TMP/d6" \
-  "a keyed pane is a shell in its directory (agents are not resumed in this part)"
+  "a keyed pane is a shell in its directory (--no-resume)"
 npl="$(TL list-panes -a -F x | wc -l | tr -d ' ')"
 assert_eq "$(cut -d' ' -f1 "$HOME/shells.log" | sort -u | wc -l | tr -d ' ')" "$npl" "every pane, the first included, started a shell"
 assert_eq "$(grep -c ' wired$' "$HOME/env.log")" "$npl" "...and every one of them is wired (ROOST_TMUX set)"

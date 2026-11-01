@@ -113,6 +113,150 @@ assert_eq "$(st %7.failed "lunch")" "failed-interrupted" "...nor one whose reaso
 roost_pending_state "$SHAPE_TMP/st/%7.other" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "1" "a name that is no state (or no file): exit 1"
 
+# --- restore: placement writes the pending record (Task 3.3) ------------------
+# `roost wiring apply` runs when restore starts a server, and writes under
+# XDG_CONFIG_HOME: a temp dir here, not the canary.
+export XDG_CONFIG_HOME="$SHAPE_TMP/config"
+HERE="$PWD"
+ROOST="$HERE/bin/roost"
+PH="$HERE/scripts/roost-placeholder"
+R() { env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST" "$@"; }
+BASH_BIN="$(command -v bash)"
+TL set -g default-shell "$BASH_BIN"
+export SHELL="$BASH_BIN"
+SD="$ROOST_SHAPE_DIR/roost"; mkdir -p "$SD"
+BOOT="$(TL display -p '#{start_time}-#{pid}')"
+PEND="$SD/pending/$BOOT"
+CX=019a0f0f-6a8b-7c71-9d2e-0000000000c1
+D1="$SHAPE_TMP/w/one.d"; D2="$SHAPE_TMP/w/two.d"; D3="$SHAPE_TMP/w/three"
+mkdir -p "$D1" "$D2" "$D3"
+OLDT="$SHAPE_TMP/old.jsonl"; : > "$OLDT"; touch -t 202001010000 "$OLDT"
+
+wait_screen() { # PANE TEXT [TENTHS]
+  local i=0 n="${3:-30}"
+  while [ "$i" -lt "$n" ]; do
+    TL capture-pane -p -t "$1" 2>/dev/null | grep -qF -- "$2" && return 0
+    sleep 0.1; i=$((i+1))
+  done
+  return 1
+}
+wait_file() { local i=0 n="${2:-50}"; while [ "$i" -lt "$n" ]; do [ -e "$1" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+wait_gone() { local i=0 n="${2:-100}"; while [ "$i" -lt "$n" ]; do [ -e "$1" ] || return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+shells_wait() { local i=0; while [ "$i" -lt 30 ]; do [ -n "$(shells_for "$1")" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+first_pane() { TL list-panes -s -t "=$1:" -F '#{pane_id}' 2>/dev/null | head -1; }
+startcmd() { TL display -p -t "$1" '#{pane_start_command}' | tr -d '"\\'; }
+kill_saved() { local s; for s in ka kb kst knone kgone; do TL kill-session -t "=$s" 2>/dev/null; done; return 0; }
+
+# A shape: five sessions, one window of one pane each, in this order —
+#   ka     claude U1 in a dotted directory, with an old transcript
+#   kb     codex CX
+#   kst    a stale claude key (exited)
+#   knone  no key
+#   kgone  claude U2 in a directory that is gone
+mkshape() {
+  local n=0
+  pane_block() { # SESSION ID CWD EXTRA-LINES
+    printf '%s\n' "session $1" "id \$$n" '' "window $1:1" "id @$n" "layout b25d,200x50,0,0,$n" 'active 1' '' \
+      "pane $1:1.0" "id $2" "cwd $3"
+    [ -n "$4" ] && printf '%s\n' "$4"
+    printf '\n'
+    n=$((n+1))
+  }
+  { printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' \
+      'saved 2026-10-28T12:00:00Z' 'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' ''
+    pane_block ka %930 "$D1" "harness claude
+session_id $U1
+transcript $OLDT"
+    pane_block kb %931 "$D2" "harness codex
+session_id $CX"
+    pane_block kst %932 "$D3" "stale_reason exited
+stale_harness claude
+stale_session_id $U2"
+    pane_block knone %933 "$D3" ""
+    pane_block kgone %934 "$SHAPE_TMP/w/gone" "harness claude
+session_id $U2"
+  } > "$SD/shape"
+}
+mkshape
+
+echo "== restore --no-resume: no pending file, keyed panes are shells (§4.3, Task 3.3) =="
+: > "$HOME/shells.log"
+R restore --no-resume >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "0" "restore --no-resume: exit 0"
+assert_eq "$(ls "$PEND" 2>/dev/null | wc -l | tr -d ' ')" "0" "...no pending file"
+for s in ka kb; do
+  p="$(first_pane "$s")"; shells_wait "$p"
+  assert_eq "$(shells_for "$p" | wc -l | tr -d ' ')" "1" "...$s's keyed pane is a shell"
+done
+kill_saved
+
+echo "== restore: every resumable keyed pane waits in a placeholder, its file first (§4.6, T3) =="
+: > "$HOME/shells.log"; : > "$STUB_LOG"
+HOLD="$SHAPE_TMP/loop.hold"; rm -f "$HOLD"
+ROOST_TEST_LOOP_HOLD="$HOLD" R restore >/dev/null 2>"$SHAPE_TMP/err" &
+RPID=$!
+# Placement is over when every saved session exists and restoring/ is gone
+# (the owner drops it before the hold); up to 15 s.
+i=0
+while [ "$i" -lt 150 ]; do
+  [ -n "$(first_pane kgone)" ] && [ ! -e "$SD/restoring" ] && [ "$(ls "$PEND" 2>/dev/null | wc -l | tr -d ' ')" = 2 ] && break
+  sleep 0.1; i=$((i+1))
+done
+pa="$(first_pane ka)"; pb="$(first_pane kb)"
+assert_eq "$(ls "$PEND" 2>/dev/null | sort | tr '\n' ' ')" "$(printf '%s\n' "$pa" "$pb" | sort | tr '\n' ' ')" \
+  "pending/<boot>/ holds one file per resumable keyed pane, named by its new %N"
+kill -0 "$RPID" 2>/dev/null; assert_true $? "...restore is still running: held after placement (ROOST_TEST_LOOP_HOLD)"
+for p in "$pa" "$pb"; do
+  case "$(startcmd "$p")" in
+    *roost-placeholder\ "$PEND/$p"\ claude|*roost-placeholder\ "$PEND/$p"\ codex) r=0 ;; *) r=1 ;; esac
+  assert_true $r "$p runs the placeholder by path with its file and harness ($(startcmd "$p"))"
+  assert_eq "$(shells_for "$p")" "" "...no shell has started in $p"
+done
+wait_screen "$pa" "waiting to resume claude - press any key for a shell"
+assert_true $? "the claude pane shows the waiting line (its file was there when it started)"
+assert_eq "$(sed -n 's/^was //p' "$PEND/$pa")|$(sed -n 's/^harness //p' "$PEND/$pa")|$(sed -n 's/^session_id //p' "$PEND/$pa")|$(sed -n 's/^cwd //p' "$PEND/$pa")|$(sed -n 's/^session //p' "$PEND/$pa")|$(sed -n 's/^window //p' "$PEND/$pa")" \
+  "%930|claude|$U1|$D1|ka|1" "the file holds the saved block's keys, session and window"
+oa="$(sed -n 's/^order //p' "$PEND/$pa")"; ob="$(sed -n 's/^order //p' "$PEND/$pb")"
+[ -n "$oa" ] && [ -n "$ob" ] && [ "$oa" -lt "$ob" ]; assert_true $? "order follows the shape's pane order ($oa < $ob)"
+assert_eq "$(ls -l "$PEND/$pa" | cut -c1-10)" "-rw-------" "...0600"
+for s in kst knone kgone; do
+  p="$(first_pane "$s")"; shells_wait "$p"
+  assert_eq "$(shells_for "$p" | wc -l | tr -d ' ')|$( [ -e "$PEND/$p" ] && echo file)" "1|" "$s: a shell, no pending file (stale, no key, directory gone)"
+done
+touch "$HOLD"; wait "$RPID"
+assert_eq "$(cat "$STUB_LOG")" "" "placement launched nothing"
+kill_saved; rm -f "$PEND"/*
+
+echo "== --recent 0: an old transcript's pane is a shell, no pending file (§4.3, revision 10) =="
+: > "$HOME/shells.log"
+R restore --recent 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+pa="$(first_pane ka)"; pb="$(first_pane kb)"
+shells_wait "$pa"
+assert_eq "$(shells_for "$pa" | wc -l | tr -d ' ')|$( [ -e "$PEND/$pa" ] && echo file)" "1|" \
+  "--recent 0: the pane whose transcript is old is a shell, with no file under pending/<boot>/"
+[ -e "$PEND/$pb" ]; assert_true $? "...a pane with no transcript path is still resumed (its file is there)"
+R restore --recent x >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "2" "--recent needs a number of days: usage, exit 2"
+kill_saved; rm -f "$PEND"/*
+
+echo "== §8.1 test 2 (i), the keyed half: a keyed pane taken during placement =="
+: > "$HOME/shells.log"; : > "$STUB_LOG"
+PHOLD="$SHAPE_TMP/place.hold"; rm -f "$PHOLD"
+ROOST_TEST_PLACE_HOLD="$PHOLD" R restore --only ka >/dev/null 2>"$SHAPE_TMP/err" &
+RPID=$!
+i=0; while [ "$i" -lt 50 ] && [ -z "$(first_pane ka)" ]; do sleep 0.1; i=$((i+1)); done
+pa="$(first_pane ka)"
+wait_screen "$pa" "roost restore is placing this session"
+TL send-keys -t "$pa" x
+shells_wait "$pa"
+touch "$PHOLD"; wait "$RPID"
+assert_eq "$(ls "$PEND" | tr '\n' ' ')" "$pa.taken " "its file is %N.taken, nothing waiting"
+case "$(startcmd "$pa")" in *"$PEND/"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "...no waiting placeholder was started in it"
+assert_eq "$(grep -c "roost revive $pa" "$SHAPE_TMP/err")" "1" "one stderr line names roost revive $pa"
+assert_eq "$(shells_for "$pa" | wc -l | tr -d ' ')|$(cat "$STUB_LOG")" "1|" "...the person's shell, and no launch"
+kill_saved; rm -f "$PEND"/*
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
