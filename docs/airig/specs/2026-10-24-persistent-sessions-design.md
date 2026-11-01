@@ -698,7 +698,7 @@ ${ROOST_SHAPE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/roost/shapes}/<server>/
   closed/<boot>/      one file per removal on purpose, naming pane ids            (§3.6a)
   aliases/<boot>      the old-id → new-id map of the restore that made boot <boot>  (§5.4)
   pending/<boot>/     the resume keys of panes placed but not yet resumed           (§4.6)
-  claims/<boot>/      one entry per conversation being launched, by any launcher    (§4.6)
+  claims/<boot>/      MOVED: not in the shape directory, see below                  (§4.6)
   persist             present when `roost persist on` has been run for this server (§4.4)
   service.env         the roots and homes the login service runs with              (§4.4)
   login/<os-boot>     present once the login restore has run on this OS boot        (§4.6)
@@ -707,6 +707,16 @@ ${ROOST_SHAPE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/roost/shapes}/<server>/
     save, stamp       the pin: a hard link to the offered save, and its STAMP-GEN      (§4.8)
   declined            a hard link to the newest save a person declined at the offer (§4.8)
 ```
+
+**Claims live outside the shape directory** (coordinator ruling, Part 2 review round 2): one entry per
+conversation being launched, by any launcher (§4.6), in
+`${XDG_STATE_HOME:-$HOME/.local/state}/roost/launch-claims/<server>/claims/<boot>/`,
+whatever the saving setting. With claims in the shape directory, two
+launchers whose `ROOST_SHAPE_DIR` differed (saving on in one shell, off in
+another; a worker with the server's environment beside a hand `revive`) did
+not see each other's claims, and one gone record launched twice. A claim is
+keyed by server and boot, not by a shape. Every other `claims/` in this
+document means that directory.
 
 `<server>` is the socket **name** for a `-L NAME` server (`roost` for the
 default), which is what survives a reboot: the socket file under
@@ -1988,7 +1998,10 @@ not have, and not in the shape, which §3.3 reads from live options. So:
   a bare `roost` **asks** instead (§4.8).
 - `pending/<boot>/` and `claims/<boot>/` for a boot that is gone are removed
   by the next `--at-login`, after its own pending files are written; `rm
-  -rf` of the shape directory forgets them with the rest.
+  -rf` of the shape directory forgets the pending files with the rest.
+  Claims are not in the shape directory (§3.1, coordinator ruling, Part 2 review round 2): the sweep removes
+  `launch-claims/<server>/claims/<boot>/` under the state directory, and
+  `rm -rf ~/.local/state/roost` forgets them.
 
 ### 4.7 The placeholder: a pane roost can prove untouched
 

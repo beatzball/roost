@@ -1,6 +1,6 @@
 ---
 title: Persistent Sessions
-description: Save your fleet's sessions, windows and panes as a plain file, and put them back after a reboot or a crash with roost restore.
+description: Save your fleet's sessions, windows and panes as a plain file, put them back after a reboot or a crash with roost restore, and bring one agent's conversation back with roost revive.
 sidebar:
   order: 12
 ---
@@ -13,10 +13,14 @@ pane was running — to a plain text file. `roost restore` reads it back and
 puts the sessions, windows and panes where they were, each pane a shell in
 its saved directory.
 
-**Agents are not resumed yet.** A pane that was running Claude Code or codex
-comes back as a shell in its directory; its conversation key stays in the file,
-for a later roost that resumes it. Saving is also manual for now: run
-`roost save` when you want one.
+`roost revive` brings **one** pane's agent conversation back — an agent that
+crashed, or that you `/exit`ed — in the same pane, with the same `%N`.
+
+**Restore does not resume agents yet.** A pane that was running Claude Code or
+codex comes back as a shell in its directory; its conversation key stays in
+the file, for a later roost that resumes it, and `roost revive` can bring a
+conversation back by hand. Saving is also manual for now: run `roost save`
+when you want one.
 
 ## Save
 
@@ -107,6 +111,76 @@ its counts, and marks the one a plain `roost restore` uses.
   cannot bring back conversations whose harness store is not on this machine.
 - `--only NAME`, `--only NAME:WINDOW` or `--only %N` (a pane id from the save)
   restores just that, and can be given more than once.
+
+## Revive one conversation
+
+```sh
+roost revive %5
+```
+
+brings back the conversation pane `%5` was having, in `%5` itself. It is for
+the everyday case: an agent crashed, or you typed `/exit`, and the pane is
+back at its shell with the conversation's id still on it. `revive` runs the
+harness's own resume command in the pane:
+
+| harness | what `revive` runs |
+|---|---|
+| Claude Code | `claude --resume ID` |
+| codex | `codex resume ID` |
+| GitHub Copilot CLI | `copilot --resume=ID` |
+| pi | `pi --session FILE` (the session file), or `pi --session ID` |
+| opencode | nothing: the command is **printed** for you to run (see below) |
+
+It runs in the conversation's **own** directory, never another one. For
+Claude Code that is the directory written inside the conversation's own
+transcript; for the others it is the directory the agent reported. A harness
+resumed from a different directory moves the conversation there (Claude Code)
+or asks about it, so `revive` would rather refuse than guess.
+
+Before it touches the pane, `revive` checks that the harness still has the
+conversation, so an old pane cannot be killed for nothing. Claude Code, for
+example, deletes transcripts after 30 days by default.
+
+- **Exit `0` means launched, not resumed.** `revive` prints the pane id and
+  one line on stderr with the command it ran. It does not wait for the
+  harness's prompt, and it answers nothing the harness asks. A dialog the
+  resume opens stays on screen for you: Claude Code's folder trust in a
+  folder you never trusted, codex's "Working directory" choice or its hooks
+  review, copilot's folder trust and extension permission, pi's "Fork this
+  session into current directory?". The badge comes back with the harness's
+  first event.
+- **Exit `13`: not resumed, and the reason is printed.** The pane has no
+  recorded conversation; its key belongs to another program than the one
+  running in it now (a stale key); the harness no longer holds that
+  conversation (`claude no longer holds 3fa3…; the pane is untouched`);
+  another pane has the same conversation open, or is still launching it —
+  one conversation is never open in two panes. The pane is left exactly as
+  it was.
+- **Exit `14`:** the harness is not on your `PATH`.
+- **Exit `15`:** the conversation's directory no longer exists. `revive`
+  will not resume it somewhere else.
+- **Exit `1`:** the pane is ⏳ working or 🛑 blocked, or it is a shell
+  running something of yours (an editor, a build). `--force` replaces it
+  anyway. A shell sitting at its prompt is **not** refused: it is replaced,
+  and a command you typed there but did not run is lost.
+- **Exit `2`:** the target is gone, and nothing about it was kept.
+
+**A pane that is gone.** `roost revive %5` of a pane you closed brings the
+conversation back in a **new window** in the same session, as long as the
+roost server has not restarted since (pane ids start again at `%0` on every
+start). It reads what roost kept about the pane when the agent started. The
+new pane has its own `%N`, which `revive` prints; `@roost-was` on it names
+the old one. `--new-window` asks for the same thing for a pane that is still
+there, but a conversation is never open in two panes, so it refuses one
+whose agent still has it.
+
+**opencode** creates a new, empty session when you resume an id it does not
+know, and roost cannot yet check which ids it knows. So for opencode `revive`
+prints the command (`cd DIR && opencode -s ID`) and exits `13` without
+running it.
+
+`--json` prints `{"pane","was","harness","session_id","command","cwd"}` for
+a program.
 
 ## The file
 

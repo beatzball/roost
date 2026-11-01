@@ -42,6 +42,19 @@ and this project uses [Semantic Versioning](https://semver.org/).
   and nothing saves on its own yet: run `roost save` when you want one. See
   the Persistent Sessions docs page.
 
+- **`roost revive %N` brings one agent's conversation back after a crash or
+  an `/exit` (#57).** It runs the harness's own resume — `claude --resume`,
+  `codex resume`, `copilot --resume=`, `pi --session` — in the same pane,
+  which keeps its `%N`, and in the conversation's own directory. Before it
+  touches the pane it checks that the harness still holds the conversation,
+  and that no other pane has it open; if not, it exits 13 with the reason and
+  the pane is untouched. 14 means the harness is not on `PATH`, 15 that the
+  directory is gone. A pane you closed comes back in a new window, from what
+  roost kept about it. Exit 0 means launched, not resumed: a dialog the
+  harness opens is left for you. A ⏳ working or 🛑 blocked agent, or a shell
+  running something, is refused unless `--force`. For opencode the command
+  is printed, not run. See the Persistent Sessions docs page.
+
 ### Changed
 
 - **A bare `roost stop`, `roost kill` or `roost down` asks before it ends

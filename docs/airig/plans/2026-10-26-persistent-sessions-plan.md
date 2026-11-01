@@ -318,7 +318,10 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_HOLD_BEFORE_SWEEP=FILE` | restore waits after every session is placed, before its final sweep, until FILE exists | review round 2 of Part 1 (a mutant the sweep hid) |
 | `ROOST_TEST_BOOT_HOLD_AFTER_CLAIM=FILE` | restore waits right after the bootstrap's claim returned, before it counts that session's panes, until FILE exists | review round 2 of Part 1 (R2-B2) |
 | `ROOST_TEST_PLACE_HOLD_AFTER_USED=FILE` | restore waits after winning `F → F.used` (T2), before that pane's respawn | 1.12 |
-| `ROOST_TEST_REVIVE_HOLD=FILE` | `revive` waits after its rename to `%N.launching`, its `origin` line and its claim, before step 7 | 3.8 |
+| `ROOST_TEST_REVIVE_HOLD=FILE` | `revive` waits after its rename to `%N.launching`, its `origin` line and its claim, before step 7 (in Part 2, with no pending file: after its claim, before step 7) | 3.8; added early in Part 2's review round 1 (B3) |
+| `ROOST_TEST_CLAIM_HOLD_AFTER_LINK=FILE` | `roost_resume_claim` waits right after it links its owner record, before it writes its pane file | review round 1 of Part 2 (B1) |
+| `ROOST_TEST_CLAIM_PAUSE_STALE=FILE` | `roost_resume_claim` waits after it judged a claim stale (its pane is gone, or is this run's own), before it takes the takeover claim | review round 2 of Part 2 (R2-B1) |
+| `ROOST_TEST_CLAIM_PAUSE_TAKEN=FILE` | `roost_resume__take_stale` waits after it removed the judged record, before it links its own | review round 2 of Part 2 (R2-B1) |
 | `ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN=FILE` | `revive` waits right after that rename, before its `origin` line | 3.8 |
 | `ROOST_TEST_LOOP_HOLD=FILE` | a hand restore waits after placement, before its resume loop (this plan's seam, not the spec's: it lets Task 3.3 read the placed state before Task 3.5's loop exists) | 3.3 |
 | `ROOST_TEST_RESUME_HOLD=FILE` | the engine waits after its rename to `.launching` and its claim, before the respawn | 3.5 |
@@ -1057,7 +1060,9 @@ Unattended: yes
 
 No pending record exists yet, so `revive` meets only panes with **no file**
 (§4.7's last row) and gone panes. Part 3 teaches it the pending states.
-`claims/<boot>/` ships here.
+`claims/<boot>/` ships here, under
+`${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/`, not the shape
+directory (coordinator ruling, Part 2 review round 2; Task 2.5 says why).
 
 **After this part merges, a user can:** `roost revive %N` a pane whose agent
 crashed or was `/exit`ed and get the same conversation back in the same `%N`;
@@ -1182,9 +1187,28 @@ from which of R and the worktree `claude --resume ID` finds the conversation.
 
 **Do:**
 1. Red first: `roost_resume_claim DIR HARNESS ID PANE` makes
-   `claims/<boot>/<harness>-<id>/` with `pid`, `lstart`, `pane` (`pane` empty
-   until the launcher knows it). When `mkdir` fails, the existing claim is
-   judged in **two stages**, §4.1 step 5a's rule:
+   `claims/<boot>/<harness>-<id>/` holding `owner`, a symbolic link to "PID
+   LSTART" (Part 1's owner record, `roost_shape__claim`, with its takeover of
+   a dead holder), and `pane`: the target pane (empty until the launcher
+   knows it) and, on a second line, the owner record it was written under.
+   **Built this way, not as the separate `pid` and `lstart` files this task
+   first named** (as built in Part 2, confirmed by its review round 1, Fable
+   N4): mkdir-then-write leaves a claim with no owner in it, and a second
+   launcher must guess whether it is being written or was left by one that
+   died — Part 1 replaced exactly that with one `ln -s` (its review round 1,
+   Codex B2). The pane file carries its owner record because a takeover
+   links first and writes its pane after, and a previous owner's pane file
+   beside a new live link read as "stale, take it over" — two launches of
+   one conversation (Part 2 review round 1, B1). A pane file whose second
+   line is not the current owner names nothing. Do not change either back.
+   **Where:** `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`,
+   whatever the saving setting, never the shape directory (coordinator ruling, Part 2 review round 2,
+   Opus R2-N1 and Fable N2): a claim placed by the caller's
+   `ROOST_SHAPE_DIR` was invisible to a launcher with another setting, and
+   one gone record launched twice. Every launcher finds it through
+   `roost_resume_claims_dir`.
+   When the link exists, the existing claim is judged in **two stages**,
+   §4.1 step 5a's rule:
    - **it names a pane** — the same pane as this claim → taken over (an
      in-place revive of a pane whose earlier launch never identified); another
      pane that **exists** on this server → refused, naming it, **whatever the
@@ -1197,7 +1221,7 @@ from which of R and the worktree `claude --resume ID` finds the conversation.
    Red cases for each: another existing pane **and a dead claimer** →
    refused; no pane and a dead claimer → taken over; no pane and a live
    claimer → refused; a gone pane with a live claimer → taken over.
-   `roost_resume_release` removes only a claim whose `pid`/`lstart` are this
+   `roost_resume_release` removes only a claim whose owner record is this
    run's; a refused claim is left byte for byte.
 2. Implement. `roost_shape_owner_live` is used only in the no-pane stage;
    the pane stage asks tmux (`display -p -t %N '#{pane_id}'`).
@@ -1336,6 +1360,13 @@ Part 5's.
 
 **Probe.** §6 step 3 names one measurement, which needs the engine; it is Task
 3.12, not first.
+
+**One agreement table, before the engine (from Part 2's review round 1, Fable
+N3).** Save's `roost_shape_agree` still calls a shell pane running a job
+(`sleep 60` typed at its prompt) `other`, while `revive` calls it `exited` by
+reading the pane's own process (`#{pane_pid}`, `roost_revive` in
+`scripts/lib/roost-resume.sh`). Part 3 must make one table decide both, or a
+restore will refuse a pane that `revive` would resume.
 
 **After this part merges, a user can:** after a reboot, run `roost restore` and
 get the fleet back with every agent resumed 2 s apart in its own directory;
@@ -2314,8 +2345,8 @@ a new session (`setsid` where present). Once each. Never the live server.
    save (no `persist-on` save in between), the job places both. `--at-login`
    writes `restoring/` first, waits up to 60 s for
    the socket directory, writes `login/<os-boot>` and `login.log` (0600,
-   halved past 1 MB), removes other boots' `pending/` and `claims/` after its
-   own files, and always exits 0. **`closed/` is not swept with them** (§3.6a,
+   halved past 1 MB), removes other boots' `pending/` and `claims/` (the latter under
+   `launch-claims/<server>/`, Task 2.5) after its own files, and always exits 0. **`closed/` is not swept with them** (§3.6a,
    §4.6): `closed/<boot>/` is removed only when **no** save in `shape` or
    `history/`, not `declined`, and not a live offer's `offer/save` names that
    boot. **Ring case (red):** a B1 save kept in `history/`,

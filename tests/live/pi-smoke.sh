@@ -469,5 +469,63 @@ else
   skipped "the abort turn never started, so the abort path was not exercised"
 fi
 
+printf '\n== revive: /quit, then roost revive the pane (#57, #191 Part 2) ==\n'
+# A fresh pane, so the case does not depend on what the cases above left in
+# theirs. One plain turn, then the harness's own exit, then `roost revive %N`:
+# the pane must come back in the SAME %N with the old prompt on screen,
+# re-identified under the SAME id (spec §2.8).
+#
+# remain-on-exit keeps the pane after the exit: its command IS the harness,
+# so without it the pane would close, and a revive of a gone pane is a new
+# window (a different case, covered by tests/test-revive.sh). A dead pane is a
+# revive target in place.
+#
+# THE ENVIRONMENT. `revive` respawns the pane with the resume argv alone, and
+# the new process takes its environment from the tmux SERVER, not from the
+# launch line above, which set this harness's home and provider inline. So
+# they are put into the server's global environment first, and the home is
+# read back: a resume that fell back to the default home would read and write
+# the developer's real one.
+start_pane revive "$D/pi-ok"; rv="$PANE"
+ask "$rv" 'Say exactly: PLUM-REVIVE'
+if ! wait_state "$rv" done 240; then
+  no "revive: the turn before the exit never reached done (got '$(state "$rv")')"
+else
+  rid="$(tmux -S "$S" show-options -pqv -t "$rv" @roost-session)"
+  rtr="$(tmux -S "$S" show-options -pqv -t "$rv" @roost-transcript-path)"
+  case "$rid" in
+    ????????-????-????-????-????????????) ok "the pane carries a pi session id: $rid" ;;
+    *) die "revive: no session id on the pane (got '$rid') — did the adapter's identify move?" ;;
+  esac
+  [ -f "$rtr" ] && ok "...and its session file, which revive resumes by path" || no "the recorded session file '$rtr' does not exist"
+  tmux -S "$S" set-option -p -t "$rv" remain-on-exit on
+  tmux -S "$S" send-keys -t "$rv" "/quit"; sleep 1; tmux -S "$S" send-keys -t "$rv" Enter
+  for _ in $(seq 1 30); do [ "$(tmux -S "$S" display -p -t "$rv" '#{pane_dead}')" = 1 ] && break; sleep 1; done
+  [ "$(tmux -S "$S" display -p -t "$rv" '#{pane_dead}')" = 1 ] || die "revive: pi did not leave on /quit"
+  for kv in "PATH=$HERE/bin:$PATH" "ROOST_SOCKET=$S" "ROOST_EVENT_LOG=$L/revive.jsonl" \
+            "PI_CODING_AGENT_DIR=$D/pi-ok" "PI_OFFLINE=1" "PI_SKIP_VERSION_CHECK=1"; do
+    tmux -S "$S" set-environment -g "${kv%%=*}" "${kv#*=}"
+  done
+  [ "$(tmux -S "$S" show-environment -g PI_CODING_AGENT_DIR 2>/dev/null)" = "PI_CODING_AGENT_DIR=$D/pi-ok" ] \
+    || die "revive: the server's PI_CODING_AGENT_DIR is not this run's — refusing to resume into a real home"
+  # revive's own store check reads PI_CODING_AGENT_DIR too, so it is passed here.
+  # Launch claims live under the state directory (review round 2), and this
+  # file keeps the real one for the harness's own sake: the revive's claim
+  # goes to this run's temp directory instead.
+  out="$(XDG_STATE_HOME="$D/state" PI_CODING_AGENT_DIR="$D/pi-ok" ROOST_SOCKET="$S" "$HERE/bin/roost" revive "$rv" 2>"$L/revive.err")"; rc=$?
+  if [ "$rc:$out" = "0:$rv" ]; then ok "roost revive exits 0 and keeps the same %N ($rv)"
+  else no "roost revive exited $rc, printed '$out': $(cat "$L/revive.err")"; fi
+  if wait_screen "$rv" "Trust" 5; then tmux -S "$S" send-keys -t "$rv" Enter; sleep 2; fi
+  if wait_screen "$rv" "PLUM-REVIVE" 60; then ok "the old prompt is on screen: the conversation came back"
+  else no "the old prompt is not on screen after the resume"; tmux -S "$S" capture-pane -p -t "$rv" | grep -v '^$' | tail -15 | sed 's/^/    /'; fi
+  nid=""
+  for _ in $(seq 1 60); do
+    nid="$(tmux -S "$S" show-options -pqv -t "$rv" @roost-session)"
+    [ "$nid" = "$rid" ] && break; sleep 1
+  done
+  [ "$nid" = "$rid" ] && ok "the pane re-identified under the same id" \
+    || no "the pane reads @roost-session '$nid' after the resume, not $rid"
+fi
+
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

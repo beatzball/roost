@@ -315,6 +315,7 @@ roost_ext_core_commands() {
     state \
     identify \
     save restore \
+    revive \
     help --help -h \
     doctor \
     validate \

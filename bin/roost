@@ -51,6 +51,8 @@
 #   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). `rm -rf` that shapes directory forgets every shape and nothing else
 #   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--only SEL ...]
 #                            put a saved shape back as shells in their saved directories, at their saved indices and layouts; agents are not resumed yet. A session that exists is skipped and named (exit 12); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
+#   roost revive [--new-window] [--force] [--json] TGT
+#                            bring a pane's agent conversation back, in place, with the same %N — or, for a %N that is gone, in a new window from the pane's kept record (--new-window opens one beside a pane that is still there): the harness's own resume (claude --resume ID, codex resume ID, copilot --resume=ID, pi --session FILE) in the conversation's own directory. Checked before anything is killed: exit 13 when there is no recorded conversation, its key is stale or the harness no longer holds it, or another pane has it open; 14 the harness is not on PATH; 15 its directory is gone. Refuses a ⏳ working or 🛑 blocked agent, and a shell running a job, unless --force. Exit 0 means launched, not resumed: a dialog the harness opens is left on screen. opencode's command is printed, not run
 #   roost kill [--yes] [SESSION]
 #                            end one session, or with no SESSION stop the whole server: every session and every agent on it. The bare form asks first on a terminal (only y stops it) and, off a terminal, refuses unless --yes (or -y). `roost stop` and `roost down` are the same command
 #   roost help               show this text
@@ -706,6 +708,34 @@ case "${1:-up}" in
     fi
     rm -rf "${ROOST_RESTORE_PD:-}"
     exit "$restore_rc"
+    ;;
+  revive)
+    # `roost revive [--new-window] [--force] [--json] TGT` (#57, spec §4.1): bring one pane's
+    # conversation back. The work is in scripts/lib/roost-resume.sh
+    # (roost_revive); this arm parses flags.
+    #
+    # --force and --json go in front of the target, in either order, under
+    # close's rule: a repeat is not consumed, so it falls into the target slot
+    # and fails there rather than being quietly accepted.
+    rv_force=0 rv_json=0 rv_new=0
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --force) [ "$rv_force" = 1 ] && break; rv_force=1; shift ;;
+        --json) [ "$rv_json" = 1 ] && break; rv_json=1; shift ;;
+        --new-window) [ "$rv_new" = 1 ] && break; rv_new=1; shift ;;
+        *) break ;;
+      esac
+    done
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+      echo "usage: roost revive [--new-window] [--force] [--json] TGT" >&2; exit 2
+    fi
+    case "$1" in -*) echo "usage: roost revive [--new-window] [--force] [--json] TGT" >&2; exit 2 ;; esac
+    . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+    ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+    rv_rc=0
+    roost_revive "$1" "$(target "$1")" "$rv_force" "$rv_json" "$rv_new" || rv_rc=$?
+    exit "$rv_rc"
     ;;
   help|--help|-h)
     # The command list is read back out of this file's own header comment

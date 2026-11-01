@@ -40,6 +40,7 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 - `roost screen TARGET` — what is on that pane's screen, chrome and all
 - `roost reply "…"` — record what *you* just said, so another agent's `read` gets it
 - `roost close TARGET` — end one agent its harness's own way, then close its pane (see below)
+- `roost revive TARGET` — bring one agent's conversation back in its pane, after a crash or an `/exit` (see below)
 
 `spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place. `view` is for neither — it is for a **human**, and it picks pane or window for you. State is **per-pane**, so `wait-done %N` waits on that one pane whichever way it was created; give it a window target instead and it waits for every agent pane in that window.
 
@@ -430,6 +431,32 @@ What it refuses, and does not change:
 | `0` | the pane is closed |
 | `1` | refused, or the agent did not leave in time, or it opened a dialog. The pane is still open. stderr says which |
 | `2` | the target was already gone. One line on stderr |
+
+## Bring a conversation back: `roost revive`
+
+```sh
+roost revive %12            # the agent in %12 crashed or exited: resume its conversation in %12
+roost revive --force %12    # %12 is busy, or a shell running something: replace it anyway
+```
+
+`revive` runs the harness's own resume command (`claude --resume ID`, `codex
+resume ID`, `copilot --resume=ID`, `pi --session FILE`) in the conversation's
+own directory, in the same pane, which keeps its `%N`. A pane that is gone
+comes back in a new window. Before it touches anything it checks that the
+harness still holds the conversation. Exit `0` means **launched**: a dialog
+the harness opens on resume stays on screen for a person. The
+[Persistent Sessions](/docs/persistent-sessions) page has the whole story.
+
+### Exit codes for `roost revive`
+
+| exit | meaning |
+|---|---|
+| `0` | launched. stdout is the pane's `%N` (a new one for a pane that was gone) |
+| `1` | refused: the agent is ⏳ working or 🛑 blocked, or the pane is a shell running a job. `--force` replaces it. Or tmux could not respawn the pane |
+| `2` | the target is gone, and nothing about it was kept |
+| `13` | not resumed, reason on stderr: no recorded conversation, a stale key, the harness no longer holds it, another pane has it, or opencode (whose command is printed, not run). The pane is untouched |
+| `14` | the harness is not on `PATH` |
+| `15` | the conversation's directory is gone; it is not resumed anywhere else |
 
 ## Answer a dialog from anywhere: `roost answer`
 
