@@ -734,6 +734,21 @@ sleep 1
 assert_eq "$rcD|$rcB|$(grep -c "claude --resume $U7" "$STUB_LOG")" "0|13|1" "...a launcher that links in that gap wins; the held one is refused, one launch"
 for o in "$SHAPE_TMP/b.out" "$SHAPE_TMP/d.out"; do [ -s "$o" ] && TL kill-pane -t "$(cat "$o")" 2>/dev/null; done
 
+# Another live launcher holds the takeover of the same stale record for too
+# long: refused (13), in a plain sentence (review round 2, Fable N3).
+reset
+G="$(gone_pane)"; plant_record "$G" claude "$U7" /old/cwd
+G2="$(gone_pane)"
+sleep 600 >/dev/null 2>&1 & LIVEPID=$!; LIVELST="$(roost_shape__lstart "$LIVEPID")"
+mkdir -p "$CLB/claude-$U7"
+ln -s "999999 Thu Jan  1 00:00:00 1970" "$CLB/claude-$U7/owner"
+printf '%s\n%s\n' "$G2" "999999 Thu Jan  1 00:00:00 1970" > "$CLB/claude-$U7/pane"
+ln -s "$LIVEPID $LIVELST" "$(roost_shape__takeover "$CLB/claude-$U7/owner" "999999 Thu Jan  1 00:00:00 1970")"
+R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(cat "$STUB_LOG")" "13|" "a takeover another live launcher holds: exit 13, nothing launched"
+assert_eq "$(cat "$SHAPE_TMP/err")" "roost revive: claude $U7 is being taken over by another launcher right now. Nothing was resumed; try again." "...said as a plain sentence"
+kill "$LIVEPID" 2>/dev/null; wait "$LIVEPID" 2>/dev/null; LIVEPID=""
+
 # Saving off (ROOST_SHAPE_DIR empty) still claims (review round 1, Codex B4),
 # in the same directory as with saving on (round 2), so two revives of one
 # gone record still launch once.

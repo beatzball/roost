@@ -502,7 +502,12 @@ roost_resume__take_stale() {
 #   0  claimed: fresh, or a stale claim taken over. ROOST_RESUME_CLAIM is its
 #      path, for roost_resume_claim_pane and roost_resume_release
 #   1  refused: ROOST_RESUME_HOLDER is the other pane (`%M`), or `pid N` for a
-#      claimer that names no pane yet. The claim found is not touched
+#      claimer that names no pane yet. The claim found is not touched. Or
+#      ROOST_RESUME_HOLDER is empty and ROOST_RESUME_BUSY says, as the end of
+#      a sentence about the conversation, that other launchers are changing
+#      the claim right now (a takeover held too long, or the loop's bound).
+#      These were once squeezed into HOLDER and printed as "already being
+#      launched in the claim ... kept changing" (review round 2, Fable N3)
 #   3  cannot claim at all: ROOST_RESUME_HOLDER says why
 #
 # A claim found is judged in TWO STAGES (§4.1 step 5a):
@@ -517,7 +522,7 @@ roost_resume__take_stale() {
 #                     one, or its pid reused -> taken over
 roost_resume_claim() {
   local dir="$1" h="$2" id="$3" pane="${4:-}" c me cur p r try=0
-  ROOST_RESUME_CLAIM="" ROOST_RESUME_HOLDER=""
+  ROOST_RESUME_CLAIM="" ROOST_RESUME_HOLDER="" ROOST_RESUME_BUSY=""
   if ! roost_resume__id_ok "$h" "$id"; then
     ROOST_RESUME_HOLDER="'$id' is not a $h session id"; return 3
   fi
@@ -558,7 +563,7 @@ roost_resume_claim() {
       roost_shape__seam ROOST_TEST_CLAIM_PAUSE_STALE
       r=0; roost_resume__take_stale "$c" "$cur" "$pane" || r=$?
       case "$r" in
-        1) ROOST_RESUME_HOLDER="another launcher (the claim $c changed while it was taken over)"
+        1) ROOST_RESUME_BUSY="is being taken over by another launcher right now"
            return 1 ;;
         3) ROOST_RESUME_HOLDER="$ROOST_SHAPE_OWNER_FAULT"; return 3 ;;
       esac
@@ -579,7 +584,7 @@ roost_resume_claim() {
     ROOST_RESUME_HOLDER="pid ${ROOST_SHAPE_OWNER_PID:-?}"
     return 1
   done
-  ROOST_RESUME_HOLDER="the claim $c kept changing"
+  ROOST_RESUME_BUSY="is being claimed by other launchers right now, and its claim kept changing"
   return 1
 }
 
@@ -956,7 +961,12 @@ roost_revive() {
   rc=0; roost_resume_claim "$sd" "$h" "$sid" "$exempt" || rc=$?
   case "$rc" in
     0) claim="$ROOST_RESUME_CLAIM" ;;
-    1) echo "roost revive: $h $sid is already being launched in $ROOST_RESUME_HOLDER — nothing resumed" >&2; return 13 ;;
+    1) if [ -n "$ROOST_RESUME_BUSY" ]; then
+         echo "roost revive: $h $sid $ROOST_RESUME_BUSY. Nothing was resumed; try again." >&2
+       else
+         echo "roost revive: $h $sid is already being launched in $ROOST_RESUME_HOLDER — nothing resumed" >&2
+       fi
+       return 13 ;;
     *) echo "roost revive: cannot claim $h $sid: $ROOST_RESUME_HOLDER" >&2; return 1 ;;
   esac
   # The plan's seam (its table, ROOST_TEST_REVIVE_HOLD): hold here, after the
