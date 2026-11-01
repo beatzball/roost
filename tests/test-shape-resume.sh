@@ -257,6 +257,192 @@ assert_eq "$(grep -c "roost revive $pa" "$SHAPE_TMP/err")" "1" "one stderr line 
 assert_eq "$(shells_for "$pa" | wc -l | tr -d ' ')|$(cat "$STUB_LOG")" "1|" "...the person's shell, and no launch"
 kill_saved; rm -f "$PEND"/*
 
+# --- the pane side: send refuses, close cancels (Task 3.4) -------------------
+echo "== roost_send_policy: §4.7's roost send column, per row =="
+for row in "placing refuse allow" "placing-claimed refuse allow" "placing-taken allow allow" \
+  "waiting refuse allow" "launching refuse allow" "launched refuse allow" \
+  "failed-waiting refuse allow" "failed-dead refuse allow" "failed-interrupted refuse allow" \
+  "failed-changed allow allow" "failed-replaced allow allow" "failed-exited allow allow" \
+  "taken allow allow" "none allow allow"; do
+  set -- $row
+  assert_eq "$(roost_send_policy "$1" 0)|$(roost_send_policy "$1" 1)" "$2|$3" "$1: $2 without --force, $3 with it"
+done
+
+# own_pane NAME [ARGS...] -> a new window in session `own` whose pane runs the
+# placeholder with ARGS (a pending file and harness, or a placing file).
+TL new-session -d -s own -x 200 -y 50 'ENV= exec /bin/sh'
+own_pane() {
+  local p
+  p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"
+  TL set -p -t "$p" remain-on-exit failed
+  TL respawn-pane -k -t "$p" "$PH" "$@"
+  printf '%s\n' "$p"
+}
+# plant %N NAME [REASON] -> a pending file for the pane under pending/<boot>/,
+# under NAME (%N, %N.launching, %N.failed, %N.taken), its reason first.
+plant() {
+  mkdir -p "$PEND"
+  { [ -n "${3:-}" ] && printf '%s\n' "$3"
+    printf 'was %%900\nharness claude\nsession_id %s\ncwd %s\nsession own\nwindow 1\norder 1\n' "$U1" "$D1"; } > "$PEND/$2"
+}
+sendq() { R send "$@" </dev/null >/dev/null 2>"$SHAPE_TMP/serr"; }
+
+echo "== send and answer refuse the rows the table refuses; the file is unchanged =="
+: > "$HOME/shells.log"
+# Each refused row: a pane, its file, then send and answer.
+refused_row() { # STATE PANE FILE-NAME
+  sendq "$2" hello; rc=$?
+  assert_eq "$rc" "3" "$1: send is refused with the blocked-target exit code (3)"
+  assert_contains "$(cat "$SHAPE_TMP/serr")" "$1" "...and the message names the state"
+  [ -e "$3" ]; assert_true $? "...the file is unchanged ($3)"
+  R answer "$2" --deny </dev/null >/dev/null 2>"$SHAPE_TMP/aerr"; rc=$?
+  assert_eq "$rc" "3" "$1: answer is refused the same way, before any dialog lookup"
+  assert_contains "$(cat "$SHAPE_TMP/aerr")" "$1" "...naming the state"
+}
+p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"; plant "$p" "$p"
+TL set -p -t "$p" remain-on-exit failed; TL respawn-pane -k -t "$p" "$PH" "$PEND/$p" claude
+wait_screen "$p" "waiting to resume claude"
+refused_row waiting "$p" "$PEND/$p"
+assert_eq "$(shells_for "$p")" "" "§8.1 test 11 (f): the waiting placeholder took no key, and the file is still %N"
+WP="$p"
+p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"; plant "$p" "$p.launching"
+TL set -p -t "$p" remain-on-exit failed; TL respawn-pane -k -t "$p" "$PH" "$PEND/$p" claude
+wait_screen "$p" "resuming claude now"
+refused_row launching "$p" "$PEND/$p.launching"
+TL kill-pane -t "$p"
+for r in "failed-waiting|store miss" "failed-interrupted|interrupted"; do
+  p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"; plant "$p" "$p.failed" "${r#*|}"
+  TL set -p -t "$p" remain-on-exit failed; TL respawn-pane -k -t "$p" "$PH" "$PEND/$p" claude
+  wait_screen "$p" "claude was not resumed"
+  refused_row "${r%%|*}" "$p" "$PEND/$p.failed"
+  TL kill-pane -t "$p"
+done
+p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"
+TL set -p -t "$p" remain-on-exit failed; TL respawn-pane -k -t "$p" 'exit 3'
+i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$p" '#{pane_dead}')" != 1 ]; do sleep 0.1; i=$((i+1)); done
+plant "$p" "$p.failed" died
+refused_row failed-dead "$p" "$PEND/$p.failed"
+R answer --force "$p" --deny </dev/null >/dev/null 2>"$SHAPE_TMP/aerr"; rc=$?
+assert_eq "$rc" "2" "answer --force to a failed, dead pane: today's dead-pane refusal (exit 2) — --force bypassed only the new check"
+FD="$p"
+R answer --force "$WP" --deny </dev/null >/dev/null 2>"$SHAPE_TMP/aerr"; rc=$?
+assert_eq "$rc" "6" "answer --force to the waiting row: today's 'not blocked … nothing to answer' (exit 6)"
+assert_contains "$(cat "$SHAPE_TMP/aerr")" "is not blocked" "...in today's words"
+
+echo "== the rows the table allows: as for any pane =="
+for r in "taken|" "failed-changed|pane changed" "failed-replaced|replaced"; do
+  st="${r%%|*}"; sfx=".${st#failed-}"; [ "$st" = taken ] || sfx=.failed
+  p="$(TL new-window -d -P -F '#{pane_id}' -t own: -c "$SHAPE_TMP" 'ENV= exec /bin/sh')"; plant "$p" "$p$sfx" "${r#*|}"
+  sendq "$p" "echo SENT-$st"; rc=$?
+  assert_eq "$rc" "0" "$st: send delivers as to any pane"
+  wait_screen "$p" "SENT-$st"; assert_true $? "...and the text reached the pane"
+  TL kill-pane -t "$p"
+done
+# A shell taken during a placement that has since finished: its placing line
+# survives the exec, and no restoring/ file has it in any name -> no file.
+FF="$SD/restoring/place.gone-run.1"; mkdir -p "$SD/restoring"; : > "$FF"
+p="$(own_pane "$FF" --placing)"; wait_screen "$p" "placing this session"
+TL send-keys -t "$p" x; shells_wait "$p"; rm -rf "$SD/restoring"
+sendq "$p" "echo SENT-finished"; rc=$?
+assert_eq "$rc" "0" "a shell taken in a placement that has finished: send delivers as to any pane"
+TL kill-pane -t "$p"
+
+echo "== the placing rows, under Part 1's seams =="
+PHOLD="$SHAPE_TMP/p.hold"; UHOLD="$SHAPE_TMP/u.hold"; rm -f "$PHOLD" "$UHOLD"
+ROOST_TEST_PLACE_HOLD="$PHOLD" R restore --no-resume --only knone >/dev/null 2>&1 &
+RPID=$!
+i=0; while [ "$i" -lt 50 ] && [ -z "$(first_pane knone)" ]; do sleep 0.1; i=$((i+1)); done
+p="$(first_pane knone)"; wait_screen "$p" "placing this session"
+sendq "$p" hello; rc=$?
+assert_eq "$rc" "3" "placing: send is refused (exit 3)"
+assert_eq "$(shells_for "$p")" "" "...and nothing reached the placeholder"
+touch "$PHOLD"; wait "$RPID"; kill_saved
+ROOST_TEST_PLACE_HOLD_AFTER_USED="$UHOLD" R restore --no-resume --only knone >/dev/null 2>&1 &
+RPID=$!
+i=0; while [ "$i" -lt 50 ] && [ -z "$(ls "$SD/restoring" 2>/dev/null | grep '\.used$')" ]; do sleep 0.1; i=$((i+1)); done
+p="$(first_pane knone)"
+sendq "$p" hello; rc=$?
+assert_eq "$rc" "3" "placing, claimed (F.used): send is refused (exit 3)"
+touch "$UHOLD"; wait "$RPID"; kill_saved
+
+echo "== send --force to the waiting row: the placeholder takes it as a key (T6) =="
+sendq --force "$WP" hello
+i=0; while [ "$i" -lt 50 ] && [ ! -e "$PEND/$WP.taken" ]; do sleep 0.1; i=$((i+1)); done
+[ -e "$PEND/$WP.taken" ]; assert_true $? "the ownership refusal is bypassed: the file is %N.taken"
+shells_wait "$WP"; assert_eq "$(shells_for "$WP" | wc -l | tr -d ' ')" "1" "...and a shell started in the pane"
+TL kill-pane -t "$WP"
+
+echo "== forced delivery into a real dialog: a launched pane (§4.7, launched) =="
+if command -v python3 >/dev/null 2>&1; then
+  HOOK="$HERE/scripts/roost-agent-state"
+  python3 - "$SHAPE_TMP/payload" "$SHAPE_TMP/tr.jsonl" <<'PY'
+import json, sys
+open(sys.argv[1], "w").write(json.dumps({"session_id": "00000000-0000-4000-8000-000000001422",
+  "transcript_path": sys.argv[2], "cwd": "/tmp/roost-fixture/proj", "prompt_id": "00000000-0000-4000-8000-0000000014a2",
+  "permission_mode": "default", "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash", "tool_input": {"command": "mkdir build-x", "description": "x"}, "permission_suggestions": []}))
+PY
+  : > "$SHAPE_TMP/tr.jsonl"
+  # The dialog stand-in of tests/test-answer.sh, `state` mode: stamps 🛑
+  # through the real hook, draws the marker lines, logs each key as hex.
+  cat > "$SHAPE_TMP/dialog" <<EOF
+#!/bin/sh
+: > "$SHAPE_TMP/keys"
+"$HOOK" working </dev/null
+"$HOOK" blocked --permission-request-hook < "$SHAPE_TMP/payload"
+printf '\033[2J\033[H Bash command\n\n   mkdir build-x\n\n Do you want to proceed?\n > 1. Yes\n   2. Yes, and always allow access\n   3. No\n\n Esc to cancel - Tab to amend\n'
+stty raw -echo 2>/dev/null
+while :; do
+  k="\$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  [ -n "\$k" ] || continue
+  printf '%s\n' "\$k" >> "$SHAPE_TMP/keys"
+  printf '\033[2J\033[H (the dialog has closed)\n'; "$HOOK" working </dev/null
+done
+EOF
+  chmod +x "$SHAPE_TMP/dialog"
+  TL set -g @roost-notify-backend none
+  p="$(TL new-window -d -P -F '#{pane_id}' -t own: "$SHAPE_TMP/dialog")"
+  i=0; while [ "$i" -lt 100 ]; do
+    [ "$(TL show -pqv -t "$p" @agent_state)" = blocked ] && TL capture-pane -p -t "$p" | grep -q 'Esc to cancel' && break
+    sleep 0.05; i=$((i+1))
+  done
+  plant "$p" "$p.launching"
+  fp="$(R status --json 2>/dev/null | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+p = [x for x in d["panes"] if x["id"] == sys.argv[1]][0]
+print(p["dialog"]["fingerprint"])' "$p" 2>/dev/null)"
+  [ -n "$fp" ]; assert_true $? "(fixture) status --json gives the launched pane's dialog fingerprint"
+  R answer --expect "$fp" "$p" --approve </dev/null >/dev/null 2>"$SHAPE_TMP/aerr"; rc=$?
+  assert_eq "$rc|$(cat "$SHAPE_TMP/keys")" "3|" "answer --approve without --force: the ownership refusal, and no key logged"
+  R answer --force --expect "$fp" "$p" --approve </dev/null >/dev/null 2>"$SHAPE_TMP/aerr"; rc=$?
+  assert_eq "$rc|$(cat "$SHAPE_TMP/keys")" "0|31" "answer --force --approve: the key is delivered and logged"
+  TL kill-pane -t "$p"; rm -f "$PEND/$p.launching"
+else
+  echo "  SKIP: python3 not available (the dialog payload is built with it)"
+fi
+
+echo "== §8.1 test 11: close on a waiting pane cancels its resume with kill-pane (T19) =="
+: > "$HOME/shells.log"
+for r in "%|" ".failed|store miss" ".failed|died"; do
+  p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"
+  sfx="${r%%|*}"; [ "$sfx" = % ] && sfx=""
+  plant "$p" "$p$sfx" "${r#*|}"
+  TL set -p -t "$p" remain-on-exit failed
+  if [ "${r#*|}" = died ]; then
+    TL respawn-pane -k -t "$p" 'exit 3'
+    i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$p" '#{pane_dead}')" != 1 ]; do sleep 0.1; i=$((i+1)); done
+  else
+    TL respawn-pane -k -t "$p" "$PH" "$PEND/$p" claude; wait_screen "$p" "claude"
+  fi
+  R close "$p" </dev/null >/dev/null 2>"$SHAPE_TMP/cerr"; rc=$?
+  assert_eq "$rc|$(cat "$SHAPE_TMP/cerr")" "0|" "close on $p$sfx (${r#*|}): exit 0, nothing on stderr"
+  assert_eq "$(TL list-panes -a -F '#{pane_id}' | grep -cx -- "$p")" "0" "...the pane is gone"
+  assert_eq "$(ls "$PEND" | grep -c -- "^$p\(\.\|$\)")" "0" "...its pending file removed"
+  assert_eq "$(shells_for "$p")" "" "...and no shell ever started in it (kill-pane, not a key)"
+done
+TL kill-pane -t "$FD" 2>/dev/null; rm -f "$PEND/$FD.failed"
+TL kill-session -t '=own'
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

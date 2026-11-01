@@ -197,3 +197,168 @@ roost_pending_state() {
     *) return 1 ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# The pane side (Task 3.4): who owns a pane now, what `send` and `answer` may
+# do to it, and `close`'s cancel. These read the server through bin/roost's
+# own `t` (and its _SOCKET_FLAG / SOCKET), so they ask the server every other
+# verb asks.
+
+# roost_send_policy STATE FORCE -> prints refuse | allow: §4.7's `roost send`
+# column, one function for `send` and `answer` alike. A pane a launcher may
+# still replace with its placeholder or its resume — every row that says
+# "refused" — refuses, because a coordinator's prompt typed there is a KEY:
+# into a placeholder it takes the pane (T4, T6, T15) and the agent is not
+# resumed; into a resume's dialog it answers what a person was asked. FORCE 1
+# bypasses this refusal, and only this one (§7): each verb then keeps every
+# check it has today. The rows that say "as for any pane" — a person's shell
+# (placing, taken; taken), a person's command (failed, changed), another
+# conversation (failed, replaced), no pane (failed, exited), no file — allow.
+roost_send_policy() {
+  case "$1" in
+    placing|placing-claimed|waiting|launching|launched|failed-waiting|failed-dead|failed-interrupted)
+      if [ "${2:-0}" = 1 ]; then printf 'allow\n'; else printf 'refuse\n'; fi ;;
+    *) printf 'allow\n' ;;
+  esac
+}
+
+# roost_pending__words STATE -> prints the state as the refusal says it.
+roost_pending__words() {
+  case "$1" in
+    placing) printf 'placing (roost restore is placing it)' ;;
+    placing-claimed) printf 'placing (roost restore has claimed it and is about to replace it)' ;;
+    waiting) printf 'waiting (a placeholder waiting for its agent to be resumed)' ;;
+    launching) printf 'launching (its agent is being resumed now)' ;;
+    launched) printf 'launched (its agent was just resumed, and may be in a dialog)' ;;
+    failed-waiting) printf 'failed-waiting (its resume failed; the placeholder shows why)' ;;
+    failed-dead) printf 'failed-dead (its resume died; roost restore --resume --retry tries again)' ;;
+    failed-interrupted) printf 'failed-interrupted (a resume of it was interrupted)' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# roost_pane_owner_state %N -> prints §4.7's row for the pane, one of
+#   placing placing-claimed placing-taken waiting launching launched
+#   failed-waiting failed-dead failed-interrupted failed-changed
+#   failed-replaced failed-exited taken none
+# and sets ROOST_PENDING_FILE to the file's current path (empty for none).
+# Exit 1 when the pane cannot be read (then it prints `none`).
+#
+# It reads #{pane_start_command} and #{pane_dead} ONCE (§4.7: the file's name
+# is the proof, the start command only tells a placeholder from what else
+# runs):
+#   1. a PLACING line (`roost-placeholder F --placing`) names its restoring/
+#      file F, and F's current name gives the placing rows — F placing, F.used
+#      placing-claimed, F.taken placing-taken. A placing line whose F is gone
+#      in EVERY name is the `no file` row: restore has finished and removed
+#      restoring/, and the start command survived the `exec` that gave a
+#      person the shell (§2.10).
+#   2. else the pane's pending file: the one a pending placeholder line
+#      (`roost-placeholder P HARNESS`) names, when P is this pane's own
+#      `%N` — so a hand restore with saving off, whose pending/ is in its
+#      own directory, is found too — or else pending/<boot>/%N in this
+#      server's shape directory, which is how a LAUNCHED pane (running its
+#      resume command, not the placeholder) is found. Its current name and
+#      first line give the rest (roost_pending_state); `.launching` is
+#      launching while the pane still runs this file's placeholder line, and
+#      launched once it runs anything else.
+roost_pane_owner_state() {
+  roost_pane__owner "$1"; local r=$?
+  printf '%s\n' "$ROOST_PENDING_STATE"
+  return "$r"
+}
+
+# roost_pane__owner %N -> sets ROOST_PENDING_STATE and ROOST_PENDING_FILE,
+# prints nothing: the body of roost_pane_owner_state, for a caller that needs
+# both variables (a $(...) would lose them in its subshell).
+roost_pane__owner() {
+  local pane="$1" info dead boot sc path base f root key
+  ROOST_PENDING_FILE="" ROOST_PENDING_STATE=none
+  info="$(t -u display-message -p -t "$pane" '#{pane_id} #{pane_dead} #{start_time}-#{pid} #{pane_start_command}' 2>/dev/null || true)"
+  case "$info" in "$pane "*) ;; *) return 1 ;; esac
+  info="${info#"$pane "}"
+  dead="${info%% *}"; info="${info#* }"
+  boot="${info%% *}"; sc="${info#* }"
+  # tmux prints an argv command with double quotes round an argument that
+  # holds a space (roost_restore__placing measured it): dropped before the
+  # compare, with backslashes.
+  sc="${sc//\"/}"; sc="${sc//\\/}"
+  case "$sc" in
+    *roost-placeholder\ *\ --placing)
+      path="${sc#*roost-placeholder }"; path="${path% --placing}"
+      if [ -e "$path" ]; then ROOST_PENDING_FILE="$path" ROOST_PENDING_STATE=placing
+      elif [ -e "$path.used" ]; then ROOST_PENDING_FILE="$path.used" ROOST_PENDING_STATE=placing-claimed
+      elif [ -e "$path.taken" ]; then ROOST_PENDING_FILE="$path.taken" ROOST_PENDING_STATE=placing-taken
+      fi
+      return 0 ;;
+  esac
+  f=""
+  case "$sc" in
+    *roost-placeholder\ *)
+      path="${sc#*roost-placeholder }"; path="${path% *}"
+      base="${path##*/}"
+      [ "$base" = "$pane" ] && f="$path" ;;
+  esac
+  if [ -z "$f" ] && root="$(roost_shape_saving 2>/dev/null)"; then
+    key="$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+    f="$root/$key/pending/$boot/$pane"
+  fi
+  [ -n "$f" ] || return 0
+  if [ -e "$f" ]; then
+    ROOST_PENDING_FILE="$f" ROOST_PENDING_STATE=waiting
+  elif [ -e "$f.launching" ]; then
+    ROOST_PENDING_FILE="$f.launching" ROOST_PENDING_STATE=launched
+    case "$sc" in *roost-placeholder\ "$f"\ *) ROOST_PENDING_STATE=launching ;; esac
+  elif [ -e "$f.failed" ]; then
+    ROOST_PENDING_FILE="$f.failed"
+    ROOST_PENDING_STATE="$(roost_pending_state "$f.failed" || printf 'failed-interrupted')"
+  elif [ -e "$f.taken" ]; then
+    ROOST_PENDING_FILE="$f.taken" ROOST_PENDING_STATE=taken
+  fi
+  return 0
+}
+
+# roost_pending_refuse VERB TARGET %N FORCE -> exit 0 when VERB may go on;
+# else prints the ownership refusal on stderr and exits 1, and the caller
+# exits 3 — the blocked-target refusal's code, §4.7 ("the way it refuses a
+# blocked target"): the target is right, and retrying later, or --force, is
+# the answer.
+roost_pending_refuse() {
+  local st
+  roost_pane__owner "$3" 2>/dev/null || true
+  st="$ROOST_PENDING_STATE"
+  [ "$(roost_send_policy "${st:-none}" "$4")" = refuse ] || return 0
+  printf "roost %s: target '%s' is %s — roost may still replace this pane, and text typed into it would %s\n" \
+    "$1" "$2" "$(roost_pending__words "$st")" \
+    "$( [ "$st" = launched ] && printf 'answer its dialog' || printf 'be taken as a key that keeps the agent from being resumed' )" >&2
+  printf 'roost %s: wait for it, or pass --force to send anyway\n' "$1" >&2
+  return 1
+}
+
+# roost_pending_cancel FILE %N — T19 for `roost close`: the pending file is
+# removed and any launch claim it holds for this pane released (§4.6
+# Cancel: a person who closed the pane did not want the agent). The claim is
+# the conversation's (claims/<boot>/<harness>-<id>, §4.1 step 5a) and is
+# dropped only when it names THIS pane: a claim another launcher took for
+# another pane is never touched.
+roost_pending_cancel() {
+  local f="$1" pane="$2" h="" id="" line c boot
+  [ -n "$f" ] && [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "harness "*) h="${line#harness }" ;;
+      "session_id "*) id="${line#session_id }" ;;
+    esac
+  done < "$f"
+  rm -f "$f"
+  [ -n "$h" ] && [ -n "$id" ] || return 0
+  # The boot is the file's own directory name: pending/<boot>/%N.
+  boot="${f%/*}"; boot="${boot##*/}"
+  ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+  roost_resume_claims_dir "$_SOCKET_FLAG" "$SOCKET" "$boot" >/dev/null 2>&1 || return 0
+  c="$ROOST_RESUME_CLAIMS/$h-$id"
+  [ -f "$c/pane" ] || return 0
+  IFS= read -r line < "$c/pane" 2>/dev/null || return 0
+  [ "$line" = "$pane" ] && roost_shape_owner_drop "$c"
+  return 0
+}

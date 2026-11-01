@@ -1620,6 +1620,20 @@ JSON
     if [ -z "$wid" ]; then
       echo "roost send: no such target '$raw'" >&2; exit 2
     fi
+    # A pane roost may still replace (#191 Part 3, spec §4.7's `roost send`
+    # column): a restore's placing placeholder, a pending resume's waiting
+    # placeholder, a resume being launched or just launched. Text typed into
+    # a placeholder is a KEY that takes the pane, and the agent is never
+    # resumed; into a launched resume's dialog, an answer. Refused with the
+    # blocked-target code, 3, unless --force, which bypasses only this; every
+    # check below still runs. Asked BEFORE the dead-pane check, so a failed,
+    # dead pane names its state (its retry is roost's, not a send's). The
+    # pane is the one send-keys will type into: a window target's active pane.
+    . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+    if ! roost_pending_refuse send "$raw" "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
+      exit 3
+    fi
     # Same exit code as "no such target": a dead pane is unusable for exactly
     # the reason a nonexistent one is — the caller needs to pick a DIFFERENT
     # target, not retry this one (retrying is what exit 1 below means).
@@ -2601,11 +2615,16 @@ JSON
     # when a person runs it, or when a person told an agent to run it.
     #
     # Exit codes: `send` owns 1 to 4 and `wait-done` 5, so this keeps 1 and 2
-    # with their `send` meanings and takes 6 to 10. It never exits 3, 4 or 5.
+    # with their `send` meanings and takes 6 to 10. It never exits 4 or 5,
+    # and 3 only with `send`'s meaning (#191 Part 3).
     #
     #   0   answered, and roost saw it land
     #   1   a bad or missing argument, or tmux failed before the send
     #   2   no such target, a dead pane, or a window with two blocked panes
+    #   3   roost may still replace the pane — a restore's placeholder, or a
+    #       resume being launched or just launched — `send`'s refusal for
+    #       the same panes (spec §4.7). Nothing was sent; --force bypasses
+    #       this check only
     #   6   nothing to answer: not blocked, no dialog on screen, already answered
     #   7   a different dialog: --expect does not match, or it changed before
     #       the send
@@ -2723,6 +2742,16 @@ EOF
     esac
     if [ -z "$pane" ]; then
       echo "roost answer: no such target '$raw'" >&2; exit 2
+    fi
+    # The ownership refusal (#191 Part 3), `send`'s, from the one table
+    # (roost_send_policy): a pane roost may still replace — a placeholder,
+    # or a resume just launched into its dialog — is refused with exit 3
+    # before any dialog lookup, unless --force. --force bypasses ONLY this:
+    # the dead-pane, not-blocked and no-record checks below still run.
+    . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+    if ! roost_pending_refuse answer "$raw" "$pane" "$force"; then
+      exit 3
     fi
     if [ "$dead" = 1 ]; then
       echo "roost answer: target '$raw' is a dead pane" >&2; exit 2
@@ -4841,6 +4870,19 @@ EOF
       echo "roost close: '$raw' is the last pane of session '$cl_sess' — closing it would end the session. close takes one pane; roost kill $cl_sess ends a session" >&2
       exit 1
     fi
+    # A pane with a pending resume (#191 Part 3, spec §4.6 Cancel, §4.7
+    # T19): closing it cancels the resume — its file is removed and any
+    # launch claim it holds for this pane released (cl_done) — because a
+    # person who closed the pane did not want the agent. And a pane that is
+    # still roost's placeholder — waiting, launching, failed, dead or
+    # interrupted — is closed with kill-pane at once, never with a harness's
+    # exit keys: the placeholder would read their first byte as a key that
+    # takes the pane and starts a shell (F N1).
+    . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+    roost_pane__owner "$pane" 2>/dev/null || true
+    cl_pstate="$ROOST_PENDING_STATE" cl_pfile="$ROOST_PENDING_FILE"
+    case "$cl_pstate" in placing*) cl_pfile="" ;; esac
     # The harness, for every pane with a badge — even under --force, where
     # nothing is typed, because --json reports it and a reader deciding
     # whether to force needs to know what was there.
@@ -4859,6 +4901,7 @@ EOF
     # answer.
     cl_done() {
       t kill-pane -t "$pane" 2>/dev/null || true
+      [ -n "$cl_pfile" ] && roost_pending_cancel "$cl_pfile" "$pane"
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         roost_jsonout_emit close target s "$raw" pane s "$pane" state z "$cl_state" \
@@ -4869,6 +4912,10 @@ EOF
       fi
       exit 0
     }
+    case "$cl_pstate" in
+      waiting|launching|failed-waiting|failed-dead|failed-interrupted)
+        cl_done "its pending resume was cancelled (roost's placeholder, closed with kill-pane)" ;;
+    esac
     # Its process has already exited (remain-on-exit): nothing is left to ask.
     if [ "$cl_dead" = 1 ]; then cl_done "its process had already exited"; fi
     # Step 3. A `blocked` badge is offered to roost_unblock_pane first, as send
