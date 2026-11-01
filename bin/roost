@@ -629,6 +629,14 @@ case "${1:-up}" in
     [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] && [ -n "${ROOST_SELF_SOCK:-}" ] || exit 0
     roost_identity_stamp "$ROOST_SELF_SOCK" "$TMUX_PANE" \
       "$id_session" "$id_cwd" "$id_harness" "$id_transcript" || true
+    # Identity landed on a pane with a pending resume (#191 Part 3, §4.7
+    # T11, T12, T18): only when the stamp really WROTE, so an identify that
+    # changes nothing keeps its one read and its bail. No save yet (Part 4).
+    if [ "${ROOST_IDENTITY_WROTE:-0}" = 1 ]; then
+      . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+      . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+      roost_pending_identified "$ROOST_SELF_SOCK" "$TMUX_PANE" "$id_session" "${ROOST_IDENTITY_BOOT:-}" 2>/dev/null || true
+    fi
     exit 0
     ;;
   save)

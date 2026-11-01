@@ -337,31 +337,35 @@ roost_pending_refuse() {
   return 1
 }
 
-# roost_pending_cancel FILE %N — T19 for `roost close`: the pending file is
-# removed and any launch claim it holds for this pane released (§4.6
-# Cancel: a person who closed the pane did not want the agent). The claim is
-# the conversation's (claims/<boot>/<harness>-<id>, §4.1 step 5a) and is
-# dropped only when it names THIS pane: a claim another launcher took for
-# another pane is never touched.
-roost_pending_cancel() {
+# roost_pending__release FILE %N FLAG SOCKET — release the launch claim a
+# pending FILE's key holds for THIS pane (§4.1 step 5a's
+# claims/<boot>/<harness>-<id>). Dropped only when the claim's pane file
+# names this pane: a claim another launcher took for another pane is never
+# touched. The boot is the file's own directory name, pending/<boot>/.
+roost_pending__release() {
   local f="$1" pane="$2" h="" id="" line c boot
   [ -n "$f" ] && [ -f "$f" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "harness "*) h="${line#harness }" ;;
-      "session_id "*) id="${line#session_id }" ;;
-    esac
-  done < "$f"
-  rm -f "$f"
+  roost_pending__get "$f" harness && h="$ROOST_PENDING_V"
+  roost_pending__get "$f" session_id && id="$ROOST_PENDING_V"
   [ -n "$h" ] && [ -n "$id" ] || return 0
-  # The boot is the file's own directory name: pending/<boot>/%N.
   boot="${f%/*}"; boot="${boot##*/}"
-  ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
-  roost_resume_claims_dir "$_SOCKET_FLAG" "$SOCKET" "$boot" >/dev/null 2>&1 || return 0
+  roost_resume_claims_dir "$3" "$4" "$boot" >/dev/null 2>&1 || return 0
   c="$ROOST_RESUME_CLAIMS/$h-$id"
   [ -f "$c/pane" ] || return 0
   IFS= read -r line < "$c/pane" 2>/dev/null || return 0
   [ "$line" = "$pane" ] && roost_shape_owner_drop "$c"
+  return 0
+}
+
+# roost_pending_cancel FILE %N — T19 for `roost close`: the pending file is
+# removed and any launch claim it holds for this pane released (§4.6
+# Cancel: a person who closed the pane did not want the agent). Uses
+# bin/roost's _SOCKET_FLAG / SOCKET.
+roost_pending_cancel() {
+  [ -n "$1" ] && [ -f "$1" ] || return 0
+  ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+  roost_pending__release "$1" "$2" "$_SOCKET_FLAG" "$SOCKET"
+  rm -f "$1"
   return 0
 }
 
@@ -613,4 +617,68 @@ roost_pending_resume() {
   done <<< "$(printf '%s' "$list" | sort -n)"
   roost_shape_owner_drop "$sd/resuming"
   return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Identity lands (Task 3.7, §4.7 T11, T12, T18). Called by `roost identify`
+# and roost_identity_from_payload ONLY when the stamp really wrote
+# (ROOST_IDENTITY_WROTE=1): an identify that changes nothing keeps its one
+# read and its bail, and never reaches here.
+
+# roost_pending__server SOCK -> sets ROOST_PENDING_FLAG / ROOST_PENDING_SOCK,
+# the pair bin/roost would hold for the server at socket path SOCK, so the
+# shape key (roost_shape_key) and the claims directory are the ones `restore`
+# used. A socket in tmux's own directory for this user —
+# ${TMUX_TMPDIR:-/tmp}/tmux-<uid>/NAME — is the `-L NAME` server; any other
+# path is a `-S PATH` server. Both directories are compared resolved, because
+# macOS's /tmp is a link to /private/tmp and $TMUX carries the resolved one.
+roost_pending__server() {
+  local d own
+  d="$(cd -P "$(dirname -- "$1")" 2>/dev/null && pwd)" || d=""
+  own="$(cd -P "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)" 2>/dev/null && pwd)" || own=""
+  if [ -n "$d" ] && [ "$d" = "$own" ]; then
+    ROOST_PENDING_FLAG=-L ROOST_PENDING_SOCK="${1##*/}"
+  else
+    ROOST_PENDING_FLAG=-S ROOST_PENDING_SOCK="$1"
+  fi
+}
+
+# roost_pending_identified SOCK %N ID BOOT — identity just landed on %N with ID:
+#   %N.launching, same id      T11: the file and the claim are removed; from
+#                              now on the live @roost-session is the owner
+#                              §5.1a checks
+#   %N.launching, another id   T12: a person answered "No, exit" and started a
+#                              fresh agent: %N.failed replaced (origin removed
+#                              first), the claim released
+#   %N.taken                   T18: the person started an agent in the shell
+#                              they took: the file is removed
+# Any other state is left as it is. Never fails its caller: identify is called
+# from adapters, which discard its exit and stderr.
+#
+# NO TMUX CALL. BOOT is the boot key the stamp's own single read returned
+# (ROOST_IDENTITY_BOOT): tests/test-identity.sh pins a changed identity at one
+# read and one write, and this runs on that path. The file is found where
+# `restore` writes it with saving on, pending/<boot>/%N in this server's shape
+# directory. A hand restore with saving off keeps its pending files in its
+# own temporary directory, which this cannot see: such a file is never
+# released here and simply goes with that directory.
+roost_pending_identified() {
+  local sock="$1" pane="$2" id="$3" boot="${4:-}" f root got
+  [ -n "$boot" ] || return 0
+  case "$pane" in %[0-9]*) ;; *) return 0 ;; esac
+  root="$(roost_shape_saving 2>/dev/null)" || return 0
+  roost_pending__server "$sock"
+  f="$root/$(roost_shape_key "$ROOST_PENDING_FLAG" "$ROOST_PENDING_SOCK")/pending/$boot/$pane"
+  if [ -f "$f.launching" ]; then
+    roost_pending__get "$f.launching" session_id; got="$ROOST_PENDING_V"
+    roost_pending__release "$f.launching" "$pane" "$ROOST_PENDING_FLAG" "$ROOST_PENDING_SOCK"
+    if [ "$got" = "$id" ]; then
+      rm -f "$f.launching"
+    else
+      roost_pending_leave_launching "$f.launching" "$f.failed" replaced || true
+    fi
+  elif [ -f "$f.taken" ]; then
+    rm -f "$f.taken"
+  fi
+  return 0
 }

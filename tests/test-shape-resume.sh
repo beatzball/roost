@@ -655,6 +655,58 @@ wait_log "$U1" 50; assert_true $? "(e) the resume replaces it (exit $rc)"
 assert_eq "$(TL display -p -t "$ve" '#{pane_current_command}')" "claude" "(e) ...the pane now runs the harness"
 kill_sess e1
 
+# --- identity lands: T11, T12, T18 (Task 3.7) ---------------------------------
+CLB="$XDG_STATE_HOME/roost/launch-claims/roost/claims/$BOOT"
+claim_of() { [ -e "$CLB/claude-$1/owner" ] || [ -L "$CLB/claude-$1/owner" ] && echo held; }
+wait_gone2() { local i=0; while [ "$i" -lt 80 ]; do [ -e "$1" ] || return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+# The stub reads STUB_IDENTIFY / STUB_IDENTIFY_AS from the pane's environment,
+# which a respawned pane takes from the server's global environment.
+echo "== T11: identity lands with the same id: the .launching file and the claim go =="
+reset_run
+TL set-environment -g STUB_IDENTIFY 1
+shape_of "i1|%996|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+R restore --pace 0 >/dev/null 2>&1
+pi1="$(first_pane i1)"
+wait_log "$U1" 50
+wait_gone2 "$PEND/$pi1.launching"; assert_true $? "the stub identified with the same id: %N.launching removed (T11)"
+assert_eq "$(ls "$PEND" | grep -c "^$pi1")|$(claim_of "$U1")" "0|" "...no file in any name, and the claim released"
+assert_eq "$(TL show -pqv -t "$pi1" @roost-session)" "$U1" "...the live @roost-session is the owner now"
+echo "== an identify that changes nothing does not touch pending (the one-read bail) =="
+plant "$pi1" "$pi1.launching"
+env TMUX="$SHAPE_SOCK,1,0" TMUX_PANE="$pi1" "$ROOST" identify --session "$U1" --cwd "$(TL show -pqv -t "$pi1" @roost-cwd)" --harness claude >/dev/null 2>&1
+assert_eq "$(TL show -pqv -t "$pi1" @roost-session)|$( [ -e "$PEND/$pi1.launching" ] && echo kept)" "$U1|kept" \
+  "the same identity again: nothing written, so the planted file is left alone"
+rm -f "$PEND/$pi1.launching"
+kill_sess i1
+TL set-environment -gu STUB_IDENTIFY
+
+echo "== T12: identity lands with a different id: %N.failed replaced, the claim released =="
+reset_run
+TL set-environment -g STUB_IDENTIFY_AS "$U3"
+shape_of "i2|%997|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+R restore --pace 0 >/dev/null 2>&1
+pi2="$(first_pane i2)"
+wait_file "$PEND/$pi2.failed" 80
+assert_eq "$(head -1 "$PEND/$pi2.failed" 2>/dev/null)|$( [ -e "$PEND/$pi2.launching" ] && echo left)|$(claim_of "$U1")" "replaced||" \
+  "another conversation landed: %N.failed replaced (T12), no .launching, the claim released"
+assert_eq "$(grep -c '^origin' "$PEND/$pi2.failed")" "0" "...and no origin line left in it"
+kill_sess i2
+TL set-environment -gu STUB_IDENTIFY_AS
+
+echo "== §8.1 test 11, T18: a taken pane where a person starts an agent =="
+reset_run
+shape_of "i3|%998|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
+HOLD="$SHAPE_TMP/loop5.hold"; rm -f "$HOLD"
+ROOST_TEST_LOOP_HOLD="$HOLD" R restore >/dev/null 2>&1 &
+RPID=$!
+i=0; while [ "$i" -lt 150 ]; do [ "$(ls "$PEND" 2>/dev/null | wc -l | tr -d ' ')" = 1 ] && [ ! -e "$SD/restoring" ] && break; sleep 0.1; i=$((i+1)); done
+pi3="$(first_pane i3)"; wait_screen "$pi3" "waiting to resume claude"
+TL send-keys -t "$pi3" x; wait_file "$PEND/$pi3.taken" 50; shells_wait "$pi3"
+touch "$HOLD"; wait "$RPID"
+TL send-keys -t "$pi3" "STUB_IDENTIFY=1 claude --resume $U3" Enter
+wait_gone2 "$PEND/$pi3.taken"; assert_true $? "an agent started by hand in a taken pane identifies: %N.taken removed (T18)"
+kill_sess i3
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
