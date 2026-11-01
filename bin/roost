@@ -681,7 +681,7 @@ case "${1:-up}" in
     # This arm's own, never the environment's: a value inherited from a
     # caller would change which panes are resumed with nothing on the
     # command line saying so.
-    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2
+    ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2 restore_retry=0
     ROOST_RESTORE_ONLY=()
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -701,6 +701,10 @@ case "${1:-up}" in
         # over the panes already placed and waiting (§4.6) — the first-attach
         # worker's form, run by hand until Part 5's hook runs it.
         --resume) restore_mode=resume; shift ;;
+        # With --resume: also the failed panes that have a retry arrow — a
+        # waiting reason or `died` — once their cause is fixed (§4.6, §4.7
+        # T14, T16). Never a taken, changed or replaced pane.
+        --retry) restore_retry=1; shift ;;
         # Seconds between launches (§5.5; default 2, the incident's number).
         --pace) case "${2:-}" in ''|*[!0-9]*)
                   echo "roost restore: --pace needs a whole number of seconds" >&2; exit 2 ;; esac
@@ -722,7 +726,7 @@ case "${1:-up}" in
       restore_boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
       [ -n "$restore_boot" ] || { echo "roost restore: cannot read the server's boot key; nothing resumed" >&2; exit 1; }
       restore_rc=0
-      roost_pending_resume "$restore_dir" "$restore_boot" "$restore_pace" || restore_rc=$?
+      roost_pending_resume "$restore_dir" "$restore_boot" "$restore_pace" "$restore_retry" || restore_rc=$?
       exit "$restore_rc"
     fi
     # --dry-run and --list only look: they name the shape directory without

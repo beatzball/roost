@@ -381,11 +381,17 @@ roost_pending_cancel() {
 # with ROOST_RESUME_TFLAG / ROOST_RESUME_TSOCK set.
 
 # roost_pending__get FILE KEY -> ROOST_PENDING_V, the value of KEY in a
-# pending file (the first such line), or empty.
+# pending file (the first such line), or empty. Lines before `was` are a
+# `.failed` file's reason and are never a key: `harness missing` is a reason,
+# not a harness named "missing" (Task 3.6, a retried file keeps its reason
+# line until it leaves `.launching`).
 roost_pending__get() {
-  local line
+  local line seen=0
   ROOST_PENDING_V=""
   while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$seen" = 0 ]; then
+      case "$line" in "was "*) seen=1 ;; *) continue ;; esac
+    fi
     case "$line" in "$2 "*) ROOST_PENDING_V="${line#"$2 "}"; return 0 ;; esac
   done < "$1"
   return 1
@@ -432,17 +438,30 @@ roost_pending__is_placeholder() {
 # the placeholder, which shows the reason itself at its next wake (§4.7 step
 # 1; revision 4 item 2: no respawn, so no gap a key could fall into). Then
 # the ROOST_TEST_RESUME_HOLD_AFTER_FAILED seam. Prints the reason line.
+#
+# From a FAILED, DEAD pane (a --retry by T16, ROOST_PENDING_FROMDEAD=1) a
+# failed check is T7's other half: the first line STAYS `died` and the new
+# reason is added as a note, so the file stays failed, dead and is never
+# relabelled failed, waiting, whose row needs a live placeholder (§4.7 T7,
+# revision 5, C B2(a)). `pane changed` is T9, not T7, and is written as
+# itself.
 roost_pending__fail() {
   local l="$1" p="$2" reason="$3" note="${4:-}" claim="${5:-}" pane
   pane="${p##*/}"
   roost_resume_release "$claim"
+  if [ "${ROOST_PENDING_FROMDEAD:-0}" = 1 ] && [ "$reason" != "pane changed" ]; then
+    note="$reason${note:+: $note}"; reason=died
+  fi
   roost_pending_leave_launching "$l" "$p.failed" "$reason" "$note" || true
   roost_shape__seam ROOST_TEST_RESUME_HOLD_AFTER_FAILED
   printf 'roost restore: %s (was %s): %s %s not resumed: %s%s\n' "$pane" "$ROOST_PENDING_WAS" \
     "$ROOST_PENDING_H" "$ROOST_PENDING_ID" "$reason" "${note:+ ($note)}" >&2
 }
 
-# roost_pending__one PLAIN-FILE BOOT -> one pane through §4.6's steps:
+# roost_pending__one PLAIN-FILE BOOT [FROM] -> one pane through §4.6's steps.
+# FROM is the state the file is claimed from: `waiting` (the plain %N, T5),
+# or with --retry `failed-waiting` (T14) or `failed-dead` (T16), both claimed
+# from %N.failed; it decides step 4's check (§4.7's last column).
 #   0   launched (T10). Launched, not resumed: roost does not wait for the
 #       harness and answers nothing it opens (§4.1 step 8, §5.2)
 #   2   not this run's: a key won the rename first (the pane is the
@@ -451,13 +470,22 @@ roost_pending__fail() {
 #   1   no launch claim can be taken at all: the file is put back to %N and
 #       the loop stops — launching with no claim is what claims exist to stop
 roost_pending__one() {
-  local p="$1" boot="$2" pane l h id tr cwd scwd rc dir claim="" info sc dead o
+  local p="$1" boot="$2" from="${3:-waiting}" pane l h id tr cwd scwd rc dir claim="" info sc dead o first=""
   local -a argv clear
   pane="${p##*/}"
-  # Step 1, claim the pane (T5): the rename the placeholder's key races.
-  # Lost: the pane is the person's, or another launcher's — move on, nothing
-  # touched.
-  roost_pending_take "$p" "$p.launching" waiting || return 2
+  ROOST_PENDING_FROMDEAD=0
+  # Step 1, claim the pane: the rename the placeholder's key races. Lost:
+  # the pane is the person's, or another launcher's — move on, nothing
+  # touched. From waiting it is T5 with `origin waiting`; from a failed file
+  # (--retry) T14 or T16 with `origin failed REASON`, REASON its first line
+  # (§4.6 step 1).
+  if [ "$from" = waiting ]; then
+    roost_pending_take "$p" "$p.launching" waiting || return 2
+  else
+    [ -f "$p.failed" ] && IFS= read -r first < "$p.failed" || true
+    roost_pending_take "$p.failed" "$p.launching" "failed $first" || return 2
+    [ "$from" = failed-dead ] && ROOST_PENDING_FROMDEAD=1
+  fi
   l="$p.launching"
   roost_pending__get "$l" was; ROOST_PENDING_WAS="$ROOST_PENDING_V"
   roost_pending__get "$l" harness; h="$ROOST_PENDING_V"; ROOST_PENDING_H="$h"
@@ -525,9 +553,12 @@ roost_pending__one() {
   # The plan's seam: after the rename to .launching and the claim, before
   # anything is checked or replaced, so a test can press a key in between.
   roost_shape__seam ROOST_TEST_RESUME_HOLD
-  # Step 4, the pane is what its state says — from waiting: its start
-  # command is the placeholder line written for THIS file, and it is alive.
-  # A pane that is gone was closed (T19): its file goes, its claim with it.
+  # Step 4, the pane is what its state says (§4.7's last column, for the
+  # state step 1 renamed from) — from waiting or failed, waiting: its start
+  # command is the placeholder line written for THIS file, and it is alive;
+  # from failed, dead: pane_dead is 1, whatever the start command (a dead
+  # pane holds no person's work). A pane that is gone was closed (T19): its
+  # file goes, its claim with it.
   info="$(t -u display-message -p -t "$pane" '#{pane_id} #{pane_dead} #{pane_start_command}' 2>/dev/null || true)"
   case "$info" in
     "$pane "*) ;;
@@ -536,7 +567,11 @@ roost_pending__one() {
        return 2 ;;
   esac
   info="${info#"$pane "}"; dead="${info%% *}"; sc="${info#* }"
-  if [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$sc" "$p" "$h"; then
+  if [ "$from" = failed-dead ]; then
+    if [ "$dead" != 1 ]; then
+      roost_pending__fail "$l" "$p" "pane changed" "" "$claim"; return 13
+    fi
+  elif [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$sc" "$p" "$h"; then
     roost_pending__fail "$l" "$p" "pane changed" "" "$claim"; return 13
   fi
   if ! roost_resume_claim_held "$claim"; then
@@ -566,7 +601,57 @@ roost_pending__one() {
   return 0
 }
 
-# roost_pending_resume SHAPE-DIR BOOT PACE -> the loop over pending/<boot>/.
+# roost_pending__recover DIR BOOT — T8b, run by the worker that holds
+# `resuming/`, before its loop: a `.launching` file whose pane still runs its
+# placeholder line and whose LAUNCHER IS GONE goes back by its `origin`
+# line, read into memory first and removed before the rename (T5's rule,
+# revision 10): `origin waiting` → %N; `origin taken` → %N.taken; `origin
+# failed REASON` → %N.failed with REASON first; no origin line (the launcher
+# died between its rename and its append) proves nothing → %N.failed
+# interrupted. The dead claim is released. No other process renames a
+# `.launching` file it did not make (§4.6).
+#
+# The launcher is judged by the conversation's claim (§4.1 step 5a): a claim
+# for this pane whose owner is alive (pid and start time, never age) is a
+# live launcher, and its file is left alone. No claim at all is a launcher
+# that died before claiming. The one window this cannot see: a live launcher
+# between its rename and its claim — a few tmux reads in `revive` — whose
+# file would be put back here and whose own claim would then fail its
+# step 4 or its held check. A pane running anything but its placeholder line
+# (a launched resume) is never touched: identity or its exit settles it.
+roost_pending__recover() {
+  local d="$1" boot="$2" f p pane info sc h id c rec line orig
+  for f in "$d"/%*.launching; do
+    [ -f "$f" ] || continue
+    p="${f%.launching}"; pane="${p##*/}"
+    info="$(t -u display-message -p -t "$pane" '#{pane_id} #{pane_start_command}' 2>/dev/null || true)"
+    case "$info" in "$pane "*) sc="${info#"$pane "}" ;; *) continue ;; esac
+    roost_pending__get "$f" harness; h="$ROOST_PENDING_V"
+    roost_pending__get "$f" session_id; id="$ROOST_PENDING_V"
+    roost_pending__is_placeholder "$sc" "$p" "$h" || continue
+    c=""
+    if [ -n "$h" ] && [ -n "$id" ] && roost_resume_claims_dir "$_SOCKET_FLAG" "$SOCKET" "$boot" >/dev/null 2>&1; then
+      c="$ROOST_RESUME_CLAIMS/$h-$id"
+      rec="$(readlink "$c/owner" 2>/dev/null || true)"
+      line=""; [ -f "$c/pane" ] && IFS= read -r line < "$c/pane"
+      if [ -n "$rec" ] && [ "$line" = "$pane" ] && roost_shape__alive "$rec"; then continue; fi
+      if [ -n "$rec" ] && [ "$line" = "$pane" ]; then roost_shape_owner_drop "$c"; fi
+    fi
+    orig=""
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in "origin "*) orig="${line#origin }" ;; esac
+    done < "$f"
+    case "$orig" in
+      waiting) roost_pending_leave_launching "$f" "$p" || continue ;;
+      taken) roost_pending_leave_launching "$f" "$p.taken" || continue ;;
+      "failed "?*) roost_pending_leave_launching "$f" "$p.failed" "${orig#failed }" || continue ;;
+      *) roost_pending_leave_launching "$f" "$p.failed" interrupted || continue ;;
+    esac
+    printf 'roost restore: %s: its launcher is gone; put back (%s)\n' "$pane" "${orig:-no origin: interrupted}" >&2
+  done
+}
+
+# roost_pending_resume SHAPE-DIR BOOT PACE [RETRY] -> the loop over pending/<boot>/.
 #   0   every waiting pane taken was launched, or nothing was waiting
 #   13  at least one pane was not resumed, its reason in its .failed file
 #   1   another worker holds `resuming/` (nothing done), or no launch claim
@@ -579,8 +664,14 @@ roost_pending__one() {
 # the wait is before the next claim, so a key pressed in a waiting pane
 # during it wins that pane's rename (§8.1 test 11 (a)). Shells come first by
 # construction: placement made them before this loop starts.
+#
+# RETRY 1 (`--retry`) also takes the `%N.failed` files that have a retry
+# arrow: failed, waiting (T14) and failed, dead (T16), told apart by the
+# first line (§4.7 T14, revision 5, F N6). Taken, changed, replaced,
+# exited and interrupted have none, so a retry never meets a person's shell
+# or job.
 roost_pending_resume() {
-  local sd="$1" boot="$2" pace="${3:-2}" d own rc=0 r f n launched=0
+  local sd="$1" boot="$2" pace="${3:-2}" retry="${4:-0}" d own rc=0 r f n launched=0 st b
   d="$sd/pending/$boot"
   [ -d "$d" ] || return 0
   own=0; roost_shape_owner_take "$sd/resuming" || own=$?
@@ -593,22 +684,35 @@ roost_pending_resume() {
   # The plain files, by order. A name with a dot is another state; a file
   # with no order sorts last. Read into a list first: the loop renames files
   # in this directory as it goes.
+  # T8b first, while this run holds resuming/: a dead launcher's claims are
+  # put back so this loop can take them.
+  roost_pending__recover "$d" "$boot"
   local list=""
   for f in "$d"/%*; do
     [ -f "$f" ] || continue
-    case "${f##*/}" in *.*) continue ;; esac
-    case "${f##*/}" in %|%*[!0-9]*) continue ;; esac
-    roost_pending__selected "$f" || continue
-    roost_pending__get "$f" order; n="$ROOST_PENDING_V"
+    b="${f##*/}"; st=waiting
+    case "$b" in
+      *.failed)
+        [ "$retry" = 1 ] || continue
+        st="$(roost_pending_state "$f" || true)"
+        case "$st" in failed-waiting|failed-dead) ;; *) continue ;; esac
+        b="${b%.failed}"; f="${f%.failed}" ;;
+      *.*) continue ;;
+    esac
+    case "$b" in %|%*[!0-9]*) continue ;; esac
+    if [ "$st" = waiting ]; then roost_pending__selected "$f" || continue
+    else roost_pending__selected "$f.failed" || continue; fi
+    if [ "$st" = waiting ]; then roost_pending__get "$f" order; else roost_pending__get "$f.failed" order; fi
+    n="$ROOST_PENDING_V"
     case "$n" in ''|*[!0-9]*) n=999999999 ;; esac
-    list="$list$n $f"$'\n'
+    list="$list$n $st $f"$'\n'
   done
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    f="${f#* }"
-    [ -e "$f" ] || continue
+    f="${f#* }"; st="${f%% *}"; f="${f#* }"
+    if [ "$st" = waiting ]; then [ -e "$f" ] || continue; else [ -e "$f.failed" ] || continue; fi
     if [ "$launched" = 1 ] && [ "$pace" != 0 ]; then sleep "$pace"; fi
-    r=0; roost_pending__one "$f" "$boot" || r=$?
+    r=0; roost_pending__one "$f" "$boot" "$st" || r=$?
     case "$r" in
       0) launched=1 ;;
       13) rc=13 ;;
