@@ -475,6 +475,26 @@ want="$(date -j -f '%Y %b %d %H:%M:%S' '2026 Dec 31 23:59:00' +%s 2>/dev/null ||
 got="$(PATH="$SB:$PATH" roost_restore__shutdown_at)"
 assert_eq "$got" "$want" "the shutdown is read as 31 December of the year BEFORE the boot"
 
+echo "== the year comes from the LOCAL clock, as last's time and the month do (fix round 1) =="
+# lepoch TZ "YYYY Mon DD HH:MM" -> epoch of that local time in TZ.
+lepoch() { TZ="$1" date -j -f '%Y %b %d %H:%M:%S' "$2:00" +%s 2>/dev/null || TZ="$1" date -d "$(printf '%s' "$2" | awk '{ print $2, $3, $1, $4 }'):00" +%s; }
+# yearcase TZ BOOT-LOCAL SHUTDOWN-AS-LAST-PRINTS WANT-LOCAL LABEL
+yearcase() {
+  local b w g
+  b="$(lepoch "$1" "$2")"; w="$(lepoch "$1" "$4")"
+  printf '#!/bin/sh\necho "shutdown time %s"\n' "$3" > "$SB/last"
+  printf '#!/bin/sh\necho "{ sec = %s, usec = 0 }"\n' "$b" > "$SB/sysctl"
+  chmod +x "$SB/last" "$SB/sysctl"
+  g="$(TZ="$1" PATH="$SB:$PATH" roost_restore__shutdown_at)"
+  assert_eq "$g" "$w" "$5"
+}
+yearcase America/Chicago "2026 Dec 31 20:00" "Thu Dec 31 19:55" "2026 Dec 31 19:55" \
+  "Chicago, boot 31 Dec 20:00 local (already 1 Jan in UTC): shutdown 31 Dec 19:55 of the same year"
+yearcase Australia/Sydney "2027 Jan 01 05:00" "Thu Dec 31 23:50" "2026 Dec 31 23:50" \
+  "Sydney, boot 1 Jan 05:00 local (still 31 Dec in UTC): shutdown 31 Dec 23:50 of the year before"
+yearcase America/Chicago "2027 Jan 02 09:00" "Thu Dec 31 23:50" "2026 Dec 31 23:50" \
+  "a boot in January, a shutdown in December: the year steps back one"
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

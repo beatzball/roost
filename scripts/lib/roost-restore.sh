@@ -1395,7 +1395,11 @@ roost_restore__shutdown_at() {
   mon="${4:-}" day="${5:-}" hm="${6:-}"
   case "$hm" in [0-9]*:[0-9][0-9]) ;; *) return 0 ;; esac
   boot="$(roost_restore__boot_second)" || return 0
-  by="$(date -u -r "$boot" +%Y 2>/dev/null || date -u -d "@$boot" +%Y)"
+  # The boot's year and month in LOCAL time, the clock `last` printed the
+  # shutdown in. Read in UTC, the year was one off near New Year in any zone
+  # but UTC (fix round 1: a boot at 20:00 on 31 December in Chicago is
+  # already the next year in UTC), and the window never matched.
+  by="$(date -r "$boot" +%Y 2>/dev/null || date -d "@$boot" +%Y)"
   bm="$(date -r "$boot" +%m 2>/dev/null || date -d "@$boot" +%m)"
   sm="$(roost_restore__local_epoch "2000 $mon 01 00:00" | { read -r e; date -r "$e" +%m 2>/dev/null || date -d "@$e" +%m; })"
   y="$by"
