@@ -417,11 +417,25 @@ roost_pending__release() {
 # removed and any launch claim it holds for this pane released (§4.6
 # Cancel: a person who closed the pane did not want the agent). Uses
 # bin/roost's _SOCKET_FLAG / SOCKET.
+#
+# Every name the pane's file can have now goes, not only FILE (review round
+# 1, Opus N4): close reads the file's name, then kills the pane, then removes
+# — and a launcher that failed in between (its respawn met a pane being
+# killed) had renamed `.launching` to `.failed`, which close's `rm` missed,
+# leaving a stray record for a gone pane. FILE itself is removed whatever
+# its suffix (a `.taken` one included), then %N, %N.launching and %N.failed
+# of the same pane on the same boot.
 roost_pending_cancel() {
-  [ -n "$1" ] && [ -f "$1" ] || return 0
+  local base f
+  [ -n "${1:-}" ] || return 0
+  base="$1"
+  case "$base" in *.launching|*.failed|*.taken) base="${base%.*}" ;; esac
   ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
-  roost_pending__release "$1" "$2" "$_SOCKET_FLAG" "$SOCKET"
-  rm -f "$1"
+  for f in "$1" "$base" "$base.launching" "$base.failed"; do
+    [ -f "$f" ] || continue
+    roost_pending__release "$f" "$2" "$_SOCKET_FLAG" "$SOCKET"
+    rm -f "$f"
+  done
   return 0
 }
 

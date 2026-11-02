@@ -463,6 +463,14 @@ for r in "%|" ".failed|store miss" ".failed|died"; do
   assert_eq "$(ls "$PEND" | grep -c -- "^$p\(\.\|$\)")" "0" "...its pending file removed"
   assert_eq "$(shells_for "$p")" "" "...and no shell ever started in it (kill-pane, not a key)"
 done
+# A launch that failed while close ran (review round 1, Opus N4): the file
+# close read was .launching, and by the time it was removed the launcher had
+# moved it to .failed. Planted: both names, and the plain one, for one pane.
+p="$(TL new-window -d -P -F '#{pane_id}' -t own: 'sleep 600')"
+plant "$p" "$p.launching"; plant "$p" "$p.failed" "store miss"; plant "$p" "$p"
+TL set -p -t "$p" remain-on-exit failed; TL respawn-pane -k -t "$p" "$PH" "$PEND/$p" claude; wait_screen "$p" "claude"
+R close "$p" </dev/null >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(ls "$PEND" | grep -c -- "^$p\(\.\|$\)")" "0|0" "close removes every pending file of its pane (%N, .launching, .failed), not only the one it read"
 TL kill-pane -t "$FD" 2>/dev/null; rm -f "$PEND/$FD.failed"
 TL kill-session -t '=own'
 
