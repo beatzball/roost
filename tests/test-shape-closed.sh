@@ -284,6 +284,104 @@ R restore --no-resume >/dev/null 2>&1; rc=$?
 assert_eq "$rc|$(sessions)|$(paths)" "0|s1 s2 s3 |pa pb pc pd pe " "a plain restore brings every pane back"
 TL kill-server 2>/dev/null; sleep 0.3
 
+# --- roost close records its intent; kill NAME and stop too, ruling R1-A (Task 4.8) ---
+echo "== (8b) the planted race: close's save loses to pane-exited's, and A still stays closed =="
+mkdir -p "$SHAPE_TMP/pa8" "$SHAPE_TMP/pb8"
+# An agent that leaves when a line is typed: close's exit command is a line.
+LEAVER="sh -c 'read x; exit 0'"
+cfleet() {
+  TL kill-server 2>/dev/null; sleep 0.3
+  TL -f /dev/null new-session -d -s f8 -x 200 -y 50 -c "$SHAPE_TMP" 'ENV= exec /bin/sh'
+  TL set -g @roost-home "$PWD"; TL source-file tmux/roost.conf
+  ${1:+TL set-environment -g ROOST_TEST_NOW "$1"}
+  A="$(TL new-window -d -P -F '#{pane_id}' -t '=f8:' -c "$SHAPE_TMP/pa8" "$LEAVER")"
+  B="$(TL new-window -d -P -F '#{pane_id}' -t '=f8:' -c "$SHAPE_TMP/pb8" "$LEAVER")"
+  for p in "$A" "$B"; do TL set -p -t "$p" @roost-harness claude \; set -p -t "$p" @agent_state idle; done
+  settle; rm -rf "$SD"; R save >/dev/null 2>&1; settle
+  CB="$(boot_now)"
+}
+# a_gone LABEL — A (cwd pa8) is not among the restored panes and B (pb8) is.
+a_gone() { case " $(paths) " in *" pa8 "*) r=1 ;; *" pb8 "*) r=0 ;; *) r=1 ;; esac; assert_true $r "$1 ($(paths))"; }
+sg() { printf '%s-%s' "$(sed -n 's/^saved //p;/^$/q' "$1" | tr -d ':-')" "$(sed -n 's/^gen //p;/^$/q' "$1")"; }
+holds() { grep -q "^cwd $SHAPE_TMP/$2\$" "$1"; }
+race() {
+  local now="${1:-}" H="$SHAPE_TMP/hold-close$$-$RANDOM" g sga
+  cfleet "$now"
+  sga="$(sg "$SD/shape")"
+  ( ROOST_TEST_NOW="$now" ROOST_TEST_SAVE_HOLD="$H" R close "$A" >/dev/null 2>&1; [ -n "$now" ] || unset ROOST_TEST_NOW ) &
+  local cp=$!
+  wait_at "$H"; assert_true $? "${now:+[same second] }close's own save is held"
+  settle
+  holds "$SD/shape" pa8; assert_eq "$?" "1" "${now:+[same second] }...the newest shape is the pane-exited save, without A"
+  case " $(trig "$SD") " in *" pane-exited "*) r=0 ;; *) r=1 ;; esac
+  assert_true $r "${now:+[same second] }...labelled pane-exited ($(trig "$SD"))"
+  g="$(gen_of "$SD")"
+  : > "$H"; wait "$cp"; settle
+  assert_eq "$(gen_of "$SD")" "$g" "${now:+[same second] }...and close's save wrote nothing (the same body)"
+  assert_eq "$(cat "$SD/closed/$CB/close.${A#%}" 2>/dev/null)" "$A" "${now:+[same second] }closed/<boot>/close.<A> names %A"
+  TL kill-server; sleep 0.3
+  R restore --no-resume --from "$sga" >/dev/null 2>&1
+  a_gone "${now:+[same second] }restore --from the save that still holds A: A is not back"
+}
+# The fixtures above used `-f /dev/null`: the conf is sourced by cfleet.
+race
+race 1793600000
+
+echo "== (g) a save in flight: listed with A, published after the close =="
+cfleet
+H="$SHAPE_TMP/hold-flight"
+TL set-environment -g ROOST_TEST_SAVE_HOLD_AFTER_LIST "$H"
+TL rename-window -t '=f8:0' inflight
+wait_at "$H"; assert_true $? "a hook's saver is held after listing A"
+TL set-environment -gu ROOST_TEST_SAVE_HOLD_AFTER_LIST
+R close "$A" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "roost close A while that save is in flight: exit 0"
+: > "$H"; settle
+TL send-keys -t "$B" x Enter; settle
+late=""; lg=0
+for f in "$SD/shape" "$SD"/history/*; do
+  holds "$f" pa8 || continue
+  g="$(sed -n 's/^gen //p;/^$/q' "$f")"; [ "$g" -gt "$lg" ] && { lg="$g"; late="$f"; }
+done
+[ -n "$late" ] && grep -q '^trigger .*after-rename-window' "$late"; assert_true $? "the save published after the close still holds A ($(sg "$late"))"
+TL kill-server; sleep 0.3
+R restore --no-resume --from "$(sg "$late")" >/dev/null 2>&1
+a_gone "restore --from that save: A is not back, B (who died) is"
+
+echo "== a failed close takes its own record back =="
+cfleet
+STAY="$(TL new-window -d -P -F '#{pane_id}' -t '=f8:' -c "$SHAPE_TMP" "sh -c 'while :; do read x; done'")"
+TL set -p -t "$STAY" @roost-harness claude \; set -p -t "$STAY" @agent_state idle
+R close "$STAY" 1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "1" "a harness that does not leave: close exits 1"
+[ ! -e "$SD/closed/$CB/close.${STAY#%}" ]; assert_true $? "...and its close.<N> is removed"
+TL list-panes -a -F '#{pane_id}' | grep -qx "$STAY"; assert_true $? "...the pane is still there"
+
+echo "== the ends of a fleet: roost kill NAME and roost stop (ruling R1-A) =="
+cfleet
+TL new-session -d -s e2 -c "$SHAPE_TMP/pb8" 'ENV= exec /bin/sh'
+E2="$(TL display -p -t '=e2:' '#{pane_id}')"
+settle
+f8p="$(TL list-panes -s -t '=f8:' -F '#{pane_id}' | sort | tr '\n' ' ')"
+R kill f8 >/dev/null 2>&1; settle
+got=""; for p in $f8p; do [ "$(cat "$SD/closed/$CB/close.${p#%}" 2>/dev/null)" = "$p" ] && got="$got$p "; done
+assert_eq "$got" "$f8p" "roost kill NAME: one close.<N> per pane of that session"
+[ ! -e "$SD/closed/$CB/close.${E2#%}" ]; assert_true $? "...and none for the session it left"
+R stop --yes >/dev/null 2>&1
+assert_eq "$(cat "$SD/closed/$CB/close.${E2#%}" 2>/dev/null)" "$E2" "roost stop: a close.<N> for every pane (kill-server runs no hook, so roost wrote it)"
+out="$(R restore --no-resume 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a plain restore after the stop: exit 0"
+assert_contains "$out" "nothing to restore: every saved pane was closed on purpose" "...nothing to restore"
+assert_contains "$out" "to bring back a fleet you stopped: roost restore --from $SD/shape" "...and the way back, with the full path"
+TL list-sessions >/dev/null 2>&1; assert_eq "$?" "1" "...no server started"
+out="$(R restore --no-resume --from "$(sg "$SD/shape")" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--from STAMP-GEN of that save: exit 0"
+assert_contains "$out" "nothing to restore: every saved pane was closed on purpose" "...the same: step 4 filters it"
+assert_contains "$out" "roost restore --from $SD/shape" "...and the same way back"
+R restore --no-resume --from "$SD/shape" >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(sessions)" "0|e2 " "--from the file by path places the fleet as it was stopped"
+TL kill-server 2>/dev/null; sleep 0.3
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

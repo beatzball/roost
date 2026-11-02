@@ -879,6 +879,10 @@ case "${1:-up}" in
     # closed on purpose, which is said, and is not a failure.
     roost_restore_prepare "$ROOST_RESTORE_FILE" "$restore_dir" || restore_rc=$?
     if [ "$restore_rc" = 3 ]; then
+      # The way back (ruling R1-A): a fleet ended with `roost stop` or
+      # `roost kill` is still on disk, and the file by PATH skips step 4.
+      # Named whole, so it can be pasted.
+      echo "roost restore: to bring back a fleet you stopped: roost restore --from $ROOST_RESTORE_FILE" >&2
       rm -rf "${ROOST_RESTORE_PD:-}"
       exit 0
     fi
@@ -4913,7 +4917,43 @@ EOF
         *) [ -z "$kl_name" ] && kl_name="$kl_a" ;;
       esac
     done
+    # THE INTENT, ruling R1-A (#51, spec §3.6a): `roost kill NAME` and `roost
+    # stop` are how a session or a fleet is ended for good — `roost close`
+    # refuses a session's last pane — so each writes closed/<boot>/close.<N>
+    # for every pane it is about to remove, BEFORE the tmux command. That
+    # matters most for `stop`: kill-server runs no hook at all (§2.7), and
+    # without it the next restore would bring the whole fleet back. The way
+    # back is `roost restore --from FILE` by path (restore says so).
+    #
+    # kl_intent [NAME]: the panes listed under NAME and under no other
+    # session (a group's shared windows and a window linked elsewhere outlive
+    # the kill, so they are not named); with no NAME, every pane. Silent, and
+    # nothing at all with saving off.
+    kl_intent() {
+      local d b all p s sess mine="" other=" "
+      . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+      d="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null)" || return 0
+      b="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      [ -n "$b" ] || return 0
+      all="$(t list-panes -a -F '#{session_id} #{pane_id}' 2>/dev/null || true)"
+      if [ -n "${1:-}" ]; then
+        sess="$(t display-message -p -t "=$1:" '#{session_id}' 2>/dev/null || true)"
+        [ -n "$sess" ] || return 0
+        while read -r s p; do
+          [ -n "$p" ] || continue
+          if [ "$s" = "$sess" ]; then mine="$mine$p "; else other="$other$p "; fi
+        done <<< "$all"
+      else
+        while read -r s p; do [ -n "$p" ] && mine="$mine$p "; done <<< "$all"
+      fi
+      for p in $mine; do
+        case "$other" in *" $p "*) continue ;; esac
+        roost_shape__closed_write "$d" "$b" "close.${p#%}" "$p"$'\n'
+      done
+      return 0
+    }
     if [ -n "$kl_name" ]; then
+      session_exists "$kl_name" && kl_intent "$kl_name"
       t kill-session -t "=$kl_name" 2>/dev/null && echo "roost: session '$kl_name' killed." || echo "roost: no session '$kl_name'."
       exit 0
     fi
@@ -4933,10 +4973,14 @@ EOF
       kl_aw=agents; [ "$kl_agents" = 1 ] && kl_aw=agent
       kl_sw=sessions; [ "$kl_sess" = 1 ] && kl_sw=session
       kl_what="This ends $kl_agents $kl_aw in $kl_sess $kl_sw."
-      # #191 Part 4 adds a line here once persistence lands: a bare stop
-      # records the fleet as closed on purpose, so say it will not come back
-      # at login and how to restore it by hand (`roost restore --from FILE`).
-      # Not before: there is no login restore to warn about yet.
+      # A bare stop records the fleet as closed on purpose (ruling R1-A, the
+      # kl_intent below), so a plain `roost restore` will not bring it back;
+      # say so, and the way back, before the person agrees. Only with saving
+      # on: with ROOST_SHAPE_DIR= nothing is recorded. Part 5 adds the login
+      # restore to this sentence when it lands.
+      if ( . "$ROOST_HOME/scripts/lib/roost-shape.sh"; roost_shape_saving >/dev/null ); then
+        kl_what="$kl_what It is recorded as closed on purpose: roost restore will not bring it back (roost restore --list, then roost restore --from FILE, does)."
+      fi
       #
       # Both stdin AND stderr must be a terminal. stdin is where the answer
       # comes from; stderr is where the question goes, and a caller that
@@ -4957,6 +5001,7 @@ EOF
         exit 1
       fi
     fi
+    kl_intent
     t kill-server 2>/dev/null && echo "roost: server stopped (all sessions)." || echo "roost: not running."
     ;;
   close)
@@ -5114,11 +5159,38 @@ EOF
         "$(t show-options -p -t "$pane" -qv @roost-name 2>/dev/null || true)"
       cl_harness="$ROOST_CLOSE_HARNESS"
     fi
+    # THE INTENT (#51, spec §3.6a). Before close sends the exit command — or
+    # kills the pane outright — it writes closed/<boot>/close.<N> naming %N,
+    # so a restore after a reboot leaves this pane closed whatever tmux ran at
+    # shutdown and whatever happened to close's own save: `pane-exited` cannot
+    # say a removal was meant (§2.7), and its save may well have written the
+    # same body first, so close's save writes nothing. If close then gives up
+    # with the pane still there (exit 1), the file goes: a failed close leaves
+    # no claim. One file per close, so taking it back edits nothing another
+    # writer owns. With saving off there is no shape directory and nothing to
+    # write. cl_intent writes once; cl_unintent removes only its own file.
+    cl_closed=""
+    cl_intent() {
+      local d b
+      [ -n "$cl_closed" ] && return 0
+      cl_closed=-
+      d="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null)" || return 0
+      b="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      [ -n "$b" ] || return 0
+      roost_shape__closed_write "$d" "$b" "close.${pane#%}" "$pane"$'\n'
+      cl_closed="$d/closed/$b/close.${pane#%}"
+    }
+    cl_unintent() {
+      case "$cl_closed" in ''|-) return 0 ;; esac
+      cl_row "$pane" >/dev/null 2>&1 && rm -f "$cl_closed"
+      return 0
+    }
     # cl_done HOW: close the pane, report, exit 0. kill-pane by %N, never a
     # window or session target, so nothing but this pane can go. It failing
     # means the pane closed on its own in the meantime, which is the same
     # answer.
     cl_done() {
+      cl_intent
       t kill-pane -t "$pane" 2>/dev/null || true
       [ -n "$cl_pfile" ] && roost_pending_cancel "$cl_pfile" "$pane"
       # The pane is gone: save, `--trigger close` (#51, §3.4). The label is
@@ -5245,6 +5317,7 @@ EOF
     delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null || true)"
     case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
     cl_exit="$ROOST_CLOSE_EXIT"
+    cl_intent
     t send-keys -t "$pane" -l "$cl_exit" 2>/dev/null || true
     sleep "$delay" 2>/dev/null || sleep 0.3
     t send-keys -t "$pane" Enter 2>/dev/null || true
@@ -5258,11 +5331,13 @@ EOF
       read -r _id _w cl_dead _pp _wp _sw _jb cl_now <<< "$row"
       if [ "$cl_dead" = 1 ]; then cl_done "$cl_harness left after $cl_exit"; fi
       if [ "$cl_now" = blocked ]; then
+        cl_unintent
         echo "roost close: '$raw' went blocked after $cl_exit — $cl_harness is asking something before it exits. Nothing was answered, and the pane is still open: answer it there, or run roost close --force" >&2
         exit 1
       fi
       if job_gone "$cl_pid" "$cl_job"; then cl_done "$cl_harness left after $cl_exit"; fi
     done
+    cl_unintent
     echo "roost close: timed out after ${timeout}s waiting for $cl_harness in '$raw' to leave after $cl_exit — the pane is still open" >&2
     exit 1
     ;;

@@ -1073,7 +1073,14 @@ roost_shape_auto() {
 # In a subshell, so the listing's arrays and the ROOST_SHAPE_* globals never
 # reach the verb that called it; the owner record is then the verb's own pid,
 # alive for as long as the subshell is. Silent and never fails its caller.
+#
+# ROOST_TEST_SAVE_HOLD (the plan's seam) holds a direct call BEFORE its want,
+# as well as at the lock: a verb's save can then be ordered after a hook's,
+# which is how §8.1 test 8 (b) plants the race where `close`'s save finds the
+# body `pane-exited` already wrote and writes nothing (§3.6a: the closed
+# record, not that save, keeps the pane closed).
 roost_shape_save_now() {
+  roost_shape__seam ROOST_TEST_SAVE_HOLD
   ( roost_shape_auto "$1" "$2" "$3" ) >/dev/null 2>&1 || true
 }
 
