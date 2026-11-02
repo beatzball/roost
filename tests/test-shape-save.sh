@@ -199,7 +199,7 @@ tmux -S "$S2" rename-window -t '=two:' pubfail
 out="$(ROOST_TEST_PUBLISH_FAIL=1 R2 save --auto --trigger after-rename-window 2>&1)"; rc=$?
 assert_eq "$rc|$out|$(gen_of "$SD2")" "0||2" "a refused publish: silent, exit 0, gen unchanged"
 assert_contains "$(cat "$SD2/save.err" 2>/dev/null)" "step publish" "...save.err names the publish step"
-ls "$SD2"/.shape.* >/dev/null 2>&1; assert_eq "$?" "1" "...and no temp file is left"
+assert_eq "$(ls -A "$SD2" | grep -c '^\.shape\.')" "0" "...and no temp file is left"
 R2 save --auto --trigger after-rename-window
 assert_eq "$(gen_of "$SD2")" "3" "the next save publishes"
 [ ! -e "$SD2/save.err" ]; assert_true $? "...and removes save.err"

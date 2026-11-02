@@ -428,6 +428,23 @@ assert_contains "$(cat "$SHAPE_TMP/e9c")" "no shutdown record readable; restorin
 a_gone "...and the newest save, A still closed"
 TL kill-server 2>/dev/null; sleep 0.3
 
+echo "== a close save is not a death save: the rule does not walk back past it =="
+# D dies (a death save), then A — a plain shell, so close kills it at once —
+# is closed: that save's triggers are after-kill-pane and close, no death.
+# Inside the window the newest save is therefore picked; walking past it
+# would reach the save from before D died and bring D back.
+cfleet
+TL new-session -d -s dz -c "$SHAPE_TMP/pe" "$(dier dz)"
+SH1="$(TL new-window -d -P -F '#{pane_id}' -t '=f8:' -c "$SHAPE_TMP/pa" 'ENV= exec /bin/sh')"
+settle; R save >/dev/null 2>&1; settle
+: > "$SHAPE_TMP/go-dz"; settle
+R close "$SH1" >/dev/null 2>&1; settle
+roost_restore__death "$SD/shape"; assert_eq "$?" "1" "(fixture) the newest save is close's, not a death save ($(trig "$SD"))"
+TL kill-server; sleep 0.3
+ROOST_SHUTDOWN_AT="$(date +%s)" R restore --no-resume >/dev/null 2>&1
+TL has-session -t '=dz' 2>/dev/null; assert_eq "$?" "1" "inside the window, the close save is picked: D, which died before it, is not back"
+TL kill-server 2>/dev/null; sleep 0.3
+
 echo "== (d) sixty death saves inside the window: still recoverable =="
 cfleet
 SGOOD="$(sg "$SD/shape")"
