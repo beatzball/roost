@@ -236,6 +236,78 @@ attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" atta
 # @N (window-id) / %N (pane-id) / anything with a colon → verbatim; a bare word → default session.
 target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
 
+# resolve_was VERB RAW -> RW_TARGET, the target the verb goes on with; exit 1
+# (the verb exits 2) when a `was:` form cannot be resolved, the reason on
+# stderr. #191 Part 3, spec §5.4.
+#
+# A BARE %N ALWAYS MEANS A PANE OF THE RUNNING SERVER, and nothing else: pane
+# ids restart at %0 after a reboot (§2.7), so an old %1 usually EXISTS as some
+# other pane, and a verb that redirected a miss would deliver to the wrong
+# agent on a hit — checking the map first would only reverse which caller is
+# wrong. A historical id is written `was:%930`, and only that form is
+# resolved: through THIS boot's alias map (aliases/<boot> in the server's
+# shape directory, `%OLD OLDBOOT %NEW` per line, appended by every restore
+# into this boot), never another boot's. One stderr line says where it went.
+# Two old boots with the same id (two shapes restored into one boot) make
+# `was:%930` ambiguous: exit, naming both `was:%930@OLDBOOT` forms, which
+# resolve. RW_OLD / RW_OLDBOOT keep the old id and boot, for `read`, whose
+# was: form reads the OLD boot's record.
+#
+# The one courtesy for a stale coordinator: a bare %N that names a live pane
+# AND is an old id in this boot's map gets one note line, then goes where it
+# was asked. Cost when no restore ever wrote a map: one stat(2), no tmux call.
+resolve_was() {
+  local verb="$1" raw="$2" old want="" root key boot map o b n hits=0 bl="" new="" live
+  RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT=""
+  case "$raw" in
+    was:%[0-9]*|%[0-9]*) ;;
+    *) return 0 ;;
+  esac
+  . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+  map=""
+  if root="$(roost_shape_saving 2>/dev/null)"; then
+    key="$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+    if [ -d "$root/$key/aliases" ]; then
+      boot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      [ -n "$boot" ] && map="$root/$key/aliases/$boot"
+    fi
+  fi
+  case "$raw" in
+    %*)
+      [ -n "$map" ] && [ -f "$map" ] || return 0
+      live="$(t display-message -p -t "$raw" '#{pane_id}' 2>/dev/null || true)"
+      [ "$live" = "$raw" ] || return 0
+      while read -r o b n; do
+        [ "$o" = "$raw" ] && [ "$n" != "$raw" ] || continue
+        echo "note: $raw was also an old id; the pane that was $raw is now $n (was:$raw)" >&2
+      done < "$map"
+      return 0 ;;
+  esac
+  old="${raw#was:}"
+  case "$old" in *@*) want="${old#*@}"; old="${old%%@*}" ;; esac
+  case "${old#%}" in ''|*[!0-9]*) echo "roost $verb: '$raw' is not a pane id (was:%N or was:%N@BOOT)" >&2; return 1 ;; esac
+  if [ -n "$map" ] && [ -f "$map" ]; then
+    while read -r o b n; do
+      [ "$o" = "$old" ] || continue
+      [ -z "$want" ] || [ "$b" = "$want" ] || continue
+      case " $bl " in *" $b "*) continue ;; esac
+      hits=$((hits + 1)); bl="${bl:+$bl }$b"; new="$n"; RW_OLDBOOT="$b"
+    done < "$map"
+  fi
+  if [ "$hits" = 0 ]; then
+    echo "roost $verb: '$raw' is not in this boot's restore map — no restore into this server named that pane" >&2
+    return 1
+  fi
+  if [ "$hits" -gt 1 ]; then
+    echo "roost $verb: '$raw' is ambiguous — two restores into this boot had a pane $old: $(for b in $bl; do printf 'was:%s@%s ' "$old" "$b"; done | sed 's/ $//; s/ /, /g')" >&2
+    RW_OLDBOOT=""
+    return 1
+  fi
+  RW_OLD="$old" RW_TARGET="$new"
+  echo "roost $verb: $raw is $new" >&2
+  return 0
+}
+
 # record_for RAW TGT — find the pane record (#74) that RAW names, for `read` and
 # `forget`. Returns 1 when records are off or RAW names nothing that could have
 # one. Otherwise sets:
@@ -257,6 +329,15 @@ record_for() {
   . "$ROOST_HOME/scripts/lib/roost-record.sh"
   roost_record_root
   [ -n "$ROOST_RECORD_ROOT" ] || return 1
+  # `read was:%OLD` (#191 Part 3, §5.4) reads the OLD boot's record, the one
+  # the alias map names: the replies the pane gave before the reboot, which
+  # the new pane's record does not have. Set only by `read`'s arm.
+  if [ -n "${RF_FORCE_BOOT:-}" ] && [ -n "${RF_FORCE_PANE:-}" ]; then
+    roost_record_pane_dir "$RF_FORCE_BOOT" "$RF_FORCE_PANE" || return 1
+    RF_PANE="$RF_FORCE_PANE" RF_DIR="$ROOST_RECORD_PANE_DIR" RF_STATE=0
+    roost_record_schema "$RF_DIR" || RF_STATE=$?
+    return 0
+  fi
   info="$(t display-message -p -t "$2" '#{start_time}-#{pid} #{pane_id}' 2>/dev/null || true)"
   # tmux 3.6 does NOT fail display-message for a pane id that is gone: it
   # prints the server's own formats and an EMPTY #{pane_id} (measured while
@@ -801,7 +882,8 @@ case "${1:-up}" in
     . "$ROOST_HOME/scripts/lib/roost-pending.sh"
     ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
     rv_rc=0
-    roost_revive "$1" "$(target "$1")" "$rv_force" "$rv_json" "$rv_new" || rv_rc=$?
+    resolve_was revive "$1" || exit 2
+    roost_revive "$RW_TARGET" "$(target "$RW_TARGET")" "$rv_force" "$rv_json" "$rv_new" || rv_rc=$?
     exit "$rv_rc"
     ;;
   help|--help|-h)
@@ -1373,6 +1455,7 @@ JSON
       set -- send "$@"
     done
     need_arg "${2:-}" "usage: roost send [--force] [--json] [--when-idle] [--from LABEL] [SESSION:]WINDOW TEXT..."; raw="$2"; shift 2
+    resolve_was send "$raw" || exit 2; raw="$RW_TARGET"
     tgt="$(target "$raw")"
 
     # ONE SEND PER TARGET AT A TIME (#175). Two `roost send`s running at once
@@ -2768,6 +2851,7 @@ JSON
     # it that reads blocked. tmux 3.6 answers display-message for a pane that
     # is gone with exit 0 and an empty #{pane_id} (see record_for), so "found"
     # is a pane id that came back, not a zero exit.
+    resolve_was answer "$raw" || exit 2; raw="$RW_TARGET"
     tgt="$(target "$raw")"
     pane="" dead=""
     case "$tgt" in
@@ -3334,6 +3418,9 @@ EOF
           exit 1 ;;
       esac
     done
+    resolve_was read "$raw" || exit 2; raw="$RW_TARGET"
+    # was:%OLD reads the OLD boot's record (§5.4): record_for honours this.
+    RF_FORCE_BOOT="$RW_OLDBOOT" RF_FORCE_PANE="$RW_OLD"
     tgt="$(target "$raw")"
     # --turn N: one kept turn, from the record only (#42). It never falls back
     # to the screen — the caller asked for a particular turn, and the screen is
@@ -3455,7 +3542,11 @@ EOF
             if [ "$ROOST_RECORD_COUNT" -gt 0 ]; then
               roost_record_turn_file "$RF_DIR" "$ROOST_RECORD_MAX"
               if roost_record_read "$ROOST_RECORD_FILE"; then
-                echo "roost read: '$raw' is gone — this is its last recorded reply (turn $ROOST_RECORD_MAX)." >&2
+                if [ -n "$RF_FORCE_PANE" ]; then
+                  echo "roost read: was:$RF_FORCE_PANE — its last recorded reply before the restore (turn $ROOST_RECORD_MAX)." >&2
+                else
+                  echo "roost read: '$raw' is gone — this is its last recorded reply (turn $ROOST_RECORD_MAX)." >&2
+                fi
                 if [ "$json" -eq 1 ]; then
                   . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
                   # The last kept turn's sent_by (#56), as on the --turn path.
@@ -3752,6 +3843,7 @@ EOF
       set -- screen "$@"
     fi
     need_arg "${2:-}" "usage: roost screen [SESSION:]WINDOW [LINES]"; raw="$2"; lines="${3:-40}"
+    resolve_was screen "$raw" || exit 2; raw="$RW_TARGET"
     # No target begins with a dash, so a word that does is a flag or a typo.
     # `roost read` refuses it; without this, `roost screen -5` took `-5` as a
     # target and read a pane for it, so the two commands disagreed about the
@@ -4021,6 +4113,7 @@ EOF
       esac
     done
     need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout=0
+    resolve_was wait-done "$raw" || exit 2; raw="$RW_TARGET"
     # TIMEOUT_SEC is refused here, before any polling, unless it is a whole
     # number of seconds (#66). It flows into `[ "$timeout" -gt 0 ]` and
     # `$((timeout * 4))` in the loop below, and measured on the old code:
@@ -4628,6 +4721,8 @@ EOF
         exit 1
         ;;
       *)
+        resolve_was forget "$2" || exit 2
+        set -- "$1" "$RW_TARGET"
         tgt="$(target "$2")"
         if ! record_for "$2" "$tgt" || ! roost_record_is_record "$RF_DIR"; then
           echo "roost forget: no record for '$2'." >&2
@@ -4728,7 +4823,9 @@ EOF
       # held test and the same count rule as @roost-pane-border in
       # tmux/roost.conf, whose comment explains both. The state underneath is
       # still `working`, and `status --json` still says so in `state`.
-      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},#{@agent_state}},-}]'
+      # A restored pane ends with `(was %930)`, its id before the reboot
+      # (#191 Part 3, §5.4); every other line is unchanged to the byte.
+      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},#{@agent_state}},-}]#{?@roost-was, (was #{@roost-was}),}'
     else echo "roost: not running"; fi
     ;;
   kill|down|stop)
@@ -4876,6 +4973,7 @@ EOF
       fi
     fi
     . "$ROOST_HOME/scripts/lib/roost-close.sh"
+    resolve_was close "$raw" || exit 2; raw="$RW_TARGET"
     tgt="$(target "$raw")"
     # Step 1. A %N is matched by id out of `list-panes -a`, as wait-done's
     # snapshot does and for its reason: tmux 3.6 answers display-message for a

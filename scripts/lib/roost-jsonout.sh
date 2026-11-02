@@ -482,7 +482,7 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
-  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg p_ver p_ref
+  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg p_ver p_ref p_was
   local ns=0 np=0 j
   # The dialog record's reader (#142). Sourced here, where it is used, so no
   # other roost command pays for it; it runs nothing at source time.
@@ -547,8 +547,12 @@ roost_jsonout_status() {
   # found for the stamp, and the last report it refused. The first is tied to
   # @agent_since like the hold record, so it rides in the same call for the
   # same reason; the second is not tied to a stamp and only comes along.
+  #
+  # Then @roost-was (#191 Part 3, spec §5.4): the pane id a restored pane had
+  # before the reboot, so a person or a coordinator who knows the old id finds
+  # the pane. It only comes along.
   trusted=0
-  roost_jsonout_list 20 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}\t#{@roost-verified}\t#{@roost-refused}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 21 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}\t#{@roost-verified}\t#{@roost-refused}\t#{@roost-was}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -576,6 +580,7 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[17]="$(t display-message -p -t "$id" '#{@roost-background}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[18]="$(t display-message -p -t "$id" '#{@roost-verified}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[19]="$(t display-message -p -t "$id" '#{@roost-refused}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[20]="$(t display-message -p -t "$id" '#{@roost-was}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
@@ -587,6 +592,7 @@ roost_jsonout_status() {
     p_dialog[np]="${ROOST_JSONOUT_F[15]}"; p_answered[np]="${ROOST_JSONOUT_F[16]}"
     p_bg[np]="${ROOST_JSONOUT_F[17]}"
     p_ver[np]="${ROOST_JSONOUT_F[18]}"; p_ref[np]="${ROOST_JSONOUT_F[19]}"
+    p_was[np]="${ROOST_JSONOUT_F[20]:-}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -676,7 +682,15 @@ roost_jsonout_status() {
     # is hex, a fixed word or a digit, checked by the parser, so it needs no
     # trip through the encoder. Additive under the schema-1 rule.
     roost_answer_dialog_json "${p_state[k]}" "${p_dialog[k]}" "${p_answered[k]}"
-    doc="$doc,\"dialog\":$ROOST_ANSWER_JSON}"
+    doc="$doc,\"dialog\":$ROOST_ANSWER_JSON"
+    # The pane id it had before a restore (#191 Part 3, §5.4), or null. Only
+    # a `%` and digits ever stand: anything else a person set by hand is null,
+    # so it needs no trip through the encoder. Additive under the schema-1
+    # rule, last so every field before it keeps its place.
+    case "${p_was[k]}" in
+      %[0-9]*) case "${p_was[k]#%}" in *[!0-9]*) doc="$doc,\"was\":null}" ;; *) doc="$doc,\"was\":\"${p_was[k]}\"}" ;; esac ;;
+      *) doc="$doc,\"was\":null}" ;;
+    esac
     j=$((j + 11)); sep=","; k=$((k + 1))
   done
   printf '%s]}\n' "$doc"

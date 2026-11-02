@@ -489,6 +489,24 @@ roost_restore__not_resumed() {
   return 0
 }
 
+# roost_restore__was PANE BLOCKFILE — §5.4: `@roost-was %OLD` on the pane,
+# and `%OLD OLDBOOT %NEW` appended to aliases/<this boot> in the server's
+# shape directory (0600, the shape directory's rule), so `was:%OLD` resolves
+# and `status` says what the pane was. Every pane matched to a saved block,
+# a pane a key took during placement included: it IS the saved pane's place,
+# and its old id must still find it. No map with saving off: there is no
+# shape directory for it, and `resolve_was` reads only that one.
+roost_restore__was() {
+  local old
+  old="$(roost_shape_get "$2" id 2>/dev/null || true)"
+  case "$old" in %[0-9]*) ;; *) return 0 ;; esac
+  t set-option -p -t "$1" @roost-was "$old" 2>/dev/null || true
+  [ -n "${ROOST_RESTORE_MAPDIR:-}" ] || return 0
+  roost_restore__pending_root || return 0
+  ( umask 077 && mkdir -p "$ROOST_RESTORE_MAPDIR" \
+      && printf '%s %s %s\n' "$old" "${ROOST_RESTORE_OLDBOOT:-unknown}" "$1" >> "$ROOST_RESTORE_MAPDIR/$ROOST_RESTORE_BOOT" ) 2>/dev/null || true
+}
+
 # roost_restore__rec PANE BLOCKFILE [REASON] — one placed pane, for the
 # report (§4.3 Report) and --json. Appends to ROOST_RESTORE_RECS one line:
 #   was|pane|session|window|harness|reason|stale-id|launch hint
@@ -846,6 +864,7 @@ roost_restore__build_window() {
       2) printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is%s\n' \
            "$(roost_restore__addr "${blocks[$i]}")" "$id" "$out" >&2 ;;
     esac
+    roost_restore__was "$id" "${blocks[$i]}"
     if [ "$zp" = 0 ]; then
       ROOST_RESTORE_PANES=$((ROOST_RESTORE_PANES + 1))
       if f="$(roost_shape_get "${blocks[$i]}" name)"; then
@@ -1055,6 +1074,10 @@ roost_restore_run() {
   # runs in this same process, and each placeholder names its file by path.
   ROOST_RESTORE_SD="${ROOST_RESTORE_RD%/restoring}" ROOST_RESTORE_BOOT=""
   ROOST_RESTORE_NOTRES=0 ROOST_RESTORE_BUSY="" ROOST_RESTORE_RECS="" ROOST_RESTORE_SKIPPED=""
+  # The alias map (§5.4): in the shape directory only, under the save's own
+  # boot as OLDBOOT.
+  ROOST_RESTORE_MAPDIR="" ROOST_RESTORE_OLDBOOT="$(roost_restore__hdr "$file" boot 2>/dev/null || true)"
+  [ -n "$sdir" ] && ROOST_RESTORE_MAPDIR="$sdir/aliases"
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
   # The bootstrap's name record (roost_restore__respawn_claimed) is this
   # run's alone: a value from the environment is never one (review round 8,
