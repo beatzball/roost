@@ -63,16 +63,18 @@ shard_weight() {
     test-revive.sh) echo 70 ;;
     # Added for persistent sessions Part 3 (#191), not off a CI log: 58 s
     # once on the dev Mac (tmux 3.6) at Task 3.5, 181 cases; 78 s once at
-    # Task 3.14, 231 cases.
-    test-shape-resume.sh) echo 78 ;;
+    # Task 3.14, 231 cases; 141 s once at Part 4's Task 4.13, 260 cases
+    # (Part 4's hook cases, and the fixture written again after each restore).
+    test-shape-resume.sh) echo 141 ;;
     # Added for persistent sessions Part 4 (#51), not off a CI log: 23 s
     # once on the dev Mac (tmux 3.6) at Task 4.5, 59 cases, 15 s of it the
-    # held-owner case's deliberate wait.
-    test-shape-save.sh) echo 23 ;;
+    # held-owner case's deliberate wait; 43 s once at Task 4.13, 95 cases.
+    test-shape-save.sh) echo 43 ;;
     # Added for persistent sessions Part 4 (#51), not off a CI log: 63 s
-    # once on the dev Mac (tmux 3.6) at Task 4.6, 52 cases; most of it is
-    # waiting for the hooks' background saves to settle.
-    test-shape-closed.sh) echo 63 ;;
+    # once on the dev Mac (tmux 3.6) at Task 4.6, 52 cases; 98 s once at
+    # Task 4.13, 107 cases; most of it is waiting for the hooks' background
+    # saves to settle.
+    test-shape-closed.sh) echo 98 ;;
     *) echo 5 ;;
   esac
 }
