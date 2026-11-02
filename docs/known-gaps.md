@@ -169,6 +169,25 @@ agents through one engine (`scripts/lib/roost-pending.sh`), from the
   file in the shape directory. A hand restore with `ROOST_SHAPE_DIR=` keeps
   its pending files in a temporary directory, which identify cannot see:
   those files are never released and go with that directory.
+- **A resume that exits non-zero before identity stays launching.** The
+  pane is left dead (`remain-on-exit failed`) with its file `%N.launching`
+  and its claim held; `revive` says it is already being resumed and
+  `--retry` does not take it. Moving it to failed, dead is T13, Part 4's
+  `pane-died` hook. Until then the way out is `roost close` on the pane,
+  then a new `roost restore` (review round 1, Fable N1). Severity: low.
+- **`-S` servers: identify hashes the resolved socket path.** For a
+  `-S PATH` server the shape key is a checksum of the path. `restore` uses
+  the path as typed; identify sees the resolved one in `$TMUX`. A typed path
+  that is not canonical (a symlink, `..`) gives another key, so identity
+  never finds and releases the pending file: the pane stays launched, its
+  claim held. `-L` servers, the default, are not affected (review round 1,
+  Fable N4). Severity: low.
+- **With saving off, a launched pane has no owner state.** A launched pane
+  runs its resume command, not the placeholder, so it is found only through
+  the shape directory; with `ROOST_SHAPE_DIR=` there is none, the pane reads
+  as no file, and `send` is not refused while the resumed agent may be in a
+  dialog (review round 1, Opus). Waiting and failed placeholders are found
+  from their own start command and are still refused. Severity: low.
 - **What a resumed fleet weighs, measured once** (docs/airig/probes/
   persist-3-fleet-rss.md, 2026-11-01): 30 stub agents holding 50 MiB each
   came to 20.7 times the placed-only server's RSS; one resumed real Claude
