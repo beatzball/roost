@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 . tests/lib-shape.sh
 shape_test_setup; trap shape_test_teardown EXIT
 . scripts/lib/roost-shape.sh
+. scripts/lib/roost-restore.sh
 
 # `roost wiring apply` runs when restore starts a server (the boot-change
 # case below), and writes under XDG_CONFIG_HOME: a temp dir here, not the
@@ -381,6 +382,81 @@ assert_contains "$out" "roost restore --from $SD/shape" "...and the same way bac
 R restore --no-resume --from "$SD/shape" >/dev/null 2>&1; rc=$?
 assert_eq "$rc|$(sessions)" "0|e2 " "--from the file by path places the fleet as it was stopped"
 TL kill-server 2>/dev/null; sleep 0.3
+
+# --- which save a restore picks after a shutdown, steps 1 to 3 (Task 4.9b) ---
+echo "== (a) a chain of death saves inside the window: the save before it is picked =="
+cfleet
+SA="$(sg "$SD/shape")"
+D1="$(TL new-session -d -P -F '#{pane_id}' -s dd1 "$(dier d1)")"; D2="$(TL new-session -d -P -F '#{pane_id}' -s dd2 "$(dier d2)")"
+settle
+SPRE="$(sg "$SD/shape")"
+H="$SHAPE_TMP/hold-chain"
+( ROOST_TEST_SAVE_HOLD="$H" R close "$A" >/dev/null 2>&1 ) & cp=$!
+wait_at "$H"; settle
+: > "$SHAPE_TMP/go-d1"; settle; : > "$SHAPE_TMP/go-d2"; settle
+: > "$H"; wait "$cp"; settle
+roost_restore__death "$SD/shape"; assert_true $? "(fixture) the newest save is a death save ($(trig "$SD"))"
+lst="$(ROOST_SHUTDOWN_AT="$(date +%s)" R restore --list 2>&1)"
+assert_contains "$(printf '%s\n' "$lst" | grep '^\*')" "$SPRE" "--list marks the save before the chain ($SPRE)"
+TL kill-server; sleep 0.3
+ROOST_SHUTDOWN_AT="$(date +%s)" R restore --no-resume >/dev/null 2>"$SHAPE_TMP/e9b"; rc=$?
+assert_eq "$rc|$(sessions)" "0|dd1 dd2 f8 " "a plain restore walks back past the chain: dd1 and dd2 come back"
+a_gone "...and A, closed in the planted race inside the window, still does not (8b, the reading-rule form)"
+TL kill-server 2>/dev/null; sleep 0.3
+
+echo "== (b2), the restore half: inside the window C comes back, B does not =="
+cfleet
+TL new-session -d -s cs9 -c "$SHAPE_TMP/pa8" "$(dier c9)"
+b9="$(TL split-window -d -P -F '#{pane_id}' -t '=f8:0' -c "$SHAPE_TMP/pe" 'ENV= exec /bin/sh')"
+settle; R save >/dev/null 2>&1; settle
+TL kill-pane -t "$b9"; settle
+: > "$SHAPE_TMP/go-c9"; settle
+TL kill-server; sleep 0.3
+ROOST_SHUTDOWN_AT="$(date +%s)" R restore --no-resume >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(TL has-session -t '=cs9' 2>/dev/null && echo cs9)" "0|cs9" "C's session (C died inside the window) comes back"
+case " $(paths) " in *" pe "*) r=1 ;; *) r=0 ;; esac
+assert_true $r "...and B (killed) does not ($(paths))"
+TL kill-server 2>/dev/null; sleep 0.3
+
+echo "== (c) no readable record: the newest save, one stderr line, closed/ still applied =="
+cfleet
+R close "$A" >/dev/null 2>&1; settle
+TL kill-server; sleep 0.3
+ROOST_SHUTDOWN_AT= R restore --no-resume >/dev/null 2>"$SHAPE_TMP/e9c"; rc=$?
+assert_eq "$rc" "0" "ROOST_SHUTDOWN_AT empty: exit 0"
+assert_contains "$(cat "$SHAPE_TMP/e9c")" "no shutdown record readable; restoring the newest save — roost restore --list shows the others" "...the stderr line"
+a_gone "...and the newest save, A still closed"
+TL kill-server 2>/dev/null; sleep 0.3
+
+echo "== (d) sixty death saves inside the window: still recoverable =="
+cfleet
+SGOOD="$(sg "$SD/shape")"
+# The rename hook would save each change first, under its own (not a death)
+# label; off for this case, so each save below is the death save it says.
+TL set-hook -gu 'after-rename-window[98]'
+i=0
+while [ "$i" -lt 60 ]; do
+  TL rename-window -t '=f8:0' "d$i" 2>/dev/null
+  # Labelled as a death by hand: sixty real deaths would take minutes.
+  R save --auto --trigger pane-exited
+  i=$((i+1))
+done
+settle
+assert_eq "$(nhist "$SD")" "60" "(fixture) sixty death saves after the good one"
+ROOST_SHUTDOWN_AT="$(date +%s)"; export ROOST_SHUTDOWN_AT
+roost_restore__reading_rule "$SD"; unset ROOST_SHUTDOWN_AT
+assert_eq "$(basename "$ROOST_RESTORE_FILE")" "$SGOOD" "...picked through sixty death saves (ring of 100)"
+TL kill-server 2>/dev/null; sleep 0.3
+
+echo "== (f) a shutdown on 31 December, a boot on 1 January: the year before =="
+SB="$SHAPE_TMP/stub-last"; mkdir -p "$SB"
+printf '#!/bin/sh\necho "shutdown time Wed Dec 31 23:59"\necho "reboot time Thu Jan  1 00:01"\n' > "$SB/last"
+NY="$(date -j -f '%Y %b %d %H:%M:%S' '2027 Jan 01 00:01:00' +%s 2>/dev/null || date -d 'Jan 1 2027 00:01:00' +%s)"
+printf '#!/bin/sh\necho "{ sec = %s, usec = 0 } Fri Jan  1 00:01:00 2027"\n' "$NY" > "$SB/sysctl"
+chmod +x "$SB/last" "$SB/sysctl"
+want="$(date -j -f '%Y %b %d %H:%M:%S' '2026 Dec 31 23:59:00' +%s 2>/dev/null || date -d 'Dec 31 2026 23:59:00' +%s)"
+got="$(PATH="$SB:$PATH" roost_restore__shutdown_at)"
+assert_eq "$got" "$want" "the shutdown is read as 31 December of the year BEFORE the boot"
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

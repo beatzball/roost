@@ -1307,6 +1307,136 @@ roost_restore__stampgen() {
   printf '%s-%s\n' "${sv//[-:]/}" "$(roost_restore__hdr "$1" gen)"
 }
 
+# THE READING RULE, steps 1 to 3 (§3.6): which save a restore with no --from
+# picks. Step 4 (the closed record) is roost_restore_drop_closed, run on
+# whichever save this picks.
+#
+# Why steps 1 to 3 exist: when a machine shuts down every process is
+# signalled at about the same time, and if tmux ran pane-exited or
+# session-closed hooks before it was killed itself, the newest saves are a
+# SHRINKING fleet. Probe 4.2 (docs/airig/probes/persist-4-shutdown-hooks.md)
+# saw no hook run in a Linux poweroff or reboot, and §2.7 none for a SIGTERM to
+# the server, so the chain can come only from panes whose own processes died
+# first; the rule is kept for exactly those.
+
+# ROOST_RESTORE_DEATHS — the four triggers that are a process death or a kill
+# with no hook of its own (§3.6, revision 4, F N8). A save whose trigger list
+# holds ANY of them is a death save, so a coalesced round
+# `after-split-window pane-exited` is one too (revision 3, F N10).
+ROOST_RESTORE_DEATHS=" pane-exited pane-died session-closed window-unlinked "
+
+# roost_restore__death FILE -> exit 0 when FILE is a death save.
+roost_restore__death() {
+  local t
+  for t in $(roost_restore__hdr "$1" trigger); do
+    case "$ROOST_RESTORE_DEATHS" in *" $t "*) return 0 ;; esac
+  done
+  return 1
+}
+
+# roost_restore__iso_epoch STAMP -> epoch seconds of `2026-11-02T01:47:18-06:00`
+# (util-linux `last --time-format iso`), GNU date first, then BSD date, whose
+# %z wants the offset with no colon.
+roost_restore__iso_epoch() {
+  local z o
+  date -d "$1" +%s 2>/dev/null && return 0
+  z="${1%[+-]??:??}"; o="${1#"$z"}"
+  date -j -f '%Y-%m-%dT%H:%M:%S%z' "$z${o%:*}${o#*:}" +%s 2>/dev/null
+}
+
+# roost_restore__local_epoch "YEAR Mon DD HH:MM" -> epoch seconds, read in the
+# machine's own zone, as `last` wrote it. The seconds are given as :00: BSD
+# date -j fills every field the format leaves out from the clock now.
+roost_restore__local_epoch() {
+  date -j -f '%Y %b %d %H:%M:%S' "$1:00" +%s 2>/dev/null \
+    || date -d "$(printf '%s' "$1" | awk '{ print $2, $3, $1, $4 }'):00" +%s 2>/dev/null
+}
+
+# roost_restore__boot_second -> this boot's start, epoch seconds: macOS
+# `sysctl -n kern.boottime` ("{ sec = N, usec = M } ..."), then Linux's
+# /proc/stat btime.
+roost_restore__boot_second() {
+  local b
+  b="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^[{] *sec = \([0-9][0-9]*\).*/\1/p' | head -1)"
+  [ -n "$b" ] || b="$(sed -n 's/^btime //p' /proc/stat 2>/dev/null | head -1)"
+  case "$b" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$b"
+}
+
+# roost_restore__shutdown_at -> the last shutdown's time, epoch seconds, or
+# nothing when no record is readable. EVERY comparison is in epoch seconds.
+#
+#   ROOST_SHUTDOWN_AT=EPOCH   the plan's stub record; set and EMPTY = none
+#   Linux                     `last -x --time-format iso shutdown`, the newest
+#                             line: second resolution, the zone offset printed
+#                             (probe 4.1, docs/airig/probes/
+#                             persist-4-linux-shutdown.md)
+#   macOS                     `last reboot`'s newest `shutdown time Tue Oct 20
+#                             15:05`: minute resolution, local time, NO YEAR.
+#                             The year is the boot second's, and a shutdown
+#                             month later than the boot month is the year
+#                             before (a shutdown on 31 December, a boot on 1
+#                             January). Measured on macOS 26.3 (§3.6)
+# Tried in that order on every system, so a stub `last` on PATH is read the
+# same way on both.
+roost_restore__shutdown_at() {
+  local line iso mon day hm boot by bm sm y
+  if [ "${ROOST_SHUTDOWN_AT+set}" = set ]; then
+    case "$ROOST_SHUTDOWN_AT" in ''|*[!0-9]*) return 0 ;; esac
+    printf '%s\n' "$ROOST_SHUTDOWN_AT"; return 0
+  fi
+  iso="$(last -x --time-format iso shutdown 2>/dev/null | grep '^shutdown' | head -1 \
+    | grep -o '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][+-][0-9][0-9]:[0-9][0-9]' | head -1)"
+  if [ -n "$iso" ]; then roost_restore__iso_epoch "$iso"; return 0; fi
+  line="$(last reboot 2>/dev/null | grep '^shutdown time' | head -1)"
+  [ -n "$line" ] || return 0
+  # shutdown time Tue Oct 20 15:05
+  set -- $line
+  mon="${4:-}" day="${5:-}" hm="${6:-}"
+  case "$hm" in [0-9]*:[0-9][0-9]) ;; *) return 0 ;; esac
+  boot="$(roost_restore__boot_second)" || return 0
+  by="$(date -u -r "$boot" +%Y 2>/dev/null || date -u -d "@$boot" +%Y)"
+  bm="$(date -r "$boot" +%m 2>/dev/null || date -d "@$boot" +%m)"
+  sm="$(roost_restore__local_epoch "2000 $mon 01 00:00" | { read -r e; date -r "$e" +%m 2>/dev/null || date -d "@$e" +%m; })"
+  y="$by"
+  [ -n "$sm" ] && [ "${sm#0}" -gt "${bm#0}" ] && y=$((by - 1))
+  roost_restore__local_epoch "$y $mon $day $hm"
+}
+
+# roost_restore__reading_rule SHAPEDIR -> ROOST_RESTORE_FILE, ROOST_RESTORE_WHY
+# and ROOST_RESTORE_NOREC (1: no record, step 3, the caller says so). Steps:
+#   1. no shutdown evidence: `shape`, the newest save
+#   2. evidence — a record, and `shape` a death save inside the window — the
+#      newest save, walking back through history/ by gen, that is NOT a death
+#      save or is older than the window
+#   3. no readable record: `shape`
+# The window is the shutdown's minute and the minute before it (macOS records
+# only the minute; Linux's second is read the same way, so both agree).
+roost_restore__reading_rule() {
+  local sdir="$1" sat ws we f t
+  ROOST_RESTORE_FILE="$sdir/shape" ROOST_RESTORE_WHY="the newest save" ROOST_RESTORE_NOREC=0
+  sat="$(roost_restore__shutdown_at)"
+  if [ -z "$sat" ]; then ROOST_RESTORE_NOREC=1; return 0; fi
+  ws=$(( (sat / 60) * 60 - 60 )); we=$(( (sat / 60) * 60 + 59 ))
+  roost_restore__death "$sdir/shape" || return 0
+  t="$(roost_restore__epoch "$(roost_restore__hdr "$sdir/shape" saved)")" || return 0
+  [ "$t" -ge "$ws" ] && [ "$t" -le "$we" ] || return 0
+  for f in $(ls -1 "$sdir/history" 2>/dev/null | sort -t- -k2,2nr); do
+    f="$sdir/history/$f"
+    if roost_restore__death "$f"; then
+      t="$(roost_restore__epoch "$(roost_restore__hdr "$f" saved)")" || continue
+      [ "$t" -lt "$ws" ] || continue
+    fi
+    ROOST_RESTORE_FILE="$f" ROOST_RESTORE_WHY="the save before a shutdown's teardown"
+    return 0
+  done
+  # Every save in the ring is a death save inside the window: the oldest is
+  # the best left, and step 4 still applies to it.
+  f="$(ls -1 "$sdir/history" 2>/dev/null | sort -t- -k2,2n | head -1)"
+  [ -n "$f" ] && ROOST_RESTORE_FILE="$sdir/history/$f" ROOST_RESTORE_WHY="the oldest save kept (every newer one is a shutdown's teardown)"
+  return 0
+}
+
 # roost_restore_pick SHAPEDIR FROM -> ROOST_RESTORE_FILE and
 # ROOST_RESTORE_WHY; exit 2 when there is nothing to restore.
 #
@@ -1320,7 +1450,10 @@ roost_restore_pick() {
   ROOST_RESTORE_FILE="" ROOST_RESTORE_WHY="" ROOST_RESTORE_BYFILE=0
   if [ -z "$from" ]; then
     if [ -n "$sdir" ] && [ -f "$sdir/shape" ]; then
-      ROOST_RESTORE_FILE="$sdir/shape" ROOST_RESTORE_WHY="the newest save"; return 0
+      roost_restore__reading_rule "$sdir"
+      [ "$ROOST_RESTORE_NOREC" = 1 ] && \
+        printf 'roost restore: no shutdown record readable; restoring the newest save — roost restore --list shows the others\n' >&2
+      return 0
     fi
     printf 'roost restore: no saved shape for this server; nothing to restore\n' >&2
     return 2
@@ -1534,12 +1667,14 @@ roost_restore_dry_run() {
 # then `history/` newest first, one line each with its STAMP-GEN, trigger
 # and counts; `*` marks the one a restore with no --from picks.
 roost_restore_list() {
-  local sdir="$1" f mark where
+  local sdir="$1" f mark where pick=""
   if [ -z "$sdir" ] || { [ ! -f "$sdir/shape" ] && [ ! -d "$sdir/history" ]; }; then
     printf 'roost restore: no saves for this server\n'
     roost_restore__list_pending "$sdir"
     return 0
   fi
+  # The one the reading rule picks (§3.6 steps 1 to 3), marked `*`.
+  if [ -f "$sdir/shape" ]; then roost_restore__reading_rule "$sdir"; pick="$ROOST_RESTORE_FILE"; fi
   { [ -f "$sdir/shape" ] && printf '%s\n' "$sdir/shape"
     # `|| true`: with no history/ yet `ls` fails, and under bin/roost's
     # `set -e -o pipefail` that failure ended --list before the rest of it
@@ -1547,7 +1682,8 @@ roost_restore_list() {
     ls -1 "$sdir/history" 2>/dev/null | sort -r | while IFS= read -r f; do printf '%s\n' "$sdir/history/$f"; done || true
   } | while IFS= read -r f; do
     [ -f "$f" ] || continue
-    if [ "$f" = "$sdir/shape" ]; then mark="*" where="shape (restore picks this)"; else mark=" " where="history"; fi
+    if [ "$f" = "$sdir/shape" ]; then where="shape"; else where="history"; fi
+    if [ "$f" = "$pick" ]; then mark="*" where="$where (restore picks this)"; else mark=" "; fi
     printf '%s %s  %s  %s sessions, %s windows, %s panes  %s\n' "$mark" "$(roost_restore__stampgen "$f")" \
       "$(roost_restore__hdr "$f" trigger)" "$(grep -c '^session ' "$f")" "$(grep -c '^window ' "$f")" \
       "$(grep -c '^pane ' "$f")" "$where"
