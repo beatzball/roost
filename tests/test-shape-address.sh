@@ -110,6 +110,27 @@ wait_screen "$Z" "LONG-FORM-B2"; assert_eq "$rc|$?" "0|0" "was:%930@$B2 delivers
 R send "was:%930@$B1" "echo LONG-FORM-B1" >/dev/null 2>&1; rc=$?
 wait_screen "$Y" "LONG-FORM-B1"; assert_eq "$rc|$?" "0|0" "was:%930@$B1 delivers to $Y"
 
+echo "== one save restored twice into one boot: the NEWEST line wins (review round 1, B1) =="
+# The spec's own recovery path (§4.3: a session skipped because a key took
+# its bootstrap comes back with kill-session, then restore --only) restores
+# the same save into one boot twice, so the map holds two lines for one
+# (old id, old boot). The first restore's pane is gone; the second's is live.
+B3=1700002222-7373
+shape "$B3" "dd:%950"
+R restore --no-resume >/dev/null 2>&1
+G1="$(first_pane dd 1)"
+TL kill-session -t '=dd'
+R restore --no-resume --only dd >/dev/null 2>&1
+G2="$(first_pane dd 1)"
+[ -n "$G1" ] && [ -n "$G2" ] && [ "$G1" != "$G2" ]; assert_true $? "(fixture) two restores of dd: $G1 (killed), then $G2"
+R send "was:%950" "echo SECOND-RESTORE" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+wait_screen "$G2" "SECOND-RESTORE"
+assert_eq "$rc|$?" "0|0" "send was:%950 reaches the pane of the newer restore ($G2)"
+assert_contains "$(cat "$SHAPE_TMP/err")" "was:%950 is $G2" "...and names it"
+out="$(R screen "was:%950" 2>/dev/null)"; rc=$?
+assert_eq "$rc" "0" "screen was:%950: exit 0"
+assert_contains "$out" "SECOND-RESTORE" "...the newer pane's screen"
+
 echo "== the other verbs resolve it too =="
 out="$(R screen "was:%930@$B1" 2>/dev/null)"; assert_contains "$out" "LONG-FORM-B1" "screen was:%930@BOOT"
 R wait-done "was:%932" 1 >/dev/null 2>"$SHAPE_TMP/err"

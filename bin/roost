@@ -277,21 +277,32 @@ resolve_was() {
       [ -n "$map" ] && [ -f "$map" ] || return 0
       live="$(t display-message -p -t "$raw" '#{pane_id}' 2>/dev/null || true)"
       [ "$live" = "$raw" ] || return 0
+      # The note names the NEWEST pane for that old id (the map is appended
+      # in restore order), and is printed once (review round 1, B1).
+      new=""
       while read -r o b n; do
         [ "$o" = "$raw" ] && [ "$n" != "$raw" ] || continue
-        echo "note: $raw was also an old id; the pane that was $raw is now $n (was:$raw)" >&2
+        new="$n"
       done < "$map"
+      [ -n "$new" ] && echo "note: $raw was also an old id; the pane that was $raw is now $new (was:$raw)" >&2
       return 0 ;;
   esac
   old="${raw#was:}"
   case "$old" in *@*) want="${old#*@}"; old="${old%%@*}" ;; esac
   case "${old#%}" in ''|*[!0-9]*) echo "roost $verb: '$raw' is not a pane id (was:%N or was:%N@BOOT)" >&2; return 1 ;; esac
   if [ -n "$map" ] && [ -f "$map" ]; then
+    # Every matching line moves `new` on, so the LAST one wins: the map is
+    # appended in restore order, and one save restored twice into one boot
+    # (kill-session, then restore --only: §4.3's own recovery path) writes
+    # two lines for one (old id, old boot), the first naming a gone pane
+    # (review round 1, Fable B1 = Opus N3). The boot list only counts the
+    # distinct old boots, for the ambiguity below.
     while read -r o b n; do
       [ "$o" = "$old" ] || continue
       [ -z "$want" ] || [ "$b" = "$want" ] || continue
+      new="$n"; RW_OLDBOOT="$b"
       case " $bl " in *" $b "*) continue ;; esac
-      hits=$((hits + 1)); bl="${bl:+$bl }$b"; new="$n"; RW_OLDBOOT="$b"
+      hits=$((hits + 1)); bl="${bl:+$bl }$b"
     done < "$map"
   fi
   if [ "$hits" = 0 ]; then
