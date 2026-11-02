@@ -320,6 +320,13 @@ sys.stdout.write("\n".join(out) + "\nx")' 2>/dev/null || true)"
     ( d="$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" \
         && . "$d/roost-resume.sh" && . "$d/roost-pending.sh" \
         && roost_pending_identified "$sock" "$pane" "$sid" "$ROOST_IDENTITY_BOOT" ) >/dev/null 2>&1 || true
+    # The resume key changed: save (#51, §3.4, `--trigger identify`), after
+    # the pending file is settled so the save reads the new key. A process of
+    # its own, in the background with every stream closed: this runs inside a
+    # harness's session-start hook, which the harness waits on.
+    ( d="$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)" \
+        && ROOST_SOCKET="$sock" "$d/bin/roost" save --auto --socket "$sock" --trigger identify ) \
+      </dev/null >/dev/null 2>&1 &
   fi
   return 0
 }

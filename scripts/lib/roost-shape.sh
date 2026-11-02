@@ -1064,6 +1064,19 @@ roost_shape_auto() {
   return 0
 }
 
+# roost_shape_save_now FLAG SOCKET TRIGGER — §3.4's direct call, for roost's
+# own verbs: `spawn`, `split`, `view` after the name is stamped, `close`
+# after the pane is gone, `revive` and the resume engine after a respawn
+# (respawn-pane -k fires no hook, §2.7), restore after `restoring/` is
+# dropped. The same saver as the hooks' (roost_shape_auto), run to the end
+# before the verb goes on, so a verb's own change is on disk when it returns.
+# In a subshell, so the listing's arrays and the ROOST_SHAPE_* globals never
+# reach the verb that called it; the owner record is then the verb's own pid,
+# alive for as long as the subshell is. Silent and never fails its caller.
+roost_shape_save_now() {
+  ( roost_shape_auto "$1" "$2" "$3" ) >/dev/null 2>&1 || true
+}
+
 # roost_shape_check FILE -> exit 0 when the whole file may be restored; else
 # exit 1 with ROOST_SHAPE_FAULT="line N: <fault>". An unknown block is skipped
 # with one stderr line naming its line, and the file still passes.

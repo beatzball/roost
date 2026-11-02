@@ -15,7 +15,9 @@ shape_test_setup; trap 'kill_holds; shape_test_teardown' EXIT
 . scripts/lib/roost-shape.sh
 
 ROOST="$PWD/bin/roost"
-R() { ROOST_SOCKET=roost "$ROOST" "$@"; }
+# TMUX and TMUX_PANE cleared: a run from inside a roost pane would otherwise
+# hand `spawn` and `split` a pane id of the live server (test-revive.sh's R).
+R() { env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST" "$@"; }
 SD="$ROOST_SHAPE_DIR/roost"
 HOLDS=""
 # Every background sleeper a case starts to stand for a live owner, killed at
@@ -214,6 +216,97 @@ assert_eq "$rc|$(cat "$SHAPE_TMP/list.out")" "0|" "released: silent, exit 0"
 R2 save --auto --trigger after-rename-window
 assert_eq "$(gen_of "$SD2")|$(nhist "$SD2")" "1|0" "the next save makes a fresh directory whose gen starts at 1"
 tmux -S "$S2" kill-server 2>/dev/null
+
+# --- roost's own verbs save, and the hooks save the rest (Task 4.7) ----------
+echo "== every structural change makes a new shape; trigger says what (§8.1 test 8) =="
+TL set -g @roost-home "$PWD"
+TL source-file tmux/roost.conf
+settle() { shape_settle "$SD"; }
+# saved_since GEN NAME — exit 0 when a save newer than GEN (shape, or a
+# history file) carries NAME in its trigger line.
+saved_since() {
+  local f g
+  for f in "$SD/shape" "$SD"/history/*; do
+    [ -f "$f" ] || continue
+    g="$(sed -n 's/^gen //p;/^$/q' "$f")"
+    [ "${g:-0}" -gt "$1" ] 2>/dev/null || continue
+    case " $(sed -n 's/^trigger //p;/^$/q' "$f") " in *" $2 "*) return 0 ;; esac
+  done
+  return 1
+}
+# verb LABEL TRIGGER CMD... — run a change, settle, and assert a new shape
+# whose trigger names TRIGGER.
+verb() {
+  local label="$1" want="$2" g; shift 2
+  settle; g="$(gen_of "$SD")"
+  "$@" >/dev/null 2>&1
+  settle
+  [ "$(gen_of "$SD")" -gt "$g" ] 2>/dev/null; assert_true $? "$label: a new shape"
+  saved_since "$g" "$want"; assert_true $? "...its trigger names $want ($(sed -n 's/^trigger //p;/^$/q' "$SD/shape"))"
+}
+settle
+mp="$(TL display -p -t '=main:1' '#{pane_id}')"
+verb "roost spawn" spawn R spawn helper1
+verb "roost split" split env -u TMUX ROOST_SOCKET=roost TMUX_PANE="$mp" "$ROOST" split -n helper2
+verb "rename-window" after-rename-window TL rename-window -t '=main:1' verbs
+verb "kill-pane" after-kill-pane TL kill-pane -t "$(TL list-panes -a -F '#{pane_id} #{@roost-name}' | awk '$2 == "helper2" { print $1 }')"
+TL new-window -d -t '=main:' -n lone 'ENV= exec /bin/sh'; settle
+verb "move-pane of a window's last pane" window-unlinked TL move-pane -d -s '=main:lone' -t "$mp"
+x="$(TL split-window -d -P -F '#{pane_id}' -t "$mp" 'ENV= exec /bin/sh')"; settle
+verb "break-pane" window-linked TL break-pane -d -s "$x"
+TL new-session -d -s other 'ENV= exec /bin/sh'; settle
+verb "move-window" window-linked TL move-window -d -s "$(TL display -p -t "$x" '#{window_id}')" -t '=other:'
+verb "link-window" window-linked TL link-window -d -s '=other:' -t '=main:'
+verb "select-layout" after-select-layout TL select-layout -t "$mp" tiled
+ip="$(TL new-window -d -P -F '#{pane_id}' -t '=main:' -c "$SHAPE_TMP" 'ENV= exec /bin/sh')"; settle
+UID1=3fa3c0de-7777-4abc-8def-000000000007
+verb "identify" identify TL send-keys -t "$ip" "$ROOST identify --session $UID1 --cwd $SHAPE_TMP --harness claude" Enter
+stub_store_add 3fa3c0de-8888-4abc-8def-000000000008 "$SHAPE_TMP"
+rv="$(TL new-window -d -P -F '#{pane_id}' -t '=main:' -c "$SHAPE_TMP" "$STUB_BIN/claude 600")"
+i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$rv" '#{pane_current_command}')" != claude ]; do sleep 0.1; i=$((i+1)); done
+TL set-option -p -t "$rv" @roost-harness claude \; set-option -p -t "$rv" @roost-session 3fa3c0de-8888-4abc-8def-000000000008 \
+  \; set-option -p -t "$rv" @roost-cwd "$SHAPE_TMP" \; set-option -p -t "$rv" @agent_state idle
+# An option fires no hook: saved by hand, so the shape holds the key that
+# revive's respawn clears (§4.1 step 7) and the save after it has a change.
+R save >/dev/null 2>&1
+verb "roost revive" respawn env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST" revive "$rv"
+cp_="$(TL split-window -d -P -F '#{pane_id}' -t "$mp" 'ENV= exec /bin/sh')"; settle
+verb "roost close" close R close "$cp_"
+
+echo "== 50 roost state working on a working pane write no shape =="
+TL set-option -p -t "$mp" @agent_state working; settle
+g="$(gen_of "$SD")"; h="$(nhist "$SD")"
+i=0; while [ "$i" -lt 50 ]; do TMUX="$SHAPE_SOCK,1,0" TMUX_PANE="$mp" "$ROOST" state working >/dev/null 2>&1; i=$((i+1)); done
+settle
+assert_eq "$(gen_of "$SD"):$(nhist "$SD")" "$g:$h" "50 roost state working: no new shape"
+
+echo "== restore's final save: trigger restore, the only one during a restore =="
+# From a copy taken before the kill, by path: the hooks save the fleet
+# without `other` the moment it goes, and its kill file would filter a
+# STAMP-GEN pick (§3.6 step 4); a FILE is the caller's own choice.
+R save >/dev/null 2>&1; settle; cp "$SD/shape" "$SHAPE_TMP/with-other"
+TL kill-session -t '=other'; settle
+g="$(gen_of "$SD")"
+R restore --no-resume --from "$SHAPE_TMP/with-other" --only other >/dev/null 2>&1; settle
+assert_eq "$(gen_of "$SD")" "$((g + 1))" "a restore publishes exactly one save"
+case " $(sed -n 's/^trigger //p;/^$/q' "$SD/shape") " in *" restore "*) r=0 ;; *) r=1 ;; esac
+assert_true $r "...with trigger restore ($(sed -n 's/^trigger //p;/^$/q' "$SD/shape"))"
+TL has-session -t '=other' 2>/dev/null; assert_true $? "...after placing the session"
+
+echo "== ten roost spawns in parallel: one fleet, unique history, gen monotonic =="
+settle; g0="$(gen_of "$SD")"; h0="$(ls "$SD/history")"
+i=0; while [ "$i" -lt 10 ]; do R spawn "par$i" >/dev/null 2>&1 & i=$((i+1)); done
+wait; settle
+n=0; i=0; while [ "$i" -lt 10 ]; do grep -q "^name par$i\$" "$SD/shape" && n=$((n+1)); i=$((i+1)); done
+assert_eq "$n" "10" "the newest shape holds all ten panes"
+new="$(ls "$SD/history" | grep -vxF "$h0" | wc -l | tr -d ' ')"
+[ "$new" -le 10 ]; assert_true $? "...at most ten new history files ($new)"
+assert_eq "$(ls "$SD/history" | sed 's/.*-//' | sort | uniq -d)" "" "...every history gen unique"
+gens="$(for f in "$SD"/history/*; do sed -n 's/^gen //p;/^$/q' "$f"; done | sort -n | tr '\n' ' ')"
+names="$(ls "$SD/history" | sed 's/.*-//' | sort -n | tr '\n' ' ')"
+assert_eq "$gens" "$names" "...each history file's own gen is its name's gen"
+[ "$(gen_of "$SD")" -gt "$g0" ] && [ "$(sed -n 's/^gen //p;/^$/q' "$SD/shape")" = "$(gen_of "$SD")" ]
+assert_true $? "...and gen moved forward, shape carrying the newest"
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

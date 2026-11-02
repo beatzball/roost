@@ -1180,6 +1180,9 @@ roost_revive() {
       return 1
     fi
   fi
+  # The respawn fired no hook (§2.7): save it (#51, §3.4, `--trigger
+  # respawn`), so a revive into a dialog is on disk before identity lands.
+  roost_shape_save_now "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" respawn
   # Step 8.
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
   if [ "$json" = 1 ]; then

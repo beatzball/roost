@@ -26,20 +26,7 @@ gen_of() { cat "$1/gen" 2>/dev/null || printf -- '-'; }
 nhist() { ls "$1/history" 2>/dev/null | wc -l | tr -d ' '; }
 trig() { sed -n 's/^trigger //p;/^$/q' "$1/shape" 2>/dev/null; }
 wait_at() { local i=0; while [ "$i" -lt 100 ]; do ls "$1".at.* >/dev/null 2>&1 && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
-# settle — until no hook's saver of THIS server is running and none is
-# wanted: no `save --auto` process naming this socket, no lock/, no want/.
-# At most 15 s. The hooks run with `run-shell -b`, so a case that reads the
-# shape directory right after a tmux command would race them.
-settle() {
-  local i=0
-  sleep 0.3
-  while [ "$i" -lt 150 ]; do
-    if ! pgrep -f "save --auto --socket $SHAPE_SOCK" >/dev/null 2>&1 \
-       && [ ! -e "$SD/lock" ] && [ ! -e "$SD/want" ]; then return 0; fi
-    sleep 0.1; i=$((i+1))
-  done
-  return 1
-}
+settle() { shape_settle "$SD"; }
 # kills BOOT — every pane id named by a kill file of that boot, sorted, one line.
 kills() { cat "$SD/closed/$1"/kill.* 2>/dev/null | sort -u | tr '\n' ' '; }
 boot_now() { TL display -p '#{start_time}-#{pid}'; }

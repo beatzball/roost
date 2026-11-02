@@ -270,3 +270,21 @@ stub_store_add() {
   printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$cwd" "$id" \
     > "$CLAUDE_CONFIG_DIR/projects/$folder/$id.jsonl"
 }
+
+# shape_settle [SHAPE-DIR] — until no saver of this file's server is running
+# and none is wanted: no `save --auto` process naming its socket, no lock/,
+# no want/. At most 15 s; exit 1 if it never settles. Since Part 4 the hooks
+# save with `run-shell -b` and identify saves in the background (#51, §3.4),
+# so a case that reads the shape directory right after a tmux command or an
+# identify would race them. The first 0.3 s lets a hook that tmux has queued
+# start its process at all.
+shape_settle() {
+  local sd="${1:-$ROOST_SHAPE_DIR/roost}" i=0
+  sleep 0.3
+  while [ "$i" -lt 150 ]; do
+    if ! pgrep -f "save --auto --socket $SHAPE_SOCK" >/dev/null 2>&1 \
+       && [ ! -e "$sd/lock" ] && [ ! -e "$sd/want" ]; then return 0; fi
+    sleep 0.1; i=$((i+1))
+  done
+  return 1
+}

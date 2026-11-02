@@ -723,11 +723,18 @@ case "${1:-up}" in
       "$id_session" "$id_cwd" "$id_harness" "$id_transcript" || true
     # Identity landed on a pane with a pending resume (#191 Part 3, §4.7
     # T11, T12, T18): only when the stamp really WROTE, so an identify that
-    # changes nothing keeps its one read and its bail. No save yet (Part 4).
+    # changes nothing keeps its one read and its bail.
     if [ "${ROOST_IDENTITY_WROTE:-0}" = 1 ]; then
       . "$ROOST_HOME/scripts/lib/roost-resume.sh"
       . "$ROOST_HOME/scripts/lib/roost-pending.sh"
       roost_pending_identified "$ROOST_SELF_SOCK" "$TMUX_PANE" "$id_session" "${ROOST_IDENTITY_BOOT:-}" 2>/dev/null || true
+      # The resume key changed: save (#51, §3.4, `--trigger identify`).
+      # After the pending file is settled, so the save reads the new key.
+      # A process of its own, in the background with every stream closed:
+      # identify runs inside a harness's session-start hook, which the
+      # harness waits on, and the save must not sit on that path.
+      ROOST_SOCKET="$ROOST_SELF_SOCK" "$ROOST_HOME/bin/roost" save --auto --socket "$ROOST_SELF_SOCK" \
+        --trigger identify </dev/null >/dev/null 2>&1 &
     fi
     exit 0
     ;;
@@ -1049,6 +1056,11 @@ case "${1:-up}" in
     # the command and swallow the id we already have.
     t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true
     [ -n "$launch" ] && { t set-option -p -t "$new" @roost-launch "$launch" 2>/dev/null || true; }
+    # Saved after the name is stamped (#51, §3.4): a name changed, and no
+    # tmux hook fires for an option. after-new-window saved the window
+    # already, without the name.
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" spawn
     printf '%s\n' "$new"
     ;;
   split)
@@ -1082,6 +1094,9 @@ case "${1:-up}" in
     # the command and swallow the id we already have.
     [ -n "$name" ] && { t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true; }
     [ -n "$launch" ] && { t set-option -p -t "$new" @roost-launch "$launch" 2>/dev/null || true; }
+    # Saved after the name is stamped, as in `spawn` (#51, §3.4).
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" split
     printf '%s\n' "$new"
     ;;
   view)
@@ -1194,6 +1209,10 @@ case "${1:-up}" in
     fi
     # Best effort, the way the name write is: the hint §4.3's report quotes.
     t set-option -p -t "$new" @roost-launch "$view_launch" 2>/dev/null || true
+    # The split or spawn above saved with its own hint; this one changed it
+    # (#51, §3.4).
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" view
 
     # The prefix is a user setting — tmux/roost.conf binds C-s, and the user
     # config sourced after it may rebind. Read the live one rather than
@@ -5095,6 +5114,10 @@ EOF
     cl_done() {
       t kill-pane -t "$pane" 2>/dev/null || true
       [ -n "$cl_pfile" ] && roost_pending_cancel "$cl_pfile" "$pane"
+      # The pane is gone: save, `--trigger close` (#51, §3.4). The label is
+      # not what keeps it closed after a reboot — closed/<boot>/close.<N>
+      # is (§3.6a) — but it says in --list who removed it.
+      roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" close
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         roost_jsonout_emit close target s "$raw" pane s "$pane" state z "$cl_state" \

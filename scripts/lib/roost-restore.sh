@@ -1155,6 +1155,12 @@ roost_restore_run() {
   server_running && roost_restore__settle_dead
   roost_shape_owner_drop "$ROOST_RESTORE_RD"
   rm -rf "$ROOST_RESTORE_PD"
+  # Restore's own final save (#51, §3.4, §3.5 step 4): one coherent save of
+  # the whole restore instead of sixty. Every hook during placement only
+  # recorded its want, held off by restoring/; this save drains them all, so
+  # its trigger names them beside `restore`. With saving off (no shape
+  # directory) there is nothing to save.
+  [ -n "$sdir" ] && server_running && roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" restore
   # The plan's seam (ROOST_TEST_LOOP_HOLD): a hand restore waits here, after
   # placement and before its resume loop, so a test can read the placed
   # state — the pending files and their placeholders — before any launch.
