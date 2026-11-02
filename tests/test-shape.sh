@@ -138,6 +138,11 @@ wait_cmd "$k1" claude; wait_cmd "$k2" codex; wait_cmd "$ne" claude; wait_cmd "$o
 sp="$(cd "$SHAPE_TMP" && TMUX_PANE="$a1" R spawn x 'FOO_TOKEN=abc sh')"
 
 echo "== a first save =="
+# Since Part 4 the fixture's own `roost spawn` and every identify above save
+# by themselves (§3.4), some in the background. This case is about the
+# person's first save into an empty directory, so they are let finish and
+# their directory removed first.
+shape_settle "$SD"; rm -rf "$SD"
 out="$(R save 2>"$SHAPE_TMP/save.err")"; rc=$?
 assert_eq "$rc:$out" "0:$SD/shape" "roost save prints the shape's path, exit 0"
 assert_eq "$(cat "$SHAPE_TMP/save.err")" "2 sessions, 5 windows, 9 panes, 2 with a conversation, 3 stale" \

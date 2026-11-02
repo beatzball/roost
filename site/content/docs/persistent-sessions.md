@@ -1,6 +1,6 @@
 ---
 title: Persistent Sessions
-description: Save your fleet's sessions, windows and panes as a plain file, put them back after a reboot or a crash with roost restore — agents resumed, paced, in their own directories — and bring one agent's conversation back with roost revive.
+description: roost saves your fleet's sessions, windows and panes as a plain file on every change; put them back after a reboot or a crash with roost restore — agents resumed, paced, in their own directories — and bring one agent's conversation back with roost revive.
 sidebar:
   order: 12
 ---
@@ -16,7 +16,9 @@ agent** in its own directory, two seconds apart.
 `roost revive` brings **one** pane's agent conversation back — an agent that
 crashed, or that you `/exit`ed — in the same pane, with the same `%N`.
 
-Saving is manual for now: run `roost save` when you want one.
+Saving is automatic: roost saves the shape every time the fleet changes, so
+you rarely need `roost save` at all. Restoring is by hand: run `roost
+restore` after a reboot or a crash.
 
 ## Save
 
@@ -43,6 +45,37 @@ id, and a conversation id is enough to resume that conversation.
 - `rm -rf ~/.local/state/roost/shapes` forgets every shape and nothing else.
 
 A save that finds nothing changed since the last one writes nothing.
+
+### Saving is automatic
+
+roost saves on its own whenever the fleet changes shape:
+
+- a session, window or pane is made, closed, killed, renamed or moved
+  (`roost spawn`, `split` and `view` too, once the pane has its name);
+- a pane's program exits, or dies and stays on screen;
+- a layout is chosen or a pane resized **by a command**;
+- an agent reports its conversation (`roost identify`), and `roost revive`
+  or a restore relaunches one;
+- `roost close` takes a pane away, and a restore finishes placing.
+
+Some changes fire nothing roost listens to, so they are saved only with the
+**next** change of any other kind: a pane resized by dragging, `swap-pane`,
+`swap-window`, a `join-pane` or `move-pane` that leaves its window with
+panes, `respawn-pane` by hand, and a shell's `cd`. A crash right after one of
+those restores the panes as they were before it.
+
+The saving runs in the background and never shows on screen. Several changes
+at once (ten `roost spawn`s in a second) become one or two saves. Each save
+says in its first lines what caused it.
+
+`history/` keeps the last **100** saves (`ROOST_SHAPE_KEEP=N` keeps N): enough
+for a whole fleet to shut down pane by pane and the save before it to still
+be there. `ROOST_SHAPE_DIR=` (empty) turns saving off.
+
+`roost doctor` says whether saving is on and names the last save. It warns
+when the server has not saved since it started (a shape directory you cannot
+write to shows this way), and quotes the step and exit code when the last save
+failed.
 
 ## Restore
 
@@ -154,6 +187,53 @@ it. `--json` prints the same as one document on stdout:
 every resumed codex reports its state through the first one's background
 process, so their badges all show on that pane until #145 is fixed.
 
+### Which save a restore picks
+
+A plain `roost restore` uses the newest save, `shape`, with two rules on top.
+
+**After a shutdown.** When a machine shuts down, agents can exit one by one
+before tmux itself goes, and each exit is saved: the newest saves can be a
+fleet shrinking to nothing. So when the system records its last shutdown
+(macOS `last reboot`, Linux `last -x`) and the newest save is one of those
+exits inside the shutdown's minute or the minute before, restore walks back to
+the newest save that is not. With no readable record it uses `shape` and says
+so in one line. `roost restore --list` marks the save it would pick.
+
+**Closed stays closed.** A pane you removed on purpose does not come back:
+
+- `roost close` on a pane;
+- `tmux kill-pane`, `kill-window`, or `kill-session` of a session that is not
+  the last;
+- `roost kill NAME` and `roost stop`, which end a session or the whole fleet
+  for good.
+
+roost writes down each such removal the moment it happens, and every restore
+of a save from that server's run leaves those panes out. A window that lost
+panes this way takes tmux's default layout (one line says so), and a window
+or session with nothing left is not made. A pane that merely exited is not a
+removal: a crash, a shutdown or a lost connection leaves the fleet
+restorable.
+
+**After `roost stop` or `roost kill`.** Ending a fleet on purpose means a
+plain `roost restore` brings nothing back:
+
+```
+roost restore: nothing to restore: every saved pane was closed on purpose
+roost restore: to bring back a fleet you stopped: roost restore --from ~/.local/state/roost/shapes/roost/shape
+```
+
+The fleet is still on disk. To get it back, restore the file **by path**:
+
+```sh
+roost restore --list
+roost restore --from ~/.local/state/roost/shapes/roost/history/20261026T101500Z-412
+```
+
+(`shape` itself, or any `history/` file `--list` shows.) `--from` with a
+`STAMP-GEN` name honours the closes and restores nothing; only a path skips
+them. `tmux kill-server`, and `tmux kill-session` of the last session, are
+not seen at all: use `roost stop` to end a fleet you do not want back.
+
 ### Look before you restore
 
 ```sh
@@ -210,7 +290,7 @@ is %34 (it was %930 before a restore)".
 ### Pick a save, or part of one
 
 - `roost restore --from 20261024T205102Z-4182` restores an earlier save from
-  the list.
+  the list, still leaving out what was closed on purpose since.
 - `roost restore --from FILE` restores a copy, from anywhere. A file saved on
   another machine says so in one line, then restores. It places the panes; it
   cannot bring back conversations whose harness store is not on this machine.
@@ -338,7 +418,15 @@ naming the line, and nothing is changed.
   belong to each harness; credentials. A shape copied to another machine
   places panes there and resumes nothing.
 - **A `cd` is not seen until the next save.** The directory saved is the one
-  the shell was in when you saved.
+  the shell was in at the last change roost saved.
+- **A revived agent that stops in a dialog** is saved without its
+  conversation key until it reports in (the save before still has it, in
+  `history/`). A pane restore placed and has not resumed yet keeps its key in
+  every save, marked `resume pending` (or `resume failed` with the reason).
+- **A session skipped because a key took its first pane** comes back with
+  `tmux kill-session -t NAME` then `roost restore --from STAMP-GEN --only
+  NAME`, with the save restore names in its message: after the kill, the
+  newest save no longer has that session.
 - **A window linked into two sessions** (`tmux link-window`) comes back as
   two separate windows.
 - **A session group** (`tmux new-session -t`) comes back as a group: the

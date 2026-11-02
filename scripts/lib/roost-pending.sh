@@ -673,11 +673,12 @@ roost_pending__one() {
   if ! t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
     roost_pending__fail "$l" "$p" "pane changed" "tmux could not respawn it" "$claim"; return 13
   fi
-  # T10 also says "then save (--trigger respawn)". Not yet: a save today
-  # writes only live identity options, so every pane still WAITING would be
-  # written without its key and the newest shape would lose them. The
-  # overlay that writes a pending pane's keys from its file is Part 4's
-  # (§4.6 Overlay); the save after a launch comes with it.
+  # T10's second half: save (--trigger respawn), since respawn-pane -k fires
+  # no hook (§2.7). The panes still WAITING keep their keys in it through the
+  # saver's overlay, which writes a pane with no identity from its pending
+  # file (§4.6 Overlay, roost_shape__pane); Part 3 held this save back until
+  # that overlay existed.
+  roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" respawn
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$id" "$tr")
   printf 'roost restore: %s (was %s): launched %s in %s\n' "$pane" "$ROOST_PENDING_WAS" "${argv[*]}" "$dir" >&2
   return 0

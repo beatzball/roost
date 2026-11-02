@@ -1303,6 +1303,74 @@ case "$out" in *"$cshome/.claude/settings.json"*) csleak=1 ;; *) csleak=0 ;; esa
 assert_true $? "doctor never reads \$HOME/.claude/settings.json when \$CLAUDE_SETTINGS names another file"
 rm -rf "$cshome"
 
+# --- persistent sessions: what saving does (#51, #191 Part 4, spec §4.5, R3) ---
+# A throwaway -S server of this file's own, named to doctor through
+# ROOST_CONFIG_SOCK (the server doctor reads); the shape directory is keyed
+# by that path (§3.1). Saving is on only where a case passes ROOST_SHAPE_DIR.
+PS_D="$(mktemp -d /tmp/amx.XXXX)"; PSOCK="$PS_D/s"
+. "$HERE/scripts/lib/roost-shape.sh"
+PSHAPES="$TMP/shapes"; PSD="$PSHAPES/$(roost_shape_key -S "$PSOCK")"
+pdoc() { run_doctor "$EMPTY" ROOST_CONFIG_SOCK="$PSOCK" "$@" 2>&1 || true; }
+out="$(run_doctor "$EMPTY" ROOST_SHAPE_DIR= 2>&1 || true)"
+assert_contains "$out" "persist: saving off (ROOST_SHAPE_DIR is empty); login restore off" "ROOST_SHAPE_DIR empty: saving off, said with both halves"
+out="$(run_doctor "$EMPTY" ROOST_SHAPE_DIR="$PSHAPES" 2>&1 || true)"
+assert_contains "$out" "persist: saving on; login restore off (" "saving on: both halves named"
+tmux -S "$PSOCK" -f /dev/null new-session -d -s d 'ENV= exec /bin/sh'
+out="$(pdoc ROOST_SHAPE_DIR="$PSHAPES")"
+assert_contains "$out" "no save since this server started" "a running server with no save of its own boot: warned"
+out="$(pdoc ROOST_SHAPE_DIR=)"
+case "$out" in *"no save since"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "...but not with saving off (off by choice)"
+env -u TMUX -u TMUX_PANE ROOST_SOCKET="$PSOCK" ROOST_SHAPE_DIR="$PSHAPES" "$HERE/bin/roost" save >/dev/null 2>&1
+out="$(pdoc ROOST_SHAPE_DIR="$PSHAPES")"
+case "$out" in *"no save since"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "a server whose newest save is its own: no such line"
+assert_contains "$out" "last save " "...and the line names the last save"
+printf 'saved 2026-11-02T10:00:00Z\nstep publish\nexit 7\n' > "$PSD/save.err"
+out="$(pdoc ROOST_SHAPE_DIR="$PSHAPES")"
+assert_contains "$out" "the last save failed at step 'publish' with exit 7" "a planted save.err: warned, quoting its step and exit code"
+rm -f "$PSD/save.err"
+sleep 600 & PLIVE=$!
+mkdir -p "$PSD/lock"; ln -s "$PLIVE $(roost_shape__lstart "$PLIVE")" "$PSD/lock/owner"; touch -h -t 202001010000 "$PSD/lock/owner"
+mkdir -p "$PSD/restoring"; ln -s "$PLIVE $(roost_shape__lstart "$PLIVE")" "$PSD/restoring/owner"; touch -h -t 202001010000 "$PSD/restoring/owner"
+out="$(pdoc ROOST_SHAPE_DIR="$PSHAPES")"
+assert_contains "$out" "lock/ has been held by pid $PLIVE" "a lock/ with one live owner over 60 s: warned, its pid named"
+assert_contains "$out" "restoring/ has been held by pid $PLIVE" "...and a restoring/ likewise"
+kill "$PLIVE" 2>/dev/null; wait "$PLIVE" 2>/dev/null; rm -rf "$PSD/lock" "$PSD/restoring"
+if [ "$(id -u)" != 0 ]; then
+  tmux -S "$PSOCK" kill-server; sleep 0.3
+  tmux -S "$PSOCK" -f /dev/null new-session -d -s d 'ENV= exec /bin/sh'
+  chmod 500 "$PSD"
+  env -u TMUX -u TMUX_PANE ROOST_SOCKET="$PSOCK" ROOST_SHAPE_DIR="$PSHAPES" "$HERE/bin/roost" save --auto --trigger save >/dev/null 2>&1
+  out="$(pdoc ROOST_SHAPE_DIR="$PSHAPES")"
+  assert_contains "$out" "no save since this server started" "a read-only shape directory: the no-save line shows it"
+  case "$out" in *"the last save failed"*) r=1 ;; *) r=0 ;; esac
+  assert_true $r "...with no save.err line (none can be written there)"
+  chmod 700 "$PSD"
+else
+  printf '  SKIP: a read-only shape directory (running as root)\n'
+fi
+# A harness with no recorded conversation, and a disagreeing identity. The
+# "harness" is a process NAMED claude, built the way tests/lib-shape.sh builds
+# its stub (stub_build_bin: tmux reads the executable's own name, and on macOS
+# a link or a copy of /bin/sleep reads `sleep` or is killed at exec).
+mkdir -p "$TMP/fakebin"
+if [ "$(uname -s)" = Darwin ]; then
+  printf '%s\n' '#include <stdlib.h>' '#include <unistd.h>' \
+    'int main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 600); return 0; }' > "$TMP/fakebin/s.c"
+  cc -o "$TMP/fakebin/claude" "$TMP/fakebin/s.c" 2>/dev/null
+else
+  cp "$(command -v sleep)" "$TMP/fakebin/claude"
+fi
+tmux -S "$PSOCK" new-window -d -t '=d:' "$TMP/fakebin/claude 600"
+q="$(tmux -S "$PSOCK" new-window -d -P -F '#{pane_id}' -t '=d:' 'ENV= exec /bin/sh')"
+tmux -S "$PSOCK" set -p -t "$q" @roost-harness claude \; set -p -t "$q" @roost-session 3fa3c0de-0000-4abc-8def-000000000001
+sleep 0.5
+out="$(pdoc ROOST_SHAPE_DIR=)"
+assert_contains "$out" "1 pane(s) run a harness with no recorded conversation (claude)" "N panes run a harness with no recorded conversation"
+assert_contains "$out" "1 pane(s) carry an identity that disagrees with what they run (claude)" "M carry a disagreeing identity"
+tmux -S "$PSOCK" kill-server 2>/dev/null; rm -rf "$PS_D"
+
 # --- nothing escaped the sandbox --------------------------------------------
 # Last, because both halves have to see every invocation above. Same shape,
 # and the same order of operations, as tests/test-install.sh's: check the

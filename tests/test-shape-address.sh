@@ -117,10 +117,16 @@ echo "== one save restored twice into one boot: the NEWEST line wins (review rou
 # (old id, old boot). The first restore's pane is gone; the second's is live.
 B3=1700002222-7373
 shape "$B3" "dd:%950"
+# The second restore names its save (restore's own advice now says --from):
+# since Part 4 the kill-session below is recorded for this boot and the
+# newest save no longer holds dd, so a plain `restore --only dd` finds
+# nothing (§3.6). By path, because every fixture save here has the same
+# stamp and gen, so a STAMP-GEN could name an earlier fixture's file.
+cp "$SD/shape" "$SHAPE_TMP/dd.shape"
 R restore --no-resume >/dev/null 2>&1
 G1="$(first_pane dd 1)"
 TL kill-session -t '=dd'
-R restore --no-resume --only dd >/dev/null 2>&1
+R restore --no-resume --from "$SHAPE_TMP/dd.shape" --only dd >/dev/null 2>&1
 G2="$(first_pane dd 1)"
 [ -n "$G1" ] && [ -n "$G2" ] && [ "$G1" != "$G2" ]; assert_true $? "(fixture) two restores of dd: $G1 (killed), then $G2"
 R send "was:%950" "echo SECOND-RESTORE" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?

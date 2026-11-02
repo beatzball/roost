@@ -242,6 +242,7 @@ echo "== (f) a key in the held bootstrap: taken, the saved session skipped =="
 # left in shells.log would count for this one: start the log empty.
 stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"
 H="$SHAPE_TMP/hold"; rm -f "$H"
+sgf="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
 ROOST_TEST_RESTORE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
 rpid=$!
 wait_boot "" 50
@@ -254,6 +255,10 @@ wait_boot .taken; assert_true $? "the key won: bootstrap.taken"
 : > "$H"; wait "$rpid"; rc=$?
 assert_eq "$rc" "12" "...the saved session of that name is skipped, exit 12"
 assert_contains "$(cat "$SHAPE_TMP/err")" "the bootstrap pane was taken by a key" "...and the reason is named"
+# Part 4: the way back names the save restored, by STAMP-GEN — after the
+# kill-session it advises, a plain restore would pick a newer save with no
+# such session (§3.6; tests/test-shape-address.sh follows the advice).
+assert_contains "$(cat "$SHAPE_TMP/err")" "then roost restore --from $sgf --only NAME" "...and the way back names that save"
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...the pane is the person's shell"
 detach_client
 
@@ -1007,6 +1012,10 @@ xp="$(TL split-window -d -P -F '#{pane_id}' -t "$ap" -c "$SHAPE_TMP/d2" \
   "$ROOST identify --session 6a7b8c9d-1e2f-4a3b-8c4d-5e6f7a8b9c0d --cwd $SHAPE_TMP/d2 --harness codex; exec $BASH_BIN")"
 TL new-session -d -s beta -x 200 -y 50 -c "$SHAPE_TMP/d3" "$BASH_BIN"
 sleep 1.5
+# Since Part 4 the identifies above save by themselves, in the background
+# (§3.4); this save is meant to be the person's, so theirs are let finish and
+# the directory starts empty.
+shape_settle "$SD"; rm -rf "$SD"
 R save >/dev/null 2>&1
 rmdir "$SHAPE_TMP/gone"
 stamp="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
@@ -1038,7 +1047,10 @@ ROOST_SHAPE_DIR="$nd" ROOST_SOCKET=roost "$ROOST" restore --list >/dev/null 2>&1
 [ ! -e "$nd" ]; assert_true $? "neither makes the shape directory of a server with no save"
 
 echo "== --list: every save, the one restore would pick marked (§3.6) =="
-TL rename-window -t '=beta:1' changed; R save >/dev/null 2>&1
+# Settled first: since Part 4 a hook or a background identify may still be
+# saving, and this line is about the person's own save being the newest.
+shape_settle "$SD"
+TL rename-window -t '=beta:1' changed; shape_settle "$SD"; R save >/dev/null 2>&1
 lst="$(R restore --list 2>&1)"; rc=$?
 assert_eq "$rc" "0" "--list exits 0"
 assert_eq "$(printf '%s\n' "$lst" | grep -c '^[* ] [0-9]\{8\}T[0-9]\{6\}Z-[0-9]')" "$((1 + $(ls "$SD/history" | wc -l)))" "shape and every history save, one line each"
@@ -1046,6 +1058,11 @@ assert_contains "$(printf '%s\n' "$lst" | grep '^\*')" "shape" "the newest, shap
 assert_contains "$(printf '%s\n' "$lst" | grep "$stamp")" "save  2 sessions, 2 windows, 4 panes" "a line holds its trigger and counts"
 
 echo "== --from STAMP-GEN, --from FILE, another host =="
+# The copies the cases below restore are taken NOW: since Part 4 every
+# restore ends with its own save (§3.4, --trigger restore), so after the
+# first restore `shape` is what that restore placed, not this fleet.
+sed 's/^host .*/host elsewhere.example/' "$SD/shape" > "$SHAPE_TMP/copy.shape"
+cp "$SD/shape" "$SHAPE_TMP/only.shape"
 stop_server
 # --no-resume: this case is about which save is read; that save's keyed pane
 # has a gone directory, which a resuming restore reports as 13 (§8.1 test 3b).
@@ -1059,7 +1076,6 @@ R restore --no-resume --from "$stamp" >/dev/null 2>&1; rc=$?
 assert_eq "$rc:$(TL list-windows -t '=beta:' -F '#{window_index}|#{automatic-rename}'):$(TL display -p -t "$(first_pane beta)" '#{pane_current_path}')" \
   "0:1|1:$SHAPE_TMP/d3" "--from STAMP-GEN restores that save from history/"
 stop_server
-sed 's/^host .*/host elsewhere.example/' "$SD/shape" > "$SHAPE_TMP/copy.shape"
 R restore --from "$SHAPE_TMP/copy.shape" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc:$(TL list-windows -t '=beta:' -F '#{window_name}')" "0:changed" "--from FILE restores a copy"
 assert_contains "$(cat "$SHAPE_TMP/err")" "elsewhere.example" "...and a copy from another host says so in one line, then restores"
@@ -1068,16 +1084,18 @@ R restore --from 20000101T000000Z-1 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "2" "--from a STAMP-GEN that is not there: exit 2"
 
 echo "== --only (§4.3) =="
-R restore --only beta >/dev/null 2>&1; rc=$?
+# Each from the same copy, by path: a restore of beta alone would otherwise
+# leave a `shape` holding beta alone for the next case (Part 4's final save).
+R restore --from "$SHAPE_TMP/only.shape" --only beta >/dev/null 2>&1; rc=$?
 assert_eq "$rc:$(TL list-sessions -F '#{session_name}' | tr '\n' ' ')" "0:beta " "--only SESSION places that session alone"
 stop_server
-R restore --only alpha:1 >/dev/null 2>&1
+R restore --from "$SHAPE_TMP/only.shape" --only alpha:1 >/dev/null 2>&1
 assert_eq "$(TL list-sessions -F '#{session_name}' | tr '\n' ' ')" "alpha " "--only SESSION:WINDOW places that window's session with it"
 stop_server
 # The pane's id in THIS save: the newest save was made on a restored
 # server, whose pane ids are not the fixture's.
-oldxp="$(awk -v RS= -v d="cwd $SHAPE_TMP/d2" 'index($0 "\n", "\n" d "\n") && /^pane / { sub(/.*\nid /, ""); sub(/\n.*/, ""); print }' "$SD/shape")"
-R restore --only "$oldxp" >/dev/null 2>"$SHAPE_TMP/err"
+oldxp="$(awk -v RS= -v d="cwd $SHAPE_TMP/d2" 'index($0 "\n", "\n" d "\n") && /^pane / { sub(/.*\nid /, ""); sub(/\n.*/, ""); print }' "$SHAPE_TMP/only.shape")"
+R restore --from "$SHAPE_TMP/only.shape" --only "$oldxp" >/dev/null 2>"$SHAPE_TMP/err"
 assert_eq "$(TL list-panes -a -F '#{pane_current_path}')" "$SHAPE_TMP/d2" "--only %OLD places that one pane"
 stop_server
 out="$(R restore --only nosuch 2>&1)"; rc=$?
