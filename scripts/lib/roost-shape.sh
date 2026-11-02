@@ -1054,6 +1054,12 @@ roost_shape__round() {
   # The pending changes first (§3.5 step 2), for this server's boot, so the
   # listing below writes each pane under the name its file has now.
   boot="$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  # A hook's saver whose server went (and perhaps another took the socket)
+  # while it waited publishes nothing, and it is not a failure (see
+  # roost_shape_auto). Checked here, before the listing, and again after it.
+  if [ -n "${ROOST_SHAPE_HOOKBOOT:-}" ] && [ "$boot" != "$ROOST_SHAPE_HOOKBOOT" ]; then
+    ROOST_SHAPE_LAST=lost; return 1
+  fi
   ROOST_SHAPE_PDIR=""
   if [ -n "$boot" ]; then
     roost_shape__arrows "$dir" "$boot" "${ROOST_SHAPE_WANTS:-}"
@@ -1066,6 +1072,11 @@ roost_shape__round() {
     printf 'roost save: could not list the tmux server on %s %s; nothing written\n' "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" >&2
     roost_shape__err "$dir" list "$r"
     return 1
+  fi
+  # The server listed must still be the one whose boot was checked above:
+  # a new server can take the socket between that check and the listing.
+  if [ -n "${ROOST_SHAPE_HOOKBOOT:-}" ] && [ "$ROOST_SHAPE_BOOT" != "$ROOST_SHAPE_HOOKBOOT" ]; then
+    ROOST_SHAPE_LAST=lost; return 1
   fi
   roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_LIST
   # The body (everything after the header's blank line) equal to `shape`'s
@@ -1242,6 +1253,18 @@ roost_shape_auto() {
     fi
     [ "$trigger" = pane-exited ] && [ -n "$pane" ] && \
       roost_shape__closed_write "$dir" "$boot" "died.${pane#%}" "$pane"$'\n'
+  fi
+  # A hook's save is about ITS server, the boot it passed (fix round 2, CI):
+  # a hook that runs late, after its server was killed and a new one took
+  # the same socket, would otherwise list that new server and publish it —
+  # over a shape a person or a test had just written. So with a boot, the
+  # live server must be that boot, or nothing is wanted, locked or written;
+  # a server that is simply gone is not a failed save either (no save.err).
+  # The closed record above is the hook's own boot's, and stands.
+  ROOST_SHAPE_HOOKBOOT=""
+  if [ -n "$boot" ]; then
+    [ "$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)" = "$boot" ] || return 0
+    ROOST_SHAPE_HOOKBOOT="$boot"
   fi
   roost_shape__want "$dir" "$trigger${pane:+.$pane}" || return 0
   # Step 4: a live restore owns publishing until it ends; its final save

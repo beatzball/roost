@@ -194,14 +194,39 @@ R2 save --auto --trigger after-rename-window
 assert_eq "$(gen_of "$SD2")" "2" "the next save publishes"
 [ ! -e "$SD2/save.err" ]; assert_true $? "...and removes save.err"
 
+echo "== a hook's save never saves the NEXT server on the same socket (fix round 2) =="
+# CI caught it: a hook's background save from a server that had just been
+# killed ran late, listed the new server at the same socket, and published
+# it over the shape a test had written. A hook names its boot (--boot); its
+# save is about that server only.
+cp -Rp "$SD2" "$SHAPE_TMP/sd2-hook"
+B2OLD="$(tmux -S "$S2" display -p '#{start_time}-#{pid}')"
+tmux -S "$S2" rename-window -t '=two:' old-server
+H="$SHAPE_TMP/hold-boot"
+ROOST_TEST_SAVE_HOLD_AFTER_DRAIN="$H" R2 save --auto --trigger after-rename-window --boot "$B2OLD" >"$SHAPE_TMP/hb.out" 2>&1 & hp=$!
+wait_at "$H"; assert_true $? "a hook's saver of the old server is held after its drain"
+tmux -S "$S2" kill-server; sleep 0.3
+start_s2; tmux -S "$S2" rename-window -t '=two:' new-server
+: > "$H"; wait "$hp"; rc=$?
+assert_eq "$rc|$(cat "$SHAPE_TMP/hb.out")" "0|" "released after a new server took the socket: silent, exit 0"
+assert_eq "$(gen_of "$SD2")" "$(gen_of "$SHAPE_TMP/sd2-hook")" "...gen unchanged: the new server was not saved by the old server's hook"
+grep -q '^name new-server$' "$SD2/shape"; assert_eq "$?" "1" "...and the shape does not hold the new server"
+[ ! -e "$SD2/save.err" ]; assert_true $? "...and no save.err: a gone server is not a failed save"
+R2 save --auto --trigger after-rename-window --boot "$B2OLD"
+assert_eq "$(gen_of "$SD2")|$( [ -e "$SD2/save.err" ] && echo err)" "$(gen_of "$SHAPE_TMP/sd2-hook")|" \
+  "a hook save that starts after its server is gone: nothing written, no save.err"
+R2 save --auto --trigger after-rename-window
+grep -q '^name new-server$' "$SD2/shape"; assert_true $? "the new server's own save (no old boot) is written as usual"
+
 echo "== a publish that fails: save.err (R3, ROOST_TEST_PUBLISH_FAIL) =="
 tmux -S "$S2" rename-window -t '=two:' pubfail
+gpf="$(gen_of "$SD2")"
 out="$(ROOST_TEST_PUBLISH_FAIL=1 R2 save --auto --trigger after-rename-window 2>&1)"; rc=$?
-assert_eq "$rc|$out|$(gen_of "$SD2")" "0||2" "a refused publish: silent, exit 0, gen unchanged"
+assert_eq "$rc|$out|$(gen_of "$SD2")" "0||$gpf" "a refused publish: silent, exit 0, gen unchanged"
 assert_contains "$(cat "$SD2/save.err" 2>/dev/null)" "step publish" "...save.err names the publish step"
 assert_eq "$(ls -A "$SD2" | grep -c '^\.shape\.')" "0" "...and no temp file is left"
 R2 save --auto --trigger after-rename-window
-assert_eq "$(gen_of "$SD2")" "3" "the next save publishes"
+assert_eq "$(gen_of "$SD2")" "$((gpf + 1))" "the next save publishes"
 [ ! -e "$SD2/save.err" ]; assert_true $? "...and removes save.err"
 
 echo "== the directory removed under a held saver publishes nothing into it =="
