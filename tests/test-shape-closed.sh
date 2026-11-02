@@ -375,6 +375,15 @@ assert_eq "$rc" "0" "a plain restore after the stop: exit 0"
 assert_contains "$out" "nothing to restore: every saved pane was closed on purpose" "...nothing to restore"
 assert_contains "$out" "to bring back a fleet you stopped: roost restore --from $SD/shape" "...and the way back, with the full path"
 TL list-sessions >/dev/null 2>&1; assert_eq "$?" "1" "...no server started"
+# --json and --dry-run --json still print one JSON document (fix round 1).
+jsonok() { if command -v jq >/dev/null 2>&1; then jq -e . >/dev/null 2>&1; else python3 -m json.tool >/dev/null 2>&1; fi; }
+for m in "" "--dry-run"; do
+  out="$(R restore --no-resume $m --json 2>/dev/null)"; rc=$?
+  printf '%s' "$out" | jsonok; r=$?
+  assert_eq "$rc|$r" "0|0" "restore ${m:+$m }--json with every pane closed: exit 0, one valid JSON document"
+  assert_contains "$out" '"restored":[]' "...nothing restored in it"
+  assert_contains "$out" "\"way_back\":\"roost restore --from $SD/shape\"" "...and the way back"
+done
 out="$(R restore --no-resume --from "$(sg "$SD/shape")" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "--from STAMP-GEN of that save: exit 0"
 assert_contains "$out" "nothing to restore: every saved pane was closed on purpose" "...the same: step 4 filters it"

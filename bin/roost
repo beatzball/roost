@@ -883,6 +883,18 @@ case "${1:-up}" in
       # `roost kill` is still on disk, and the file by PATH skips step 4.
       # Named whole, so it can be pasted.
       echo "roost restore: to bring back a fleet you stopped: roost restore --from $ROOST_RESTORE_FILE" >&2
+      # --json (with or without --dry-run) still prints ONE document, in the
+      # report's own shape (roost_restore_report), so a caller piping it to a
+      # JSON reader gets an answer and not an empty stdout (fix round 1):
+      # nothing restored, nothing skipped, the save it read, and why — with
+      # the way back.
+      if [ "$restore_json" = 1 ]; then
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        roost_jsonout_encode "$(roost_restore__stampgen "$ROOST_RESTORE_FILE")" \
+          "roost restore --from $ROOST_RESTORE_FILE" || roost_jsonout_fail restore
+        printf '{"restored":[],"skipped":[],"from":%s,"closed_on_purpose":true,"way_back":%s}\n' \
+          "${ROOST_JSONOUT_STR[0]}" "${ROOST_JSONOUT_STR[1]}"
+      fi
       rm -rf "${ROOST_RESTORE_PD:-}"
       exit 0
     fi
