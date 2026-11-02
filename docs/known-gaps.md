@@ -154,12 +154,17 @@ agents through one engine (`scripts/lib/roost-pending.sh`), from the
   and move on (§4.1 step 8, §5.2): a folder-trust or similar dialog the
   harness opens stays on screen, the pane's pending file stays `.launching`
   and its claim held until identity lands. Nothing answers it. By design.
-- **A launcher between its rename and its claim cannot be seen.** The worker
-  that holds `resuming/` puts back a `.launching` file whose launcher is gone
-  (T8b), and judges "gone" by the conversation's claim. A `revive` that has
-  renamed the pane's file and not yet taken its claim — a few tmux reads —
-  has none; its file would be put back and its own launch then fails its
-  checks (exit 1 or 13, nothing launched twice). Severity: low.
+- **A launcher's record is what T8b judges.** The worker that holds
+  `resuming/` puts back a `.launching` file whose launcher is gone (T8b).
+  Round 1 judged "gone" by the conversation's claim alone, and a `revive`
+  between its rename and its claim has none yet: a reviewer's probe showed
+  the worker put the file back while the revive went on and LAUNCHED (exit
+  0), leaving the pane running the agent with a `.failed` file that `send`
+  refused (review round 1, Opus N1). Now every launcher writes
+  `.<%N>.by.<pid>` (pid and start time) beside the file before it renames,
+  and T8b leaves a pane alone while such a record is alive. What is left: a
+  launcher whose record could not be written (an unwritable pending
+  directory) is judged by its claim alone, as before. Severity: low.
 - **Identity release needs saving on.** T11, T12 and T18 find the pending
   file in the shape directory. A hand restore with `ROOST_SHAPE_DIR=` keeps
   its pending files in a temporary directory, which identify cannot see:

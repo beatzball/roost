@@ -997,6 +997,28 @@ assert_eq "$(head -1 "$PEND/$P.failed" 2>/dev/null)|$(grep -c "$V7" "$STUB_LOG")
   "a worker run: %P.failed interrupted (no origin proves nothing), nothing launched"
 TL kill-pane -t "$P"; rm -f "$PEND/$P".*
 
+echo "== a worker during a live revive's rename-to-claim window (review round 1, Opus N1) =="
+# Three actors: revive renames the pane's file and holds right after its
+# claim's owner link (before the claim names the pane); a worker runs; then
+# the revive goes on. The worker must see a LIVE launcher and leave the file.
+reset
+V8=3fa3c0de-0008-4abc-8def-0000000000a8; stub_store_add "$V8" "$D1R"
+P="$(waiting "$V8")"
+H="$SHAPE_TMP/link.hold"; rm -f "$H" "$H".at.*
+ROOST_TEST_CLAIM_HOLD_AFTER_LINK="$H" "${RB[@]}" revive "$P" >/dev/null 2>"$SHAPE_TMP/rverr" &
+RV=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$H".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(ls "$PEND" | grep "^$P")" "$P.launching" "(fixture) the revive renamed the file and holds before its claim names the pane"
+R restore --resume >/dev/null 2>"$SHAPE_TMP/werr"; wrc=$?
+assert_eq "$wrc|$(ls "$PEND" | grep "^$P")" "0|$P.launching" "the worker leaves a live launcher's file alone (no T8b, no T7)"
+touch "$H"; wait "$RV"; rc=$?
+wait_log "claude --resume $V8"
+assert_eq "$rc|$(grep -c "$V8" "$STUB_LOG")|$(ls "$PEND" | grep "^$P")" "0|1|$P.launching" "the revive goes on: one launch, the file still %P.launching"
+R send "$P" "x" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "3" "send agrees: refused (exit 3)"
+assert_contains "$(cat "$SHAPE_TMP/err")" "is launched" "...as launched"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".* "$PEND"/.*"$P"* 2>/dev/null
+
 echo "== --new-window from a pending file =="
 reset
 P="$(waiting "$V1")"

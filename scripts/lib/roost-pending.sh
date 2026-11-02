@@ -92,8 +92,22 @@ roost_pending_write() {
 #
 # A lost rename touches nothing: the pane is the person's or another
 # launcher's, and the caller moves on (§4.6 step 1).
+#
+# THE LAUNCHER'S RECORD, written BEFORE the rename (review round 1, Opus N1).
+# A `.launching` file says the pane is claimed, but not by whom until the
+# conversation's claim names the pane — and `revive` renames first and claims
+# after (the pane first, then the conversation: §4.1 step 5a, revision 4).
+# In that window the worker's T8b saw no claim, judged the launcher gone, and
+# put the file back while the revive went on to launch: the pane ran the
+# agent with a `.failed` file, and `send` refused it. So each launcher first
+# writes `.<%N>.by.<pid>` beside the file, holding its owner record (pid and
+# start time, §3.5's rule, never age), and T8b leaves a pane alone while any
+# such record is alive (roost_pending__launcher_live). It is never removed by
+# its writer: it is alive exactly as long as the launcher is, and T8b clears
+# the dead ones it meets. Dot-named, so no `%*` listing sees it.
 roost_pending_take() {
   [ -e "$1" ] || return 1
+  roost_pending__mark "$2"
   # `mv` without -f or -i, and nothing between the check above and it but
   # the rename itself: whoever renames FROM first wins, and the loser's mv
   # finds no FROM.
@@ -105,6 +119,30 @@ roost_pending_take() {
   [ -n "${ROOST_PENDING_SEAM:-}" ] && roost_shape__seam "$ROOST_PENDING_SEAM"
   [ -n "${3:-}" ] && printf 'origin %s\n' "$3" >> "$2"
   return 0
+}
+
+# roost_pending__mark %N-FILE — write this process's launcher record for the
+# pane the pending file names (roost_pending_take says why). Best effort: a
+# record that cannot be written leaves the old behaviour, a window T8b may
+# misjudge, never a failed launch.
+roost_pending__mark() {
+  local pane="${1##*/}" d="${1%/*}" me
+  pane="${pane%%.*}"
+  me="$$ $(roost_shape__lstart "$$" 2>/dev/null || true)"
+  ( umask 077 && printf '%s\n' "$me" > "$d/.$pane.by.$$" ) 2>/dev/null || true
+}
+
+# roost_pending__launcher_live DIR %N -> exit 0 when a launcher record for %N
+# names a live process other than this one; removes the dead ones it reads.
+roost_pending__launcher_live() {
+  local f rec live=1
+  for f in "$1"/."$2".by.*; do
+    [ -f "$f" ] || continue
+    [ "${f##*.by.}" = "$$" ] && continue
+    IFS= read -r rec < "$f" 2>/dev/null || rec=""
+    if [ -n "$rec" ] && roost_shape__alive "$rec"; then live=0; else rm -f "$f"; fi
+  done
+  return "$live"
 }
 
 # roost_pending_leave_launching FILE NEWNAME [REASON [NOTE]] -> exit 0 when
@@ -619,14 +657,14 @@ roost_pending__one() {
 # interrupted. The dead claim is released. No other process renames a
 # `.launching` file it did not make (§4.6).
 #
-# The launcher is judged by the conversation's claim (§4.1 step 5a): a claim
-# for this pane whose owner is alive (pid and start time, never age) is a
-# live launcher, and its file is left alone. No claim at all is a launcher
-# that died before claiming. The one window this cannot see: a live launcher
-# between its rename and its claim — a few tmux reads in `revive` — whose
-# file would be put back here and whose own claim would then fail its
-# step 4 or its held check. A pane running anything but its placeholder line
-# (a launched resume) is never touched: identity or its exit settles it.
+# The launcher is judged by its own record (roost_pending_take writes it
+# before its rename) and by the conversation's claim (§4.1 step 5a): a live
+# record for this pane, or a claim for this pane whose owner is alive (pid
+# and start time, never age), is a live launcher, and its file is left
+# alone. Round 1 judged by the claim alone, and a `revive` between its
+# rename and its claim was taken for dead (review round 1, Opus N1). A pane
+# running anything but its placeholder line (a launched resume) is never
+# touched: identity or its exit settles it.
 roost_pending__recover() {
   local d="$1" boot="$2" f p pane info sc h id c rec line orig
   for f in "$d"/%*.launching; do
@@ -637,6 +675,10 @@ roost_pending__recover() {
     roost_pending__get "$f" harness; h="$ROOST_PENDING_V"
     roost_pending__get "$f" session_id; id="$ROOST_PENDING_V"
     roost_pending__is_placeholder "$sc" "$p" "$h" || continue
+    # A launcher that is still running — a `revive` between its rename and
+    # its claim — is not gone, whatever the claim says yet (review round 1,
+    # Opus N1): its record was written before its rename.
+    roost_pending__launcher_live "$d" "$pane" && continue
     c=""
     if [ -n "$h" ] && [ -n "$id" ] && roost_resume_claims_dir "$_SOCKET_FLAG" "$SOCKET" "$boot" >/dev/null 2>&1; then
       c="$ROOST_RESUME_CLAIMS/$h-$id"
