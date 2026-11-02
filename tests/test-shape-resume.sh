@@ -771,6 +771,25 @@ assert_eq "$(TL display -p -t "$pc" '#{pane_current_command}')|$(TL display -p -
   "...both sleeps alive"
 kill_sess x2 x3
 
+echo "== --retry takes only the states with a retry arrow (T14, T16), by the first line =="
+# A placeholder whose file is %N.failed interrupted, its key in the store, the
+# pane alive: every check a retry makes would PASS, so only the first-line
+# rule keeps it out (§4.7: interrupted, changed, replaced and exited have no
+# retry arrow; only a person's `revive` reaches interrupted).
+reset_run
+TL new-session -d -s x9 -x 200 -y 50 'sleep 600'
+pq="$(first_pane x9)"
+mkdir -p "$PEND"
+for r in interrupted replaced; do
+  printf '%s\nwas %%1009\nharness claude\nsession_id %s\ntranscript %s\ncwd %s\nsession x9\nwindow 1\norder 1\n' "$r" "$U1" "$(tfile "$U1")" "$D1" > "$PEND/$pq.failed"
+  TL set -p -t "$pq" remain-on-exit failed; TL respawn-pane -k -t "$pq" "$PH" "$PEND/$pq" claude
+  wait_screen "$pq" "claude was not resumed: $r" 70 >/dev/null
+  R restore --resume --retry >/dev/null 2>&1
+  assert_eq "$(grep -c "$U1" "$STUB_LOG")|$(head -1 "$PEND/$pq.failed" 2>/dev/null)" "0|$r" \
+    "failed with '$r' first, every check passable: --retry launches nothing, the file as it was"
+done
+kill_sess x9
+
 echo "== a retried dead pane (T16): pane_dead 1 is its check =="
 reset_run
 TL new-session -d -s x4 -x 200 -y 50 'sleep 600'

@@ -133,6 +133,48 @@ conversation. What it does NOT know:
   process is: a shell with a job is refused with exit 1 (a person's work)
   and `--force` replaces it; a pane whose own process is not a shell or the
   harness is a stale key (13).
+  Since Part 3 save asks the same function (`roost_shape_agree_pane`), so
+  a restore and a `revive` judge such a pane alike.
+
+### Restore resumes agents: what Part 3 leaves open (#191 Part 3)
+
+Live risk, small. A hand `roost restore` and `roost restore --resume` resume
+agents through one engine (`scripts/lib/roost-pending.sh`), from the
+`pending/<boot>/` record placement writes.
+
+- **No save after each launch.** §4.7 T10 says a launch is followed by `save
+  --auto --trigger respawn`. Not done in Part 3: a save today writes only the
+  live identity options, so every pane still WAITING (a placeholder, with no
+  identity on it) would be written without its key, and the newest shape
+  would lose those keys. The overlay that writes a pending pane's key from
+  its file is Part 4's (§4.6 Overlay); the save after a launch comes with it.
+  Until then a crash in the middle of a restore leaves the previous `shape`
+  as the newest save, which still has every key. Severity: low.
+- **A dialog on resume is left for a person.** Restore and `revive` launch
+  and move on (§4.1 step 8, §5.2): a folder-trust or similar dialog the
+  harness opens stays on screen, the pane's pending file stays `.launching`
+  and its claim held until identity lands. Nothing answers it. By design.
+- **A launcher between its rename and its claim cannot be seen.** The worker
+  that holds `resuming/` puts back a `.launching` file whose launcher is gone
+  (T8b), and judges "gone" by the conversation's claim. A `revive` that has
+  renamed the pane's file and not yet taken its claim — a few tmux reads —
+  has none; its file would be put back and its own launch then fails its
+  checks (exit 1 or 13, nothing launched twice). Severity: low.
+- **Identity release needs saving on.** T11, T12 and T18 find the pending
+  file in the shape directory. A hand restore with `ROOST_SHAPE_DIR=` keeps
+  its pending files in a temporary directory, which identify cannot see:
+  those files are never released and go with that directory.
+- **What a resumed fleet weighs, measured once** (docs/airig/probes/
+  persist-3-fleet-rss.md, 2026-11-01): 30 stub agents holding 50 MiB each
+  came to 20.7 times the placed-only server's RSS; one resumed real Claude
+  2.1.316 held about 232 MiB before its first prompt, about 83 % of §2.9's
+  long-running mean. Consistent with §2.9's hypothesis (cold starts, not the
+  resident set, were the boot's weight), not proof: start cost was not
+  measured.
+- **codex badges after a restore.** §5.7: every resumed codex reports through
+  the first one's app-server, so the badges land on the first codex pane
+  until #145; the report says so. §8.2 item 6 (two real codex panes after a
+  restore) has not been run.
 
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 

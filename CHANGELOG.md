@@ -38,9 +38,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   pane is a shell in its saved directory. A session that already exists is
   skipped and named. `--dry-run` prints the plan and starts nothing,
   `--list` shows every save, `--from` picks an earlier save or a copy, and
-  `--only` restores one session, window or pane. Agents are not resumed yet,
-  and nothing saves on its own yet: run `roost save` when you want one. See
-  the Persistent Sessions docs page.
+  `--only` restores one session, window or pane. Nothing saves on its own
+  yet: run `roost save` when you want one. See the Persistent Sessions docs
+  page.
 
 - **`roost revive %N` brings one agent's conversation back after a crash or
   an `/exit` (#57).** It runs the harness's own resume — `claude --resume`,
@@ -54,6 +54,28 @@ and this project uses [Semantic Versioning](https://semver.org/).
   harness opens is left for you. A ⏳ working or 🛑 blocked agent, or a shell
   running something, is refused unless `--force`. For opencode the command
   is printed, not run. See the Persistent Sessions docs page.
+
+- **`roost restore` now resumes your agents, one at a time, each in its own
+  directory (#191).** After the panes are placed, every agent that had a
+  conversation is launched with its harness's own resume, shells first, then
+  agents `--pace` seconds apart (default 2). Until its turn an agent's pane
+  shows `waiting to resume claude - press any key for a shell`; press a key
+  and the pane is your shell and that agent is left out (`roost revive %N`
+  brings it back). `roost send` and `roost answer` refuse such a pane with
+  exit 3 unless `--force`, and `roost close` cancels its resume. A resume that
+  cannot run (harness missing, directory gone, store miss, a duplicate) leaves
+  the pane saying why, and `roost restore --resume --retry` tries again once
+  you have fixed it; it never touches a pane you took. `--no-resume` places
+  only, `--recent DAYS` leaves out old conversations, `--resume` resumes
+  panes already placed. Restore ends with one report line — what was
+  launched, what was not and why, which agents were mid-turn — and `--json`
+  gives it as a document; exit 13 means an agent was not resumed. After a
+  restore, write `was:%930` to reach the pane that was `%930` before it:
+  every verb that takes a pane resolves it through this server's restore map,
+  a bare `%N` is never redirected, `roost status` shows `(was %930)` and
+  `status --json` has `was`, and a resumed Claude Code is told its old id.
+  "Launched" is the word: a dialog a harness opens on resume is left for you.
+  See the Persistent Sessions docs page.
 
 ### Changed
 
