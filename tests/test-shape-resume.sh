@@ -989,6 +989,28 @@ assert_eq "$rc" "0" "every agent launched: exit 0"
 assert_contains "$(cat "$SHAPE_TMP/err")" "launched 1 agents; skipped 0 (existing); 0 not resumed" "...and the report says so"
 kill_sess z7
 
+echo "== a pane revive took during the pace: taken by another launcher, not 'not resumed' (review round 1, Fable N3) =="
+reset_run
+shape_of "q1|%2101|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")" \
+         "q2|%2102|$D1|harness claude;session_id $U3;transcript $(tfile "$U3")"
+"${RB[@]}" restore --json --pace 8 >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err" &
+RPID=$!
+wait_log "$U1" 100
+q2="$(first_pane q2)"
+R revive "$q2" >/dev/null 2>&1; rvrc=$?
+wait "$RPID"; rc=$?
+assert_eq "$rvrc|$rc|$(grep -c "$U3" "$STUB_LOG")" "0|0|1" "(fixture) revive launched q2 during the pace; restore exit 0; q2 launched once"
+assert_contains "$(cat "$SHAPE_TMP/err")" "launched 1 agents; skipped 0 (existing); 0 not resumed" "the report does not count the revived pane as not resumed"
+assert_contains "$(cat "$SHAPE_TMP/err")" "$q2 (was %2102): taken by another launcher" "...and names what happened to it on stderr"
+if command -v python3 >/dev/null 2>&1; then
+  assert_eq "$(python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+r = {x["was"]: x for x in d["restored"]}
+print(r["%2102"]["launched"], r["%2102"]["reason"])' "$SHAPE_TMP/out")" "False taken by another launcher" "--json says the same"
+fi
+kill_sess q1 q2
+
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

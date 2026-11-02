@@ -569,7 +569,9 @@ roost_restore_report() {
       if [ "$h" = codex ]; then
         ncodex=$((ncodex + 1)); [ -n "$first_codex" ] || first_codex="$pane"
       fi
-    elif [ -n "$h" ]; then
+    elif [ -n "$h" ] && [ "$r" != "taken by another launcher" ]; then
+      # A pane another launcher (a `revive`) took during the loop was
+      # resumed, by that launcher: not counted here (review round 1, N3).
       nr=$((nr + 1))
     fi
     case "$r" in

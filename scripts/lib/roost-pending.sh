@@ -743,7 +743,7 @@ roost_pending__recover() {
 # exited and interrupted have none, so a retry never meets a person's shell
 # or job.
 roost_pending_resume() {
-  local sd="$1" boot="$2" pace="${3:-2}" retry="${4:-0}" d own rc=0 r f n launched=0 st b first
+  local sd="$1" boot="$2" pace="${3:-2}" retry="${4:-0}" d own rc=0 r f n launched=0 st b first was o
   d="$sd/pending/$boot"
   [ -d "$d" ] || return 0
   own=0; roost_shape_owner_take "$sd/resuming" || own=$?
@@ -793,7 +793,21 @@ roost_pending_resume() {
       13) rc=13
           first=""; [ -f "$f.failed" ] && IFS= read -r first < "$f.failed"
           ROOST_PENDING_RESULTS="${ROOST_PENDING_RESULTS:-}$b|0|${first:-not resumed}|${ROOST_PENDING_H:-}"$'\n' ;;
-      2) if [ -e "$f.taken" ]; then first="taken by a key"; else first="pane gone"; fi
+      # Not this run's (review round 1, Fable N3): the rename was lost to a
+      # key (`.taken`) or to ANOTHER LAUNCHER (a `revive`'s `.launching`),
+      # or the pane is gone. Each is said on stderr like any other result,
+      # and the report does not count a pane another launcher took as "not
+      # resumed" (roost_restore_report).
+      2) if [ -e "$f.launching" ]; then first="taken by another launcher"
+         elif [ -e "$f.taken" ]; then first="taken by a key"
+         else first="pane gone"; fi
+         if [ "$first" != "pane gone" ]; then
+           was=""
+           for o in "$f.launching" "$f.taken"; do
+             [ -f "$o" ] || continue; roost_pending__get "$o" was; was="$ROOST_PENDING_V"; break
+           done
+           printf 'roost restore: %s (was %s): %s\n' "$b" "${was:-?}" "$first" >&2
+         fi
          ROOST_PENDING_RESULTS="${ROOST_PENDING_RESULTS:-}$b|0|$first|"$'\n' ;;
       1) rc=1; break ;;
     esac
