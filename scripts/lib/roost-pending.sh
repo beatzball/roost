@@ -117,8 +117,21 @@ roost_pending_take() {
   # a launcher killed here leaves a `.launching` file with no origin line,
   # which T8b must read as interrupted.
   [ -n "${ROOST_PENDING_SEAM:-}" ] && roost_shape__seam "$ROOST_PENDING_SEAM"
-  [ -n "${3:-}" ] && printf 'origin %s\n' "$3" >> "$2"
-  return 0
+  [ -n "${3:-}" ] || return 0
+  # NEVER WRITE INTO A FILE THIS RUN NO LONGER OWNS (review round 1, Opus
+  # N2). `>>` creates its file: when something moved TO away after the
+  # rename (a T8b put-back), the append made a stray one-line %N.launching
+  # beside the real file, and identity later took it for the pane's record
+  # and moved it over the key. So the append goes only to a file that holds
+  # its `was` line, and is checked after: a file this append created (no
+  # `was` line) is removed again. Either way the take is LOST (exit 1): the
+  # pane is no longer this launcher's to launch.
+  if [ -f "$2" ] && grep -q '^was ' "$2" 2>/dev/null; then
+    printf 'origin %s\n' "$3" >> "$2"
+    grep -q '^was ' "$2" 2>/dev/null && return 0
+  fi
+  if [ -f "$2" ] && ! grep -q '^was ' "$2" 2>/dev/null; then rm -f "$2"; fi
+  return 1
 }
 
 # roost_pending__mark %N-FILE — write this process's launcher record for the

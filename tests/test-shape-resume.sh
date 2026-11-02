@@ -61,6 +61,25 @@ printf 'store miss\n' | cat - "$SHAPE_TMP/keep13" > "$P/%13.failed"; rm -f "$P/%
 roost_pending_take "$P/%13.failed" "$P/%13.launching" "failed store miss"
 assert_eq "$(tail -1 "$P/%13.launching")" "origin failed store miss" "from failed: origin failed REASON (the old first line)"
 
+echo "== roost_pending_take never writes into a file it no longer owns (review round 1, Opus N2) =="
+# Held between the rename and the origin append (the seam a caller names in
+# ROOST_PENDING_SEAM), the file is moved away, as a T8b put-back would: the
+# append must not create a stray %N.launching, and the take reports it lost.
+# The seam helper is roost-shape.sh's, which every caller of this library has
+# sourced (bin/roost, restore, revive); this file sources it here.
+. scripts/lib/roost-shape.sh
+f9="$(roost_pending_write "$SD" "$BOOT" %19 %939 claude "$U1" "" /w "" main 2 9)"
+TH="$SHAPE_TMP/take.hold"; rm -f "$TH" "$TH".at.*
+( TAKE_SEAM="$TH" ROOST_PENDING_SEAM=TAKE_SEAM roost_pending_take "$f9" "$f9.launching" waiting; echo "rc=$?" > "$SHAPE_TMP/take.rc" ) &
+TP=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$TH".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+mv "$f9.launching" "$f9.failed"
+touch "$TH"; wait "$TP"
+assert_eq "$(cat "$SHAPE_TMP/take.rc")|$(ls "$P" | grep -c '^%19\.launching$')" "rc=1|0" \
+  "the file moved away before the origin line: no stray .launching is made, and the take is lost (exit 1)"
+assert_eq "$(grep -c '^origin' "$f9.failed")" "0" "...and nothing was written into the file at its new name"
+rm -f "$P/%19".* "$P"/.%19.by.* 2>/dev/null
+
 echo "== roost_pending_leave_launching: origin removed, then the rename (revision 10, C B1) =="
 roost_pending_leave_launching "$P/%12.launching" "$P/%12"; rc=$?
 assert_eq "$rc|$(ls "$P" | tr '\n' ' ')" "0|%12 %13.launching " "back to %N: exit 0"

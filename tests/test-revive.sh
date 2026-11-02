@@ -1019,6 +1019,25 @@ assert_eq "$rc" "3" "send agrees: refused (exit 3)"
 assert_contains "$(cat "$SHAPE_TMP/err")" "is launched" "...as launched"
 TL kill-pane -t "$P"; rm -f "$PEND/$P".* "$PEND"/.*"$P"* 2>/dev/null
 
+echo "== a worker while a revive holds before its origin line (review round 1, Opus N2) =="
+reset
+V9=3fa3c0de-0009-4abc-8def-0000000000a9; stub_store_add "$V9" "$D1R"
+TL set-environment -g STUB_IDENTIFY 1
+P="$(waiting "$V9")"
+H="$SHAPE_TMP/orig.hold"; rm -f "$H" "$H".at.*
+ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN="$H" "${RB[@]}" revive "$P" >/dev/null 2>&1 &
+RV=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$H".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+R restore --resume >/dev/null 2>&1
+touch "$H"; wait "$RV"; rc=$?
+wait_log "claude --resume $V9"
+assert_eq "$rc|$(grep -c "$V9" "$STUB_LOG")" "0|1" "the revive goes on and launches, once"
+i=0; while [ "$i" -lt 50 ] && ls "$PEND" | grep -q "^$P"; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(ls "$PEND" | grep -c "^$P")|$(TL show -pqv -t "$P" @roost-session)" "0|$V9" \
+  "identity lands: no pending file left for the pane (never two, never a stray), the key on the pane"
+TL set-environment -gu STUB_IDENTIFY
+TL kill-pane -t "$P"; rm -f "$PEND/$P".* 2>/dev/null
+
 echo "== --new-window from a pending file =="
 reset
 P="$(waiting "$V1")"
