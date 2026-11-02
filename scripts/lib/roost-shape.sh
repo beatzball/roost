@@ -1054,11 +1054,20 @@ roost_shape__round() {
   # The pending changes first (§3.5 step 2), for this server's boot, so the
   # listing below writes each pane under the name its file has now.
   boot="$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
-  # A hook's saver whose server went (and perhaps another took the socket)
-  # while it waited publishes nothing, and it is not a failure (see
-  # roost_shape_auto). Checked here, before the listing, and again after it.
-  if [ -n "${ROOST_SHAPE_HOOKBOOT:-}" ] && [ "$boot" != "$ROOST_SHAPE_HOOKBOOT" ]; then
-    ROOST_SHAPE_LAST=lost; return 1
+  # The wants of this round were kept for the server whose boot the saver
+  # read at its drain (ROOST_SHAPE_EXPECT; roost_shape__saver). Another
+  # server on the socket now — the old one killed, a new one started while
+  # this round waited — is not theirs: publish nothing, and say "lost", which
+  # is not a failure; the saver then goes on and the new server's own wants,
+  # in a want/ this round never drained, get their own round (fix round 3).
+  # A server simply gone: only a round made of hook wants is "lost"
+  # (ROOST_SHAPE_HOOKONLY), since a hook that outlives its server has
+  # nothing to save; a person's or a verb's round goes on, fails to list,
+  # and says so in save.err (R3).
+  if [ -n "${ROOST_SHAPE_EXPECT:-}" ] && [ "$boot" != "$ROOST_SHAPE_EXPECT" ]; then
+    if [ -n "$boot" ] || [ "${ROOST_SHAPE_HOOKONLY:-0}" = 1 ]; then
+      ROOST_SHAPE_LAST=lost; return 1
+    fi
   fi
   ROOST_SHAPE_PDIR=""
   if [ -n "$boot" ]; then
@@ -1073,9 +1082,9 @@ roost_shape__round() {
     roost_shape__err "$dir" list "$r"
     return 1
   fi
-  # The server listed must still be the one whose boot was checked above:
-  # a new server can take the socket between that check and the listing.
-  if [ -n "${ROOST_SHAPE_HOOKBOOT:-}" ] && [ "$ROOST_SHAPE_BOOT" != "$ROOST_SHAPE_HOOKBOOT" ]; then
+  # The server listed must still be the one the wants were kept for: a new
+  # server can take the socket between that check and the listing.
+  if [ -n "${ROOST_SHAPE_EXPECT:-}" ] && [ "$ROOST_SHAPE_BOOT" != "$ROOST_SHAPE_EXPECT" ]; then
     ROOST_SHAPE_LAST=lost; return 1
   fi
   roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_LIST
@@ -1147,20 +1156,43 @@ roost_shape__round() {
 # back (the server it could not list is the cause, and the next hook brings
 # a new want).
 roost_shape__saver() {
-  local dir="$1" key="$2" drain triggers r
+  local dir="$1" key="$2" drain triggers r live wants hookonly w
   while :; do
     while [ -d "$dir/want" ] && roost_shape__mine "$dir"; do
+      # WHOSE WANTS (fix round 3). A hook's want names its boot,
+      # `<trigger>[.%N]@<boot>`; a person's and a verb's name none. The live
+      # server's boot is read before the drain, and a want of ANOTHER boot —
+      # a late hook of a server that was killed, whose socket a new server
+      # now holds — is dropped here, alone: every other want stays in this
+      # round and is saved for the live server. So an old hook's saver
+      # holding lock/ while the server is replaced saves the NEW server's
+      # wants instead of dropping them (round 3 jury, Opus), and a foreign
+      # per-pane want never reaches the arrows, which would cancel the new
+      # server's pending resume for a pane that shares its id (Fable).
+      live="$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
       drain="$dir/want.$$"
       rm -rf "$drain"
       mv "$dir/want" "$drain" 2>/dev/null || break
+      wants="" hookonly=1
+      for w in $(ls "$drain" 2>/dev/null); do
+        case "$w" in
+          *@*) [ -n "$live" ] && [ "${w##*@}" = "$live" ] || continue; w="${w%@*}" ;;
+          *) hookonly=0 ;;
+        esac
+        wants="$wants$w "
+      done
       # want/<trigger>.<%N> names a pane; the header carries the trigger.
-      triggers="$(ls "$drain" 2>/dev/null | sed 's/\.%[0-9]*$//' | sort -u | tr '\n' ' ')"
+      triggers="$(printf '%s\n' $wants | sed 's/\.%[0-9]*$//' | sort -u | tr '\n' ' ')"
       triggers="${triggers% }"
-      ROOST_SHAPE_WANTS="$(ls "$drain" 2>/dev/null | tr '\n' ' ')"
+      ROOST_SHAPE_WANTS="$wants" ROOST_SHAPE_EXPECT="$live" ROOST_SHAPE_HOOKONLY="$hookonly"
       rm -rf "$drain"
       roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_DRAIN
       [ -n "$triggers" ] || continue
       r=0; roost_shape__round "$dir" "$key" "$triggers" || r=1
+      # "lost": the server changed under this round; its wants were not the
+      # live server's. Not a failure: go on, so a want the new server left
+      # meanwhile is drained and saved by this same saver.
+      if [ "$r" = 1 ] && [ "$ROOST_SHAPE_LAST" = lost ]; then r=0; continue; fi
       [ "$r" = 0 ] || break
     done
     roost_shape__mine "$dir" && roost_shape_owner_drop "$dir/lock"
@@ -1247,9 +1279,6 @@ roost_shape_auto() {
       ids="$(roost_shape__kill_diff "$before" "$after")"
       [ -n "$ids" ] && roost_shape__closed_write "$dir" "$boot" \
         "kill.$(roost_shape__compact_stamp)-$$" "$ids"$'\n'
-      # One want per killed pane too, `<trigger>.%N`: the saver's arrows
-      # cancel its pending file and release its claim (T19, §4.7).
-      for r in $ids; do roost_shape__want "$dir" "$trigger.$r" || true; done
     fi
     [ "$trigger" = pane-exited ] && [ -n "$pane" ] && \
       roost_shape__closed_write "$dir" "$boot" "died.${pane#%}" "$pane"$'\n'
@@ -1261,12 +1290,20 @@ roost_shape_auto() {
   # live server must be that boot, or nothing is wanted, locked or written;
   # a server that is simply gone is not a failed save either (no save.err).
   # The closed record above is the hook's own boot's, and stands.
-  ROOST_SHAPE_HOOKBOOT=""
+  #
+  # Every want a hook writes names that boot, `@<boot>`, so the saver can drop
+  # it alone should the server change before it is drained, and keep every
+  # other want (roost_shape__saver, fix round 3). The per-pane wants are
+  # written only HERE, after the check (they were written before it, and a
+  # killed server's late hook left `want/<trigger>.%N` for the next server's
+  # saver to cancel that server's own pending %N: round 3 jury, Fable).
   if [ -n "$boot" ]; then
     [ "$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)" = "$boot" ] || return 0
-    ROOST_SHAPE_HOOKBOOT="$boot"
+    # One want per killed pane, `<trigger>.%N@<boot>`: the saver's arrows
+    # cancel its pending file and release its claim (T19, §4.7).
+    for r in ${ids:-}; do roost_shape__want "$dir" "$trigger.$r@$boot" || true; done
   fi
-  roost_shape__want "$dir" "$trigger${pane:+.$pane}" || return 0
+  roost_shape__want "$dir" "$trigger${pane:+.$pane}${boot:+@$boot}" || return 0
   # Step 4: a live restore owns publishing until it ends; its final save
   # (--trigger restore) covers this want. A restoring/ whose owner is dead
   # holds nothing.

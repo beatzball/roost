@@ -218,6 +218,46 @@ assert_eq "$(gen_of "$SD2")|$( [ -e "$SD2/save.err" ] && echo err)" "$(gen_of "$
 R2 save --auto --trigger after-rename-window
 grep -q '^name new-server$' "$SD2/shape"; assert_true $? "the new server's own save (no old boot) is written as usual"
 
+echo "== an old hook's saver never drops the NEW server's wants (fix round 3, A) =="
+# Round 3 jury (Opus probe): the old server's hook saver holds lock/; the
+# server is replaced on the socket; the new server's own saves find lock/
+# held and leave their wants; the old saver drains them. Only the old hook's
+# OWN want may be dropped; the rest must land in a save of the live server.
+OLDB="$(tmux -S "$S2" display -p '#{start_time}-#{pid}')"
+H="$SHAPE_TMP/hold-lockA"
+ROOST_TEST_SAVE_HOLD="$H" R2 save --auto --trigger after-rename-window --boot "$OLDB" >/dev/null 2>&1 & hp=$!
+wait_at "$H"; assert_true $? "(fixture) the old server's hook saver holds lock/"
+tmux -S "$S2" kill-server; sleep 0.3
+start_s2; tmux -S "$S2" rename-window -t '=two:' newserver-a
+NEWB="$(tmux -S "$S2" display -p '#{start_time}-#{pid}')"
+R2 save --auto --trigger spawn
+R2 save --auto --trigger after-rename-window --boot "$NEWB"
+: > "$H"; wait "$hp"
+grep -q '^name newserver-a$' "$SD2/shape"; assert_true $? "released: the new server's wants were saved (the shape holds newserver-a)"
+assert_eq "$(ls "$SD2/want" 2>/dev/null | tr '\n' ' ')" "" "...and no want is left behind"
+case " $(sed -n 's/^trigger //p;/^$/q' "$SD2/shape") " in *" spawn "*) r=0 ;; *) r=1 ;; esac
+assert_true $r "...the verb's own cause is in that save's trigger"
+
+echo "== a killed server's late hook never touches the next server's pending panes (fix round 3, B) =="
+# Round 3 jury (Fable replay): a late hook of a killed server wrote
+# want/<trigger>.%N for its kill difference before its boot check, and the
+# next server's saver ran the arrow for its own %N: it cancelled that
+# server's pending resume.
+AB="$(tmux -S "$S2" display -p '#{start_time}-#{pid}')"
+tmux -S "$S2" kill-server; sleep 0.3
+start_s2; BB="$(tmux -S "$S2" display -p '#{start_time}-#{pid}')"
+R2 save --auto --trigger after-kill-pane --boot "$AB" --ids-before "x%0 %1 " --ids-after "x%0 "
+[ -n "$(ls "$SD2/closed/$AB"/kill.* 2>/dev/null)" ]; assert_true $? "a late hook of the killed server still writes its kill file under its own boot"
+assert_eq "$(ls "$SD2/want" 2>/dev/null | grep -c '%1')" "0" "...but leaves no per-pane want"
+mkdir -p "$SD2/pending/$BB"; printf 'was %%9\nharness claude\nsession_id 3fa3c0de-0000-4abc-8def-000000000901\ncwd /tmp\n' > "$SD2/pending/$BB/%1"
+# The second guard: a foreign per-pane want that got into want/ anyway (a
+# server that died between a hook's check and the drain) carries its boot.
+mkdir -p "$SD2/want"; : > "$SD2/want/after-kill-pane.%1@$AB"
+tmux -S "$S2" rename-window -t '=two:' newserver-b
+R2 save --auto --trigger after-rename-window --boot "$BB"
+[ -f "$SD2/pending/$BB/%1" ]; assert_true $? "the next server's pending %1 is still there after its own save"
+grep -q '^name newserver-b$' "$SD2/shape"; assert_true $? "...and that save was published"
+
 echo "== a publish that fails: save.err (R3, ROOST_TEST_PUBLISH_FAIL) =="
 tmux -S "$S2" rename-window -t '=two:' pubfail
 gpf="$(gen_of "$SD2")"

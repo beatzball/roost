@@ -224,6 +224,15 @@ server (scripts/lib/roost-shape.sh, roost_shape_auto).
 - **`save.err` stays until a save is published.** A round that finds nothing
   changed does not remove it (ruling R3's wording), so doctor can quote an
   old failure while saving works again; the next real change clears it.
+- **A hook's save is about its own server, by boot.** Every want a hook
+  writes names its boot (`want/<trigger>[.%N]@<boot>`), and a saver drops
+  only wants of another boot, so a server replaced on the socket mid-save
+  keeps its own wants (fix round 3). What is left: a hook on a LIVE server
+  whose boot read (`display-message`) fails drops its own want silently, as
+  if the server were gone; never seen, the next change saves. And a
+  person's or a verb's want (they name no boot) drained by a saver after
+  the server was replaced is saved for the new server, its label riding
+  along. Severity: low.
 - **A lock held by a stopped saver is never broken by age** (the owner rule).
   doctor names a live owner held over 60 s; the wants wait for it.
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
