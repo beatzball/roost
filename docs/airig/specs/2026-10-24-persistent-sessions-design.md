@@ -1540,8 +1540,13 @@ the hidden form the service runs (§4.4).
   each with a placing placeholder as its first pane's command (Windows,
   below). A session skipped because a key took the bootstrap is named by
   `restore --list` as `skipped: the bootstrap pane was taken by a key`, and
-  comes back with `tmux kill-session -t NAME` then `roost restore --only
-  NAME` (revision 4, F N6).
+  comes back with `tmux kill-session -t NAME` then `roost restore --from
+  <STAMP-GEN of the save restored> --only NAME` (or `--from FILE` when it
+  was restored from a file), which restore's own message names (revision 4,
+  F N6; amended at step 4's review, coordinator ruling). Not a plain
+  `restore --only NAME`: since step 4 that kill-session is recorded as
+  closed for this boot (§3.6a), and this restore's own final save is the
+  newest and holds the person's shell, not NAME.
 - **Every pane placement creates is roost's from its creation** (revision
   4, item 3). Revision 3 gave only the bootstrap a placeholder and created
   every other session, window and split as an ordinary login shell, which
@@ -4331,7 +4336,7 @@ are the six items of §0.
 | F N3 — a placeholder that exits by itself reads as a cancel | **taken**: placeholders run under `remain-on-exit failed`; a crash is arrow T13a, `%N.failed died`, and `--retry` reaches it (§4.7, test 11 "a crashed placeholder"); the taken shell clears the option so a person's own `exit` still closes the pane |
 | F N4 — a `.failed duplicate` pane says "waiting" for ever | **taken**: no failed pane is respawned any more; the placeholder reads its file again every 5 s and shows the reason (§4.7 step 1, §4.6 step 3, test 11) |
 | F N5 — the bootstrap placeholder starts before wiring | **taken**: the placeholder reads `default-command` when it hands over, so a key after `wiring apply` gets a wired shell (measured, §2.10; §4.3 Server) |
-| F N6 — a key in the bootstrap skips the whole first session | **taken**: `restore --list` names it, and `kill-session` then `restore --only NAME` brings it back (§4.3 Sessions) |
+| F N6 — a key in the bootstrap skips the whole first session | **taken**: `restore --list` names it, and `kill-session` then `restore --from <STAMP-GEN of the save restored> --only NAME` (or `--from FILE`) brings it back (§4.3 Sessions; amended at step 4: the kill-session is recorded as closed for this boot and this restore's own save is newest, so a plain `--only NAME` finds nothing) |
 | F N7 — a taken pane in which a person starts a fresh agent keeps its file | **taken**: arrow T18, the file is removed (§4.7, test 11) |
 | F N8 — §3.6 calls `window-unlinked` and `session-closed` process deaths | **taken**: "process deaths, or a kill with no hook of its own" (§3.6) |
 | C N1 — test 8(b2) asserts on every file under `closed/` | **taken**: the assertion is on the kill and close files after the death-note rule, plus a separate check that `died.<C>` exists (test 8(b2)) |

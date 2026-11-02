@@ -10,11 +10,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **roost now saves your fleet's shape by itself, on every change (#51,
-  #191).** Make, close, kill, rename, move or resize a session, window or
-  pane — or `roost spawn`, `split`, `view`, `close`, `revive` — and the
-  shape under `~/.local/state/roost/shapes/` is up to date a moment later,
-  so a crash loses at most the last change and `roost restore` has the
-  fleet as it was. A burst of changes becomes one or two saves, and
+  #191).** Make, close, kill, rename or move a session, window or pane,
+  choose a layout or resize a pane by command — or `roost spawn`, `split`,
+  `view`, `close`, `revive` — and the shape under
+  `~/.local/state/roost/shapes/` is up to date a moment later, so a crash
+  loses at most the last change and `roost restore` has the fleet as it
+  was. A drag resize, `swap-pane`, `swap-window`, a `join-pane` or
+  `move-pane` that leaves its window with panes, and a shell's `cd` fire
+  nothing roost listens to: they are saved with the next change of any
+  other kind. A burst of changes becomes one or two saves, and
   `history/` keeps the last 100 (`ROOST_SHAPE_KEEP`). A pane you closed on
   purpose stays closed: `roost close`, `tmux kill-pane`, `kill-window`,
   `kill-session`, and `roost kill NAME` and `roost stop` for a whole

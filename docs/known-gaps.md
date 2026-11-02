@@ -217,7 +217,7 @@ server (scripts/lib/roost-shape.sh, roost_shape_auto).
   `tmux kill-session -t NAME` then `roost restore --only NAME`. Since Part 4
   the kill is recorded and the newest save lacks NAME, so restore's message
   now says `roost restore --from STAMP-GEN --only NAME`, naming the save it
-  restored. The spec text is not changed (coordinator to rule).
+  restored. The spec (§4.3, F N6) now says the same (coordinator ruling).
 - **Every restore rewrites `shape`.** Its own final save is the placed fleet:
   after `restore --no-resume`, `shape` holds shells, and a second restore
   from it resumes nothing. The save before is in `history/`.
