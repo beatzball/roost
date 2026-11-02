@@ -523,6 +523,10 @@ kill_sess() { local s; for s in "$@"; do TL kill-session -t "=$s" 2>/dev/null; d
 reset_run() { : > "$STUB_LOG"; : > "$HOME/shells.log"; rm -rf "$PEND" "$XDG_STATE_HOME/roost/launch-claims"; }
 logline() { grep -- "$1" "$STUB_LOG" | head -1; }
 wait_log() { local i=0; while [ "$i" -lt "${2:-100}" ]; do grep -q -- "$1" "$STUB_LOG" 2>/dev/null && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+# wait_count PATTERN N — up to 5 s for N launch lines matching PATTERN. A
+# restore returns once its last respawn is issued; the stub writes its line
+# a moment later, so a count read at once can be one short under load.
+wait_count() { local i=0; while [ "$i" -lt 50 ]; do [ "$(grep -c -- "$1" "$STUB_LOG" 2>/dev/null)" -ge "$2" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
 
 echo "== §8.1 test 4: the resume runs in its directory, agents --pace apart, shells first =="
 reset_run
@@ -537,6 +541,7 @@ i=0; while [ "$i" -lt 150 ]; do [ -n "$(first_pane r4)" ] && [ ! -e "$SD/restori
 p4="$(first_pane r4)"; shells_wait "$p4"
 assert_eq "$(shells_for "$p4" | wc -l | tr -d ' ')|$(cat "$STUB_LOG")" "1|" "shells are placed before any agent: the shell pane has its shell, nothing launched yet"
 touch "$HOLD"; wait "$RPID"; rc=$?
+wait_log "$CX" 50
 assert_eq "$rc" "0" "restore: exit 0 (every agent launched)"
 assert_eq "$(wc -l < "$STUB_LOG" | tr -d ' ')" "3" "three launches, one per keyed pane"
 assert_eq "$(logline "$U1" | cut -d' ' -f2-)" "$D1 claude --resume $U1" "claude: --resume <id> in the transcript's first cwd (a dotted path)"
@@ -571,6 +576,7 @@ reset_run
 shape_of "r1|%940|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")" \
          "r2|%941|$D1|harness claude;session_id $U3;transcript $(tfile "$U3")"
 R restore --only r2 --pace 0 >/dev/null 2>&1; rc=$?
+wait_log "$U3" 50
 assert_eq "$rc|$(wc -l < "$STUB_LOG" | tr -d ' ')|$(grep -c "$U3" "$STUB_LOG")" "0|1|1" "--only SESSION: one session placed, one agent run"
 kill_sess r1 r2
 
@@ -582,6 +588,7 @@ shape_of "d1|%960|$D3|harness claude;session_id $U4;transcript $f4d/$U4.jsonl" \
          "d4|%963|$D3|harness claude;session_id $U6;transcript $f6d/$U6.jsonl" \
          "d5|%964|$D3|harness claude;session_id $U7;transcript $f7d/$U7.jsonl"
 R restore --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+wait_log "$U4" 50; wait_log "$CX" 50; wait_log "$U7" 50
 assert_eq "$rc" "13" "a pane not resumed for a listed reason: exit 13"
 assert_eq "$(logline "$U4" | cut -d' ' -f2-)" "$REPO claude --resume $U4" "a transcript filed under the worktree's folder, first cwd the repository root: run in the root"
 assert_eq "$(logline "$CX" | cut -d' ' -f2-)" "$D3 codex resume $CX" "codex with no session_cwd: the shell cwd"
@@ -602,6 +609,7 @@ shape_of "u1|%970|$D1|harness claude;session_id $U1;transcript $(tfile "$U1");st
          "u4|%973|$D1|harness claude;session_id $U1;transcript $(tfile "$U1")"
 R restore --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 q1="$(first_pane u1)"; q2="$(first_pane u2)"; q3="$(first_pane u3)"; q4="$(first_pane u4)"
+wait_log "$U1" 50
 assert_eq "$rc" "13" "a duplicate and a store miss: exit 13"
 assert_eq "$(grep -c "$U1" "$STUB_LOG")" "1" "duplicate: the first launched, once"
 assert_eq "$(head -1 "$PEND/$q2.failed" 2>/dev/null)" "duplicate of $q1" "...the second %N.failed duplicate of %M"
@@ -650,6 +658,7 @@ TL respawn-pane -k -t "$v4" 'sh'
 sleep 0.3
 spid4="$(TL display -p -t "$v4" '#{pane_pid}')"; scmd4="$(TL display -p -t "$v4" '#{pane_current_command}')"
 wait "$WPID"; rc=$?
+wait_log "$U10" 50
 assert_eq "$rc" "13" "the worker: exit 13 (one pane changed)"
 assert_eq "$(wc -l < "$STUB_LOG" | tr -d ' ')|$(grep -c "$U3\|$U8\|$U9" "$STUB_LOG")" "2|0" "two launches: the first and the last; the taken and the changed panes never"
 [ -e "$PEND/$v2.taken" ]; assert_true $? "(a) echo keep-me + C-a: %N.taken"
@@ -771,6 +780,8 @@ stub_store_add "$U11" "$D1"
 R restore --resume >/dev/null 2>&1
 assert_eq "$(cat "$STUB_LOG")|$( [ -e "$PEND/$px.failed" ] && echo failed)" "|failed" "the store repaired, a plain --resume: nothing launched, still .failed (only --retry retries)"
 R restore --resume --retry >/dev/null 2>&1; rc=$?
+# restore returns once the respawn is issued; the stub logs a moment later.
+wait_log "$U11" 50
 assert_eq "$rc|$(grep -c "$U11" "$STUB_LOG")" "0|1" "(A) --retry: launched once more, exit 0"
 assert_eq "$(TL display -p -t "$px" '#{pane_dead}')" "0" "(A) ...pane_dead 0"
 wait_gone2 "$PEND/$px.launching"; assert_eq "$(ls "$PEND" | grep -c "^$px")" "0" "(A) ...and the file gone once the stub identified"
@@ -811,6 +822,7 @@ R restore --resume >/dev/null 2>&1; rc=$?
 assert_eq "$rc|$(head -1 "$PEND/$pc7.failed" 2>/dev/null)|$(grep -c "$U16" "$STUB_LOG")" "13|died|0" \
   "the worker finds it dead with its own placeholder line: %N.failed died, not pane changed"
 R restore --resume --retry >/dev/null 2>&1; rc=$?
+wait_log "$U16" 50
 assert_eq "$rc|$(grep -c "$U16" "$STUB_LOG")|$(TL display -p -t "$pc7" '#{pane_dead}')" "0|1|0" "...which --retry relaunches in place (T16)"
 kill_sess x7
 
@@ -865,6 +877,7 @@ printf 'died\nwas %%1004\nharness claude\nsession_id %s\ntranscript %s\ncwd %s\n
 R restore --resume >/dev/null 2>&1
 assert_eq "$(cat "$STUB_LOG")" "" "failed, dead: a plain --resume leaves it"
 R restore --resume --retry >/dev/null 2>&1; rc=$?
+wait_log "$U9" 50
 assert_eq "$rc|$(grep -c "$U9" "$STUB_LOG")|$(TL display -p -t "$pz" '#{pane_dead}')" "0|1|0" "--retry relaunches a failed, dead pane in place"
 kill_sess x4
 
@@ -903,6 +916,7 @@ kill -9 "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 wait_gone2 "$PEND/$py1.launching"
 assert_eq "$(ls "$PEND" | grep -c '^%[0-9]*$')|$(ls "$PEND" | grep -c "^$py1")" "2|0" "killed after the first launch: its file gone (identified), two claimable"
 R restore --resume --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+wait_log "$U3" 50; wait_log "$U8" 50
 assert_eq "$rc|$(wc -l < "$STUB_LOG" | tr -d ' ')|$(grep -c "$U3" "$STUB_LOG")|$(grep -c "$U8" "$STUB_LOG")" "0|3|1|1" \
   "the next run takes the dead worker's resuming/ and launches exactly those two"
 kill_sess y1 y2 y3
@@ -921,6 +935,7 @@ i=0; while [ "$i" -lt 50 ] && ! ls "$RH".at.* >/dev/null 2>&1; do sleep 0.1; i=$
 kill -9 "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 [ -e "$PEND/$py4.launching" ]; assert_true $? "(fixture) the dead worker left %N.launching, its claim held"
 R restore --resume --pace 0 >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+wait_log "$U1" 50
 assert_eq "$rc|$(grep -c "$U1" "$STUB_LOG")" "0|1" "the next run puts it back by its origin (waiting) and launches it once"
 kill_sess y4
 
@@ -939,6 +954,7 @@ assert_eq "$rc|$(head -1 "$PEND/$py6.failed" 2>/dev/null)" "13|duplicate of $py5
 assert_eq "$(head -1 "$CLB/claude-$U1/pane" 2>/dev/null)" "$py5" "...and the claim names the first"
 TL kill-pane -t "$py5"
 R restore --resume --retry --pace 0 >/dev/null 2>&1; rc=$?
+wait_count "$U1" 2; i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$py6" '#{pane_current_command}')" != claude ]; do sleep 0.1; i=$((i+1)); done
 assert_eq "$rc|$(grep -c "$U1" "$STUB_LOG")|$(TL display -p -t "$py6" '#{pane_current_command}')" "0|2|claude" \
   "the first pane killed: --retry launches the second"
 kill_sess y5 y6
