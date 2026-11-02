@@ -133,6 +133,72 @@ conversation. What it does NOT know:
   process is: a shell with a job is refused with exit 1 (a person's work)
   and `--force` replaces it; a pane whose own process is not a shell or the
   harness is a stale key (13).
+  Since Part 3 save asks the same function (`roost_shape_agree_pane`), so
+  a restore and a `revive` judge such a pane alike.
+
+### Restore resumes agents: what Part 3 leaves open (#191 Part 3)
+
+Live risk, small. A hand `roost restore` and `roost restore --resume` resume
+agents through one engine (`scripts/lib/roost-pending.sh`), from the
+`pending/<boot>/` record placement writes.
+
+- **No save after each launch.** §4.7 T10 says a launch is followed by `save
+  --auto --trigger respawn`. Not done in Part 3: a save today writes only the
+  live identity options, so every pane still WAITING (a placeholder, with no
+  identity on it) would be written without its key, and the newest shape
+  would lose those keys. The overlay that writes a pending pane's key from
+  its file is Part 4's (§4.6 Overlay); the save after a launch comes with it.
+  Until then a crash in the middle of a restore leaves the previous `shape`
+  as the newest save, which still has every key. Severity: low.
+- **A dialog on resume is left for a person.** Restore and `revive` launch
+  and move on (§4.1 step 8, §5.2): a folder-trust or similar dialog the
+  harness opens stays on screen, the pane's pending file stays `.launching`
+  and its claim held until identity lands. Nothing answers it. By design.
+- **A launcher's record is what T8b judges.** The worker that holds
+  `resuming/` puts back a `.launching` file whose launcher is gone (T8b).
+  Round 1 judged "gone" by the conversation's claim alone, and a `revive`
+  between its rename and its claim has none yet: a reviewer's probe showed
+  the worker put the file back while the revive went on and LAUNCHED (exit
+  0), leaving the pane running the agent with a `.failed` file that `send`
+  refused (review round 1, Opus N1). Now every launcher writes
+  `.<%N>.by.<pid>` (pid and start time) beside the file before it renames,
+  and T8b leaves a pane alone while such a record is alive. What is left: a
+  launcher whose record could not be written (an unwritable pending
+  directory) is judged by its claim alone, as before. Severity: low.
+- **Identity release needs saving on.** T11, T12 and T18 find the pending
+  file in the shape directory. A hand restore with `ROOST_SHAPE_DIR=` keeps
+  its pending files in a temporary directory, which identify cannot see:
+  those files are never released and go with that directory.
+- **A resume that exits non-zero before identity stays launching.** The
+  pane is left dead (`remain-on-exit failed`) with its file `%N.launching`
+  and its claim held; `revive` says it is already being resumed and
+  `--retry` does not take it. Moving it to failed, dead is T13, Part 4's
+  `pane-died` hook. Until then the way out is `roost close` on the pane,
+  then a new `roost restore` (review round 1, Fable N1). Severity: low.
+- **`-S` servers: identify hashes the resolved socket path.** For a
+  `-S PATH` server the shape key is a checksum of the path. `restore` uses
+  the path as typed; identify sees the resolved one in `$TMUX`. A typed path
+  that is not canonical (a symlink, `..`) gives another key, so identity
+  never finds and releases the pending file: the pane stays launched, its
+  claim held. `-L` servers, the default, are not affected (review round 1,
+  Fable N4). Severity: low.
+- **With saving off, a launched pane has no owner state.** A launched pane
+  runs its resume command, not the placeholder, so it is found only through
+  the shape directory; with `ROOST_SHAPE_DIR=` there is none, the pane reads
+  as no file, and `send` is not refused while the resumed agent may be in a
+  dialog (review round 1, Opus). Waiting and failed placeholders are found
+  from their own start command and are still refused. Severity: low.
+- **What a resumed fleet weighs, measured once** (docs/airig/probes/
+  persist-3-fleet-rss.md, 2026-11-01): 30 stub agents holding 50 MiB each
+  came to 20.7 times the placed-only server's RSS; one resumed real Claude
+  2.1.316 held about 232 MiB before its first prompt, about 83 % of §2.9's
+  long-running mean. Consistent with §2.9's hypothesis (cold starts, not the
+  resident set, were the boot's weight), not proof: start cost was not
+  measured.
+- **codex badges after a restore.** §5.7: every resumed codex reports through
+  the first one's app-server, so the badges land on the first codex pane
+  until #145; the report says so. §8.2 item 6 (two real codex panes after a
+  restore) has not been run.
 
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 

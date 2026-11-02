@@ -506,6 +506,17 @@ R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc|$(TL display -p -t "$P" '#{pane_current_command}')" "1|sleep" "a shell running a job (sleep 60): exit 1, the sleep alive"
 assert_contains "$(cat "$SHAPE_TMP/err")" "person's work" "...says it is a person's work"
 assert_eq "$(cat "$STUB_LOG")" "" "...nothing launched"
+# One agreement table for save and revive (Part 3's header, from Part 2's
+# review round 1, Fable N3): the same pane, saved now, is `exited` too —
+# never `other`, which a restore would refuse while revive resumes it.
+assert_eq "$(roost_shape_agree_pane claude sleep "$(ppid_of "$P")")" "exited" \
+  "roost_shape_agree_pane: a shell pane whose foreground is sleep is exited"
+assert_eq "$(roost_shape_agree_pane claude sleep "")" "other" \
+  "...and with no pane process to ask, the table alone: other"
+R save >/dev/null 2>&1
+sv="$(awk -v RS= -v want="id $P" '{ s = $0 "\n"; if (index(s, "\n" want "\n")) print }' "$SD/shape")"
+assert_eq "$(printf '%s\n' "$sv" | sed -n 's/^stale_reason //p')" "exited" \
+  "save calls the same pane exited, as revive does (one agreement table)"
 out="$(R revive --force "$P" 2>/dev/null)"; rc=$?
 assert_eq "$rc|$out" "0|$P" "--force then launches"
 wait_log "claude --resume $U4"; assert_true $? "...the conversation, in that pane"
@@ -860,6 +871,180 @@ R revive "$G" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "13" "a gone %N whose record has no session id: exit 13"
 assert_contains "$(cat "$SHAPE_TMP/err")" "has no recorded conversation" "...says so"
 unset ROOST_RECORD_DIR; export ROOST_RECORD_DIR=""
+
+# --- revive meets the pending states (#191 Part 3, Task 3.8) ------------------
+# A pane a restore placed and has not resumed: a placeholder by its own path,
+# watching pending/<boot>/%P (planted here, the block roost_pending_write
+# writes). The worker is `roost restore --resume`, run directly (worker-only:
+# Part 5's hook is not covered).
+PH="$PWD/scripts/roost-placeholder"
+PEND="$SD/pending/$BOOT"; mkdir -p "$PEND"
+V1=3fa3c0de-0001-4abc-8def-0000000000a1
+V2=3fa3c0de-0002-4abc-8def-0000000000a2
+V3=3fa3c0de-0003-4abc-8def-0000000000a3
+V4=3fa3c0de-0004-4abc-8def-0000000000a4
+V5=3fa3c0de-0005-4abc-8def-0000000000a5
+V6=3fa3c0de-0006-4abc-8def-0000000000a6
+V7=3fa3c0de-0007-4abc-8def-0000000000a7
+for v in "$V1" "$V2" "$V3" "$V4" "$V5" "$V6"; do stub_store_add "$v" "$D1R"; done
+RB=(env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST")
+wait_screen() { local i=0; while [ "$i" -lt "${3:-30}" ]; do TL capture-pane -p -t "$1" 2>/dev/null | grep -qF -- "$2" && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+wait_f() { local i=0; while [ "$i" -lt "${2:-50}" ]; do [ -e "$1" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+shells_wait() { local i=0; while [ "$i" -lt 30 ]; do [ -n "$(shells_for "$1")" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+# waiting ID [TRANSCRIPT] -> a new waiting placeholder pane for conversation ID
+waiting() {
+  local p tr="${2-}"
+  p="$(TL new-window -d -P -F '#{pane_id}' -t shp: -c "$D1R" 'sleep 600')"
+  { printf 'was %%900\nharness claude\nsession_id %s\n' "$1"
+    [ -n "$tr" ] && printf 'transcript %s\n' "$tr"
+    printf 'cwd %s\nsession shp\nwindow 1\norder 1\n' "$D1R"; } > "$PEND/$p"
+  TL set -p -t "$p" remain-on-exit failed
+  TL respawn-pane -k -t "$p" "$PH" "$PEND/$p" claude
+  wait_screen "$p" "waiting to resume claude" >/dev/null
+  printf '%s\n' "$p"
+}
+phline() { TL display -p -t "$1" '#{pane_start_command}' | tr -d '"\\'; }
+claimed() { [ -L "$CLB/claude-$1/owner" ] && echo held; }
+taken_with_sleep() { # PANE — a key, then `sleep 60` in the shell it hands over
+  TL send-keys -t "$1" x; wait_f "$PEND/$1.taken"; shells_wait "$1"
+  TL send-keys -t "$1" 'sleep 60' Enter; wait_cmd "$1" sleep
+}
+
+echo "== revive against a waiting pane: T5, then the worker launches nothing for it =="
+reset
+P="$(waiting "$V1")"
+assert_eq "$(phline "$P")" "$PH $PEND/$P claude" "(before) the pane runs its placeholder line"
+out="$(R revive "$P" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out|$(ls "$PEND" | grep "^$P")" "0|$P|$P.launching" "revive a waiting pane: exit 0, the same %N, its file %P.launching"
+assert_eq "$(tail -1 "$PEND/$P.launching")" "origin waiting" "...with its origin line"
+wait_log "claude --resume $V1"; assert_true $? "...launched"
+R restore --resume >/dev/null 2>&1
+assert_eq "$(grep -c "$V1" "$STUB_LOG")" "1" "a worker run after it launches nothing more for %P"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+
+echo "== overlapping the worker: revive %Q, then restore --resume =="
+reset
+Q="$(shpane "$D1R")"; wait_cmd "$Q" sh; setid "$Q" claude "$V2" "$D1R"
+P="$(waiting "$V2")"
+R revive "$Q" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "(fixture) revive %Q launched its conversation"
+R restore --resume >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(head -1 "$PEND/$P.failed" 2>/dev/null)|$(grep -c "$V2" "$STUB_LOG")" "13|duplicate of $Q|1" \
+  "the worker then finds the key claimed: %P.failed duplicate of %Q, one launch"
+TL kill-pane -t "$Q"; TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+
+echo "== a taken pane: the shell checks (T17, T8) =="
+reset
+P="$(waiting "$V3")"; taken_with_sleep "$P"; pid0="$(ppid_of "$P")"
+assert_eq "$(phline "$P")" "$PH $PEND/$P claude" "(before) the start command still reads the placeholder line (it survives the exec)"
+R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(TL display -p -t "$P" '#{pane_current_command}')|$(ls "$PEND" | grep "^$P")|$(claimed "$V3")" "1|sleep|$P.taken|" \
+  "a taken pane in use: exit 1, the sleep alive, %P.taken again, no claim"
+assert_contains "$(cat "$SHAPE_TMP/err")" "person's work" "...and says why"
+assert_eq "$(grep -c '^origin' "$PEND/$P.taken")" "0" "...with no origin line left"
+out="$(R revive --force "$P" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "0|$P" "--force: launched"
+wait_log "claude --resume $V3"; assert_true $? "...the conversation"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+reset
+P="$(waiting "$V4")"; TL send-keys -t "$P" x; wait_f "$PEND/$P.taken"; shells_wait "$P"; sleep 0.3
+assert_eq "$(phline "$P")" "$PH $PEND/$P claude" "(before) an idle taken shell: still the placeholder line"
+out="$(R revive "$P" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$out" "0|$P" "an idle taken shell: exit 0, the same %P"
+wait_log "claude --resume $V4"; assert_true $? "...launched"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+
+echo "== a revive of a taken shell, interrupted (T8b by origin taken) =="
+reset
+P="$(waiting "$V5")"; taken_with_sleep "$P"; pid0="$(ppid_of "$P")"
+H="$SHAPE_TMP/rv.hold"; rm -f "$H" "$H".at.*
+ROOST_TEST_REVIVE_HOLD="$H" "${RB[@]}" revive "$P" >/dev/null 2>&1 &
+RV=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$H".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+kill -9 "$RV" 2>/dev/null; wait "$RV" 2>/dev/null
+[ -e "$PEND/$P.launching" ]; assert_true $? "(fixture) the killed revive left %P.launching and its claim"
+R restore --resume >/dev/null 2>&1
+assert_eq "$(ls "$PEND" | grep "^$P")|$(claimed "$V5")|$(TL display -p -t "$P" '#{pane_current_command}')|$(ppid_of "$P")|$(grep -c "$V5" "$STUB_LOG")" \
+  "$P.taken||sleep|$pid0|0" "a worker run: %P.taken again, the claim gone, the sleep and pane_pid alive, nothing launched"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+
+echo "== no origin line: failed, interrupted, never retried =="
+reset
+P="$(waiting "$V6")"; mv "$PEND/$P" "$PEND/$P.launching"
+wait_screen "$P" "resuming claude now" 70 >/dev/null
+R restore --resume >/dev/null 2>&1
+assert_eq "$(head -1 "$PEND/$P.failed" 2>/dev/null)" "interrupted" "a planted %P.launching with no origin line and no launcher: %P.failed interrupted"
+R restore --resume --retry >/dev/null 2>&1
+assert_eq "$(grep -c "$V6" "$STUB_LOG")" "0" "...and --retry launches nothing"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+
+echo "== an inherited origin: a store miss, a key, then a revive killed before its origin =="
+reset
+P="$(waiting "$V7")"
+R restore --resume >/dev/null 2>&1
+assert_eq "$(head -1 "$PEND/$P.failed")|$(grep -c '^origin' "$PEND/$P.failed")" "store miss|0" "a store miss: %P.failed, no origin line"
+wait_screen "$P" "claude was not resumed" 70 >/dev/null
+TL send-keys -t "$P" x; wait_f "$PEND/$P.taken"; shells_wait "$P"
+assert_eq "$(grep -c '^origin' "$PEND/$P.taken")" "0" "T15: %P.taken, no origin line"
+stub_store_add "$V7" "$D1R"
+H="$SHAPE_TMP/rvo.hold"; rm -f "$H" "$H".at.*
+ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN="$H" "${RB[@]}" revive "$P" >/dev/null 2>&1 &
+RV=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$H".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+kill -9 "$RV" 2>/dev/null; wait "$RV" 2>/dev/null
+R restore --resume >/dev/null 2>&1
+assert_eq "$(head -1 "$PEND/$P.failed" 2>/dev/null)|$(grep -c "$V7" "$STUB_LOG")" "interrupted|0" \
+  "a worker run: %P.failed interrupted (no origin proves nothing), nothing launched"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".*
+
+echo "== a worker during a live revive's rename-to-claim window (review round 1, Opus N1) =="
+# Three actors: revive renames the pane's file and holds right after its
+# claim's owner link (before the claim names the pane); a worker runs; then
+# the revive goes on. The worker must see a LIVE launcher and leave the file.
+reset
+V8=3fa3c0de-0008-4abc-8def-0000000000a8; stub_store_add "$V8" "$D1R"
+P="$(waiting "$V8")"
+H="$SHAPE_TMP/link.hold"; rm -f "$H" "$H".at.*
+ROOST_TEST_CLAIM_HOLD_AFTER_LINK="$H" "${RB[@]}" revive "$P" >/dev/null 2>"$SHAPE_TMP/rverr" &
+RV=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$H".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(ls "$PEND" | grep "^$P")" "$P.launching" "(fixture) the revive renamed the file and holds before its claim names the pane"
+R restore --resume >/dev/null 2>"$SHAPE_TMP/werr"; wrc=$?
+assert_eq "$wrc|$(ls "$PEND" | grep "^$P")" "0|$P.launching" "the worker leaves a live launcher's file alone (no T8b, no T7)"
+touch "$H"; wait "$RV"; rc=$?
+wait_log "claude --resume $V8"
+assert_eq "$rc|$(grep -c "$V8" "$STUB_LOG")|$(ls "$PEND" | grep "^$P")" "0|1|$P.launching" "the revive goes on: one launch, the file still %P.launching"
+R send "$P" "x" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "3" "send agrees: refused (exit 3)"
+assert_contains "$(cat "$SHAPE_TMP/err")" "is launched" "...as launched"
+TL kill-pane -t "$P"; rm -f "$PEND/$P".* "$PEND"/.*"$P"* 2>/dev/null
+
+echo "== a worker while a revive holds before its origin line (review round 1, Opus N2) =="
+reset
+V9=3fa3c0de-0009-4abc-8def-0000000000a9; stub_store_add "$V9" "$D1R"
+TL set-environment -g STUB_IDENTIFY 1
+P="$(waiting "$V9")"
+H="$SHAPE_TMP/orig.hold"; rm -f "$H" "$H".at.*
+ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN="$H" "${RB[@]}" revive "$P" >/dev/null 2>&1 &
+RV=$!
+i=0; while [ "$i" -lt 50 ] && ! ls "$H".at.* >/dev/null 2>&1; do sleep 0.1; i=$((i+1)); done
+R restore --resume >/dev/null 2>&1
+touch "$H"; wait "$RV"; rc=$?
+wait_log "claude --resume $V9"
+assert_eq "$rc|$(grep -c "$V9" "$STUB_LOG")" "0|1" "the revive goes on and launches, once"
+i=0; while [ "$i" -lt 50 ] && ls "$PEND" | grep -q "^$P"; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(ls "$PEND" | grep -c "^$P")|$(TL show -pqv -t "$P" @roost-session)" "0|$V9" \
+  "identity lands: no pending file left for the pane (never two, never a stray), the key on the pane"
+TL set-environment -gu STUB_IDENTIFY
+TL kill-pane -t "$P"; rm -f "$PEND/$P".* 2>/dev/null
+
+echo "== --new-window from a pending file =="
+reset
+P="$(waiting "$V1")"
+R revive --new-window "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(ls "$PEND" | grep "^$P")" "13|$P" "--new-window: exit 13, the file still %P"
+assert_contains "$(cat "$SHAPE_TMP/err")" "revive it in place" "...saying revive it in place"
+TL kill-pane -t "$P"; rm -f "$PEND/$P"
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

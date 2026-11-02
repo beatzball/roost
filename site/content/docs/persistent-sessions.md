@@ -1,6 +1,6 @@
 ---
 title: Persistent Sessions
-description: Save your fleet's sessions, windows and panes as a plain file, put them back after a reboot or a crash with roost restore, and bring one agent's conversation back with roost revive.
+description: Save your fleet's sessions, windows and panes as a plain file, put them back after a reboot or a crash with roost restore — agents resumed, paced, in their own directories — and bring one agent's conversation back with roost revive.
 sidebar:
   order: 12
 ---
@@ -9,18 +9,14 @@ sidebar:
 
 `roost save` writes your fleet's **shape** — every session, window and pane,
 with their names, directories and layouts, and which agent conversation each
-pane was running — to a plain text file. `roost restore` reads it back and
-puts the sessions, windows and panes where they were, each pane a shell in
-its saved directory.
+pane was running — to a plain text file. `roost restore` reads it back, puts
+the sessions, windows and panes where they were, and then **resumes each
+agent** in its own directory, two seconds apart.
 
 `roost revive` brings **one** pane's agent conversation back — an agent that
 crashed, or that you `/exit`ed — in the same pane, with the same `%N`.
 
-**Restore does not resume agents yet.** A pane that was running Claude Code or
-codex comes back as a shell in its directory; its conversation key stays in
-the file, for a later roost that resumes it, and `roost revive` can bring a
-conversation back by hand. Saving is also manual for now: run `roost save`
-when you want one.
+Saving is manual for now: run `roost save` when you want one.
 
 ## Save
 
@@ -65,20 +61,98 @@ What it does:
 - Every saved session that does not exist is made again, with its windows at
   their saved indices and names, its panes split to the saved count, and the
   saved layout applied. A zoomed window comes back zoomed.
-- Every pane becomes a shell in its saved directory. A directory that is gone
-  gives a shell in your home directory instead, with one line saying so.
+- Every pane without an agent becomes a shell in its saved directory. A
+  directory that is gone gives a shell in your home directory instead, with
+  one line saying so; an agent whose directory is gone is not resumed.
+- Every pane **with** an agent waits for its turn, then the agent is resumed
+  (next section).
 - A saved session whose name already exists is **skipped and named**, with
   everything in it. Restore never adds windows to a session you have.
-- Exit code: `0` everything placed, `12` something was skipped as existing,
-  `13` a window could not hold every saved pane (each one left out is named,
-  with its conversation), `16` the file was refused, `2` there is nothing to
-  restore.
+- Exit code: `0` everything placed and every agent launched, `12` something
+  was skipped as existing, `13` an agent was not resumed (the reason is
+  printed) or a window could not hold every saved pane (each one left out is
+  named, with its conversation), `16` the file was refused, `2` there is
+  nothing to restore. `12` wins when both happen.
 
 While restore is placing panes, each new pane shows `roost restore is
 placing this session - press any key for a shell`. That is a placeholder, not
 a shell. If you attach and press a key in it, the pane becomes your shell and
 restore leaves it alone. If restore got there first, the pane says `roost
 restore is placing this pane` and becomes a shell a moment later.
+
+### Agents are resumed, one at a time
+
+After the panes are placed, restore resumes every agent that had a
+conversation, with the harness's own resume command (the table under
+**Revive one conversation** below), in the conversation's own directory —
+shells first, then agents, `--pace` seconds apart (default `2`), so a large
+fleet does not start all at once.
+
+Until its turn, an agent's pane shows
+
+```
+waiting to resume claude - press any key for a shell
+```
+
+That is a placeholder, not a shell. **Press a key and the pane is yours**: it
+becomes a shell, that agent is not resumed, and the pane says so
+(`roost revive %N` brings it back later). Whatever else you typed with the key
+is thrown away on purpose, so half a command never runs. Once its turn has
+come, the pane says `resuming claude now`, and a key does nothing.
+
+`roost send` and `roost answer` **refuse** a pane that is still waiting,
+launching or just launched (exit `3`, naming the state), because the text
+would land as that key. `--force` sends it anyway. `roost close` on a
+waiting pane closes it at once and cancels its resume.
+
+**"Launched", not "resumed".** Restore runs each resume command and moves
+on. It does not wait for the harness's prompt and answers nothing the harness
+asks: a folder-trust or similar dialog stays on screen for you.
+
+A resume that cannot run leaves the placeholder showing why:
+
+```
+claude was not resumed: store miss - press any key for a shell; roost restore --resume --retry tries again
+```
+
+The reasons are `harness missing` (not on your `PATH`), `directory gone`,
+`store miss` (the harness no longer holds that conversation) and
+`duplicate of %M` (another pane has that conversation open, or is launching
+it — one conversation is never open in two panes). Fix the cause, then
+
+```sh
+roost restore --resume --retry
+```
+
+tries those panes again. It never touches a pane you took with a key, one you
+replaced with another command, or one now running another conversation.
+
+- `--no-resume` places only: every pane is a shell, no agent is started.
+- `--recent DAYS` leaves out an agent whose conversation was last written
+  more than DAYS days ago; its pane is a shell. The choice is made when the
+  panes are placed, so a later `--resume` does not start it either.
+- `--resume` resumes the panes already placed and waiting, without placing
+  anything.
+- `--pace SECONDS` sets the gap between launches; `0` starts them back to
+  back.
+
+**The report.** Restore ends with one line on stderr:
+
+```
+roost restore: restored 3 sessions, 7 windows, 14 panes; launched 5 agents; skipped 0 (existing); 1 not resumed (reasons listed above); 1 were working or blocked at the save — re-prompt by hand: %4
+```
+
+Above it, one line for each pane not resumed and why; a pane that was started
+with a command (`roost view`, `roost spawn NAME CMD`) says what it was
+started as, for you to run again. An agent that was mid-turn at the save
+comes back at rest: its conversation is back, its turn is not, so re-prompt
+it. `--json` prints the same as one document on stdout:
+`{"restored":[{"was","pane","session","window","launched","reason"}],"skipped":[…],"from":"STAMP-GEN"}`.
+
+**codex.** When more than one codex pane is resumed, the report says
+`N codex panes resumed; until #145 their badges all land on the first (%M)`:
+every resumed codex reports its state through the first one's background
+process, so their badges all show on that pane until #145 is fixed.
 
 ### Look before you restore
 
@@ -92,7 +166,7 @@ prints what restore would do, as a tree, and starts nothing:
 from 20261024T205102Z-4182 (the newest save; saved 2 h ago)
 session roost
   window 1 roost
-    pane 1 promo        /home/me/w/roost               claude   shell, not resumed: this roost places panes only
+    pane 1 promo        /home/me/w/roost               claude   resume
     pane 2 -            /home/me/w/roost               -        shell
   window 2 build
     pane 1 api          /home/me/w/gone                codex    shell in ~, not resumed: directory gone
@@ -100,7 +174,38 @@ session litro (exists - skipped, 9 panes not restored)
 ```
 
 `roost restore --list` shows every save with its stamp, what caused it and
-its counts, and marks the one a plain `roost restore` uses.
+its counts, and marks the one a plain `roost restore` uses. It ends with
+every pane still waiting, launching, failed or taken, with its state and,
+for a failed one, the reason.
+
+## Addressing a pane after a restore: `was:%N`
+
+Pane ids start again at `%0` every time the roost server starts, so after a
+reboot the pane that was `%930` has a new id, and **an old id like `%1`
+usually exists again as some other pane.** So roost never redirects a bare
+`%N`: it always means a pane of the server running now.
+
+To reach a pane by the id it had before the restore, write `was:`:
+
+```sh
+roost send was:%930 "carry on"     # roost send: was:%930 is %34
+roost read was:%930                # the replies %930 gave BEFORE the reboot
+```
+
+`send`, `read`, `wait-done`, `screen`, `answer`, `close`, `revive` and
+`forget` all take it, and say on stderr which pane it meant. It is looked up
+in the map restore wrote for the server running now, and nowhere else. If two
+restores into this server both had a `%930`, `was:%930` is refused and names
+both long forms, `was:%930@BOOT`, which work.
+
+A bare `%1` that is a live pane **and** was an old id gets one extra line,
+`note: %1 was also an old id; the pane that was %1 is now %0 (was:%1)`, and
+still goes to the live `%1`.
+
+`roost status` ends a restored pane's line with `(was %930)`, and
+`roost status --json` has `was` for every pane (`null` when it was not
+restored). A resumed Claude Code is told both ids when it starts: "This pane
+is %34 (it was %930 before a restore)".
 
 ### Pick a save, or part of one
 

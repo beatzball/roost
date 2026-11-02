@@ -447,6 +447,15 @@ harness still holds the conversation. Exit `0` means **launched**: a dialog
 the harness opens on resume stays on screen for a person. The
 [Persistent Sessions](/docs/persistent-sessions) page has the whole story.
 
+**After a restore, old ids are `was:%N`.** Pane ids start again at `%0` on
+every server start, so a bare `%930` from before a reboot is never redirected
+— it means the pane `%930` now, if there is one. Write `was:%930` to reach
+the pane that was `%930`: `send`, `read`, `wait-done`, `screen`, `answer`,
+`close`, `revive` and `forget` resolve it through the current server's restore
+map and say which pane it meant. A pane still waiting for its agent to be
+resumed refuses `send` and `answer` with exit `3` unless `--force`: the text
+would land as a key and keep the agent from being resumed.
+
 ### Exit codes for `roost revive`
 
 | exit | meaning |
@@ -563,7 +572,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 ### `roost status --json`
 
 ```json
-{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1,"background":null,"dialog":null}]}
+{"schema":1,"command":"status","running":true,"socket":"roost","socket_kind":"name","sessions":[{"name":"main","windows":2,"attached_clients":1}],"panes":[{"id":"%3","session":"main","window_id":"@1","window_index":1,"window_name":"api","pane_index":1,"name":null,"command":"claude","state":"working","since":1789000100,"session_id":"0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4","cwd":"/home/you/src/api","harness":"claude","transcript":"/home/you/.claude/projects/-home-you-src-api/0f5c3a52-7d1e-4b8f-9c2a-51e3f0a7b6d4.jsonl","subagents":1,"background":null,"dialog":null,"was":null}]}
 ```
 
 | field | type | meaning |
@@ -591,6 +600,7 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `panes[].background` | integer or `null` | how many background tasks of its own hold a Claude Code pane at `working` (a `run_in_background` command, a background agent, a `Monitor`). `null` for every pane that is not held, for a hold roost could not count, and for every harness but Claude Code — never `0` for "could not see" |
 | `panes[].verified` | bool or `null` | whether the report that set this badge came from inside the pane's own process tree. `true` when roost checked it; `false` when the check could not run (no working `ps`, or the pane's process is not visible, as in a container), so the report was accepted unchecked; `null` before any report, and for a badge set by a roost older than this check |
 | `panes[].refused` | integer or `null` | epoch seconds of the last state report the pane turned away because it came from a process outside the pane's tree (a detached app or a shell that copied the pane's `TMUX_PANE`); `null` when there has been none. `roost doctor` names such a pane, with the process id |
+| `panes[].was` | string or `null` | the `%N` the pane had before a restore, or `null` for a pane no restore placed. Address it as `was:%930` ([Persistent Sessions](/docs/persistent-sessions)); a bare old `%N` is never redirected |
 | `panes[].dialog` | object or `null` | the dialog a 🛑 blocked pane is showing, for [`roost answer`](#answer-a-dialog-from-anywhere-roost-answer). `null` unless `state` is `blocked` and the agent's hook described the dialog (Claude Code, and codex) |
 | `panes[].dialog.fingerprint` | string | twelve hex characters, new for each dialog: what `roost answer --expect` takes |
 | `panes[].dialog.harness` | string | `claude` or `codex` |

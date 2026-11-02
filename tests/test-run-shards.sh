@@ -58,9 +58,11 @@ assert_eq "$(SHARD=3/4 bash "$HERE/tests/run.sh" --list)" \
   "the same shard spec lists the same files on two runs"
 
 # Spread: the greedy longest-first rule puts the n heaviest files into n
-# different shards, so the 102 s file never shares a job with the 65 s one.
+# different shards, so the 102 s file never shares a job with the 70 s one.
 # These four are the top of the weight table; if the table is re-measured and
 # the top four change, update them here — the property is what is pinned.
+# (Updated for #191 Part 3: test-shape-resume.sh, 78, displaced
+# test-opencode2-plugin.sh, 65, from the top four.)
 shard_of() { # shard_of FILE N -> which shard of N lists FILE
   local f=$1 n=$2 k=1
   while [ "$k" -le "$n" ]; do
@@ -71,7 +73,7 @@ shard_of() { # shard_of FILE N -> which shard of N lists FILE
   done
   printf 'none'
 }
-spread="$(for f in test-send-turn.sh test-send-lock.sh test-revive.sh test-opencode2-plugin.sh; do
+spread="$(for f in test-send-turn.sh test-send-lock.sh test-shape-resume.sh test-revive.sh; do
             shard_of "$f" 4; echo
           done | LC_ALL=C sort -u | wc -l | tr -d ' ')"
 assert_eq "$spread" "4" "the four slowest files land in four different shards of 4"

@@ -97,6 +97,60 @@ assert_eq "$(ps -o args= -p "$(TL display -p -t "$p" '#{pane_pid}')" | sed 's/^ 
   "a user's own default-command: the key hands over to it (exec, read at that moment)"
 TL set -gu default-command
 
+echo "== the pending modes: waiting, launching, failed (Task 3.2, §4.7 T6/T15) =="
+PD="$SHAPE_TMP/pend"; mkdir -p "$PD"
+WAITING='waiting to resume claude - press any key for a shell'
+RESUMING='resuming claude now'
+# pending PANE-NAME -> a planted pending file for a placeholder (the block
+# roost_pending_write writes; its keys do not matter to the placeholder).
+pending() { printf 'was %%900\nharness claude\nsession_id x\ncwd /\nsession s\nwindow 1\norder 0\n' > "$PD/$1"; printf '%s\n' "$PD/$1"; }
+# waiter FILE -> a new pane running the waiting placeholder by its own path.
+waiter() {
+  local p
+  p="$(TL new-window -d -P -F '#{pane_id}' -t shp: 'sleep 600')"
+  TL set -p -t "$p" remain-on-exit failed
+  TL respawn-pane -k -t "$p" "$PH" "$1" claude
+  printf '%s\n' "$p"
+}
+# T6: a key in waiting -> taken, the person's shell.
+F="$(pending %71)"; p="$(waiter "$F")"
+wait_screen "$p" "$WAITING"; assert_true $? "FILE HARNESS: the screen shows the waiting line"
+pid="$(TL display -p -t "$p" '#{pane_pid}')"
+printf 'origin waiting\n' >> "$F"   # planted: T6 cannot rewrite before its rename
+TL send-keys -t "$p" x
+wait_file "$F.taken"; assert_true $? "a key on FILE: the placeholder wins FILE -> FILE.taken (T6)"
+shells_wait "$p"; assert_eq "$(shells_for "$p" | wc -l | tr -d ' ')" "1" "...and a shell started (one shells.log line)"
+assert_eq "$(TL display -p -t "$p" '#{pane_pid}')" "$pid" "...in the same process"
+TL capture-pane -p -t "$p" | grep -qF 'this pane is yours; claude was not resumed (roost revive %71 to resume it)'
+assert_true $? "...after saying the pane is the person's, and how to resume it"
+assert_eq "$(grep -c '^origin ' "$F.taken")" "0" "an origin line in the file it won is removed before the shell starts"
+assert_eq "$(TL show -pqv -t "$p" remain-on-exit)" "" "...and remain-on-exit is unset"
+# Launching: the line follows the file, and a key then starts no shell.
+F="$(pending %72)"; p="$(waiter "$F")"
+wait_screen "$p" "$WAITING"
+mv "$F" "$F.launching"
+wait_screen "$p" "$RESUMING" 60; assert_true $? "renamed to .launching: within 6 s the screen says resuming claude now"
+TL send-keys -t "$p" x
+sleep 1
+assert_eq "$(shells_for "$p")" "" "...a key then starts no shell (the rename is lost)"
+[ -e "$F.launching" ] && [ ! -e "$F.taken" ]; assert_true $? "...and the file is still .launching"
+# Failed, waiting: the reason, no respawn; a key -> taken (T15).
+F="$(pending %73)"; p="$(waiter "$F")"
+wait_screen "$p" "$WAITING"
+pid="$(TL display -p -t "$p" '#{pane_pid}')"
+{ printf 'store miss\n'; cat "$F"; } > "$F.failed"; rm -f "$F"
+FAILED='claude was not resumed: store miss - press any key for a shell; roost restore --resume --retry tries again'
+wait_screen "$p" "$FAILED" 60; assert_true $? "renamed to .failed (store miss): within 6 s the screen shows the reason"
+assert_eq "$(TL display -p -t "$p" '#{pane_pid}')|$(shells_for "$p")" "$pid|" "...no respawn, no shell"
+TL send-keys -t "$p" x
+wait_file "$F.taken"; assert_true $? "a key there: FILE.failed -> FILE.taken (T15)"
+[ ! -e "$F.failed" ]; assert_true $? "...the .failed file is gone"
+shells_wait "$p"; assert_eq "$(shells_for "$p" | wc -l | tr -d ' ')" "1" "...then a shell"
+TL capture-pane -p -t "$p" | grep -qF 'claude was not resumed: store miss'
+assert_true $? "...after the reason"
+"$PH" "$F" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "2" "no harness and no --placing: usage, exit 2"
+
 # --- restore: server, sessions, the bootstrap (Task 1.12) ---------------------
 # `roost wiring apply` runs when restore starts a server, and writes under
 # XDG_CONFIG_HOME: a temp dir here, not the canary (tests/lib-shape.sh points
@@ -751,7 +805,10 @@ sleep 1
 F1="$(fleet)"; L1="$(layouts)"; J1="$(json5)"
 R save >/dev/null 2>&1
 stop_server; : > "$HOME/shells.log"; : > "$HOME/env.log"
-R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+# --no-resume: this case is placement's (§8.1 test 1), every pane a shell. Since
+# Part 3 a plain restore puts a keyed pane in a waiting placeholder and then
+# resumes it; tests/test-shape-resume.sh covers that.
+R restore --no-resume >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "0" "restore exits 0"
 sleep 1
 F2="$(fleet)"
@@ -778,7 +835,7 @@ assert_eq "$(TL display -p -t "$(first_pane alpha)" '#{window_width}x#{window_he
 assert_eq "$(TL list-panes -t '=beta:9' -F x | wc -l | tr -d ' '):$(TL display -p -t '=beta:9' '#{window_linked}')" "2:0" \
   "a window linked into two sessions comes back as two windows (§3.2)"
 assert_eq "$(TL display -p -t "$(TL list-panes -t '=beta:1' -F '#{pane_id}' | tail -1)" '#{pane_current_path}')" "$SHAPE_TMP/d6" \
-  "a keyed pane is a shell in its directory (agents are not resumed in this part)"
+  "a keyed pane is a shell in its directory (--no-resume)"
 npl="$(TL list-panes -a -F x | wc -l | tr -d ' ')"
 assert_eq "$(cut -d' ' -f1 "$HOME/shells.log" | sort -u | wc -l | tr -d ' ')" "$npl" "every pane, the first included, started a shell"
 assert_eq "$(grep -c ' wired$' "$HOME/env.log")" "$npl" "...and every one of them is wired (ROOST_TMUX set)"
@@ -955,7 +1012,9 @@ rmdir "$SHAPE_TMP/gone"
 stamp="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
 stop_server
 out="$(R restore --dry-run 2>"$SHAPE_TMP/err")"; rc=$?
-assert_eq "$rc" "0" "--dry-run with no server: exit 0, what the real run would give"
+# 13, not 0, since Part 3: a keyed pane whose directory is gone cannot be
+# resumed, a reason listed (§8.1 test 3b).
+assert_eq "$rc" "13" "--dry-run with no server: exit 13 (a keyed pane's directory is gone), what the real run would give"
 assert_prefix "$out" "from $stamp (the newest save; saved " "the first line names the save and why it was picked"
 assert_contains "$out" $'\nsession alpha\n  window 1 main\n    pane 1 promo' "sessions, two-space windows, four-space panes"
 assert_contains "$(printf '%s\n' "$out" | grep "$SHAPE_TMP/gone")" "claude" "a keyed pane shows its harness"
@@ -965,7 +1024,7 @@ assert_contains "$out" $'\nsession beta\n' "every session is in the tree"
 TL ls >/dev/null 2>&1; assert_eq "$?" "1" "--dry-run never starts a server"
 printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"; assert_eq "$?" "1" "no colour when stdout is a pipe"
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc" "0" "the real run gives the same exit code"
+assert_eq "$rc" "13" "the real run gives the same exit code"
 assert_contains "$(cat "$SHAPE_TMP/err")" "directory $SHAPE_TMP/gone is gone; a shell in the home directory" "a gone directory: one stderr line (§8.1 test 3a)"
 assert_eq "$(TL list-panes -t '=alpha:1' -F '#{pane_current_path}' | grep -cx "$HOME")" "1" "...and that pane is a shell in the home directory"
 out="$(R restore --dry-run 2>/dev/null)"; rc=$?
@@ -988,7 +1047,9 @@ assert_contains "$(printf '%s\n' "$lst" | grep "$stamp")" "save  2 sessions, 2 w
 
 echo "== --from STAMP-GEN, --from FILE, another host =="
 stop_server
-R restore --from "$stamp" >/dev/null 2>&1; rc=$?
+# --no-resume: this case is about which save is read; that save's keyed pane
+# has a gone directory, which a resuming restore reports as 13 (§8.1 test 3b).
+R restore --no-resume --from "$stamp" >/dev/null 2>&1; rc=$?
 # Not the window's NAME: in that save beta's window is named automatically
 # (from its pane's directory), and tmux sets an automatic name on its own
 # timer, so a read right after restore found it empty once in about ten

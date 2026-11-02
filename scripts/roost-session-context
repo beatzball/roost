@@ -157,6 +157,19 @@ if [ ! -t 0 ]; then
   fi
 fi
 
+# A restored pane (#191 Part 3, spec §5.4 item 3): SessionStart fires on a
+# resume, so the resumed Claude is told its new id above; when restore left
+# `@roost-was %OLD` on the pane, it is told the id it had before too, so a
+# message that names the old id still makes sense to it. One read, through
+# the server this hook already proved it is inside, after the pane id is
+# known; `|| true`, so a failed read only means the line is not added. Only a
+# `%` and digits are used: the value goes into JSON unescaped.
+was="$(tmux -S "$ROOST_SELF_SOCK" show-options -pqv -t "$pane" @roost-was 2>/dev/null || true)"
+case "$was" in
+  %[0-9]*) case "${was#%}" in *[!0-9]*) was_note="" ;; *) was_note=" (it was $was before a restore)" ;; esac ;;
+  *) was_note="" ;;
+esac
+
 # The injected text. Keep it SHORT: this is prepended to every session on this
 # machine, it is paid for in tokens every time, and it is guidance — not a
 # manual. `roost help` is one command away for the rest.
@@ -176,7 +189,7 @@ cat <<JSON
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "You are an agent running inside roost, a tmux \"agent view\" on its own separate server. This pane is $pane — that is your address, and how other agents reach you: roost send $pane \"...\".\nUse roost's own commands, not bare tmux: roost split and roost spawn to open a pane or a window, roost send to prompt another agent, roost status to list the fleet, roost read to collect a reply. A bare tmux command targets the DEFAULT server — the user's ordinary tmux, which roost exists to leave alone.\nNever run tmux kill-server without -S or -L naming a throwaway socket.\nRun roost help for the rest."
+    "additionalContext": "You are an agent running inside roost, a tmux \"agent view\" on its own separate server. This pane is $pane$was_note — that is your address, and how other agents reach you: roost send $pane \"...\".\nUse roost's own commands, not bare tmux: roost split and roost spawn to open a pane or a window, roost send to prompt another agent, roost status to list the fleet, roost read to collect a reply. A bare tmux command targets the DEFAULT server — the user's ordinary tmux, which roost exists to leave alone.\nNever run tmux kill-server without -S or -L naming a throwaway socket.\nRun roost help for the rest."
   }
 }
 JSON

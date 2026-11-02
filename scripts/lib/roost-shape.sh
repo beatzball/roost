@@ -160,6 +160,68 @@ roost_shape_agree() {
   esac
 }
 
+# roost_shape__fg_is HARNESS COMMAND — the foreground COMMAND can be this
+# harness itself. roost_close_harness's names (Claude's version string, the
+# five names), plus the two that table cannot claim because they are not
+# distinctive: pi runs as `node` (probe 1.6), and opencode — not measured —
+# as `node` or `bun` besides its own name. A shell running one of those for
+# this harness is the agent at work, judged by the table; a shell running
+# anything else is a person's job.
+#
+# Moved here from scripts/lib/roost-resume.sh (it was roost_resume__fg_is)
+# when save and revive came to share roost_shape_agree_pane, below.
+roost_shape__fg_is() {
+  roost_close_harness "" "$2" ""
+  [ "$ROOST_CLOSE_HARNESS" = "$1" ] && return 0
+  case "$1:$2" in
+    pi:node|opencode:node|opencode:bun) return 0 ;;
+  esac
+  return 1
+}
+
+# roost_shape_agree_pane HARNESS COMMAND PANE-PID -> prints ok | exited |
+# nested | other. THE agreement table for a live pane: save's writer and
+# `revive` both ask this, so a restore never refuses a pane that `revive`
+# would resume (Part 3's header: "one agreement table, before the engine",
+# from Part 2's review round 1, Fable N3). Before it, save called a shell pane
+# running a job `other` while revive called it `exited`.
+#
+# It is roost_shape_agree (§3.2's table) with one addition, for a SHELL pane:
+# #{pane_current_command} names the foreground job, so a shell running `sleep
+# 60` reads `sleep`, which the table calls `other` (13, nothing anyone can
+# do). But the agent has left and a person is using the shell — §4.1 step
+# 7's case, "a shell pane whose shell has a child process", refused with exit
+# 1 and replaced under --force. So when the pane's OWN process (PANE-PID,
+# #{pane_pid}) is a shell and the foreground is not a harness, the pane is
+# `exited` and step 7's shell check decides. A harness in the foreground (a
+# person typed `claude` at the prompt) is still judged by the table: ok or
+# nested. `other` is left for a pane whose own process is neither — an
+# editor or a `sleep` started as the pane's command.
+#
+# The pane's own process is asked FIRST, for every harness (Part 2's review
+# round 1, Codex B2): asked only after the table said `other`, it never ran
+# for pi and opencode, which the table admits on presence alone — a shell
+# left by pi and running `sleep 600` read `ok`, and the person's job was
+# killed without --force. For a shell-owned pane: the foreground is this
+# harness (roost_shape__fg_is) → the table decides (ok); another harness's
+# distinctive command → the table decides (nested); anything else → exited.
+#
+# An empty PANE-PID, or one `ps` cannot name (the pane died between the
+# listing and this read), is the table alone: there is no process to ask.
+roost_shape_agree_pane() {
+  local o=""
+  [ -n "${3:-}" ] && o="$(ps -o comm= -p "$3" 2>/dev/null || true)"
+  o="${o##*/}"; o="${o#-}"; o="${o%% *}"
+  case "$o" in
+    sh|bash|zsh|fish|dash)
+      roost_close_harness "" "$2" ""
+      if ! roost_shape__fg_is "$1" "$2" && [ -z "$ROOST_CLOSE_HARNESS" ]; then
+        printf 'exited\n'; return 0
+      fi ;;
+  esac
+  roost_shape_agree "$1" "$2"
+}
+
 # roost_shape__t ARGS... — tmux on the server being saved. The flag and socket
 # are bin/roost's own pair, set by roost_shape_save.
 #
@@ -288,7 +350,7 @@ roost_shape__stamp() {
 # part after the cut is skipped.
 ROOST_SHAPE_FS='#{session_id} #{session_attached} #{session_grouped} #{window_index} x#{q:session_group} x#{q:session_name} .#{session_id}'
 ROOST_SHAPE_FW='#{window_id} #{session_id} #{window_index} #{window_active} #{window_zoomed_flag} #{automatic-rename} #{window_layout} x#{q:window_name} .#{window_id}'
-ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} .#{pane_id}'
+ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} #{pane_pid} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} .#{pane_id}'
 
 # roost_shape__suspect LINE -> exit 0 when a listing line must be read again
 # field by field. On a server that prints control bytes as `\NNN` (R8.2), the
@@ -373,12 +435,12 @@ roost_shape__parse_windows() {
 }
 
 roost_shape__parse_panes() {
-  local line pid sid wid idx act xc xs xh xi xt xl xr xn xp end
-  P_ID=() P_SID=() P_WID=() P_IDX=() P_ACT=() P_CMD=() P_STATE=() P_HARNESS=()
+  local line pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp end
+  P_ID=() P_SID=() P_WID=() P_IDX=() P_ACT=() P_PPID=() P_CMD=() P_STATE=() P_HARNESS=()
   P_SESSION=() P_TRANSCRIPT=() P_LAUNCH=() P_RCWD=() P_NAME=() P_PATH=()
   while IFS= read -r line; do
     case "$line" in %[0-9]*) ;; *) continue ;; esac
-    IFS=' ' read pid sid wid idx act xc xs xh xi xt xl xr xn xp end <<< "$line"
+    IFS=' ' read pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp end <<< "$line"
     if [ "$end" != ".$pid" ] || roost_shape__suspect "$line"; then
       # The free text only; session, window, index and active are this line's
       # own context (see the window case above, and Codex B3).
@@ -392,7 +454,7 @@ roost_shape__parse_panes() {
       roost_shape__d "$pid" '#{@roost-name}'; xn="x$ROOST_SHAPE_D"
       roost_shape__d "$pid" '#{pane_current_path}'; xp="x$ROOST_SHAPE_D"
     fi
-    P_ID+=("$pid"); P_SID+=("$sid"); P_WID+=("$wid"); P_IDX+=("$idx"); P_ACT+=("$act")
+    P_ID+=("$pid"); P_SID+=("$sid"); P_WID+=("$wid"); P_IDX+=("$idx"); P_ACT+=("$act"); P_PPID+=("$ppid")
     P_CMD+=("${xc#x}"); P_STATE+=("${xs#x}"); P_HARNESS+=("${xh#x}"); P_SESSION+=("${xi#x}")
     P_TRANSCRIPT+=("${xt#x}"); P_LAUNCH+=("${xl#x}"); P_RCWD+=("${xr#x}"); P_NAME+=("${xn#x}")
     P_PATH+=("${xp#x}")
@@ -555,7 +617,9 @@ roost_shape__pane() {
   roost_shape__clean "${P_SESSION[$k]}" octal && s="$ROOST_SHAPE_V"
   roost_shape__clean "${P_TRANSCRIPT[$k]}" octal && t="$ROOST_SHAPE_V"
   if [ -n "$h" ] && [ -n "$s" ]; then
-    agree="$(roost_shape_agree "$h" "$cmd")"
+    # The one table save and revive share (roost_shape_agree_pane), asked
+    # with the pane's own process.
+    agree="$(roost_shape_agree_pane "$h" "$cmd" "${P_PPID[$k]}")"
     if [ "$agree" = ok ]; then
       printf 'harness %s\nsession_id %s\n' "$h" "$s"
       [ -n "$t" ] && printf 'transcript %s\n' "$t"

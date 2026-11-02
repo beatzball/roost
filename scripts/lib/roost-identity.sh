@@ -204,7 +204,7 @@ roost_identity_stamp() {
   local sock="$1" pane="$2" sid="$3" cwd="$4" harness="$5" tr="$6"
   local tab=$'\t' want got boot
   local -a wr
-  ROOST_IDENTITY_WROTE=0
+  ROOST_IDENTITY_WROTE=0 ROOST_IDENTITY_BOOT=""
   roost_identity_valid "$sid" "$cwd" "$harness" "$tr" || return 2
   # ONE read: the four options and the server's boot key, which the record
   # needs and which costs nothing extra here. Tab-separated: a validated value
@@ -224,6 +224,10 @@ roost_identity_stamp() {
     2>/dev/null)" || return 1
   boot="${got##*$tab}"
   got="${got%$tab*}"
+  # Kept for the caller: a pending resume on this pane is filed under this
+  # boot (#191 Part 3), and asking tmux again would cost the write path a
+  # second read.
+  ROOST_IDENTITY_BOOT="$boot"
   want="$sid$tab$cwd$tab$harness$tab$tr"
   [ "$got" = "$want" ] && return 0
   # The record first, for the reason the reply is recorded before its pane
@@ -306,6 +310,16 @@ sys.stdout.write("\n".join(out) + "\nx")' 2>/dev/null || true)"
   roost_identity_stamp "$sock" "$pane" "$sid" "$cwd" "$harness" "$tr" || rc=$?
   if [ "$rc" -eq 2 ] && [ "$ROOST_IDENTITY_BAD" = transcript ]; then
     roost_identity_stamp "$sock" "$pane" "$sid" "$cwd" "$harness" "" || true
+  fi
+  # A pending resume on this pane (#191 Part 3, §4.7 T11, T12, T18), only
+  # when the stamp really wrote: an unchanged identity keeps its one read.
+  # The libraries are sourced here, by path beside this one, and only then:
+  # a hook that changed nothing pays nothing for them. In a subshell, so
+  # their functions and variables never reach the hook that called this.
+  if [ "${ROOST_IDENTITY_WROTE:-0}" = 1 ]; then
+    ( d="$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" \
+        && . "$d/roost-resume.sh" && . "$d/roost-pending.sh" \
+        && roost_pending_identified "$sock" "$pane" "$sid" "$ROOST_IDENTITY_BOOT" ) >/dev/null 2>&1 || true
   fi
   return 0
 }
