@@ -736,7 +736,9 @@ case "${1:-up}" in
     # server's shape — its sessions, windows, panes, names, directories,
     # layouts and agent keys — as a plain file. The work is in
     # scripts/lib/roost-shape.sh; this arm parses flags. `--auto` is what the
-    # hooks will call (Part 4); until then it takes the same path, silently.
+    # hooks and roost's own verbs call (Part 4, §3.4): it goes through the
+    # saver (roost_shape_auto, §3.5), prints nothing and exits 0 whatever
+    # happens, the `run-shell -b` rule.
     shift
     save_to="" save_trigger="save" save_auto=0
     while [ "$#" -gt 0 ]; do
@@ -754,7 +756,7 @@ case "${1:-up}" in
     esac
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
     if [ "$save_auto" = 1 ]; then
-      roost_shape_save "$_SOCKET_FLAG" "$SOCKET" "$save_to" "$save_trigger" >/dev/null 2>&1 || true
+      roost_shape_auto "$_SOCKET_FLAG" "$SOCKET" "$save_trigger" >/dev/null 2>&1 || true
       exit 0
     fi
     roost_shape_save "$_SOCKET_FLAG" "$SOCKET" "$save_to" "$save_trigger" || exit 1
