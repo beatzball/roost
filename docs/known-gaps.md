@@ -74,9 +74,6 @@ that changes one of these breaks the rule quietly.
   `/proc/PID/stat`, which a clock step does not move; elsewhere
   `ps -o lstart=`. With neither, every recorded owner reads as gone, so two
   restores could run at once. Every machine roost runs on has one.
-- **History has no ring yet.** Every changed save adds a file to `history/`
-  until Part 4 adds `ROOST_SHAPE_KEEP`; nothing saves automatically yet, so it
-  grows only with each `roost save`.
 
 ### `roost revive`: what it rests on, and what it does not check (#57, #191 Part 2)
 
@@ -110,13 +107,6 @@ conversation. What it does NOT know:
   hooks' parent is the app-server, so identity is skipped (#145, the entry
   below), and `revive` of such a pane says it has no recorded conversation
   (13). The live smoke sets the key by hand to test the resume itself.
-- **A launch claim is released only by a pane that is gone, until Part 4.**
-  Every launch takes `claims/<boot>/<harness>-<id>/` (in the directory
-  below) and keeps it after a successful launch. The spec releases it when identity
-  lands with the same id or the pane dies, through hooks Part 4 adds; until
-  then a claim naming a pane that still exists refuses another pane's revive
-  of the same conversation (13, naming that pane), even after the agent in
-  it has moved on. Closing that pane frees it.
 - **Claims live in one place, saving on or off:**
   `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`,
   never the shape directory (coordinator ruling, Part 2 review round 2). Round 1 put them in the shape
@@ -142,14 +132,6 @@ Live risk, small. A hand `roost restore` and `roost restore --resume` resume
 agents through one engine (`scripts/lib/roost-pending.sh`), from the
 `pending/<boot>/` record placement writes.
 
-- **No save after each launch.** §4.7 T10 says a launch is followed by `save
-  --auto --trigger respawn`. Not done in Part 3: a save today writes only the
-  live identity options, so every pane still WAITING (a placeholder, with no
-  identity on it) would be written without its key, and the newest shape
-  would lose those keys. The overlay that writes a pending pane's key from
-  its file is Part 4's (§4.6 Overlay); the save after a launch comes with it.
-  Until then a crash in the middle of a restore leaves the previous `shape`
-  as the newest save, which still has every key. Severity: low.
 - **A dialog on resume is left for a person.** Restore and `revive` launch
   and move on (§4.1 step 8, §5.2): a folder-trust or similar dialog the
   harness opens stays on screen, the pane's pending file stays `.launching`
@@ -169,12 +151,6 @@ agents through one engine (`scripts/lib/roost-pending.sh`), from the
   file in the shape directory. A hand restore with `ROOST_SHAPE_DIR=` keeps
   its pending files in a temporary directory, which identify cannot see:
   those files are never released and go with that directory.
-- **A resume that exits non-zero before identity stays launching.** The
-  pane is left dead (`remain-on-exit failed`) with its file `%N.launching`
-  and its claim held; `revive` says it is already being resumed and
-  `--retry` does not take it. Moving it to failed, dead is T13, Part 4's
-  `pane-died` hook. Until then the way out is `roost close` on the pane,
-  then a new `roost restore` (review round 1, Fable N1). Severity: low.
 - **`-S` servers: identify hashes the resolved socket path.** For a
   `-S PATH` server the shape key is a checksum of the path. `restore` uses
   the path as typed; identify sees the resolved one in `$TMUX`. A typed path
@@ -200,6 +176,56 @@ agents through one engine (`scripts/lib/roost-pending.sh`), from the
   until #145; the report says so. §8.2 item 6 (two real codex panes after a
   restore) has not been run.
 
+### Saving on change: what Part 4 rests on, and what it leaves (#51, #191 Part 4)
+
+Live risk, small. roost saves the shape on every structural change, from
+tmux hooks in `tmux/roost.conf` and from its own verbs, through one saver per
+server (scripts/lib/roost-shape.sh, roost_shape_auto).
+
+- **Measured, not assumed** (docs/airig/probes/persist-4-*.md, once each):
+  every hook name used exists on tmux 3.2a, 3.4, 3.6 and 3.8, and every move
+  fires as on 3.6 (`swap-pane` fires nothing at all on 3.2a); the kill
+  difference gives the same sets on all four; a Linux poweroff and reboot ran
+  no hook at all; Linux's `last -x` records the shutdown to the second.
+- **A save costs about 350 ms at 47 panes** on the dev Mac under load
+  (persist-4-cost.md), not the spec's estimated 50 ms. Off every agent's
+  path (hooks run it with `run-shell -b`, identify in the background), but a
+  verb's own save adds it to `spawn`, `split`, `view` and `close`.
+- **Saved late:** a drag resize, `swap-pane`, `swap-window`, a `join-pane` or
+  `move-pane` that leaves its window with panes, `respawn-pane` by hand and a
+  shell's `cd` fire no hook roost uses; each is saved with the next change of
+  any other kind. A crash in between restores the state before it.
+- **A user's own hook can reorder a death and a kill.** tmux runs a death's
+  hook from its global queue and a typed kill's from the client's. A hook a
+  user installed WITHOUT `-b` that holds the global queue could let a kill's
+  difference run first and name a pane that died. The death note (`died.<N>`)
+  keeps such a pane: a kill file never removes a pane a death note names.
+  Read from the tmux source, not raced.
+- **`tmux kill-server`, a SIGTERM to the server and `tmux kill-session` of the
+  LAST session run no hook**, so nothing records them as meant; the next
+  restore brings that fleet back. `roost stop` and `roost kill NAME` record
+  every pane they remove (ruling R1-A).
+- **After `roost stop`, only a restore by path brings the fleet back.** A
+  plain restore and `--from STAMP-GEN` honour the closes and print the path
+  to use. By design (R1-A).
+- **A revive that stops in a dialog is saved without its key.** `revive`
+  clears the pane's identity before its respawn (§4.1 step 7), so its save
+  writes the pane with no key until identity lands; a crash in that window
+  restores a shell there. The save before it, in `history/`, has the key.
+  A pane restore placed keeps its key in every save (the overlay).
+- **The spec's way back for a skipped first session changed.** §4.3 says
+  `tmux kill-session -t NAME` then `roost restore --only NAME`. Since Part 4
+  the kill is recorded and the newest save lacks NAME, so restore's message
+  now says `roost restore --from STAMP-GEN --only NAME`, naming the save it
+  restored. The spec text is not changed (coordinator to rule).
+- **Every restore rewrites `shape`.** Its own final save is the placed fleet:
+  after `restore --no-resume`, `shape` holds shells, and a second restore
+  from it resumes nothing. The save before is in `history/`.
+- **`save.err` stays until a save is published.** A round that finds nothing
+  changed does not remove it (ruling R3's wording), so doctor can quote an
+  old failure while saving works again; the next real change clears it.
+- **A lock held by a stopped saver is never broken by age** (the owner rule).
+  doctor names a live owner held over 60 s; the wants wait for it.
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-

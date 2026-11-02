@@ -18,6 +18,24 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **roost now saves your fleet's shape by itself, on every change (#51,
+  #191).** Make, close, kill, rename, move or resize a session, window or
+  pane — or `roost spawn`, `split`, `view`, `close`, `revive` — and the
+  shape under `~/.local/state/roost/shapes/` is up to date a moment later,
+  so a crash loses at most the last change and `roost restore` has the
+  fleet as it was. A burst of changes becomes one or two saves, and
+  `history/` keeps the last 100 (`ROOST_SHAPE_KEEP`). A pane you closed on
+  purpose stays closed: `roost close`, `tmux kill-pane`, `kill-window`,
+  `kill-session`, and `roost kill NAME` and `roost stop` for a whole
+  session or fleet are recorded, and a restore leaves those panes out; to
+  bring back a fleet you stopped, `roost restore --from` the saved file by
+  path (`roost restore --list` shows them, and restore prints the path).
+  After a shutdown, when agents exited one by one before tmux did, a
+  restore picks the save from before that teardown. `roost doctor` says
+  whether saving is on, names the last save, and warns when nothing has
+  been saved since the server started or the last save failed. Loading
+  the new hooks needs `prefix r` or a new server.
+
 - **`roost install` links the roost skill for every harness it wires
   (#208).** An agent in a pane now knows roost is there and how to drive it
   (`spawn`, `send`, `wait-done`, `read`) without you linking the skill by hand.
