@@ -630,6 +630,15 @@ roost_pending__one() {
     if [ "$dead" != 1 ]; then
       roost_pending__fail "$l" "$p" "pane changed" "" "$claim"; return 13
     fi
+  elif [ "$dead" = 1 ] && roost_pending__is_placeholder "$sc" "$p" "$h"; then
+    # A CRASHED PLACEHOLDER (review round 1, Fable N2): dead, and still this
+    # file's own placeholder line, so no person replaced it. That is T13a's
+    # result, failed, dead (`died`), which --retry (T16) and revive reach;
+    # T13a itself is Part 4's pane-died hook, so until then the loop meets
+    # the dead pane first. Written as `pane changed` it had no way out: a
+    # dead pane holds no person's work.
+    ROOST_PENDING_FROMDEAD=0
+    roost_pending__fail "$l" "$p" died "" "$claim"; return 13
   elif [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$sc" "$p" "$h"; then
     roost_pending__fail "$l" "$p" "pane changed" "" "$claim"; return 13
   fi

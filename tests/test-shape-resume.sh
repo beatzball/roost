@@ -790,6 +790,22 @@ assert_eq "$(TL display -p -t "$pc" '#{pane_current_command}')|$(TL display -p -
   "...both sleeps alive"
 kill_sess x2 x3
 
+echo "== a crashed placeholder is died (T13a's result), and --retry reaches it (review round 1, Fable N2) =="
+reset_run
+U16=3fa3c0de-1616-4abc-8def-000000000016; stub_store_add "$U16" "$D1"
+shape_of "x7|%1007|$D1|harness claude;session_id $U16"
+place_only 1
+pc7="$(first_pane x7)"; wait_screen "$pc7" "waiting to resume claude"
+kill -9 "$(TL display -p -t "$pc7" '#{pane_pid}')"
+i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$pc7" '#{pane_dead}')" != 1 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(TL display -p -t "$pc7" '#{pane_dead}')|$(ls "$PEND" | grep "^$pc7")" "1|$pc7" "(fixture) the placeholder crashed: a dead pane, its file still %N"
+R restore --resume >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(head -1 "$PEND/$pc7.failed" 2>/dev/null)|$(grep -c "$U16" "$STUB_LOG")" "13|died|0" \
+  "the worker finds it dead with its own placeholder line: %N.failed died, not pane changed"
+R restore --resume --retry >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(grep -c "$U16" "$STUB_LOG")|$(TL display -p -t "$pc7" '#{pane_dead}')" "0|1|0" "...which --retry relaunches in place (T16)"
+kill_sess x7
+
 echo "== --retry checks the pane again: a failed pane a person replaced since (T14 then T9) =="
 # The retry arrow (T14) is no pass: the loop then makes the check of the
 # state it came from (§4.6 step 4). A failed, waiting pane that a person
