@@ -771,6 +771,28 @@ assert_eq "$(TL display -p -t "$pc" '#{pane_current_command}')|$(TL display -p -
   "...both sleeps alive"
 kill_sess x2 x3
 
+echo "== --retry checks the pane again: a failed pane a person replaced since (T14 then T9) =="
+# The retry arrow (T14) is no pass: the loop then makes the check of the
+# state it came from (§4.6 step 4). A failed, waiting pane that a person
+# respawned with their own command AFTER the failure has the key in the store
+# by now, so every read-only check passes, and only that pane check keeps the
+# person's command alive (test 11, retry D's shape).
+reset_run
+U15=3fa3c0de-ffff-4abc-8def-00000000000f
+shape_of "x8|%1008|$D1|harness claude;session_id $U15"
+place_only 1
+pr="$(first_pane x8)"
+R restore --resume >/dev/null 2>&1
+assert_eq "$(head -1 "$PEND/$pr.failed" 2>/dev/null)" "store miss" "(fixture) %N.failed store miss"
+TL respawn-pane -k -t "$pr" 'sleep 300'; sleep 0.3
+spr="$(TL display -p -t "$pr" '#{pane_pid}')"
+stub_store_add "$U15" "$D1"
+R restore --resume --retry >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(head -1 "$PEND/$pr.failed" 2>/dev/null)|$(grep -c "$U15" "$STUB_LOG")" "13|pane changed|0" \
+  "--retry of a failed pane replaced since: %N.failed pane changed, nothing launched"
+assert_eq "$(TL display -p -t "$pr" '#{pane_pid}')|$(TL display -p -t "$pr" '#{pane_current_command}')" "$spr|sleep" "...the person's command untouched"
+kill_sess x8
+
 echo "== --retry takes only the states with a retry arrow (T14, T16), by the first line =="
 # A placeholder whose file is %N.failed interrupted, its key in the store, the
 # pane alive: every check a retry makes would PASS, so only the first-line

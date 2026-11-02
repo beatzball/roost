@@ -62,8 +62,9 @@ shard_weight() {
     # machine (load 10), so it is not the figure.
     test-revive.sh) echo 70 ;;
     # Added for persistent sessions Part 3 (#191), not off a CI log: 58 s
-    # once on the dev Mac (tmux 3.6) at Task 3.5, 181 cases.
-    test-shape-resume.sh) echo 60 ;;
+    # once on the dev Mac (tmux 3.6) at Task 3.5, 181 cases; 78 s once at
+    # Task 3.14, 231 cases.
+    test-shape-resume.sh) echo 78 ;;
     *) echo 5 ;;
   esac
 }
