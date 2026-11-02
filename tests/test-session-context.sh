@@ -97,6 +97,24 @@ esac
 has_sm="$(printf '%s' "$out" | python3 -c 'import json,sys; print("yes" if "systemMessage" in json.load(sys.stdin) else "no")' 2>/dev/null)"
 assert_eq "$has_sm" "no" "the hook prints no systemMessage at the user"
 
+# --- a restored pane: Claude learns the id it had (#191 Part 3, §5.4 item 3) ---
+# SessionStart fires on a resume, so a resumed Claude is told its NEW id
+# anyway; with @roost-was set it is told the old one too. Without it, the
+# output is byte-identical to the case above.
+base="$out"
+tmux -S "$s" set-option -p -t "$spane" @roost-was %930
+out2="$(in_roost "$SC" </dev/null 2>/dev/null)"
+text2="$(printf '%s' "$out2" | ctx 2>/dev/null)"
+assert_contains "$text2" "This pane is $spane (it was %930 before a restore)" "with @roost-was %930: the context adds the id it had before the restore"
+assert_eq "$(printf '%s' "$out2" | sed 's/ (it was %930 before a restore)//')" "$base" "...and nothing else changes"
+tmux -S "$s" set-option -pu -t "$spane" @roost-was
+out3="$(in_roost "$SC" </dev/null 2>/dev/null)"
+assert_eq "$out3" "$base" "without @roost-was: byte-identical"
+tmux -S "$s" set-option -p -t "$spane" @roost-was 'x; rm -rf /'
+out4="$(in_roost "$SC" </dev/null 2>/dev/null)"
+assert_eq "$out4" "$base" "a @roost-was that is not a pane id is ignored"
+tmux -S "$s" set-option -pu -t "$spane" @roost-was
+
 # --- outside roost: silence ---------------------------------------------------
 
 # The regression this file exists for. From a pane in the user's ORDINARY tmux,
