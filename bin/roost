@@ -874,7 +874,14 @@ case "${1:-up}" in
     restore_rc=0
     roost_restore_pick "$restore_dir" "$restore_from" || exit $?
     [ "$ROOST_RESTORE_BYFILE" = 1 ] && roost_restore__host_line "$ROOST_RESTORE_FILE"
-    roost_restore_prepare "$ROOST_RESTORE_FILE" || restore_rc=$?
+    # The shape directory goes in so the reading rule's step 4 can read the
+    # save's own boot's closed/ record (§3.6, §3.6a). 3: every saved pane was
+    # closed on purpose, which is said, and is not a failure.
+    roost_restore_prepare "$ROOST_RESTORE_FILE" "$restore_dir" || restore_rc=$?
+    if [ "$restore_rc" = 3 ]; then
+      rm -rf "${ROOST_RESTORE_PD:-}"
+      exit 0
+    fi
     if [ "$restore_rc" = 0 ]; then
       if [ "$restore_mode" = dry ]; then
         roost_restore_dry_run || restore_rc=$?

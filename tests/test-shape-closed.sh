@@ -228,6 +228,62 @@ pgrep -f "save --auto --socket $OFF" >/dev/null 2>&1; assert_eq "$?" "1" "5 s af
 assert_eq "$(ls "$ROOST_SHAPE_DIR")" "$dirs0" "...and none wrote a shape directory"
 tmux -S "$OFF" kill-server 2>/dev/null
 
+# --- restore drops what its boot's closed record names (Task 4.9a) -----------
+echo "== §3.6 step 4: the picked save's own boot's closed/ removes those panes =="
+# A fleet with no hooks (-f /dev/null): the closed files are planted by hand,
+# so each case says exactly which file it is about.
+sessions() { TL list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
+paths() { TL list-panes -a -F '#{pane_current_path}' 2>/dev/null | sed "s|^$SHAPE_TMP/||" | sort | tr '\n' ' '; }
+mkdir -p "$SHAPE_TMP/pa" "$SHAPE_TMP/pb" "$SHAPE_TMP/pc" "$SHAPE_TMP/pd" "$SHAPE_TMP/pe"
+fleet() {
+  TL -f /dev/null new-session -d -s s1 -x 200 -y 50 -c "$SHAPE_TMP/pa" 'ENV= exec /bin/sh'
+  A="$(TL display -p -t '=s1:' '#{pane_id}')"
+  B="$(TL split-window -d -P -F '#{pane_id}' -t "$A" -c "$SHAPE_TMP/pb" 'ENV= exec /bin/sh')"
+  C="$(TL new-window -d -P -F '#{pane_id}' -t '=s1:' -c "$SHAPE_TMP/pc" 'ENV= exec /bin/sh')"
+  TL new-session -d -s s2 -c "$SHAPE_TMP/pd" 'ENV= exec /bin/sh'; D="$(TL display -p -t '=s2:' '#{pane_id}')"
+  TL new-session -d -s s3 -c "$SHAPE_TMP/pe" 'ENV= exec /bin/sh'; E="$(TL display -p -t '=s3:' '#{pane_id}')"
+  rm -rf "$SD"; R save >/dev/null 2>&1
+  FB="$(boot_now)"; FSG="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
+  cp "$SD/shape" "$SHAPE_TMP/fleet.shape"
+}
+plant() { mkdir -p "$SD/closed/$1"; printf '%s\n' "$3" > "$SD/closed/$1/$2"; }
+TL kill-server 2>/dev/null; sleep 0.3
+fleet
+plant "$FB" "close.${A#%}" "$A"
+plant "$FB" "kill.20261102T000000Z-1" "$B"; plant "$FB" "died.${B#%}" "$B"
+plant "$FB" "close.${E#%}" "$E"; plant "$FB" "died.${E#%}" "$E"
+plant "$FB" "kill.20261102T000000Z-2" "$D"
+plant "1-1" "close.${C#%}" "$C"
+TL kill-server; sleep 0.3
+R restore --no-resume >/dev/null 2>"$SHAPE_TMP/e49"; rc=$?
+assert_eq "$rc|$(sessions)" "0|s1 " "a plain restore: s2 (killed) and s3 (closed) are not created"
+assert_eq "$(paths)" "pb pc " "...A (close.) is gone, B (kill + death note) kept, C (another boot's file) kept"
+assert_eq "$(grep -c "default layout" "$SHAPE_TMP/e49")" "1" "...one stderr line: the window that lost a pane takes tmux's default layout"
+assert_contains "$(cat "$SHAPE_TMP/e49")" "window s1:0 " "...naming that window (base-index 0 on this server)"
+TL kill-server; sleep 0.3
+R restore --no-resume --from "$FSG" >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(sessions)|$(paths)" "0|s1 |pb pc " "--from STAMP-GEN: the same filter (that save's boot)"
+TL kill-server; sleep 0.3
+R restore --no-resume --from "$SHAPE_TMP/fleet.shape" >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(sessions)|$(paths)" "0|s1 s2 s3 |pa pb pc pd pe " "--from FILE: the caller's own choice, nothing filtered"
+TL kill-server; sleep 0.3
+fleet
+for p in "$A" "$B" "$C" "$D" "$E"; do plant "$FB" "close.${p#%}" "$p"; done
+TL kill-server; sleep 0.3
+out="$(R restore --no-resume 2>&1)"; rc=$?
+assert_eq "$rc" "0" "every saved pane closed: exit 0"
+assert_contains "$out" "nothing to restore: every saved pane was closed on purpose" "...saying so"
+TL list-sessions >/dev/null 2>&1; assert_eq "$?" "1" "...and no server was started"
+
+echo "== 8 (i), the restore half: after a SIGTERM to the server, the whole fleet comes back =="
+TL kill-server 2>/dev/null; sleep 0.3
+fleet
+spid="$(TL display -p '#{pid}')"; kill -TERM "$spid"; sleep 1
+[ ! -e "$SD/closed/$FB" ]; assert_true $? "no closed record for that boot"
+R restore --no-resume >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(sessions)|$(paths)" "0|s1 s2 s3 |pa pb pc pd pe " "a plain restore brings every pane back"
+TL kill-server 2>/dev/null; sleep 0.3
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

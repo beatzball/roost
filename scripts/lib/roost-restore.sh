@@ -974,9 +974,20 @@ roost_restore__make_session() {
     # Fable N1): only a key's earns the advice to kill the session and try
     # again. Changed or split by hand, the session holds a person's work, and
     # killing it would lose that.
+    #
+    # The advice names THIS save (--from), not a plain restore (spec §4.3
+    # said `roost restore --only NAME`). Since Part 4 that kill-session writes
+    # a kill file for the session's panes on this boot, and this restore's own
+    # final save, then the save after the kill, become the newest: a plain
+    # restore would find no NAME at all. The save restored here is from an
+    # earlier boot (or a file), so its own closed record does not hold this
+    # kill, and --from it brings NAME back.
     case "$r" in
       0) ;;
-      1) printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --only NAME)\n" "$name" "$npanes" >&2
+      1) local from_sel
+         if [ "${ROOST_RESTORE_BYFILE:-0}" = 1 ]; then from_sel="$ROOST_RESTORE_FILE"
+         else from_sel="$(roost_restore__stampgen "$ROOST_RESTORE_FILE")"; fi
+         printf "roost restore: session '%s' skipped: the bootstrap pane was taken by a key — %s panes not restored (tmux kill-session -t NAME, then roost restore --from %s --only NAME)\n" "$name" "$npanes" "$from_sel" >&2
          ROOST_RESTORE_SKIPPED="${ROOST_RESTORE_SKIPPED:-}$name"$'\n'
          return 12 ;;
       *) [ "$r" = 2 ] && printf 'roost restore: pane %s (%s) was changed by hand during placement; left as it is\n' \
@@ -1058,16 +1069,111 @@ roost_restore__make_member() {
 # refused file or selection, 2 a selector that matches nothing). Nothing here
 # touches the server but to read it (§4.3 Refuse first: the file is checked
 # before the first tmux command).
+#
+# With SHAPE-DIR (and the save not a --from FILE, ROOST_RESTORE_BYFILE), the
+# reading rule's step 4 runs between the parse and --only: every pane the
+# save's own boot's closed/ record names is removed first
+# (roost_restore_drop_closed), so --only, --dry-run and the run all see the
+# fleet that is left. 3 when nothing is left: the caller says so and exits 0.
 roost_restore_prepare() {
-  local r=0
+  local r=0 boot
   if ! roost_shape_check "$1"; then
     printf 'roost restore: %s: %s; nothing done\n' "$1" "$ROOST_SHAPE_FAULT" >&2
     return 16
   fi
   ROOST_RESTORE_PD="$(mktemp -d)"
   roost_shape_parse "$1" "$ROOST_RESTORE_PD" || return 1
+  if [ -n "${2:-}" ] && [ "${ROOST_RESTORE_BYFILE:-0}" != 1 ]; then
+    boot="$(roost_shape_get "$ROOST_RESTORE_PD/0000.header" boot 2>/dev/null || true)"
+    roost_restore_drop_closed "$ROOST_RESTORE_PD" "$2" "$boot" || return 3
+  fi
   roost_restore__select || r=$?
   return "$r"
+}
+
+# roost_restore_drop_closed PARSEDIR SHAPE-DIR BOOT — §3.6 step 4, the closed
+# record (§3.6a) applied to the picked save. Exit 0, or 1 when nothing is
+# left to restore.
+#
+# Read: closed/<BOOT>/ of the SAVE'S OWN boot, and no other boot's, ever. A
+# pane id is never reused inside one server (§2.7, measured), so a save of
+# boot B that holds %N was listed while %N was alive — before its removal —
+# and a save that does not hold it has nothing to remove. NO TIME IS
+# COMPARED (revision 3, item 2): revision 2 compared seconds and lost a close
+# in the picked save's own second, and ordering by `gen` would lose a save
+# listed before a close and published after it.
+#
+# Removed: every pane a `close.` file names, whatever else names it (a
+# `roost close` ends in a death by design, so a closed pane has both); and
+# every pane a `kill.` file names that NO `died.` note names. A kill file and
+# a death note together keep the pane: the belt for the one ordering the kill
+# difference does not prove (a user's own hook holding tmux's global queue,
+# §3.6a).
+#
+# Then: a window that lost panes takes tmux's default layout, with one stderr
+# line, because select-layout needs the saved pane count (§2.7); a window left
+# with no pane, a session left with no window, and a later member of a group
+# whose first member went, are not created.
+roost_restore_drop_closed() {
+  local pd="$1" d="$2/closed/$3" f id kill=" " died=" " close=" " gone=" " w waddr s saddr n left=0
+  [ -n "$3" ] && [ -d "$d" ] || return 0
+  for f in "$d"/kill.* "$d"/died.* "$d"/close.*; do
+    [ -f "$f" ] || continue
+    while IFS= read -r id || [ -n "$id" ]; do
+      case "$id" in %[0-9]*) ;; *) continue ;; esac
+      case "${id#%}" in *[!0-9]*) continue ;; esac
+      case "${f##*/}" in
+        kill.*) kill="$kill$id " ;;
+        died.*) died="$died$id " ;;
+        close.*) close="$close$id " ;;
+      esac
+    done < "$f"
+  done
+  for f in "$pd"/*.pane; do
+    [ -e "$f" ] || continue
+    id="$(roost_shape_get "$f" id 2>/dev/null)" || continue
+    case "$close" in *" $id "*) ;; *)
+      case "$kill" in *" $id "*) ;; *) continue ;; esac
+      case "$died" in *" $id "*) continue ;; esac ;;
+    esac
+    waddr="$(roost_restore__addr "$f")"; waddr="${waddr%.*}"
+    case "$gone" in *" $waddr "*) ;; *) gone="$gone$waddr " ;; esac
+    rm -f "$f"
+  done
+  for w in "$pd"/*.window; do
+    [ -e "$w" ] || continue
+    waddr="$(roost_restore__addr "$w")"
+    case "$gone" in *" $waddr "*) ;; *) continue ;; esac
+    n="$(ROOST_RESTORE_PD="$pd" roost_restore__panes "$waddr" | grep -c . || true)"
+    if [ "$n" = 0 ]; then
+      rm -f "$w"
+    else
+      # The saved layout needs the saved pane count: without its line the
+      # window is built and left in tmux's default layout
+      # (roost_restore__build_window skips an absent layout).
+      sed '/^layout /d' "$w" > "$w.t" && mv -f "$w.t" "$w"
+      printf "roost restore: window %s lost panes closed on purpose; tmux's default layout instead\n" "$waddr" >&2
+    fi
+  done
+  for s in "$pd"/*.session; do
+    [ -e "$s" ] || continue
+    roost_shape_get "$s" group >/dev/null 2>&1 && continue
+    saddr="$(roost_restore__addr "$s")"
+    if [ -z "$(ROOST_RESTORE_PD="$pd" roost_restore__windows "$saddr")" ]; then
+      rm -f "$s"
+    fi
+  done
+  for s in "$pd"/*.session; do
+    [ -e "$s" ] || continue
+    saddr="$(roost_shape_get "$s" group 2>/dev/null)" || continue
+    ROOST_RESTORE_PD="$pd" roost_restore__block session "$saddr" >/dev/null || rm -f "$s"
+  done
+  for s in "$pd"/*.session; do [ -e "$s" ] && left=1; done
+  if [ "$left" = 0 ]; then
+    printf 'roost restore: nothing to restore: every saved pane was closed on purpose\n' >&2
+    return 1
+  fi
+  return 0
 }
 
 roost_restore_run() {

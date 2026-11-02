@@ -242,6 +242,7 @@ echo "== (f) a key in the held bootstrap: taken, the saved session skipped =="
 # left in shells.log would count for this one: start the log empty.
 stop_server; rm -rf "$SD/restoring"; : > "$HOME/shells.log"
 H="$SHAPE_TMP/hold"; rm -f "$H"
+sgf="$(sed -n 's/^saved //p;/^$/q' "$SD/shape" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$SD/shape")"
 ROOST_TEST_RESTORE_HOLD="$H" R restore >/dev/null 2>"$SHAPE_TMP/err" &
 rpid=$!
 wait_boot "" 50
@@ -254,6 +255,10 @@ wait_boot .taken; assert_true $? "the key won: bootstrap.taken"
 : > "$H"; wait "$rpid"; rc=$?
 assert_eq "$rc" "12" "...the saved session of that name is skipped, exit 12"
 assert_contains "$(cat "$SHAPE_TMP/err")" "the bootstrap pane was taken by a key" "...and the reason is named"
+# Part 4: the way back names the save restored, by STAMP-GEN — after the
+# kill-session it advises, a plain restore would pick a newer save with no
+# such session (§3.6; tests/test-shape-address.sh follows the advice).
+assert_contains "$(cat "$SHAPE_TMP/err")" "then roost restore --from $sgf --only NAME" "...and the way back names that save"
 shells_wait "$bp"; assert_eq "$(shells_for "$bp" | wc -l | tr -d ' ')" "1" "...the pane is the person's shell"
 detach_client
 
