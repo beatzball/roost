@@ -968,14 +968,86 @@ roost_shape__saver() {
   done
 }
 
-# roost_shape_auto FLAG SOCKET TRIGGER [PANE] — `roost save --auto` (§3.4,
-# §3.5): record the want, and save when no other saver is busy. Exit 0
-# always; the caller throws stdout and stderr away.
+# THE CLOSED RECORD (§3.6a): a removal that was meant stays removed after a
+# reboot. closed/<boot>/ holds one 0600 file per removal, each naming PANE
+# IDS ONLY, `%N` per line, the ids of that boot (panes only: a window or
+# session block left with no pane is dropped by restore, and naming a window
+# would also drop a pane that had moved out of it before the kill). One file
+# each, so a failed `roost close` can take its own back without editing a
+# file others append to. Restore's step 4 reads only the directory of the
+# boot a picked save names (§3.6).
+#
+#   kill.<stamp>-<pid>   a kill-pane, kill-window or kill-session: the panes in
+#                        the hook's old @roost-ids and not in its new loop
+#   died.<N>             pane-exited's own note: %N's process ended by itself.
+#                        Never a removal on its own; it is the belt that keeps
+#                        a kill file from removing a pane that died (§3.6a)
+#   close.<N>            `roost close` (and `roost kill`/`stop`, ruling R1),
+#                        written by bin/roost before the exit command
+
+# roost_shape__closed_write DIR BOOT NAME CONTENT — one closed/ file, made
+# whole in a temp file and renamed into place, 0600 under a 0700 directory.
+# Silent when it cannot be written: a hook never fails loudly.
+roost_shape__closed_write() {
+  local d="$1/closed/$2" tmp
+  ( umask 077; mkdir -p "$d" ) 2>/dev/null || return 0
+  tmp="$( (umask 077; mktemp "$d/.w.XXXXXX") 2>/dev/null)" || return 0
+  if printf '%s' "$4" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$d/$3" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+  return 0
+}
+
+# roost_shape__kill_diff BEFORE AFTER -> prints, one per line, the pane ids
+# in BEFORE and not in AFTER, each list "x" then space-separated ids (the
+# hook's form). Compared as SETS: after a join-pane the new loop holds the
+# same ids in another order on every build (probe 4.4), and a string compare
+# would read that as a kill. An EMPTY after-list prints nothing: the server
+# is ending (§3.6a, the last-session case). A word that is not `%N` is
+# ignored, so a mangled argument can only name fewer panes, never more.
+roost_shape__kill_diff() {
+  local before="${1#x}" after="${2#x}" id
+  case "$after" in *%[0-9]*) ;; *) return 0 ;; esac
+  for id in $before; do
+    case "$id" in %[0-9]*) ;; *) continue ;; esac
+    case "${id#%}" in *[!0-9]*) continue ;; esac
+    case " $after " in *" $id "*) ;; *) printf '%s\n' "$id" ;; esac
+  done
+}
+
+# roost_shape__compact_stamp -> 20261102T081500Z, the history names' form,
+# from the same clock as every stamp (ROOST_TEST_NOW when set).
+roost_shape__compact_stamp() { roost_shape__stamp | tr -d ':-'; }
+
+# roost_shape_auto FLAG SOCKET TRIGGER [PANE [BOOT [BEFORE AFTER]]] — `roost
+# save --auto` (§3.4, §3.5): first what only this caller knows, then the
+# want, then save when no other saver is busy. Exit 0 always; the caller
+# throws stdout and stderr away.
+#
+# Step 1 (revision 3): a removal hook's kill difference and pane-exited's
+# death note go to closed/<BOOT>/ BEFORE the want and the lock, and whatever
+# happens to them: a held saver or a held restoring/ must never delay or drop
+# them. BOOT is the boot key the hook passed — the running server's — never
+# one read from a saved shape (§3.6a item 5).
 roost_shape_auto() {
-  local flag="$1" sock="$2" trigger="$3" pane="${4:-}" dir key r
+  local flag="$1" sock="$2" trigger="$3" pane="${4:-}" boot="${5:-}" before="${6:-}" after="${7:-}"
+  local dir key r ids
   ROOST_SHAPE_TFLAG="$flag" ROOST_SHAPE_TSOCK="$sock"
+  case "$pane" in %[0-9]*) case "${pane#%}" in *[!0-9]*) pane="" ;; esac ;; *) pane="" ;; esac
+  case "$boot" in [0-9]*-[0-9]*) case "$boot" in *[!0-9-]*) boot="" ;; esac ;; *) boot="" ;; esac
   dir="$(roost_shape_dir "$flag" "$sock")" || return 0
   key="$(roost_shape_key "$flag" "$sock")"
+  if [ -n "$boot" ]; then
+    if [ -n "$before" ]; then
+      ids="$(roost_shape__kill_diff "$before" "$after")"
+      [ -n "$ids" ] && roost_shape__closed_write "$dir" "$boot" \
+        "kill.$(roost_shape__compact_stamp)-$$" "$ids"$'\n'
+    fi
+    [ "$trigger" = pane-exited ] && [ -n "$pane" ] && \
+      roost_shape__closed_write "$dir" "$boot" "died.${pane#%}" "$pane"$'\n'
+  fi
   roost_shape__want "$dir" "$trigger${pane:+.$pane}" || return 0
   # Step 4: a live restore owns publishing until it ends; its final save
   # (--trigger restore) covers this want. A restoring/ whose owner is dead

@@ -741,6 +741,13 @@ case "${1:-up}" in
     # happens, the `run-shell -b` rule.
     shift
     save_to="" save_trigger="save" save_auto=0
+    # The hooks' own flags (tmux/roost.conf; the plan names them, the spec
+    # does not), not in the usage line: --socket PATH (#{socket_path}),
+    # --boot KEY (the hook's #{start_time}-#{pid}), --pane %N (#{hook_pane}),
+    # --ids-before / --ids-after "x<ids>" (@roost-ids and the fresh loop,
+    # each behind an `x` so an empty list is still one word). Read only with
+    # --auto.
+    save_sock="" save_boot="" save_pane="" save_before="" save_after=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --to) [ "$#" -ge 2 ] || { echo "roost save: --to needs a file" >&2; exit 2; }
@@ -748,6 +755,13 @@ case "${1:-up}" in
         --trigger) [ "$#" -ge 2 ] || { echo "roost save: --trigger needs a name" >&2; exit 2; }
               save_trigger="$2"; shift 2 ;;
         --auto) save_auto=1; shift ;;
+        --socket|--boot|--pane|--ids-before|--ids-after)
+              [ "$#" -ge 2 ] || exit 2
+              case "$1" in
+                --socket) save_sock="$2" ;; --boot) save_boot="$2" ;; --pane) save_pane="$2" ;;
+                --ids-before) save_before="$2" ;; --ids-after) save_after="$2" ;;
+              esac
+              shift 2 ;;
         *) echo "usage: roost save [--to FILE] [--trigger NAME]" >&2; exit 2 ;;
       esac
     done
@@ -756,7 +770,18 @@ case "${1:-up}" in
     esac
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
     if [ "$save_auto" = 1 ]; then
-      roost_shape_auto "$_SOCKET_FLAG" "$SOCKET" "$save_trigger" >/dev/null 2>&1 || true
+      # A hook names its server by socket PATH. A path in tmux's own
+      # directory for this user is the `-L NAME` server, keyed NAME (§3.1):
+      # keyed by the path, every hook save of the real `-L roost` server
+      # would land in a directory no restore reads. The rule is the one
+      # identify already uses (roost_pending__server).
+      if [ -n "$save_sock" ]; then
+        . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+        roost_pending__server "$save_sock"
+        _SOCKET_FLAG="$ROOST_PENDING_FLAG" SOCKET="$ROOST_PENDING_SOCK"
+      fi
+      roost_shape_auto "$_SOCKET_FLAG" "$SOCKET" "$save_trigger" "$save_pane" \
+        "$save_boot" "$save_before" "$save_after" >/dev/null 2>&1 || true
       exit 0
     fi
     roost_shape_save "$_SOCKET_FLAG" "$SOCKET" "$save_to" "$save_trigger" || exit 1

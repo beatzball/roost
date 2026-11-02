@@ -945,6 +945,12 @@ roost_restore__make_session() {
   [ "$boot" != 1 ] && [ "${#nflag[@]}" -gt 0 ] && roost_restore__window_name "$wid" "$wname"
   t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
   if [ "$boot" = 1 ]; then
+    # The conf's save hooks (#191 Part 4) find bin/roost through
+    # @roost-home, which server_init sets. Set here first, at once, so a
+    # pane killed while restore is still starting the server is still
+    # written to closed/<this boot>/ (§8.1 test 8h): server_init comes after
+    # the hold, and every hook before it would run a path with no checkout.
+    t set-option -g @roost-home "$ROOST_HOME" 2>/dev/null || true
     roost_restore__hold ROOST_TEST_RESTORE_HOLD
     server_init
     roost_shape__read_rules || true

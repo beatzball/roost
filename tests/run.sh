@@ -69,6 +69,10 @@ shard_weight() {
     # once on the dev Mac (tmux 3.6) at Task 4.5, 59 cases, 15 s of it the
     # held-owner case's deliberate wait.
     test-shape-save.sh) echo 23 ;;
+    # Added for persistent sessions Part 4 (#51), not off a CI log: 63 s
+    # once on the dev Mac (tmux 3.6) at Task 4.6, 52 cases; most of it is
+    # waiting for the hooks' background saves to settle.
+    test-shape-closed.sh) echo 63 ;;
     *) echo 5 ;;
   esac
 }
