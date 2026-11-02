@@ -308,6 +308,32 @@ assert_eq "$gens" "$names" "...each history file's own gen is its name's gen"
 [ "$(gen_of "$SD")" -gt "$g0" ] && [ "$(sed -n 's/^gen //p;/^$/q' "$SD/shape")" = "$(gen_of "$SD")" ]
 assert_true $? "...and gen moved forward, shape carrying the newest"
 
+echo "== no process per pane: a save costs the same ps calls at 4 panes as at 40 (Task 4.11) =="
+# A recording `ps` first on PATH, for the save only. Half the panes carry a
+# key (an exited agent's identity on a shell), so the agreement table runs
+# for them: other tools' savers ran a process per pane and pinned whole
+# machines after a sleep.
+PSB="$SHAPE_TMP/ps-rec"; mkdir -p "$PSB"; REALPS="$(command -v ps)"
+printf '#!/bin/sh\necho "$*" >> "%s/calls"\nexec "%s" "$@"\n' "$PSB" "$REALPS" > "$PSB/ps"; chmod +x "$PSB/ps"
+ps_calls() { # SOCKET NPANES -> how many times one save --auto called ps
+  local s="$1" n="$2" i=1 p
+  tmux -S "$s" -f /dev/null new-session -d -s c -x 250 -y 80 'ENV= exec /bin/sh'
+  while [ "$i" -lt "$n" ]; do
+    p="$(tmux -S "$s" new-window -d -P -F '#{pane_id}' -t '=c:' 'ENV= exec /bin/sh')"
+    [ $((i % 2)) = 0 ] && tmux -S "$s" set -p -t "$p" @roost-harness claude \; set -p -t "$p" @roost-session "3fa3c0de-0000-4abc-8def-$(printf '%012d' "$i")"
+    i=$((i + 1))
+  done
+  sleep 0.5; : > "$PSB/calls"
+  PATH="$PSB:$PATH" ROOST_SOCKET="$s" "$ROOST" save --auto --trigger save
+  wc -l < "$PSB/calls" | tr -d ' '
+  tmux -S "$s" kill-server 2>/dev/null
+}
+c4="$(ps_calls "$TMUX_TMPDIR/p4s" 4)"; c40="$(ps_calls "$TMUX_TMPDIR/p40s" 40)"
+assert_eq "$c40" "$c4" "save --auto calls ps the same number of times on 40 panes as on 4 ($c4)"
+[ "$c4" -le 2 ]; assert_true $? "...at most 2 (the owner rule's own read, and one for every keyed pane at once)"
+n40="$(grep -c '^stale_reason ' "$ROOST_SHAPE_DIR/$(roost_shape_key -S "$TMUX_TMPDIR/p40s")/shape" 2>/dev/null)"
+assert_eq "$n40" "19" "...and the 40-pane save did judge its 19 keyed panes"
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

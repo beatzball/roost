@@ -145,18 +145,27 @@ roost_shape_dir() {
 #                          measured, so those two pass on presence alone, as
 #                          §3.2 allows; §10 names the risk. copilot reads
 #                          `copilot` (probe 1.6), so it is held to it.
+#
+# The work is roost_shape__agree_set, which SETS ROOST_SHAPE_AGREE instead
+# of printing: the writer calls it once per keyed pane, and a $(...) per pane
+# was a fork each — measured at about 23 ms a pane on this Mac under load,
+# most of a 47-pane save (Task 4.11, docs/airig/probes/persist-4-cost.md).
 roost_shape_agree() {
+  roost_shape__agree_set "$1" "$2"
+  printf '%s\n' "$ROOST_SHAPE_AGREE"
+}
+roost_shape__agree_set() {
   case "$2" in
-    sh|bash|zsh|fish|dash) printf 'exited\n'; return 0 ;;
+    sh|bash|zsh|fish|dash) ROOST_SHAPE_AGREE=exited; return 0 ;;
   esac
   roost_close_harness "" "$2" ""
   if [ -n "$ROOST_CLOSE_HARNESS" ]; then
-    if [ "$ROOST_CLOSE_HARNESS" = "$1" ]; then printf 'ok\n'; else printf 'nested\n'; fi
+    if [ "$ROOST_CLOSE_HARNESS" = "$1" ]; then ROOST_SHAPE_AGREE=ok; else ROOST_SHAPE_AGREE=nested; fi
     return 0
   fi
   case "$1" in
-    pi|opencode) printf 'ok\n' ;;
-    *) printf 'other\n' ;;
+    pi|opencode) ROOST_SHAPE_AGREE=ok ;;
+    *) ROOST_SHAPE_AGREE=other ;;
   esac
 }
 
@@ -208,18 +217,34 @@ roost_shape__fg_is() {
 #
 # An empty PANE-PID, or one `ps` cannot name (the pane died between the
 # listing and this read), is the table alone: there is no process to ask.
+#
+# ROOST_SHAPE_COMMS, when the writer set it, is every keyed pane's own
+# process name read by ONE `ps` for the whole save (roost_shape__comms): a
+# save must cost the same processes on a 40-agent fleet as on a 4-pane one
+# (Task 4.11). Unset (revive), the pane's own `ps`, as before.
 roost_shape_agree_pane() {
-  local o=""
-  [ -n "${3:-}" ] && o="$(ps -o comm= -p "$3" 2>/dev/null || true)"
+  roost_shape__agree_pane_set "$@"
+  printf '%s\n' "$ROOST_SHAPE_AGREE"
+}
+# roost_shape__agree_pane_set: the same, setting ROOST_SHAPE_AGREE (the
+# writer's form, no fork; see roost_shape_agree).
+roost_shape__agree_pane_set() {
+  local o="" l
+  if [ -n "${3:-}" ] && [ -n "${ROOST_SHAPE_COMMS:-}" ]; then
+    l="${ROOST_SHAPE_COMMS#*$'\n'"$3 "}"
+    [ "$l" != "$ROOST_SHAPE_COMMS" ] && o="${l%%$'\n'*}"
+  elif [ -n "${3:-}" ]; then
+    o="$(ps -o comm= -p "$3" 2>/dev/null || true)"
+  fi
   o="${o##*/}"; o="${o#-}"; o="${o%% *}"
   case "$o" in
     sh|bash|zsh|fish|dash)
       roost_close_harness "" "$2" ""
       if ! roost_shape__fg_is "$1" "$2" && [ -z "$ROOST_CLOSE_HARNESS" ]; then
-        printf 'exited\n'; return 0
+        ROOST_SHAPE_AGREE=exited; return 0
       fi ;;
   esac
-  roost_shape_agree "$1" "$2"
+  roost_shape__agree_set "$1" "$2"
 }
 
 # roost_shape__t ARGS... — tmux on the server being saved. The flag and socket
@@ -520,10 +545,43 @@ roost_shape__home() {
 # of its windows or panes, so no pane is written twice and restore makes one
 # copy of each. A window linked into two sessions OUTSIDE a group is still
 # written under each (§3.2).
+# roost_shape__comms -> ROOST_SHAPE_COMMS, "\nPID NAME\n" for every listed
+# pane that carries a key, from ONE `ps` (the agreement table asks each one's
+# own process, roost_shape_agree_pane). No keyed pane: no `ps` at all. Other
+# tools' savers ran a process per pane and pinned whole machines after a
+# sleep; this keeps a save at a fixed number of processes.
+roost_shape__comms() {
+  local k=0 pids="" pid name
+  ROOST_SHAPE_COMMS=""
+  while [ "$k" -lt "${#P_ID[@]}" ]; do
+    [ -n "${P_HARNESS[$k]}" ] && [ -n "${P_SESSION[$k]}" ] && [ -n "${P_PPID[$k]}" ] && pids="${pids:+$pids,}${P_PPID[$k]}"
+    k=$((k + 1))
+  done
+  [ -n "$pids" ] || return 0
+  ROOST_SHAPE_COMMS=$'\n'
+  # One pid: `-p` it. More: every process at once (`-A`), then the lines
+  # wanted are looked up by pid. Measured on macOS (2026-11-02, about 2400
+  # processes, load 9): `ps -p A,B,...` with two or more pids walks every
+  # process the slow way, about 290 ms whatever the count; `ps -A` takes
+  # about 90 ms; one `-p` pid about 3 ms (docs/airig/probes/persist-4-cost.md).
+  # The -A listing is cut to the wanted pids at once, by awk: the lookup in
+  # roost_shape_agree_pane matches inside this text, and bash's pattern match
+  # over a whole machine's process list was quadratic — a save spun for
+  # minutes on a 2400-process Mac (found by the cost measurement).
+  case "$pids" in
+    *,*) pids="$(ps -A -o pid=,comm= 2>/dev/null | awk -v want=",$pids," 'index(want, "," $1 ",")' || true)" ;;
+    *) pids="$(ps -o pid=,comm= -p "$pids" 2>/dev/null || true)" ;;
+  esac
+  while read -r pid name; do
+    [ -n "$pid" ] && ROOST_SHAPE_COMMS="$ROOST_SHAPE_COMMS$pid $name"$'\n'
+  done <<< "$pids"
+}
+
 roost_shape__body() {
   local i j k n first fname ns=0 nw=0 np=0 na=0 nk=0 sid wid v agree home
   local -a order
   home="$(roost_shape__home)"
+  roost_shape__comms
   # Sessions sorted by the number in their id.
   i=0
   while [ "$i" -lt "${#S_ID[@]}" ]; do order+=("${S_ID[$i]#\$} $i"); i=$((i + 1)); done
@@ -585,6 +643,7 @@ roost_shape__body() {
     done
   done
   ROOST_SHAPE_COUNTS="$ns sessions, $nw windows, $np panes, $na with a conversation, $nk stale"
+  ROOST_SHAPE_COMMS=""
 }
 
 # roost_shape__overlay %N -> prints a pane's key lines from its pending file
@@ -734,7 +793,7 @@ roost_shape__pane() {
   elif [ -n "$h" ] && [ -n "$s" ]; then
     # The one table save and revive share (roost_shape_agree_pane), asked
     # with the pane's own process.
-    agree="$(roost_shape_agree_pane "$h" "$cmd" "${P_PPID[$k]}")"
+    roost_shape__agree_pane_set "$h" "$cmd" "${P_PPID[$k]}"; agree="$ROOST_SHAPE_AGREE"
     if [ "$agree" = ok ]; then
       printf 'harness %s\nsession_id %s\n' "$h" "$s"
       [ -n "$t" ] && printf 'transcript %s\n' "$t"
@@ -960,6 +1019,9 @@ roost_shape__mine() {
 # makes, so they agree byte for byte).
 roost_shape__lock() {
   local r=0
+  # Read once, here, in this shell: every later $(roost_shape__lstart $$) runs
+  # in a subshell, which inherits the value but could not keep its own.
+  [ -n "${ROOST_SHAPE_MYLSTART:-}" ] || ROOST_SHAPE_MYLSTART="$(roost_shape__lstart_read "$$")"
   roost_shape_owner_take "$1/lock" || r=$?
   case "$r" in 0|2) ROOST_SHAPE_ME="$$ $(roost_shape__lstart "$$")" ;; esac
   return "$r"
@@ -1445,7 +1507,24 @@ roost_shape_get() {
 # name, is in parentheses and may hold spaces and `)`, so the fields are
 # counted from after its LAST `) `. Elsewhere (macOS keeps the absolute
 # start time) it is `ps -o lstart=`, as before.
+#
+# This process's own start time is read once and kept (ROOST_SHAPE_MYLSTART):
+# the saver links it into lock/ and compares against it, and on macOS each
+# read is a `ps` (Task 4.11: a save costs a fixed handful of processes). A
+# subshell has the same $$ and the same answer.
 roost_shape__lstart() {
+  local st
+  local -a f
+  if [ "$1" = "$$" ] && [ -n "${ROOST_SHAPE_MYLSTART:-}" ]; then
+    printf '%s\n' "$ROOST_SHAPE_MYLSTART"; return 0
+  fi
+  if [ "$1" = "$$" ]; then
+    ROOST_SHAPE_MYLSTART="$(roost_shape__lstart_read "$1")"
+    printf '%s\n' "$ROOST_SHAPE_MYLSTART"; return 0
+  fi
+  roost_shape__lstart_read "$1"
+}
+roost_shape__lstart_read() {
   local st
   local -a f
   if [ -r "/proc/$1/stat" ] && st="$(cat "/proc/$1/stat" 2>/dev/null)" && [ -n "$st" ]; then

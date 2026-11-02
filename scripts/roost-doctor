@@ -1073,6 +1073,82 @@ EOF
   warn "$_id ($_where) refused a '$_rst' report $((now - 10#$_rat))s ago from pid $_rpid: that process carried this pane's TMUX_PANE but is not in its process tree — see docs/known-gaps.md, \"The report filter\""
 done <<< "$panes"
 
+# --- persistent sessions: what saving does on this server (#51, #191 Part 4) ---
+# Spec §4.5 and ruling R3. The first line always names BOTH halves, saving and
+# the login restore, so "off" is never read as "nothing is written". The
+# login half is Part 5's; until then it is off and says how to restore by
+# hand. Read-only: nothing here writes, and the server is the one doctor
+# already reads (roost_cfg_tmux: ROOST_CONFIG_SOCK, else -L roost).
+. "$(dirname "$0")/lib/roost-shape.sh"
+if [ -n "${ROOST_CONFIG_SOCK:-}" ]; then _pf=-S _ps="$ROOST_CONFIG_SOCK"; else _pf=-L _ps=roost; fi
+_pboot="$(roost_cfg_tmux display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+# _phdr FILE KEY -> a header value.
+_phdr() { sed -n "s/^$2 //p;/^\$/q" "$1" 2>/dev/null | head -1; }
+# _page PATH -> seconds since PATH (not followed: an owner record is a link)
+# was made; GNU stat first, and each answer must be a number (GNU stat also
+# takes -f, as the file-system form).
+_page() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || true)"
+  case "$m" in ''|*[!0-9]*) m="$(stat -f %m "$1" 2>/dev/null || true)" ;; esac
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$(( $(date +%s) - m ))"
+}
+if _proot="$(roost_shape_saving)"; then
+  _psd="$_proot/$(roost_shape_key "$_pf" "$_ps")"
+  _plast=""
+  if [ -f "$_psd/shape" ]; then
+    _plast="; last save $(_phdr "$_psd/shape" saved) gen $(_phdr "$_psd/shape" gen) $(_phdr "$_psd/shape" trigger), $(grep -c '^session ' "$_psd/shape") sessions / $(grep -c '^pane ' "$_psd/shape") panes"
+  fi
+  ok "persist: saving on; login restore off (not built yet: roost restore brings a saved fleet back by hand)$_plast"
+  # R3: the saver's own failure record, quoted. Removed by the next save it
+  # publishes, so while it is here nothing has been published since.
+  if [ -f "$_psd/save.err" ]; then
+    warn "the last save failed at step '$(sed -n 's/^step //p' "$_psd/save.err" | head -1)' with exit $(sed -n 's/^exit //p' "$_psd/save.err" | head -1) ($(sed -n 's/^saved //p' "$_psd/save.err" | head -1)) — nothing has been saved since; see $_psd/save.err"
+  fi
+  # R3: a running server with no save of its own boot. Unconditional on
+  # `persist` (R3 extends §4.5, which tied it to persist on), and only here,
+  # with saving on: with ROOST_SHAPE_DIR= saving is off by choice. A
+  # read-only shape directory shows up exactly this way, with no save.err
+  # (the saver cannot write one there).
+  if [ -n "$_pboot" ] && [ "$(_phdr "$_psd/shape" boot)" != "$_pboot" ]; then
+    warn "no save since this server started (boot $_pboot; the newest save is ${_plast:+from boot $(_phdr "$_psd/shape" boot)}${_plast:-none}) — check that $_psd is writable"
+  fi
+  # A live owner held over 60 s is named, never taken over (§3.5: the owner
+  # rule never breaks a lock by age).
+  for _pd in lock restoring resuming; do
+    [ -L "$_psd/$_pd/owner" ] || continue
+    roost_shape_owner_live "$_psd/$_pd" || continue
+    _pa="$(_page "$_psd/$_pd/owner")" || continue
+    [ "$_pa" -gt 60 ] || continue
+    warn "$_pd/ has been held by pid $ROOST_SHAPE_OWNER_PID for ${_pa}s — roost never takes a live owner's lock by age; if that process is stuck, end it (kill $ROOST_SHAPE_OWNER_PID)"
+  done
+else
+  if [ "${ROOST_SHAPE_DIR+set}" = set ] && [ -z "$ROOST_SHAPE_DIR" ]; then _pwhy="ROOST_SHAPE_DIR is empty"
+  elif [ "${ROOST_SHAPE_DIR+set}" = set ]; then _pwhy="ROOST_SHAPE_DIR is not an absolute path"
+  else _pwhy="no usable XDG_STATE_HOME or HOME"; fi
+  ok "persist: saving off ($_pwhy); login restore off"
+fi
+# The panes a reboot would lose or must not resume (§4.5, the §2.6 count):
+# a harness running with no recorded conversation, and an identity that
+# disagrees with what the pane runs (§3.2's stale case). Whatever saving says.
+if [ -n "$_pboot" ]; then
+  _pn=0 _pm=0 _phn="" _phm=""
+  while IFS='|' read -r _pid _ppid _pcmd _ph _pses; do
+    case "$_pid" in %[0-9]*) ;; *) continue ;; esac
+    if [ -z "$_pses" ]; then
+      roost_close_harness "" "$_pcmd" ""
+      if [ -n "$ROOST_CLOSE_HARNESS" ]; then
+        _pn=$((_pn + 1)); case " $_phn " in *" $ROOST_CLOSE_HARNESS "*) ;; *) _phn="${_phn:+$_phn }$ROOST_CLOSE_HARNESS" ;; esac
+      fi
+    elif [ -n "$_ph" ] && [ "$(roost_shape_agree_pane "$_ph" "$_pcmd" "$_ppid")" != ok ]; then
+      _pm=$((_pm + 1)); case " $_phm " in *" $_ph "*) ;; *) _phm="${_phm:+$_phm }$_ph" ;; esac
+    fi
+  done <<< "$(roost_cfg_tmux list-panes -a -F '#{pane_id}|#{pane_pid}|#{pane_current_command}|#{@roost-harness}|#{@roost-session}' 2>/dev/null || true)"
+  [ "$_pn" -gt 0 ] && warn "$_pn pane(s) run a harness with no recorded conversation ($_phn) — a restore cannot resume them"
+  [ "$_pm" -gt 0 ] && warn "$_pm pane(s) carry an identity that disagrees with what they run ($_phm) — a restore will not resume them"
+fi
+
 printf '\n  notify backend: %s\n' \
   "$("$(dirname "$0")/roost-notify" --which 2>/dev/null || echo 'auto (run roost init to choose)')"
 
