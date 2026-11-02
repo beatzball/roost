@@ -587,6 +587,119 @@ roost_shape__body() {
   ROOST_SHAPE_COUNTS="$ns sessions, $nw windows, $np panes, $na with a conversation, $nk stale"
 }
 
+# roost_shape__overlay %N -> prints a pane's key lines from its pending file
+# and exit 0; exit 1 when it has none (§4.6 Overlay, Part 4).
+#
+# A pane placed and not yet resumed has NO identity options — it runs roost's
+# placeholder, or a resume whose identity has not landed (a dialog) — so a
+# save that read only the options would write it with no key, and the newest
+# shape would lose the conversation. Part 3 held its saves back for exactly
+# that (docs/known-gaps.md). So a pane with no @roost-session whose %N has a
+# file under pending/<this boot>/ — `%N`, `%N.launching`, `%N.failed` or
+# `%N.taken`, ALL FOUR alike — is written with that file's keys and one
+# `resume` line: `resume pending`, `resume failed REASON` (a person may still
+# fix it and retry), or `resume taken` (one key pressed is not a decision to
+# lose the conversation, so the next boot offers it again). The FILE is
+# read, never the pane's live options: in the gap between placement and
+# identity they say nothing. Read without the pending library (the reason
+# line, if any, comes before `was`; every other line is `key value`).
+# ROOST_SHAPE_PDIR is pending/<boot>/ of this server, set by the round.
+roost_shape__overlay() {
+  local f="" n st="" reason="" line seen=0 h="" id="" tr=""
+  [ -n "${ROOST_SHAPE_PDIR:-}" ] || return 1
+  for n in "$1" "$1.launching" "$1.failed" "$1.taken"; do
+    [ -f "$ROOST_SHAPE_PDIR/$n" ] && { f="$ROOST_SHAPE_PDIR/$n"; st="${n#"$1"}"; break; }
+  done
+  [ -n "$f" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$seen" = 0 ]; then
+      case "$line" in "was "*) seen=1 ;; *) [ -z "$reason" ] && reason="$line"; continue ;; esac
+    fi
+    case "$line" in
+      "harness "*) h="${line#harness }" ;;
+      "session_id "*) id="${line#session_id }" ;;
+      "transcript "*) tr="${line#transcript }" ;;
+    esac
+  done < "$f"
+  [ -n "$h" ] && [ -n "$id" ] || return 1
+  roost_shape__clean "$h" || return 1; h="$ROOST_SHAPE_V"
+  roost_shape__clean "$id" || return 1; id="$ROOST_SHAPE_V"
+  printf 'harness %s\nsession_id %s\n' "$h" "$id"
+  [ -n "$tr" ] && roost_shape__clean "$tr" && printf 'transcript %s\n' "$ROOST_SHAPE_V"
+  case "$st" in
+    .failed) roost_shape__clean "${reason:-interrupted}" && printf 'resume failed %s\n' "$ROOST_SHAPE_V" ;;
+    .taken) printf 'resume taken\n' ;;
+    *) printf 'resume pending\n' ;;
+  esac
+  return 0
+}
+
+# roost_shape__arrows DIR BOOT WANTS — §3.5 step 2's pending changes, the
+# arrows a tmux hook drives (§4.7), for the panes this round's wants name.
+# Run BEFORE the listing, so the overlay writes each pane under its new name:
+#
+#   pane-died.%N        T13 / T13a: %N, %N.launching or %N.failed becomes
+#                       `%N.failed` with first line `died` (an old reason
+#                       kept as a `note`), so `--retry` reaches it
+#   pane-exited.%N      on `%N.launching`: T13b, `%N.failed exited` — the
+#                       resume quit before identity landed (a declined
+#                       first-start dialog), the key kept for `revive %N`.
+#                       On any other file: T19, removed
+#   <removal>.%N        a pane in a kill difference (after-kill-pane,
+#                       window-unlinked, session-closed; written by step 1):
+#                       T19, any file removed
+#
+# And with or without a pending file, a launch claim under claims/<boot>/
+# whose `pane` names a pane that died, exited or was killed is released
+# (§4.1 step 5a: a launch keeps its claim until identity lands or the pane
+# dies). Without this a dead or killed pane's claim refused every later
+# revive of that conversation until the pane was closed by hand (Part 2's
+# known gap). The libraries are sourced here, only when a want names a pane.
+roost_shape__arrows() {
+  local dir="$1" boot="$2" w kind p f d n r line c done_=" "
+  case "$3" in *.%[0-9]*) ;; *) return 0 ;; esac
+  d="$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  . "$d/roost-resume.sh" || return 0
+  . "$d/roost-pending.sh" || return 0
+  ROOST_RESUME_TFLAG="$ROOST_SHAPE_TFLAG" ROOST_RESUME_TSOCK="$ROOST_SHAPE_TSOCK"
+  n="$dir/pending/$boot"
+  for w in $3; do
+    case "$w" in *.%[0-9]*) ;; *) continue ;; esac
+    kind="${w%.%*}"; p="${w##*.}"
+    case "$done_" in *" $kind$p "*) continue ;; esac
+    done_="$done_$kind$p "
+    for f in "$n/$p" "$n/$p.launching" "$n/$p.failed" "$n/$p.taken"; do
+      [ -f "$f" ] || continue
+      roost_pending__release "$f" "$p" "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK"
+      case "$kind:${f##*/}" in
+        pane-died:*.taken) ;;
+        pane-died:*.failed)
+          IFS= read -r line < "$f" || line=""
+          case "$line" in died) ;; *)
+            case "$line" in "was "*) r="" ;; *) r="$line" ;; esac
+            roost_pending_leave_launching "$f" "$f" died "${r:+was: $r}" || true ;;
+          esac ;;
+        pane-died:*) roost_pending_leave_launching "$f" "$n/$p.failed" died || true ;;
+        pane-exited:*.launching) roost_pending_leave_launching "$f" "$n/$p.failed" exited || true ;;
+        *) rm -f "$f" ;;
+      esac
+      # One file per pane: an arrow that renamed it (T13b's .launching to
+      # .failed) must not meet the new name on this same loop.
+      break
+    done
+    # The claim, with or without a pending file: any claim of this boot
+    # whose pane file names %N.
+    if roost_resume_claims_dir "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$boot" >/dev/null 2>&1; then
+      for c in "$ROOST_RESUME_CLAIMS"/*; do
+        [ -f "$c/pane" ] || continue
+        IFS= read -r line < "$c/pane" 2>/dev/null || continue
+        [ "$line" = "$p" ] && roost_shape_owner_drop "$c"
+      done
+    fi
+  done
+  return 0
+}
+
 # roost_shape__pane K SESSION-INDEX WINDOW-INDEX HOME -> one pane block.
 # Sets ROOST_SHAPE_PANE_KIND to conv, stale or "".
 roost_shape__pane() {
@@ -616,7 +729,9 @@ roost_shape__pane() {
   roost_shape__clean "${P_HARNESS[$k]}" octal && h="$ROOST_SHAPE_V"
   roost_shape__clean "${P_SESSION[$k]}" octal && s="$ROOST_SHAPE_V"
   roost_shape__clean "${P_TRANSCRIPT[$k]}" octal && t="$ROOST_SHAPE_V"
-  if [ -n "$h" ] && [ -n "$s" ]; then
+  if [ -z "$s" ] && roost_shape__overlay "$pid"; then
+    ROOST_SHAPE_PANE_KIND=conv
+  elif [ -n "$h" ] && [ -n "$s" ]; then
     # The one table save and revive share (roost_shape_agree_pane), asked
     # with the pane's own process.
     agree="$(roost_shape_agree_pane "$h" "$cmd" "${P_PPID[$k]}")"
@@ -706,6 +821,13 @@ roost_shape_save() {
   ROOST_SHAPE_TFLAG="$flag" ROOST_SHAPE_TSOCK="$sock"
   key="$(roost_shape_key "$flag" "$sock")"
   if [ -n "$to" ]; then
+    # A copy carries the overlay too (§4.6): this server's pending files,
+    # when saving is on and they exist. Nothing is changed or made here.
+    ROOST_SHAPE_PDIR=""
+    if dir="$(roost_shape_saving)"; then
+      ROOST_SHAPE_PDIR="$dir/$key/pending/$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      dir=""
+    fi
     if ! roost_shape__build; then
       printf 'roost save: could not list the tmux server on %s %s; nothing written\n' "$flag" "$sock" >&2
       return 1
@@ -865,8 +987,16 @@ roost_shape__prune() {
 # nothing written), failed (save.err written) or lost (the lock went: nothing
 # published). Exit 0 for published and same, 1 otherwise.
 roost_shape__round() {
-  local dir="$1" key="$2" triggers="$3" r=0 gen=0 had_gen=0 hdr tmp old oldgen oldsaved
+  local dir="$1" key="$2" triggers="$3" r=0 gen=0 had_gen=0 hdr tmp old oldgen oldsaved boot
   ROOST_SHAPE_LAST=failed
+  # The pending changes first (§3.5 step 2), for this server's boot, so the
+  # listing below writes each pane under the name its file has now.
+  boot="$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  ROOST_SHAPE_PDIR=""
+  if [ -n "$boot" ]; then
+    roost_shape__arrows "$dir" "$boot" "${ROOST_SHAPE_WANTS:-}"
+    ROOST_SHAPE_PDIR="$dir/pending/$boot"
+  fi
   # A listing that fails, or never agrees, publishes NOTHING: the last good
   # `shape` is worth more than a partial one.
   roost_shape__build || r=$?
@@ -953,7 +1083,7 @@ roost_shape__saver() {
       # want/<trigger>.<%N> names a pane; the header carries the trigger.
       triggers="$(ls "$drain" 2>/dev/null | sed 's/\.%[0-9]*$//' | sort -u | tr '\n' ' ')"
       triggers="${triggers% }"
-      ROOST_SHAPE_WANTS="$(ls "$drain" 2>/dev/null)"
+      ROOST_SHAPE_WANTS="$(ls "$drain" 2>/dev/null | tr '\n' ' ')"
       rm -rf "$drain"
       roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_DRAIN
       [ -n "$triggers" ] || continue
@@ -1044,6 +1174,9 @@ roost_shape_auto() {
       ids="$(roost_shape__kill_diff "$before" "$after")"
       [ -n "$ids" ] && roost_shape__closed_write "$dir" "$boot" \
         "kill.$(roost_shape__compact_stamp)-$$" "$ids"$'\n'
+      # One want per killed pane too, `<trigger>.%N`: the saver's arrows
+      # cancel its pending file and release its claim (T19, §4.7).
+      for r in $ids; do roost_shape__want "$dir" "$trigger.$r" || true; done
     fi
     [ "$trigger" = pane-exited ] && [ -n "$pane" ] && \
       roost_shape__closed_write "$dir" "$boot" "died.${pane#%}" "$pane"$'\n'

@@ -778,10 +778,27 @@ roost_resume__pend_changed() {
 #                case this exists for)
 # Needs ROOST_RESUME_TFLAG / ROOST_RESUME_TSOCK and ROOST_HOME; `t`,
 # `pane_cmd_wired`, `roost_unblock_pane` and `record_for` come from bin/roost.
+# roost_resume__exited_file %N -> exit 0 and ROOST_RESUME_XF when this
+# server's pending/<boot>/%N.failed exists with first line `exited` (§4.7
+# failed, exited). Read in the shape directory, where restore wrote it.
+roost_resume__exited_file() {
+  local root boot f line
+  ROOST_RESUME_XF=""
+  root="$(roost_shape_saving 2>/dev/null)" || return 1
+  boot="$(roost_resume__t display-message -p '#{start_time}-#{pid}' 2>/dev/null)" || return 1
+  [ -n "$boot" ] || return 1
+  f="$root/$(roost_shape_key "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK")/pending/$boot/$1.failed"
+  [ -f "$f" ] || return 1
+  IFS= read -r line < "$f" || return 1
+  [ "$line" = exited ] || return 1
+  ROOST_RESUME_XF="$f"
+}
+
 roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
   local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess
+  ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
   if ! roost_shape__read_rules; then
@@ -811,20 +828,38 @@ roost_revive() {
     case "$pane" in %[0-9]*) ;; *)
       echo "roost revive: '$raw' is gone: no such pane or window" >&2; return 2 ;;
     esac
-    if ! record_for "$pane" "$pane" || [ "$RF_STATE" != 0 ]; then
+    # FAILED, EXITED (§4.7 row, T13b; §4.1 steps 1 and 7): a resume that
+    # quit with status 0 before identity landed left no pane, and the saver
+    # renamed its file `%N.failed exited`, keeping the key for exactly this.
+    # Its key is the file's, it launches in a new window as for any gone
+    # pane, and the file is removed once launched (ROOST_RESUME_XF). Built in
+    # Part 4, with T13b: no such file existed before.
+    ROOST_RESUME_XF=""
+    if roost_resume__exited_file "$pane"; then
+      mode=gone
+      roost_pending__get "$ROOST_RESUME_XF" harness; h="$ROOST_PENDING_V"
+      roost_pending__get "$ROOST_RESUME_XF" session_id; sid="$ROOST_PENDING_V"
+      roost_pending__get "$ROOST_RESUME_XF" session_cwd; scwd="$ROOST_PENDING_V"
+      [ -n "$scwd" ] || { roost_pending__get "$ROOST_RESUME_XF" cwd; scwd="$ROOST_PENDING_V"; }
+      roost_pending__get "$ROOST_RESUME_XF" transcript; tr="$ROOST_PENDING_V"
+      roost_pending__get "$ROOST_RESUME_XF" session; rsess="$ROOST_PENDING_V"
+      rname=""
+      pcwd="" cmd="" ppid="" dead=0 state=""
+    elif ! record_for "$pane" "$pane" || [ "$RF_STATE" != 0 ]; then
       [ "${RF_STATE:-1}" -ge 2 ] && record_warn revive "$raw"
       echo "roost revive: '$raw' is gone, and no record of it is kept on this boot" >&2; return 2
+    else
+      mode=gone
+      roost_resume__record_get "$RF_DIR/harness"; h="$ROOST_RESUME_V"
+      roost_resume__record_get "$RF_DIR/session_id"; sid="$ROOST_RESUME_V"
+      roost_resume__record_get "$RF_DIR/cwd"; scwd="$ROOST_RESUME_V"
+      roost_resume__record_get "$RF_DIR/transcript"; tr="$ROOST_RESUME_V"
+      # The reserved `session` and `name` (§1), read when a later part writes
+      # them; today they are absent and the fallbacks below apply.
+      roost_resume__record_get "$RF_DIR/session"; rsess="$ROOST_RESUME_V"
+      roost_resume__record_get "$RF_DIR/name"; rname="$ROOST_RESUME_V"
+      pcwd="" cmd="" ppid="" dead=0 state=""
     fi
-    mode=gone
-    roost_resume__record_get "$RF_DIR/harness"; h="$ROOST_RESUME_V"
-    roost_resume__record_get "$RF_DIR/session_id"; sid="$ROOST_RESUME_V"
-    roost_resume__record_get "$RF_DIR/cwd"; scwd="$ROOST_RESUME_V"
-    roost_resume__record_get "$RF_DIR/transcript"; tr="$ROOST_RESUME_V"
-    # The reserved `session` and `name` (§1), read when a later part writes
-    # them; today they are absent and the fallbacks below apply.
-    roost_resume__record_get "$RF_DIR/session"; rsess="$ROOST_RESUME_V"
-    roost_resume__record_get "$RF_DIR/name"; rname="$ROOST_RESUME_V"
-    pcwd="" cmd="" ppid="" dead=0 state=""
   fi
   [ "$mode" = place ] && [ "$newwin" = 1 ] && mode=newwin
   # A PANE WITH A PENDING FILE (#191 Part 3, §4.1 steps 1 and 5a, §4.7): a
@@ -1180,6 +1215,9 @@ roost_revive() {
       return 1
     fi
   fi
+  # A failed, exited file is the person's to settle by revive: launched,
+  # it goes (§4.7, the row's "removes the file once launched").
+  [ -n "${ROOST_RESUME_XF:-}" ] && rm -f "$ROOST_RESUME_XF"
   # The respawn fired no hook (§2.7): save it (#51, §3.4, `--trigger
   # respawn`), so a revive into a dialog is on disk before identity lands.
   roost_shape_save_now "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" respawn

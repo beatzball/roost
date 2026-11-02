@@ -168,7 +168,16 @@ wait_gone() { local i=0 n="${2:-100}"; while [ "$i" -lt "$n" ]; do [ -e "$1" ] |
 shells_wait() { local i=0; while [ "$i" -lt 30 ]; do [ -n "$(shells_for "$1")" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
 first_pane() { TL list-panes -s -t "=$1:" -F '#{pane_id}' 2>/dev/null | head -1; }
 startcmd() { TL display -p -t "$1" '#{pane_start_command}' | tr -d '"\\'; }
-kill_saved() { local s; for s in ka kb kst knone kgone; do TL kill-session -t "=$s" 2>/dev/null; done; return 0; }
+# Since Part 4 every restore ends with its own save, and the hooks save each
+# kill-session (§3.4): `shape` is then what was placed (shells, after a
+# --no-resume) and closed/ names the killed panes. Each case here is about
+# the fixture shape below, so kill_saved lets those saves land and writes the
+# fixture again, with no closed record.
+kill_saved() {
+  local s; for s in ka kb kst knone kgone; do TL kill-session -t "=$s" 2>/dev/null; done
+  shape_settle "$SD"; rm -rf "$SD/closed"; mkshape
+  return 0
+}
 
 # A shape: five sessions, one window of one pane each, in this order —
 #   ka     claude U1 in a dotted directory, with an old transcript
@@ -508,6 +517,7 @@ printf '{"cwd":"%s","parent":{"cwd":"%s"}}\n' "$D2" "$D3" > "$f7d/$U7.jsonl"
 # each one window (index 1) of one pane.
 shape_of() {
   local b n=0 se id cw ex
+  SHAPE_OF_LAST=("$@")
   { printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' \
       'saved 2026-10-28T12:00:00Z' 'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' ''
     for b in "$@"; do
@@ -519,7 +529,16 @@ shape_of() {
       n=$((n+1))
     done; } > "$SD/shape"
 }
-kill_sess() { local s; for s in "$@"; do TL kill-session -t "=$s" 2>/dev/null; done; return 0; }
+# As kill_saved above: since Part 4 the restore's own save and the kills'
+# records would change what the next case restores, so the last fixture is
+# written again, with no closed record.
+SHAPE_OF_LAST=()
+kill_sess() {
+  local s; for s in "$@"; do TL kill-session -t "=$s" 2>/dev/null; done
+  shape_settle "$SD"; rm -rf "$SD/closed"
+  [ "${#SHAPE_OF_LAST[@]}" -gt 0 ] && shape_of "${SHAPE_OF_LAST[@]}"
+  return 0
+}
 reset_run() { : > "$STUB_LOG"; : > "$HOME/shells.log"; rm -rf "$PEND" "$XDG_STATE_HOME/roost/launch-claims"; }
 logline() { grep -- "$1" "$STUB_LOG" | head -1; }
 wait_log() { local i=0; while [ "$i" -lt "${2:-100}" ]; do grep -q -- "$1" "$STUB_LOG" 2>/dev/null && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
@@ -1034,6 +1053,126 @@ print(r["%2102"]["launched"], r["%2102"]["reason"])' "$SHAPE_TMP/out")" "False t
 fi
 kill_sess q1 q2
 
+
+# --- the saver applies the hook-driven arrows (Part 4, Task 4.10) -------------
+# From here the conf is loaded, so the hooks run: pane-died and pane-exited
+# reach the saver, which moves the pending file (§4.7 T13, T13a, T13b, T19)
+# and releases the claim. Worker-only as above: `restore --resume` stands for
+# the attach.
+echo "== §8.1 test 11, the hook half: Released, retry (B) =="
+TL set -g @roost-home "$PWD"; TL source-file tmux/roost.conf
+X1="$SHAPE_TMP/x1-bin"; mkdir -p "$X1"; cp "$STUB_WRAP/claude-exit1" "$X1/claude"
+X0="$SHAPE_TMP/x0-bin"; mkdir -p "$X0"; cp "$STUB_WRAP/claude-exit0" "$X0/claude"
+wait_dead() { local i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$1" '#{pane_dead}' 2>/dev/null)" != 1 ]; do sleep 0.1; i=$((i+1)); done; }
+first_line() { head -1 "$1" 2>/dev/null; }
+claims_for() { ls "$CLB" 2>/dev/null | grep -c "$1" || true; }
+U41=3fa3c0de-4141-4abc-8def-000000000041; stub_store_add "$U41" "$D1"
+reset_run
+shape_of "y1|%1101|$D1|harness claude;session_id $U41"
+place_only 1; p1="$(first_pane y1)"
+env PATH="$X1:$PATH" "${RB[@]}" restore --resume >/dev/null 2>&1
+wait_dead "$p1"; shape_settle "$SD"
+assert_eq "$(first_line "$PEND/$p1.failed")|$(claims_for "$U41")" "died|0" "Released: a resume that exits 1 → %N.failed died, its claim gone (pane-died)"
+R restore --resume --retry >/dev/null 2>&1; rc=$?
+wait_log "$U41" 50
+assert_eq "$rc|$(grep -c "claude --resume $U41" "$STUB_LOG")|$(TL display -p -t "$p1" '#{pane_dead}')|$(first_pane y1)" "0|2|0|$p1" \
+  "retry (B): the good stub first on PATH, --retry → one more launch, pane_dead 0, the same %N"
+kill_sess y1
+
+echo "== a resume that exits 0 before identity: %N.failed exited (T13b) =="
+reset_run
+U42=3fa3c0de-4242-4abc-8def-000000000042; stub_store_add "$U42" "$D1"
+shape_of "y2|%1102|$D1|harness claude;session_id $U42" "y2b|%1112|$D1"
+place_only 1; p2="$(first_pane y2)"
+env PATH="$X0:$PATH" "${RB[@]}" restore --resume >/dev/null 2>&1
+i=0; while [ "$i" -lt 50 ] && TL list-panes -a -F '#{pane_id}' | grep -qx "$p2"; do sleep 0.1; i=$((i+1)); done
+shape_settle "$SD"
+assert_eq "$(first_line "$PEND/$p2.failed")|$(claims_for "$U42")" "exited|0" "the pane is gone, its file %N.failed exited, no claim"
+assert_contains "$(R restore --list 2>&1)" "$p2.failed" "...and --list names it"
+n0="$(TL list-windows -a | wc -l | tr -d ' ')"
+out="$(R revive "$p2" 2>/dev/null)"; rc=$?
+assert_eq "$rc|$(TL list-windows -a | wc -l | tr -d ' ')" "0|$((n0 + 1))" "revive %N → a new window"
+[ ! -e "$PEND/$p2.failed" ]; assert_true $? "...and the file is gone"
+[ -n "$out" ] && TL kill-pane -t "$out" 2>/dev/null
+kill_sess y2 y2b
+
+echo "== the only pane of the only session dies: the server stays (§8.1 test 11) =="
+reset_run
+U43=3fa3c0de-4343-4abc-8def-000000000043; stub_store_add "$U43" "$D1"
+# A server of its own: this file's server has other sessions.
+O1="$TMUX_TMPDIR/only1"
+ROOST_SOCKET="$O1" ROOST_SHAPE_DIR="$ROOST_SHAPE_DIR" "$ROOST" save >/dev/null 2>&1 || true
+OSD="$ROOST_SHAPE_DIR/$(. scripts/lib/roost-shape.sh; roost_shape_key -S "$O1")"; mkdir -p "$OSD"
+printf '%s\n' 'roost-shape 1' 'server x' "socket $O1" 'boot 1-1' 'saved 2026-10-28T12:00:00Z' 'gen 1' 'trigger save' \
+  'roost 0.10.0' 'tmux 3.6' 'host h' '' 'session solo' 'id $0' '' 'window solo:1' 'id @0' 'layout b25d,200x50,0,0,0' 'active 1' '' \
+  'pane solo:1.0' 'id %1201' "cwd $D1" "harness claude" "session_id $U43" '' > "$OSD/shape"
+env -u TMUX -u TMUX_PANE PATH="$X1:$PATH" ROOST_SOCKET="$O1" "$ROOST" restore --pace 0 >/dev/null 2>&1
+op="$(tmux -S "$O1" list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)"
+i=0; while [ "$i" -lt 50 ] && [ "$(tmux -S "$O1" display -p -t "$op" '#{pane_dead}' 2>/dev/null)" != 1 ]; do sleep 0.1; i=$((i+1)); done
+sleep 1.5
+OB="$(tmux -S "$O1" display -p '#{start_time}-#{pid}' 2>/dev/null)"
+assert_eq "$(tmux -S "$O1" list-panes -a -F '#{pane_dead}' 2>/dev/null | tr '\n' ' ')" "1 " "the server is still running and lists one dead pane"
+assert_eq "$(first_line "$OSD/pending/$OB/$op.failed")" "died" "...its file %N.failed died"
+tmux -S "$O1" kill-server 2>/dev/null
+
+echo "== a kill releases a revive's claim at once; so does a death (§8.1 test 6) =="
+reset_run
+U44=3fa3c0de-4444-4abc-8def-000000000444; stub_store_add "$U44" "$D1"
+TL new-session -d -s y4 -c "$D1" 'ENV= exec /bin/sh'
+pv="$(TL new-window -d -P -F '#{pane_id}' -t '=y4:' -c "$D1" "$STUB_BIN/claude 600")"; i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$pv" '#{pane_current_command}')" != claude ]; do sleep 0.1; i=$((i+1)); done
+TL set -p -t "$pv" @roost-harness claude \; set -p -t "$pv" @roost-session "$U44" \; set -p -t "$pv" @roost-cwd "$D1" \; set -p -t "$pv" @agent_state idle
+R revive "$pv" >/dev/null 2>&1
+assert_eq "$(claims_for "$U44")|$(ls "$PEND" 2>/dev/null | grep -c "^$pv")" "1|0" "(fixture) a revive whose stub never identifies holds claims/<boot>/claude-<id>, and has no pending file"
+TL kill-pane -t "$pv"
+i=0; while [ "$i" -lt 50 ] && [ "$(claims_for "$U44")" != 0 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(claims_for "$U44")" "0" "kill-pane: the claim is released, bounded (the -b hook's saver)"
+TL new-window -d -t '=y4:' -c "$D1" "$STUB_BIN/claude 600"; pv="$(TL list-panes -t '=y4:' -F '#{pane_id}' | tail -1)"
+i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$pv" '#{pane_current_command}')" != claude ]; do sleep 0.1; i=$((i+1)); done
+TL set -p -t "$pv" @roost-harness claude \; set -p -t "$pv" @roost-session "$U44" \; set -p -t "$pv" @roost-cwd "$D1" \; set -p -t "$pv" @agent_state idle
+env PATH="$X1:$PATH" ROOST_SOCKET=roost "$ROOST" revive "$pv" >/dev/null 2>&1
+wait_dead "$pv"
+i=0; while [ "$i" -lt 50 ] && [ "$(claims_for "$U44")" != 0 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(TL display -p -t "$pv" '#{pane_dead}')|$(claims_for "$U44")" "1|0" "the revived pane dies (exit 1, remain-on-exit failed): released by pane-died"
+kill_sess y4
+
+echo "== kill-pane on a placed pane before the worker; a taken pane exited (T19) =="
+reset_run
+U45=3fa3c0de-4545-4abc-8def-000000000045; U46=3fa3c0de-4646-4abc-8def-000000000046; U47=3fa3c0de-4747-4abc-8def-000000000047
+for u in "$U45" "$U46" "$U47"; do stub_store_add "$u" "$D1"; done
+shape_of "y5|%1105|$D1|harness claude;session_id $U45" "y6|%1106|$D1|harness claude;session_id $U46" "y7|%1107|$D1|harness claude;session_id $U47"
+place_only 3; k5="$(first_pane y5)"; k7="$(first_pane y7)"
+TL kill-pane -t "$k5"; shape_settle "$SD"
+[ ! -e "$PEND/$k5" ]; assert_true $? "kill-pane of a waiting pane: its file is removed"
+wait_screen "$k7" "waiting to resume claude"
+TL send-keys -t "$k7" x; wait_file "$PEND/$k7.taken" 50; shells_wait "$k7"
+TL send-keys -t "$k7" 'exit' Enter
+i=0; while [ "$i" -lt 50 ] && TL list-panes -a -F '#{pane_id}' | grep -qx "$k7"; do sleep 0.1; i=$((i+1)); done
+shape_settle "$SD"
+[ ! -e "$PEND/$k7.taken" ]; assert_true $? "a taken pane exited: its file is removed (pane-exited)"
+R restore --resume --pace 0 >/dev/null 2>&1
+wait_log "$U46" 50
+assert_eq "$(grep -c "claude --resume" "$STUB_LOG")" "1" "...the worker launches the one left"
+kill_sess y5 y6 y7
+
+echo "== dialog keys survive, the structural half (§8.1 test 11) =="
+reset_run
+U48=3fa3c0de-4848-4abc-8def-000000000048; stub_store_add "$U48" "$D1"
+U49=3fa3c0de-4949-4abc-8def-000000000049
+shape_of "y8|%1108|$D1|harness claude;session_id $U48" "y9|%1109|$D1|harness claude;session_id $U49"
+place_only 2; p8="$(first_pane y8)"; p9="$(first_pane y9)"
+rm -rf "$SD/closed"; cp "$SD/shape" "$SHAPE_TMP/y89.shape"
+R restore --resume --pace 0 >/dev/null 2>&1
+wait_log "$U48" 50
+assert_eq "$(ls "$PEND" | grep "^$p8")|$(first_line "$PEND/$p9.failed")" "$p8.launching|store miss" "(fixture) y8 launched, never identifies; y9 failed"
+R spawn spawned >/dev/null 2>&1; shape_settle "$SD"
+b8="$(awk -v RS= -v id="id $p8" 'index($0 "\n", "\n" id "\n")' "$SD/shape")"
+b9="$(awk -v RS= -v id="id $p9" 'index($0 "\n", "\n" id "\n")' "$SD/shape")"
+assert_contains "$b8" "session_id $U48" "a spawn's save: the launched pane's key is in the shape"
+assert_contains "$b8" "resume pending" "...with resume pending"
+assert_contains "$b9" "session_id $U49" "...and the .failed one's key"
+assert_contains "$b9" "resume failed store miss" "...with resume failed and its reason"
+TL kill-window -t "$(TL list-panes -a -F '#{pane_id} #{@roost-name}' | awk '$2 == "spawned" { print $1 }')" 2>/dev/null
+kill_sess y8 y9
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
