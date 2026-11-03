@@ -18,6 +18,25 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`roost persist on` brings your fleet back by itself after a reboot
+  (#192, #191).** Run it once: a login job (a LaunchAgent on macOS, a systemd
+  user unit on Linux, one per roost server) places every saved session, window
+  and pane when you log in, each agent's pane waiting in a placeholder, and the
+  agents come back two seconds apart when you first attach — with `roost`,
+  `roost session`, `roost ssh` or a plain `tmux attach`; detaching starts
+  nothing. A `roost` typed while the login job is still placing waits for it,
+  and one typed when the job never ran does its work first. `roost persist
+  off` removes the job and stops no agent; `roost persist status` and `roost
+  doctor` say what is installed, whether it runs this checkout and whether
+  its roots match yours, and `roost upgrade` moves the job to the upgraded
+  checkout. The job's `service.env` holds roots and harness homes, never a
+  key, token, secret or password, and only `persist on` writes it. roost now
+  also refuses to start a second server while the first is still running
+  with its socket file gone, and prints the `kill -USR1` that brings it
+  back. On Linux, keep the fleet across a logout with `loginctl
+  enable-linger`. Loading the first-attach hook needs `prefix r` or a new
+  server.
+
 - **roost now saves your fleet's shape by itself, on every change (#51,
   #191).** Make, close, kill, rename or move a session, window or pane,
   choose a layout or resize a pane by command — or `roost spawn`, `split`,

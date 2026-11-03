@@ -327,6 +327,9 @@ checkout, or one of the two prompts a human has to answer.
 
 Detach with the prefix then `d`, like any tmux. The prefix is `Ctrl-s`.
 
+To have the fleet come back by itself after a reboot, run `roost persist on`
+once: see [Persistent Sessions](/docs/persistent-sessions).
+
 `roost help` prints the full command list, with the owl on top:
 
 ![The roost help output: an ASCII owl above the full command list](/roost-help.png)
