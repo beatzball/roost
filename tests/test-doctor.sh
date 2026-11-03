@@ -1303,6 +1303,35 @@ case "$out" in *"$cshome/.claude/settings.json"*) csleak=1 ;; *) csleak=0 ;; esa
 assert_true $? "doctor never reads \$HOME/.claude/settings.json when \$CLAUDE_SETTINGS names another file"
 rm -rf "$cshome"
 
+# --- a pane running `opencode mini` is named -----------------------------------
+# opencode mini never loads roost's opencode 2 plugin (scripts/lib/roost-have.sh
+# has the measurement), so its pane never badges and nothing else in the report
+# would say why. doctor finds it by the pane's terminal in `ps`.
+#
+# The stand-in has to LOOK like opencode to ps: its program word must end in
+# /opencode and its next word be `mini` — the shape measured for the real
+# 2.1.3, `/opt/homebrew/bin/opencode mini --standalone`. perl rewrites its own
+# $0, and ps then prints exactly that string (checked on macOS 26 and in
+# ubuntu:24.04, where perl is part of the base system). Not a copy of a shell
+# named opencode: macOS kills a copied system binary at exec (exit 137, even
+# re-signed). The control pane is `opencode -s mini` — a session NAMED mini,
+# which must not be flagged.
+MN_D="$(mktemp -d /tmp/amx.XXXX)"; MSOCK="$MN_D/s"
+tmux -S "$MSOCK" -f /dev/null new-session -d -s mn -c "$MN_D" "perl -e '\$0=\"$MN_D/opencode mini --standalone\"; sleep 600'"
+tmux -S "$MSOCK" new-window -d -t mn: -c "$MN_D" "perl -e '\$0=\"$MN_D/opencode -s mini\"; sleep 600'"
+mini_pane="$(tmux -S "$MSOCK" list-panes -t mn:0 -F '#{pane_id}')"
+ctl_pane="$(tmux -S "$MSOCK" list-panes -t mn:1 -F '#{pane_id}')"
+# Wait for both to show in ps, so a slow start reads as a skip, not a pass.
+mn_t0="$(tmux -S "$MSOCK" display-message -p -t "$mini_pane" '#{pane_tty}')"; mn_t0="${mn_t0#/dev/}"
+n=0; until ps -A -o tty=,args= 2>/dev/null | grep -q "^$mn_t0 .*opencode mini" || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done
+out="$(run_doctor "$EMPTY" ROOST_CONFIG_SOCK="$MSOCK" COLORTERM=truecolor 2>&1 || true)"
+assert_contains "$out" "$mini_pane (mn:0) is running opencode mini, which does not load roost's opencode plugin" \
+  "doctor names a pane running opencode mini"
+case "$out" in *"$ctl_pane (mn:1) is running opencode mini"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "...and not a pane running opencode -s mini (a session named mini)"
+tmux -S "$MSOCK" kill-server 2>/dev/null
+rm -rf "$MN_D"
+
 # --- persistent sessions: what saving does (#51, #191 Part 4, spec §4.5, R3) ---
 # A throwaway -S server of this file's own, named to doctor through
 # ROOST_CONFIG_SOCK (the server doctor reads); the shape directory is keyed

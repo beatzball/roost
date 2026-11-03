@@ -19,6 +19,14 @@
 # Every function is bash 3.2 safe and `set -u` clean: bin/roost runs on macOS
 # /bin/bash.
 
+# roost_have (scripts/lib/roost-have.sh): "is the harness installed?" must not
+# be answered by roost's own shims/claude or shims/opencode, which are first on
+# PATH in a roost pane and have no harness behind them on a machine without
+# one. Sourced relative to THIS file, guarded like roost-adapters.sh's sibling.
+if ! declare -f roost_have >/dev/null 2>&1; then
+  . "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-have.sh"
+fi
+
 # The harness homes, each read the way the harness reads it, so a store check
 # looks where the harness itself would. scripts/lib/roost-adapters.sh has the
 # same defaults for the install side; these are the store side.
@@ -979,7 +987,7 @@ roost_revive() {
     echo "roost revive: '$raw': $ROOST_RESUME_WHY — nothing resumed" >&2; return 13
   fi
   # Step 3.
-  if ! command -v "$h" >/dev/null 2>&1; then
+  if ! roost_have "$h"; then
     echo "roost revive: '$raw' ran $h, and $h is not on PATH — nothing resumed" >&2; return 14
   fi
   # Step 4 (§5.1). A Claude or pi pane whose transcript option is unset gets

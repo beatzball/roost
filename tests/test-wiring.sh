@@ -726,6 +726,96 @@ unset TMUX_TMPDIR
 rm -rf "$LTMP"
 
 # =============================================================================
+printf '\n== the opencode shim: mini is refused in a roost pane, nothing else is touched ==\n'
+# shims/opencode exists because `opencode mini` does not load terminal-side
+# plugins, so roost's opencode 2 adapter never runs there and the pane never
+# badges (measured on 2.1.3; scripts/lib/roost-have.sh). Every `opencode` here
+# is a fake that prints the argv it got, like the fake claude above.
+box ocshim
+printf '#!/bin/sh\nprintf "REAL"; for a in "$@"; do printf " %%s" "$a"; done; printf "\\n"\n' > "$B/real/opencode"
+chmod +x "$B/real/opencode"
+P="$HERE/shims:$B/real:/usr/bin:/bin"
+OCSHIM="$HERE/shims/opencode"
+in_roost="TMUX=/x/roost,1,0"
+
+out="$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- mini; echo "rc=$?")"
+assert_contains "$out" "roost: opencode mini does not report to roost yet" "in a roost pane, opencode mini is refused with roost's reason"
+assert_contains "$out" "ROOST_ALLOW_MINI=1 opencode mini" "the refusal names the way past it"
+assert_contains "$out" "rc=2" "the refusal exits 2 — not 127, which would read as opencode missing"
+assert_lacks "$out" "REAL" "a refused mini never starts the real opencode"
+out="$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- mini --standalone -c; echo "rc=$?")"
+assert_contains "$out" "rc=2" "mini with its own flags after it is refused too"
+out="$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- --log-level debug mini; echo "rc=$?")"
+assert_contains "$out" "rc=2" "a global flag's VALUE before mini does not hide it"
+
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- -c --prompt hi)" "REAL -c --prompt hi" \
+  "plain opencode in a roost pane: the argv is handed over exactly"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" --)" "REAL" "bare opencode in a roost pane runs"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- run mini)" "REAL run mini" \
+  "mini as an argument of another subcommand is not mini"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- -s mini)" "REAL -s mini" \
+  "a session NAMED mini is not mini"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- --prompt mini)" "REAL --prompt mini" \
+  "a prompt that says mini is not mini"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- -- mini)" "REAL -- mini" "nothing after -- is looked at"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" -- --version)" "REAL --version" \
+  "opencode --version passes through, which roost's version probe relies on"
+
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" -- mini)" "REAL mini" "outside tmux, mini runs"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" TMUX="/x/default,1,0" -- mini)" "REAL mini" \
+  "inside some other tmux server, mini runs"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" ROOST_ALLOW_MINI=1 -- mini)" "REAL mini" \
+  "ROOST_ALLOW_MINI=1 runs mini anyway"
+out="$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" ROOST_ALLOW_MINI= -- mini; echo "rc=$?")"
+assert_contains "$out" "rc=2" "an EMPTY ROOST_ALLOW_MINI is not a request"
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" "$in_roost" ROOST_NO_SHIM=1 -- mini)" "REAL mini" \
+  "ROOST_NO_SHIM=1 runs mini, as it bypasses the claude shim"
+
+# The server switch. A live server whose socket ends in /roost: off lets mini
+# through; on (the default, unset) keeps the refusal. The fake TMUX above names
+# no server at all, which is the "cannot read the switch" case — refused.
+srv
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" TMUX="$B/sock/roost,1,0" ROOST_TMUX="$TMUXBIN" -- mini; echo "rc=$?")" \
+  "$(printf 'roost: opencode mini does not report to roost yet — this pane would show no badge, and roost read and roost wait-done could not see its turns.\nroost: run plain opencode instead (the full interface badges).\nroost: to run mini anyway, with no badge: ROOST_ALLOW_MINI=1 opencode mini\nrc=2')" \
+  "a live roost server with wiring on: refused, the whole message on stderr"
+g set-option -g @roost-wiring-enabled off
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$P" TMUX="$B/sock/roost,1,0" ROOST_TMUX="$TMUXBIN" -- mini)" "REAL mini" \
+  "roost wiring off on the server: mini runs"
+g kill-server 2>/dev/null
+
+assert_eq "$(SHIM="$OCSHIM" shim_run PATH="$HERE/shims:$HERE/shims:$B/real:/usr/bin:/bin" "$in_roost" -- -c)" "REAL -c" \
+  "the shim directory twice on PATH: no recursion"
+out="$(SHIM="$OCSHIM" shim_run PATH="$HERE/shims:/usr/bin:/bin" "$in_roost" -- -c; echo "rc=$?")"
+assert_contains "$out" "roost: no opencode found on PATH after roost's shim" "no real opencode on PATH: the shim says so"
+assert_contains "$out" "rc=127" "no real opencode on PATH: exit 127, never a loop"
+
+# =============================================================================
+printf '\n== roost_have: roost'"'"'s own shims are not an installed harness ==\n'
+# The side effect a shim named opencode would have had without this: in a
+# roost pane `command -v opencode` finds the shim, so a machine with NO
+# opencode reads as having one. Each case runs the lib in a clean bash with
+# exactly the PATH named. The control is `command -v`, which must still find
+# the shim — or these cases prove nothing about the helper.
+lib_q() { env -i PATH="$1" /bin/bash -c ". '$HERE/scripts/lib/roost-opencode.sh'; $2" 2>&1; }
+NOOC="$HERE/shims:/usr/bin:/bin"
+assert_eq "$(lib_q "$NOOC" 'command -v opencode')" "$HERE/shims/opencode" \
+  "control: with only roost's shims, command -v opencode finds the shim"
+assert_eq "$(lib_q "$NOOC" 'roost_have opencode; echo $?')" "1" "roost_have opencode: no, with only roost's shim on PATH"
+assert_eq "$(lib_q "$NOOC" 'roost_have claude; echo $?')" "1" "roost_have claude: no, with only roost's shim on PATH"
+assert_eq "$(lib_q "$HERE/shims:$B/real:/usr/bin:/bin" 'roost_which opencode')" "$B/real/opencode" \
+  "roost_which opencode names the real one behind the shim"
+assert_eq "$(lib_q "$NOOC" 'v=$(roost_opencode_version); echo "[$v]"')" "[]" \
+  "no real opencode: the version probe reads nothing, not the shim's error"
+assert_eq "$(lib_q "$NOOC" 'roost_opencode_takes_config_dir; echo $?')" "0" \
+  "no real opencode: wiring still reads it as absent (safe), not as an unreadable one"
+assert_eq "$(lib_q "$HERE/shims:$OC2STUB:/usr/bin:/bin" 'roost_opencode_version')" "2.0.20" \
+  "a real opencode behind the shim: the probe asks the real one"
+assert_eq "$(lib_q "$NOOC" 'set -f; roost_have opencode; case $- in *f*) echo kept;; *) echo lost;; esac')" "kept" \
+  "roost_which leaves a caller's noglob on"
+assert_eq "$(lib_q "$NOOC" 'roost_have opencode; case $- in *f*) echo on;; *) echo off;; esac')" "off" \
+  "roost_which turns its own noglob back off"
+
+# =============================================================================
 printf '\n== sandbox ==\n'
 leaks="$(find "$CANARY" -mindepth 1 2>/dev/null | sort)"
 assert_eq "$leaks" "" "nothing in this file wrote to the canary homes"

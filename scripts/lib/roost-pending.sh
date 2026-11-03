@@ -30,6 +30,14 @@
 # /bin/bash. The placeholder side of these renames is scripts/roost-placeholder
 # (POSIX sh), which cannot source this file and makes its own two renames.
 
+# roost_have (scripts/lib/roost-have.sh): "is the harness installed?" must not
+# be answered by roost's own shims/claude or shims/opencode, which are first on
+# PATH in a roost pane and have no harness behind them on a machine without
+# one. Sourced relative to THIS file, guarded like roost-adapters.sh's sibling.
+if ! declare -f roost_have >/dev/null 2>&1; then
+  . "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-have.sh"
+fi
+
 # roost_pending_dir SHAPE-DIR BOOT -> prints pending/<boot>/ under the shape
 # directory (§3.1's tree). Creates nothing.
 roost_pending_dir() { printf '%s/pending/%s\n' "$1" "$2"; }
@@ -575,7 +583,7 @@ roost_pending__one() {
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     roost_pending__fail "$l" "$p" "store miss" "$ROOST_RESUME_WHY"; return 13
   fi
-  if ! command -v "$h" >/dev/null 2>&1; then
+  if ! roost_have "$h"; then
     roost_pending__fail "$l" "$p" "harness missing" "$h is not on PATH"; return 13
   fi
   # A Claude or pi key whose transcript is unrecorded, or gone, gets the

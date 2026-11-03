@@ -218,6 +218,16 @@ the pane shows the one in front.
   after an update, restart that opencode.
 - **A dialog in a subagent's chat badges 🛑 blocked.** The person who has to
   answer it is sitting at this pane, the same as on 1.x.
+- **`opencode mini` never badges.** opencode 2's minimal interface does not
+  load the plugin roost's badges come from. In a roost pane, roost refuses
+  `opencode mini` with a message saying so; run plain `opencode` instead. To
+  run mini anyway, knowing the pane will show no badge and `roost read` and
+  `roost wait-done` cannot see its turns: `ROOST_ALLOW_MINI=1 opencode mini`.
+  `roost doctor` names any pane already running it.
+- **A question the agent asks you reads ⏳ working, not 🛑 blocked.**
+  opencode 2's own question prompt is not a permission dialog, and this
+  adapter only sees permission dialogs. The pane looks busy while it waits
+  for your answer.
 
 `tests/live/opencode2-smoke.sh` drives a real opencode 2 to check this adapter
 end to end. Like the 1.x one, it is run by hand.

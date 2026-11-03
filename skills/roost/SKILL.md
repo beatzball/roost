@@ -92,6 +92,10 @@ fi
 `%N`. Omit CMD to open a shell you can `roost send` into later. Spawned agents
 are real and cost tokens — only spawn what you need.
 
+For an opencode helper, run plain `opencode`, never `opencode mini`. Mini does
+not report to roost: its pane shows no badge, and `roost wait-done` and
+`roost read` cannot see its turns. In a roost pane, roost refuses it and says so.
+
 ## Message an agent
 
 `roost send TARGET "text"` pastes the text, submits it, and then waits briefly

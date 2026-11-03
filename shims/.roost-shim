@@ -1,3 +1,5 @@
-# Marks this directory as roost's shim directory. shims/claude skips every
-# PATH entry holding this file when it looks for the real claude, so a second
-# checkout's shims on the same PATH cannot make it find itself.
+# Marks this directory as roost's shim directory. shims/claude and
+# shims/opencode skip every PATH entry holding this file when they look for the
+# real claude or opencode, so a second checkout's shims on the same PATH cannot
+# make either find itself. scripts/lib/roost-have.sh skips it by the same rule
+# when roost asks whether a harness is installed at all.

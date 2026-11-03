@@ -163,6 +163,20 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`opencode mini` is refused in a roost pane, because it never shows a
+  badge.** opencode 2's minimal interface does not load the plugin roost's
+  badges come from, so a mini pane stayed silent: no badge, nothing for
+  `roost read`, and `roost wait-done` could not see its turns end. In a roost
+  pane, `opencode mini` now stops at once with a message that says why, and
+  plain `opencode` runs as before. To run mini anyway, with no badge:
+  `ROOST_ALLOW_MINI=1 opencode mini`. `roost doctor` names any pane already
+  running `opencode mini`. A new pane, or `roost spawn`, gets this; a pane
+  opened before the update does not. The `roost` skill now tells agents to
+  start plain `opencode`. And roost's own question "is this harness
+  installed?" no longer counts roost's own wrappers: run from a roost pane,
+  `roost install`, `doctor`, `validate`, `revive` and `roost wiring` could
+  read a machine with no opencode as having one.
+
 - **A pane whose first event was a permission dialog no longer gets a bad
   hold record (#199).** On a fresh pane, a `blocked` stamp wrote a
   background record with no count. It then made the pane read 🔄

@@ -2031,7 +2031,8 @@ mkcheckout() { # mkcheckout DIR
   cp "$HERE/scripts/lib/roost-adapters.sh" \
      "$HERE/scripts/lib/roost-hooks.sh" \
      "$HERE/scripts/lib/roost-json.sh" \
-     "$HERE/scripts/lib/roost-opencode.sh" "$1/scripts/lib/"
+     "$HERE/scripts/lib/roost-opencode.sh" \
+     "$HERE/scripts/lib/roost-have.sh" "$1/scripts/lib/"
 }
 
 if command -v git >/dev/null 2>&1; then
