@@ -51,6 +51,8 @@
 #   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). roost also saves by itself on every change to the fleet, keeping the last ROOST_SHAPE_KEEP saves in history/ (default 100). `rm -rf` that shapes directory forgets every shape and nothing else
 #   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--resume [--retry]] [--recent DAYS] [--pace SECONDS] [--only SEL ...] [--json]
 #                            put a saved shape back as shells in their saved directories, at their saved indices and layouts, then resume each agent in its own directory, --pace seconds apart (default 2). Until its turn an agent's pane waits in a placeholder; a key there keeps it as a shell (roost revive %N brings the agent back). --no-resume places only; --recent DAYS leaves out an agent whose transcript is older; --resume resumes the panes already placed and waiting, and --retry with it tries again the ones whose resume failed for a reason you have since fixed (never a pane you took). The report ends with one summary line; --json prints it as one document. A session that exists is skipped and named (exit 12); an agent not resumed is named (exit 13); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
+#   roost persist on|off|status [--name NAME]
+#                            bring this server's fleet back at login: `on` saves it and installs one login unit for this server (a LaunchAgent on macOS, a systemd user unit on Linux) that places the fleet at login; the agents come back when you first attach. `off` removes that unit and stops nothing; saves, history and pending resumes stay. `status` says what is installed and whether it names this checkout. Exit 17 on a machine with neither launchd nor systemd
 #   roost revive [--new-window] [--force] [--json] TGT
 #                            bring a pane's agent conversation back, in place, with the same %N — or, for a %N that is gone, in a new window from the pane's kept record (--new-window opens one beside a pane that is still there): the harness's own resume (claude --resume ID, codex resume ID, copilot --resume=ID, pi --session FILE) in the conversation's own directory. Checked before anything is killed: exit 13 when there is no recorded conversation, its key is stale or the harness no longer holds it, or another pane has it open; 14 the harness is not on PATH; 15 its directory is gone. Refuses a ⏳ working or 🛑 blocked agent, and a shell running a job, unless --force. Exit 0 means launched, not resumed: a dialog the harness opens is left on screen. opencode's command is printed, not run
 #   roost kill [--yes] [SESSION]
@@ -999,6 +1001,55 @@ case "${1:-up}" in
     fi
     rm -rf "${ROOST_RESTORE_PD:-}"
     exit "$restore_rc"
+    ;;
+  persist)
+    # `roost persist on|off|status [--name NAME]` (#192, spec §4.4): bring
+    # this server's fleet back at login, opt in — one login unit per server
+    # (a LaunchAgent on macOS, a systemd user unit on Linux), never stopped.
+    # `--at-login NAME` is the hidden form that unit runs. The work is in
+    # scripts/lib/roost-persist.sh; this arm parses flags and picks the
+    # server: --name NAME is the `-L NAME` server, else this one, which must
+    # then be a named server (a unit cannot name a socket path that will not
+    # exist after a reboot).
+    shift
+    persist_verb="${1:-}"; [ "$#" -gt 0 ] && shift
+    persist_name="" persist_named=0
+    case "$persist_verb" in
+      on|off|status) ;;
+      --at-login) [ "$#" -ge 1 ] || { echo "usage: roost persist --at-login NAME" >&2; exit 2; }
+                  persist_name="$1" persist_named=1; shift ;;
+      *) echo "usage: roost persist on|off|status [--name NAME]" >&2; exit 2 ;;
+    esac
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name) [ "$#" -ge 2 ] || { echo "roost persist: --name needs a server name" >&2; exit 2; }
+                persist_name="$2" persist_named=1; shift 2 ;;
+        *) echo "usage: roost persist on|off|status [--name NAME]" >&2; exit 2 ;;
+      esac
+    done
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+    . "$ROOST_HOME/scripts/lib/roost-persist.sh"
+    if [ "$persist_named" = 0 ]; then
+      if [ "$_SOCKET_FLAG" != -L ]; then
+        echo "roost persist: this server is addressed by a socket path ($SOCKET), which does not survive a reboot; use --name NAME for a named server" >&2
+        exit 1
+      fi
+      persist_name="$SOCKET"
+    fi
+    if ! roost_persist_name_ok "$persist_name"; then
+      echo "roost persist: '$persist_name' cannot name a login unit: use letters, digits, '.', '_' and '-'" >&2
+      exit 1
+    fi
+    SOCKET="$persist_name" _SOCKET_FLAG="-L"
+    persist_rc=0
+    case "$persist_verb" in
+      on) roost_persist_on "$persist_name" || persist_rc=$? ;;
+      off) roost_persist_off "$persist_name" || persist_rc=$? ;;
+      status) roost_persist_status "$persist_name" || persist_rc=$? ;;
+      --at-login) roost_persist_at_login "$persist_name" || persist_rc=$? ;;
+    esac
+    exit "$persist_rc"
     ;;
   revive)
     # `roost revive [--new-window] [--force] [--json] TGT` (#57, spec §4.1): bring one pane's
