@@ -288,3 +288,69 @@ shape_settle() {
   done
   return 1
 }
+
+# persist_stubs DIR — the recording `launchctl`, `systemctl` and `uname` of
+# Part 5 (`roost persist`, #192). Put DIR first on PATH. Never a real
+# launchctl or systemctl from a test (the plan's Global constraints): a
+# real `launchctl bootstrap` would install a login job for the author.
+#
+# Each call appends "<tool> <argv>" to $PERSIST_LOG. Both FAIL on `stop`,
+# and systemctl on `--now` too: `persist off` must never stop the unit, and
+# stopping a unit whose cgroup holds the fleet is how forty agents end at
+# once (spec §4.4). `launchctl bootstrap` marks the label loaded and `bootout`
+# unmarks it, so `print` (status) reads it back; `systemctl enable`/`disable`
+# do the same for `is-enabled`.
+#
+# `uname -s` prints $STUB_UNAME when set, so one Mac or Linux runner tests
+# both the plist and the unit; anything else goes to the real uname.
+#
+# PERSIST_ON_LOAD, when set, is a command the launchctl stub runs in the
+# BACKGROUND on `bootstrap`, the way RunAtLoad runs the job at once (Task
+# 5.6: a stopped server's `on`). `systemctl enable` without --now runs
+# nothing, as the real one does: on Linux `on` runs --at-login itself.
+persist_stubs() {
+  local d="$1" real_uname
+  real_uname="$(command -v uname)"
+  mkdir -p "$d" "$d/state"
+  cat > "$d/launchctl" <<EOF2
+#!/bin/sh
+printf 'launchctl %s\n' "\$*" >> "\$PERSIST_LOG"
+case "\$1" in
+  stop) exit 1 ;;
+  bootstrap) : > "$d/state/loaded.\$(basename "\$3" .plist)"
+             [ -n "\${PERSIST_ON_LOAD:-}" ] && { sh -c "\$PERSIST_ON_LOAD" </dev/null >/dev/null 2>&1 & }
+             exit 0 ;;
+  bootout) l="\${2##*/}"; [ -e "$d/state/loaded.\$l" ] || exit 3; rm -f "$d/state/loaded.\$l"; exit 0 ;;
+  print) l="\${2##*/}"; [ -e "$d/state/loaded.\$l" ] ;;
+  *) exit 0 ;;
+esac
+EOF2
+  cat > "$d/systemctl" <<EOF2
+#!/bin/sh
+printf 'systemctl %s\n' "\$*" >> "\$PERSIST_LOG"
+for a in "\$@"; do case "\$a" in stop|--now) exit 1 ;; esac; done
+[ "\$1" = --user ] && shift
+case "\$1" in
+  enable) : > "$d/state/enabled.\$2"; exit 0 ;;
+  disable) rm -f "$d/state/enabled.\$2"; exit 0 ;;
+  is-enabled) if [ -e "$d/state/enabled.\$2" ]; then echo enabled; else echo disabled; exit 1; fi ;;
+  *) exit 0 ;;
+esac
+EOF2
+  cat > "$d/uname" <<EOF2
+#!/bin/sh
+if [ "\${1:-}" = -s ] && [ -n "\${STUB_UNAME:-}" ]; then printf '%s\n' "\$STUB_UNAME"; exit 0; fi
+exec "$real_uname" "\$@"
+EOF2
+  chmod +x "$d/launchctl" "$d/systemctl" "$d/uname"
+}
+
+# assert_not_contains STRING NEEDLE LABEL — the converse of tests/lib.sh's
+# assert_contains, for the "never" cases of Part 5 (no `stop`, no secret in
+# service.env). The FAIL line prints the whole string, so the stray part shows.
+assert_not_contains() {
+  case "$1" in
+    *"$2"*) ROOST_TESTS_FAIL=$((ROOST_TESTS_FAIL+1)); printf '  FAIL: %s\n       [%s] contains [%s]\n' "$3" "$1" "$2" ;;
+    *)      ROOST_TESTS_PASS=$((ROOST_TESTS_PASS+1)); printf '  PASS: %s\n' "$3" ;;
+  esac
+}

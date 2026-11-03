@@ -64,7 +64,8 @@ assert_eq "$(SHARD=3/4 bash "$HERE/tests/run.sh" --list)" \
 # (Updated for #191 Part 3: test-shape-resume.sh, 78, displaced
 # test-opencode2-plugin.sh, 65, from the top four. Updated for Part 4:
 # test-shape-resume.sh is now 141 and test-shape-closed.sh, 98, displaced
-# test-revive.sh, 70.)
+# test-revive.sh, 70. Updated for Part 5: test-shape-attach.sh, 111,
+# displaced test-send-lock.sh, 85.)
 shard_of() { # shard_of FILE N -> which shard of N lists FILE
   local f=$1 n=$2 k=1
   while [ "$k" -le "$n" ]; do
@@ -75,7 +76,7 @@ shard_of() { # shard_of FILE N -> which shard of N lists FILE
   done
   printf 'none'
 }
-spread="$(for f in test-send-turn.sh test-send-lock.sh test-shape-resume.sh test-shape-closed.sh; do
+spread="$(for f in test-send-turn.sh test-shape-attach.sh test-shape-resume.sh test-shape-closed.sh; do
             shard_of "$f" 4; echo
           done | LC_ALL=C sort -u | wc -l | tr -d ' ')"
 assert_eq "$spread" "4" "the four slowest files land in four different shards of 4"

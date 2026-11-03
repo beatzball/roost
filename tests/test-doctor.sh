@@ -1369,6 +1369,59 @@ sleep 0.5
 out="$(pdoc ROOST_SHAPE_DIR=)"
 assert_contains "$out" "1 pane(s) run a harness with no recorded conversation (claude)" "N panes run a harness with no recorded conversation"
 assert_contains "$out" "1 pane(s) carry an identity that disagrees with what they run (claude)" "M carry a disagreeing identity"
+# The login half (#192, Task 5.9). `persist on`, write-only, for the server
+# name this shape directory is keyed by, with the same homes run_doctor
+# gives doctor, so the roots match; uname and launchctl are the recording
+# stubs of tests/lib-shape.sh (no real launchctl, ever).
+. "$HERE/tests/lib-shape.sh"
+PSTUBS="$TMP/persist-stubs"; persist_stubs "$PSTUBS"
+export PERSIST_LOG="$TMP/persist.log"
+PNAME="${PSD##*/}"
+penv() { env HOME="$EMPTY" XDG_CONFIG_HOME="$EMPTY/.config" XDG_DATA_HOME="$EMPTY/.local/share" \
+  COPILOT_HOME="$EMPTY/.copilot" PI_CODING_AGENT_DIR="$EMPTY/.pi/agent" CODEX_HOME="$EMPTY/.codex" \
+  CLAUDE_CONFIG_DIR="$EMPTY/.claude" CLAUDE_SETTINGS="$EMPTY/.claude/settings.json" \
+  ROOST_SHAPE_DIR="$PSHAPES" STUB_UNAME=Darwin PATH="$PSTUBS:$PATH" "$@"; }
+pdoc2() { run_doctor "$EMPTY" ROOST_CONFIG_SOCK="$PSOCK" ROOST_SHAPE_DIR="$PSHAPES" STUB_UNAME=Darwin PATH="$PSTUBS:$PATH" "$@" 2>&1 || true; }
+penv env -u TMUX -u TMUX_PANE ROOST_PERSIST_WRITE_ONLY=1 "$HERE/bin/roost" persist on --name "$PNAME" >/dev/null 2>&1
+env -u TMUX -u TMUX_PANE ROOST_SOCKET="$PSOCK" ROOST_SHAPE_DIR="$PSHAPES" "$HERE/bin/roost" save >/dev/null 2>&1
+out="$(pdoc2)"
+assert_contains "$out" "persist: saving on; login restore on for '$PNAME' (launchd, unit names this checkout; roots match; last save " \
+  "persist on: the line names the unit, this checkout, the roots and the last save"
+assert_contains "$out" "; 0 pending)" "...and the pending count"
+case "$out" in *"login unit runs"*|*"roots you do not have"*|*"not resumed yet"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "...and no persist warning while all of it holds"
+PUNIT="$EMPTY/Library/LaunchAgents/dev.roosting.roost.$PNAME.plist"
+cp "$PUNIT" "$TMP/unit.keep"
+sed "s|$(cd -P "$HERE" && pwd)/bin/roost|/elsewhere/bin/roost|" "$TMP/unit.keep" > "$PUNIT"
+out="$(pdoc2)"
+assert_contains "$out" "unit names another checkout" "a unit that runs another checkout: said in the line"
+assert_contains "$out" "the login unit runs /elsewhere/bin/roost, not this checkout" "...and warned"
+cp "$TMP/unit.keep" "$PUNIT"
+cp "$PSD/service.env" "$TMP/env.keep"
+sed "s|^CODEX_HOME=.*|CODEX_HOME=/nowhere/codex|;s|^PATH=.*|PATH=/nonexistent|" "$TMP/env.keep" > "$PSD/service.env"
+cp "$PSD/service.env" "$TMP/env.edited"
+printf '\npane d:9.0\nid %%99\ncwd /\nharness claude\nsession_id 3fa3c0de-0000-4abc-8def-000000000009\n' >> "$PSD/shape"
+out="$(pdoc2)"
+assert_contains "$out" "service.env names roots you do not have: CODEX_HOME (unit: /nowhere/codex" "service.env with a root the caller lacks: warned, naming it"
+assert_contains "$out" "the login unit's PATH has no claude, which the newest save names" "its PATH lacks a harness the newest save names: warned"
+cmp -s "$TMP/env.edited" "$PSD/service.env"; assert_true $? "an edited service.env is byte for byte the same after roost doctor"
+cp "$TMP/env.keep" "$PSD/service.env"
+pb="$(tmux -S "$PSOCK" display -p '#{start_time}-#{pid}')"
+mkdir -p "$PSD/pending/$pb"; printf 'was %%1\nharness claude\n' > "$PSD/pending/$pb/%5"
+printf 'store miss\nwas %%2\nharness claude\n' > "$PSD/pending/$pb/%6.failed"
+out="$(pdoc2)"
+assert_contains "$out" "; 2 pending)" "this boot's pending record: counted in the line"
+assert_contains "$out" "2 agent(s) of this server are not resumed yet (1 waiting, 1 failed)" "...and warned, waiting and failed apart"
+rm -rf "$PSD/pending"
+sleep 600 & PLIVE=$!
+mkdir -p "$PSD/resuming"; ln -s "$PLIVE $(roost_shape__lstart "$PLIVE")" "$PSD/resuming/owner"; touch -h -t 202001010000 "$PSD/resuming/owner"
+out="$(pdoc2)"
+assert_contains "$out" "resuming/ has been held by pid $PLIVE" "a resuming/ held over 60 s: warned, its pid named"
+kill "$PLIVE" 2>/dev/null; wait "$PLIVE" 2>/dev/null; rm -rf "$PSD/resuming"
+assert_eq "$(cat "$PERSIST_LOG" 2>/dev/null)" "" "doctor called no launchctl or systemctl"
+penv ROOST_PERSIST_WRITE_ONLY=1 "$HERE/bin/roost" persist off --name "$PNAME" >/dev/null 2>&1
+out="$(pdoc2)"
+assert_contains "$out" "persist: saving on; login restore off (roost persist on restores the fleet at login" "persist off: login restore off, and how to turn it on"
 tmux -S "$PSOCK" kill-server 2>/dev/null; rm -rf "$PS_D"
 
 # --- nothing escaped the sandbox --------------------------------------------

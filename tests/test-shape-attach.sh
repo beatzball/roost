@@ -1,0 +1,507 @@
+#!/usr/bin/env bash
+# The login half of persistent sessions (#192, Part 5): `roost persist
+# --at-login` places the fleet and stops, every key kept for the first attach
+# (Task 5.6); the first attach resumes them (Task 5.7, client-attached[98]);
+# and ensure_session waits for, or runs, the login restore (Task 5.8).
+# Design: docs/airig/specs/2026-10-24-persistent-sessions-design.md §4.4,
+# §4.6; §8.1 tests 1, 8 (e), 9 and 11.
+#
+# Driven against this file's own named server (tests/lib-shape.sh says why it
+# is `-L roost` under a guarded TMUX_TMPDIR) with stub harnesses. No real
+# launchctl or systemctl: `on` runs through the recording stubs.
+set -u
+cd "$(dirname "$0")/.."
+. tests/lib.sh
+. tests/lib-shape.sh
+
+shape_test_setup
+# `roost wiring apply` runs when roost starts a server, and writes under
+# XDG_CONFIG_HOME: a temp dir here, not the canary.
+export XDG_CONFIG_HOME="$SHAPE_TMP/config"
+unset TMUX TMUX_PANE
+# No shutdown record anywhere in this file unless a case sets one: on a Mac
+# `last reboot` would otherwise decide which save a restore picks.
+export ROOST_SHUTDOWN_AT=""
+LOST_PID=""
+cleanup() {
+  if [ -n "$LOST_PID" ] && kill -0 "$LOST_PID" 2>/dev/null; then
+    [ -n "${SHAPE_SOCK:-}" ] && tmux -S "$SHAPE_SOCK" kill-server 2>/dev/null
+    kill -USR1 "$LOST_PID" 2>/dev/null; sleep 0.3
+    [ -n "${SHAPE_SOCK:-}" ] && tmux -S "$SHAPE_SOCK" kill-server 2>/dev/null
+    kill "$LOST_PID" 2>/dev/null
+  fi
+  shape_test_teardown
+}
+trap cleanup EXIT
+
+ROOST="$PWD/bin/roost"
+PH="$PWD/scripts/roost-placeholder"
+R() { env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST" "$@"; }
+SD="$ROOST_SHAPE_DIR/roost"; mkdir -p "$SD"
+STUBS="$SHAPE_TMP/persist-stubs"
+persist_stubs "$STUBS"
+export PERSIST_LOG="$SHAPE_TMP/persist.log"; : > "$PERSIST_LOG"
+OSBOOT="$(. scripts/lib/roost-shape.sh; ROOST_HOME="$PWD"; . scripts/lib/roost-persist.sh; roost_persist_os_boot)"
+. scripts/lib/roost-shape.sh
+. scripts/lib/roost-pending.sh
+
+# The user's conf sets a default-command: unkeyed panes run it, and a key in a
+# placeholder hands over to it (§8.1 test 1).
+mkdir -p "$XDG_CONFIG_HOME/roost"
+printf '%s\n' "set -g default-command 'exec /bin/sh'" > "$XDG_CONFIG_HOME/roost/roost.conf"
+
+U1=3fa3c0de-5151-4abc-8def-000000000001
+U2=3fa3c0de-5252-4abc-8def-000000000002
+U3=3fa3c0de-5353-4abc-8def-000000000003
+D1="$SHAPE_TMP/w/one"; D2="$SHAPE_TMP/w/two"; D3="$SHAPE_TMP/w/three"; DN="$SHAPE_TMP/w/none"
+mkdir -p "$D1" "$D2" "$D3" "$DN"
+stub_store_add "$U1" "$D1"; stub_store_add "$U2" "$D2"; stub_store_add "$U3" "$D3"
+
+gen_of() { cat "$1/gen" 2>/dev/null || printf -- '-'; }
+trig() { sed -n 's/^trigger //p;/^$/q' "$1" 2>/dev/null; }
+sg() { printf '%s-%s\n' "$(sed -n 's/^saved //p;/^$/q' "$1" | tr -d ':-')" "$(sed -n 's/^gen //p;/^$/q' "$1")"; }
+first_pane() { TL list-panes -s -t "=$1:" -F '#{pane_id}' 2>/dev/null | head -1; }
+sessions() { TL list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
+counts() { printf '%s/%s/%s' "$(TL list-sessions 2>/dev/null | grep -c .)" \
+  "$(TL list-windows -a 2>/dev/null | grep -c .)" "$(TL list-panes -a 2>/dev/null | grep -c .)"; }
+live_boot() { TL display -p '#{start_time}-#{pid}' 2>/dev/null; }
+npend() { ls "$1" 2>/dev/null | grep -c '^%[0-9]*$'; }
+wait_screen() { local i=0; while [ "$i" -lt "${3:-30}" ]; do
+  TL capture-pane -p -t "$1" 2>/dev/null | grep -qF -- "$2" && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+wait_file() { local i=0; while [ "$i" -lt "${2:-50}" ]; do [ -e "$1" ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+# wait_args PANE ARGS: the pane's own process runs exactly ARGS. Not
+# #{pane_current_command}: macOS's /bin/sh is bash in sh mode and reads
+# `bash` there, the same as a placeholder (#!/bin/sh) would.
+wait_args() { local i=0; while [ "$i" -lt "${3:-50}" ]; do
+  [ "$(ps -o args= -p "$(TL display -p -t "$1" '#{pane_pid}' 2>/dev/null)" 2>/dev/null)" = "$2" ] && return 0
+  sleep 0.1; i=$((i+1)); done; return 1; }
+stop_server() { TL kill-server 2>/dev/null; local i=0; while TL ls >/dev/null 2>&1 && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i+1)); done; sleep 0.2; }
+login_runs() { grep -c "login restore for 'roost'" "$SD/login.log" 2>/dev/null || printf 0; }
+
+# A shape of four sessions, one pane each, of an earlier boot:
+#   k1 k2 k3   a claude key each (in the stub store, so each is resumable)
+#   kn         no key
+# SHAPE BOOT FILE: the boot line and the file it goes to.
+mkshape() {
+  local n=0 boot="${1:-1700000000-11}" out="${2:-$SD/shape}" gen="${3:-1}" saved="${4:-2026-10-30T12:00:00Z}"
+  pane_block() { # SESSION ID CWD EXTRA
+    printf '%s\n' "session $1" "id \$$n" '' "window $1:1" "id @$n" "layout b25d,200x50,0,0,$n" 'active 1' '' \
+      "pane $1:1.0" "id $2" "cwd $3"
+    [ -n "$4" ] && printf '%s\n' "$4"
+    printf '\n'
+    n=$((n+1))
+  }
+  { printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" "boot $boot" \
+      "saved $saved" "gen $gen" 'trigger save' 'roost 0.10.0' 'tmux 3.6' "host $(hostname)" ''
+    if [ -n "${MKSHAPE_SESSIONS:-}" ]; then
+      for s in $MKSHAPE_SESSIONS; do pane_block "$s" "%9${n}0" "$DN" ""; done
+    else
+      pane_block k1 %930 "$D1" "harness claude
+session_id $U1"
+      pane_block k2 %931 "$D2" "harness claude
+session_id $U2"
+      pane_block k3 %932 "$D3" "harness claude
+session_id $U3"
+      pane_block kn %933 "$DN" ""
+    fi
+  } > "$out"
+  [ "$out" = "$SD/shape" ] && printf '%s\n' "$gen" > "$SD/gen"
+  return 0
+}
+
+stop_server
+rm -rf "$SD"; mkdir -p "$SD"
+mkshape
+
+echo "== §8.1 test 1: --at-login places, every keyed pane a placeholder =="
+: > "$STUB_LOG"
+out="$(R persist --at-login roost 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--at-login exits 0"
+assert_eq "$(sessions)" "k1 k2 k3 kn " "...and places every saved session"
+BOOT="$(live_boot)"; PEND="$SD/pending/$BOOT"
+for s in k1 k2 k3; do
+  p="$(first_pane "$s")"
+  sc="$(TL display -p -t "$p" '#{pane_start_command}')"
+  assert_prefix "$(printf '%s' "$sc" | tr -d '"')" "$PH" "$s: the pane's start command begins with the placeholder's absolute path"
+  assert_not_contains "$sc" "'" "$s: ...and holds no '"
+done
+sleep 1
+for s in k1 k2 k3; do
+  p="$(first_pane "$s")"
+  assert_eq "$(TL display -p -t "$p" '#{pane_dead}')" "0" "$s: one second later the pane is alive"
+  wait_screen "$p" "waiting to resume claude"; assert_true $? "$s: ...and shows its waiting line"
+done
+pn="$(first_pane kn)"
+assert_eq "$(TL display -p -t "$pn" '#{pane_start_command}' | tr -d '"')" "exec /bin/sh" "kn (no key): started with the conf's default-command"
+wait_args "$pn" /bin/sh; assert_true $? "...and runs /bin/sh"
+assert_eq "$(npend "$PEND")" "3" "three keyed panes: three pending files"
+assert_eq "$(grep -c . "$STUB_LOG" 2>/dev/null || true)" "0" "...and nothing launched"
+assert_eq "$(ls -l "$SD/login.log" | cut -c1-10)" "-rw-------" "login.log is 0600"
+assert_contains "$(cat "$SD/login.log")" "agents wait for the first attach" "login.log says what it placed"
+assert_contains "$out" "login restore for 'roost'" "run from a terminal, the same lines are printed"
+assert_eq "$([ -n "$OSBOOT" ] && [ -f "$SD/login/$OSBOOT" ] && echo yes)" "yes" "the login/<os-boot> marker is written"
+assert_eq "$([ -e "$SD/restoring" ] && echo held || echo free)" "free" "restoring/ is released"
+# Nothing of --at-login's own bookkeeping reaches the server's environment
+# (fix round 1): a variable that told restore "your caller holds restoring/"
+# would make every later `roost restore` typed in a pane skip its lock and
+# its final save.
+TL show-environment -g ROOST_RESTORE_HELD >/dev/null 2>&1
+assert_eq "$?" "1" "the server's global environment has no ROOST_RESTORE_HELD"
+TL new-window -d -t '=kn:' "env > $SHAPE_TMP/pane.env"
+wait_file "$SHAPE_TMP/pane.env"; sleep 0.2
+assert_eq "$(grep -c '^ROOST_RESTORE_\|^ROOST_PERSIST_' "$SHAPE_TMP/pane.env")" "0" "...and a new pane's environment has no ROOST_RESTORE_* or ROOST_PERSIST_* variable"
+TL kill-window -t "$(TL list-windows -t '=kn' -F '#{window_id}' | tail -1)"
+p3="$(first_pane k3)"
+TL send-keys -t "$p3" x
+wait_file "$PEND/$p3.taken"; assert_true $? "a key in a placeholder takes the pane (%N.taken)"
+wait_args "$p3" /bin/sh; assert_true $? "...and hands over to the conf's /bin/sh"
+
+echo "== §8.1 test 11: a spawn's save carries the keys; a second login brings them back =="
+R spawn x sh >/dev/null 2>&1; shape_settle "$SD"
+body="$(cat "$SD/shape")"
+for u in "$U1" "$U2" "$U3"; do assert_contains "$body" "session_id $u" "the spawn's save keeps key ${u##*-}"; done
+assert_eq "$(grep -c '^resume pending$' "$SD/shape")" "2" "...two with resume pending"
+assert_eq "$(grep -c '^resume taken$' "$SD/shape")" "1" "...and the taken one with resume taken"
+# Dialog keys survive, the reboot half: one waiting file marked failed (the
+# loop's T7), a structural save, then the server goes.
+p2="$(first_pane k2)"
+{ printf 'store miss\n'; cat "$PEND/$p2"; } > "$PEND/$p2.failed"; rm -f "$PEND/$p2"; chmod 600 "$PEND/$p2.failed"
+R spawn y sh >/dev/null 2>&1; shape_settle "$SD"
+assert_eq "$(grep -c '^resume failed store miss$' "$SD/shape")" "1" "(fixture) the structural save carries resume failed store miss"
+stop_server
+R persist --at-login roost >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "--at-login after the server went: exit 0"
+BOOT2="$(live_boot)"; PEND2="$SD/pending/$BOOT2"
+assert_eq "$(npend "$PEND2")" "3" "three pending files again: waiting, taken and failed keys all come back"
+o=""; for f in "$PEND2"/%*; do o="$o$(grep -c '^order [0-9]' "$f")"; done
+assert_eq "$o" "111" "...each with its order line"
+assert_eq "$([ -d "$PEND" ] && echo kept || echo swept)" "swept" "the old boot's pending/ is removed after the new one is written"
+
+echo "== idempotent: three more --at-login runs on a placed fleet =="
+c0="$(counts)"; l0="$(login_runs)"
+printf 'HOME=/edited\nXDG_STATE_HOME=/edited/state\n' > "$SD/service.env"; cp "$SD/service.env" "$SHAPE_TMP/env.edited"
+ok=0
+for i in 1 2 3; do R persist --at-login roost >/dev/null 2>&1 && ok=$((ok+1)); done
+assert_eq "$ok" "3" "each exits 0"
+assert_eq "$(counts)" "$c0" "sessions, windows and panes are unchanged (no second bootstrap session)"
+assert_eq "$(login_runs)" "$((l0 + 3))" "three login.log runs"
+cmp -s "$SHAPE_TMP/env.edited" "$SD/service.env"; assert_true $? "an edited service.env is byte for byte the same after --at-login"
+rm -f "$SD/service.env"
+
+echo "== earlier boots: pending/ and claims/ swept, login.log halved past 1 MB =="
+OLDB=1500000000-3
+mkdir -p "$SD/pending/$OLDB"; : > "$SD/pending/$OLDB/%7"
+CL="$XDG_STATE_HOME/roost/launch-claims/roost/claims"
+mkdir -p "$CL/$OLDB/claude-x" "$CL/$BOOT2"
+{ echo HEAD-MARK; i=0; while [ "$i" -lt 13000 ]; do printf '%0100d\n' "$i"; i=$((i+1)); done; echo TAIL-MARK; } >> "$SD/login.log"
+R persist --at-login roost >/dev/null 2>&1
+assert_eq "$([ -e "$SD/pending/$OLDB" ] || echo gone)" "gone" "another boot's pending/ is removed"
+assert_eq "$([ -e "$CL/$OLDB" ] || echo gone)" "gone" "...and its launch claims (under the state directory)"
+assert_eq "$([ -d "$CL/$BOOT2" ] && [ -d "$PEND2" ] && echo kept)" "kept" "...this boot's are kept"
+sz="$(wc -c < "$SD/login.log" | tr -d ' ')"
+assert_true "$([ "$sz" -lt 1048576 ] && echo 0 || echo 1)" "login.log is halved past 1 MB ($sz bytes)"
+assert_contains "$(cat "$SD/login.log")" "TAIL-MARK" "...keeping its newest half"
+assert_not_contains "$(cat "$SD/login.log")" "HEAD-MARK" "...and dropping the oldest"
+
+echo "== R2 at login: a lost socket starts nothing =="
+shape_settle "$SD"
+LOST_PID="$(TL display -p '#{pid}')"
+rm -f "$SHAPE_SOCK"
+out="$(R persist --at-login roost 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--at-login exits 0"
+assert_contains "$out" "roost: the tmux server (pid $LOST_PID) is still running but its socket is gone; kill -USR1 $LOST_PID recreates it" "...and logs R2's line"
+assert_eq "$([ -e "$SHAPE_SOCK" ] && echo made || echo none)" "none" "...and starts no server"
+kill -USR1 "$LOST_PID"; wait_file "$SHAPE_SOCK"
+assert_eq "$(TL display -p '#{pid}')" "$LOST_PID" "(the fleet is still there after kill -USR1)"
+LOST_PID=""
+stop_server
+
+echo "== the ring: an earlier boot's closed/ stays while a save of it is kept =="
+B1=1600000000-7
+rm -rf "$SD"; mkdir -p "$SD/history" "$SD/closed/$B1"
+MKSHAPE_SESSIONS="r1 r2" mkshape "$B1" "$SHAPE_TMP/b1.shape" 5 2026-10-29T10:00:00Z
+B1SG="$(sg "$SHAPE_TMP/b1.shape")"; cp "$SHAPE_TMP/b1.shape" "$SD/history/$B1SG"
+r1p="$(awk '/^pane r1:/ { getline; print $2 }' "$SHAPE_TMP/b1.shape")"
+printf '%s\n' "$r1p" > "$SD/closed/$B1/close.${r1p#%}"
+MKSHAPE_SESSIONS="main work" mkshape 1700000000-11 "$SD/shape" 6 2026-10-30T12:00:00Z
+R persist --at-login roost >/dev/null 2>&1
+assert_eq "$(sessions)" "main work " "(fixture) the newest save is placed"
+assert_eq "$([ -f "$SD/closed/$B1/close.${r1p#%}" ] && echo kept)" "kept" "closed/<B1>/ is kept while a B1 save is in history/"
+R restore --no-resume --from "$B1SG" >/dev/null 2>&1
+assert_eq "$(sessions)" "main r2 work " "restore --from that B1 save leaves the closed pane out (r1 not placed, r2 placed)"
+TL kill-session -t '=r2' 2>/dev/null; shape_settle "$SD"
+# The hooks' saves run in the server's environment, so the ring's size is
+# set there; a save that finds an equal body publishes (and prunes) nothing.
+TL set-environment -g ROOST_SHAPE_KEEP 2
+for w in a b c; do TL rename-window -t '=main:1' "ring-$w"; shape_settle "$SD"; done
+TL set-environment -gu ROOST_SHAPE_KEEP
+assert_eq "$(ls "$SD/history" | grep -c "^$B1SG$")" "0" "(fixture) ROOST_SHAPE_KEEP=2: no B1 save is left in the ring"
+R persist --at-login roost >/dev/null 2>&1
+assert_eq "$([ -e "$SD/closed/$B1" ] || echo gone)" "gone" "the next --at-login removes closed/<B1>/"
+stop_server
+
+echo "== §8.1 test 8 (e): the last session ended on purpose places nothing =="
+rm -rf "$SD"; mkdir -p "$SD"
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+R spawn solo sh >/dev/null 2>&1; shape_settle "$SD"
+R kill main >/dev/null 2>&1
+i=0; while TL ls >/dev/null 2>&1 && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "(fixture) roost kill of the only session ends the server"
+out="$(R persist --at-login roost 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--at-login exits 0"
+assert_contains "$out" "every saved pane was closed on purpose" "...and says the fleet was closed on purpose"
+assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "...and starts no server"
+# The same, with the last save and the close in one second.
+rm -rf "$SD/closed" "$SD/history" "$SD/shape" "$SD/gen"
+NOW="$(date +%s)"
+ROOST_TEST_NOW="$NOW" R spawn solo sh >/dev/null 2>&1; shape_settle "$SD"
+ROOST_TEST_NOW="$NOW" R save >/dev/null 2>&1
+ROOST_TEST_NOW="$NOW" R kill main >/dev/null 2>&1
+i=0; while TL ls >/dev/null 2>&1 && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+out="$(R persist --at-login roost 2>&1)"; rc=$?
+assert_eq "$rc|$(TL ls >/dev/null 2>&1 && echo up || echo down)" "0|down" "the save and the close in one second: still nothing placed, no server"
+assert_contains "$out" "closed on purpose" "...and the same line"
+# Torn down by its own exits (no close), inside the shutdown window: whole.
+rm -rf "$SD/closed" "$SD/history" "$SD/shape" "$SD/gen"
+R spawn d1 "sh -c 'while [ ! -e $SHAPE_TMP/go ]; do sleep 0.1; done'" >/dev/null 2>&1
+R spawn d2 "sh -c 'while [ ! -e $SHAPE_TMP/go ]; do sleep 0.1; done'" >/dev/null 2>&1
+shape_settle "$SD"
+# The shell window ensure_session made goes first, by a kill (a kill file,
+# so restore leaves it out); its index depends on the conf's base-index.
+TL kill-window -t "$(TL list-windows -t '=main' -F '#{window_id}' | head -1)"; shape_settle "$SD"
+assert_eq "$(TL list-windows -t '=main' 2>/dev/null | grep -c .)" "2" "(fixture) two windows, each running a command that ends"
+: > "$SHAPE_TMP/go"
+i=0; while TL ls >/dev/null 2>&1 && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+shape_settle "$SD" || true
+rm -f "$SHAPE_TMP/go"
+ROOST_SHUTDOWN_AT="$(date +%s)" R persist --at-login roost >/dev/null 2>&1; rc=$?
+assert_eq "$rc|$(sessions)|$(TL list-windows -t '=main' 2>/dev/null | grep -c .)" "0|main |2" \
+  "torn down by its own exits inside the window: restored whole (both windows)"
+stop_server
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
+
+echo "== §8.1 test 9: on with the server stopped =="
+for os in Darwin Linux; do
+  rm -rf "$SD"; mkdir -p "$SD"
+  MKSHAPE_SESSIONS="main work" mkshape 1700000000-11 "$SD/shape" 4
+  g0="$(gen_of "$SD")"; : > "$PERSIST_LOG"
+  out="$(STUB_UNAME=$os PATH="$STUBS:$PATH" \
+    PERSIST_ON_LOAD="env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost $ROOST persist --at-login roost" R persist on 2>&1)"; rc=$?
+  assert_eq "$rc" "0" "$os: on exits 0 with the server stopped ($out)"
+  assert_contains "$(cat "$PERSIST_LOG")" "$([ "$os" = Darwin ] && echo "launchctl bootstrap" || echo "systemctl --user enable")" "$os: ...the load is logged"
+  if [ "$os" = Darwin ]; then
+    assert_eq "$(gen_of "$SD")|$(trig "$SD/shape")" "$g0|save" "Darwin: shape is still the planted save when on returns"
+  fi
+  i=0; while [ "$(sessions)" != "main work " ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+  assert_eq "$(sessions)" "main work " "$os: the job places both sessions"
+  i=0; while ! trig "$SD/shape" | grep -q restore && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i+1)); done
+  assert_contains "$(trig "$SD/shape")" "restore" "$os: ...and its own --trigger restore save follows"
+  assert_eq "$(cat "$SD/shape" "$SD"/history/* 2>/dev/null | grep -c '^trigger.*persist-on')" "0" "$os: ...with no persist-on save in between"
+  stop_server
+  STUB_UNAME=$os PATH="$STUBS:$PATH" R persist off >/dev/null 2>&1
+done
+
+# --- the first attach: client-attached[98] (Task 5.7) ------------------------
+CL="$TMUX_TMPDIR/cl"
+CLT() { tmux -S "$CL" "$@"; }
+# fresh_fleet: the fixture shape placed by --at-login on a new server, no
+# launch yet; the stubs identify with the key they were resumed with.
+fresh_fleet() {
+  CLT kill-server 2>/dev/null
+  stop_server
+  rm -rf "$SD" "$XDG_STATE_HOME/roost/launch-claims"; mkdir -p "$SD"
+  mkshape
+  R persist --at-login roost >/dev/null 2>&1
+  BOOT="$(live_boot)"; PEND="$SD/pending/$BOOT"
+  TL set-environment -g STUB_IDENTIFY 1
+  : > "$STUB_LOG"
+}
+# attach_from N SESSION: a real client, from a pane of a second throwaway
+# server whose window is 80x20 (the save's windows are 200x50).
+attach_from() {
+  if ! CLT has-session 2>/dev/null; then
+    CLT -f /dev/null new-session -d -s c0 -x 80 -y 20 "env -u TMUX tmux -S $SHAPE_SOCK attach -t '=$2'"
+  else
+    CLT new-window -d -t c0: "env -u TMUX tmux -S $SHAPE_SOCK attach -t '=$2'"
+  fi
+}
+launches() { grep -c -- "--resume " "$STUB_LOG" 2>/dev/null || true; }
+wait_launches() { local i=0; while [ "$(launches)" -lt "$1" ] && [ "$i" -lt "${2:-100}" ]; do sleep 0.1; i=$((i+1)); done; }
+clients() { TL list-clients 2>/dev/null | grep -c .; }
+wait_clients() { local i=0; while [ "$(clients)" -lt "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done; }
+
+echo "== §8.1 test 11: a real attach resumes the agents, 2 s apart, in order =="
+fresh_fleet
+assert_eq "$(npend "$PEND")" "3" "(fixture) three agents wait"
+attach_from 1 k1; wait_clients 1
+wait_launches 3 100
+assert_eq "$(launches)" "3" "the attach launches exactly three"
+assert_eq "$(grep -- "--resume " "$STUB_LOG" | awk '{print $2}' | tr '\n' ' ')" "$D1 $D2 $D3 " "...in the saved order, each in its own directory"
+t1="$(awk 'NR==1{print $1}' "$STUB_LOG")"; t3="$(awk 'NR==3{print $1}' "$STUB_LOG")"
+assert_true "$([ $((t3 - t1)) -ge 3 ] && [ $((t3 - t1)) -le 6 ] && echo 0 || echo 1)" "...2 s apart (first to third: $((t3 - t1)) s)"
+i=0; while [ "$(ls "$PEND" 2>/dev/null | grep -c .)" != 0 ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(ls "$PEND" 2>/dev/null | tr '\n' ' ')" "" "...and each pending file is gone once its agent identified"
+assert_eq "$(TL display -p -t "$(first_pane k2)" '#{@roost-session}')" "$U2" "...the pane carries its key again"
+sleep 1
+assert_eq "$(launches)" "3" "no launch beyond the three"
+
+echo "== a detach starts nothing; with the hook deleted an attach starts nothing =="
+fresh_fleet
+TL set-hook -gu 'client-attached[98]'
+attach_from 1 k1; wait_clients 1
+sleep 4
+assert_eq "$(launches)" "0" "client-attached[98] deleted: an attach launches nothing"
+TL source-file "$PWD/tmux/roost.conf"
+TL show-hooks -g client-attached | grep -q 'restore --resume --auto'; assert_true $? "(fixture) the hook is back"
+TL detach-client -a 2>/dev/null; TL detach-client 2>/dev/null
+CLT kill-server 2>/dev/null
+sleep 4
+assert_eq "$(launches)|$(npend "$PEND")" "0|3" "a detach launches nothing, and all three still wait"
+
+echo "== two clients in the same second: each agent once =="
+fresh_fleet
+attach_from 1 k1; attach_from 2 k2; wait_clients 2
+wait_launches 3 100; sleep 2
+assert_eq "$(launches)" "3" "two attaches: three launches"
+assert_eq "$(grep -- "--resume " "$STUB_LOG" | awk '{print $NF}' | sort -u | grep -c .)" "3" "...each key once"
+
+echo "== a worker held past 10 s keeps resuming/; a second attach adds nothing =="
+fresh_fleet
+"$ROOST" restore --resume --auto --pace 8 >/dev/null 2>&1 &
+wp=$!
+wait_launches 1 50
+sleep 11
+owner="$(readlink "$SD/resuming/owner" 2>/dev/null)"
+attach_from 1 k1; wait_clients 1
+sleep 2
+assert_eq "${owner%% *}" "$wp" "(fixture) at 12 s resuming/ names the first worker"
+assert_eq "$(readlink "$SD/resuming/owner" 2>/dev/null | cut -d' ' -f1)" "$wp" "after the second attach resuming/ still names the first"
+wait "$wp" 2>/dev/null
+assert_eq "$(launches)" "3" "...and nothing extra was launched (three in all)"
+
+echo "== (d) must still launch: rc banners, a small client, rc files that block =="
+for variant in banner block; do
+  cp "$HOME/.bash_profile" "$SHAPE_TMP/bp.keep"; cp "$HOME/.bashrc" "$SHAPE_TMP/brc.keep"
+  for f in .bash_profile .bashrc .zshrc .profile; do
+    printf '%s\n' 'echo "BANNER from an rc file"' >> "$HOME/$f"
+    [ "$variant" = block ] && printf '%s\n' 'read -r x' >> "$HOME/$f"
+  done
+  fresh_fleet
+  attach_from 1 k1; wait_clients 1
+  wait_launches 3 100; sleep 1
+  assert_eq "$(launches)" "3" "$variant: all three launch"
+  assert_eq "$(ls "$PEND" 2>/dev/null | grep -c '\.taken$\|\.failed$')" "0" "$variant: ...none .taken or .failed"
+  cp "$SHAPE_TMP/bp.keep" "$HOME/.bash_profile"; cp "$SHAPE_TMP/brc.keep" "$HOME/.bashrc"; rm -f "$HOME/.zshrc" "$HOME/.profile"
+done
+
+echo "== a late hook of a killed server resumes nothing on the next one =="
+fresh_fleet
+OLD_BOOT="$BOOT"
+stop_server
+mkshape; R persist --at-login roost >/dev/null 2>&1
+BOOT="$(live_boot)"; PEND="$SD/pending/$BOOT"; TL set-environment -g STUB_IDENTIFY 1; : > "$STUB_LOG"
+"$ROOST" restore --resume --auto --socket "$SHAPE_SOCK" --boot "$OLD_BOOT" >/dev/null 2>&1; rc=$?
+sleep 1
+assert_eq "$rc|$(launches)|$(npend "$PEND")" "0|0|3" "the old boot's hook: exit 0, nothing launched, all three still wait"
+"$ROOST" restore --resume --auto --socket "$SHAPE_SOCK" --boot "$BOOT" >/dev/null 2>&1
+wait_launches 3 100
+assert_eq "$(launches)" "3" "the live boot's hook launches them"
+CLT kill-server 2>/dev/null
+stop_server
+
+# --- ensure_session waits for, or runs, the login restore (Task 5.8) ---------
+echo "== persist on, no server, no login marker: roost spawn runs the placement =="
+stop_server
+rm -rf "$SD"; mkdir -p "$SD"; mkshape
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+rm -rf "$SD/login"
+out="$(R spawn x sh 2>&1)"; rc=$?
+assert_eq "$rc" "0" "spawn exits 0 ($out)"
+assert_eq "$(sessions)" "k1 k2 k3 kn main " "it placed the saved fleet first, then made its own session"
+assert_eq "$([ -f "$SD/login/$OSBOOT" ] && echo yes)" "yes" "...and wrote the login marker"
+assert_eq "$(npend "$SD/pending/$(live_boot)")" "3" "...and left the keys pending for the first attach"
+assert_contains "$out" "login restore for 'roost'" "...saying what it did"
+echo "== the marker is there: a server killed on purpose is left alone =="
+stop_server
+out="$(R spawn x sh 2>&1)"; rc=$?
+assert_eq "$rc|$(sessions)" "0|main " "with login/<os-boot> present, spawn places nothing"
+stop_server
+
+echo "== persist off: unchanged =="
+rm -rf "$SD/login"
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
+R spawn x sh >/dev/null 2>&1
+assert_eq "$(sessions)" "main " "persist off, no marker: spawn places nothing"
+stop_server
+
+echo "== a login job that takes restoring/ after the wait: spawn waits again, never makes main first =="
+# Fix round 1: the wait ended, then the login job took restoring/ before
+# ensure_session's own --at-login could; that one lost, and ensure_session
+# made `main` itself, so the job skipped the saved `main` and its agents were
+# never placed. The seam holds ensure_session right after its wait.
+stop_server
+rm -rf "$SD"; mkdir -p "$SD"; MKSHAPE_SESSIONS="main work" mkshape
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+rm -rf "$SD/login"
+LH="$SHAPE_TMP/login.hold"; rm -f "$LH" "$LH".at.*
+( ROOST_TEST_LOGIN_HOLD="$LH" R spawn x sh > "$SHAPE_TMP/x.out" 2> "$SHAPE_TMP/x.err"; echo $? > "$SHAPE_TMP/x.rc" ) &
+xp=$!
+wait_at_file() { local i=0; while [ "$i" -lt 100 ]; do ls "$1".at.* >/dev/null 2>&1 && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+wait_at_file "$LH"; assert_true $? "(fixture) spawn is held after its owner wait"
+sleep 600 & JOB=$!
+mkdir -p "$SD/restoring"; ln -s "$JOB $(roost_shape__lstart "$JOB")" "$SD/restoring/owner"
+: > "$LH"
+sleep 3
+assert_eq "$([ -e "$SHAPE_TMP/x.rc" ] || echo waiting)" "waiting" "the job holds restoring/: spawn waits again"
+assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "...and makes no server, no main of its own"
+kill "$JOB"; wait "$JOB" 2>/dev/null
+wait "$xp"
+assert_eq "$(cat "$SHAPE_TMP/x.rc")" "0" "once the job is gone, spawn exits 0"
+assert_eq "$(sessions)" "main work " "...and the saved main was placed, not skipped (work too)"
+assert_eq "$(TL list-windows -t '=main' -F '#{window_name}' 2>/dev/null | grep -c '^x$')" "1" "...with spawn's window x added to it"
+stop_server
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
+
+echo "== a live restoring/ owner: ensure_session waits, saying so every 10 s =="
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+mkdir -p "$SD/login"; : > "$SD/login/$OSBOOT"
+sleep 600 & LIVE=$!
+mkdir -p "$SD/restoring"; ln -s "$LIVE $(roost_shape__lstart "$LIVE")" "$SD/restoring/owner"
+# A slowed run (fix round 2): CI's macOS runner once took over 12 s for the
+# 50 turns the wait used to count as 10 s, and printed one line. Here every
+# `sleep` of spawn's own takes 0.3 s longer, so 50 turns take 25 s or more:
+# the line must follow the clock, not the turns.
+SLOW="$SHAPE_TMP/slow-sleep"; mkdir -p "$SLOW"
+REAL_SLEEP="$(command -v sleep)"
+printf '#!/bin/sh\nexec %s "$(awk -v s="$1" '"'"'BEGIN { print s + 0.3 }'"'"')"\n' "$REAL_SLEEP" > "$SLOW/sleep"
+chmod +x "$SLOW/sleep"
+( PATH="$SLOW:$PATH" R spawn w sh > "$SHAPE_TMP/w.out" 2> "$SHAPE_TMP/w.err"; echo $? > "$SHAPE_TMP/w.rc" ) &
+wp=$!
+t0=$(date +%s); i=0
+while [ "$i" -lt 200 ]; do
+  [ "$(grep -c "^waiting for the login restore (pid $LIVE)$" "$SHAPE_TMP/w.err" 2>/dev/null)" -ge 2 ] && break
+  sleep 0.1; i=$((i+1))
+done
+t2=$(( $(date +%s) - t0 ))
+assert_eq "$([ -e "$SHAPE_TMP/w.rc" ] || echo waiting)" "waiting" "spawn is still waiting ($t2 s)"
+assert_eq "$(grep -c "^waiting for the login restore (pid $LIVE)$" "$SHAPE_TMP/w.err")" "2" "...it said so twice within 20 s (at 0 s and 10 s), naming the pid"
+assert_true "$([ "$t2" -ge 9 ] && echo 0 || echo 1)" "...and not before 10 s had passed (second line at $t2 s)"
+assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "...and started nothing meanwhile"
+kill "$LIVE"; wait "$LIVE" 2>/dev/null
+wait "$wp"
+assert_eq "$(cat "$SHAPE_TMP/w.rc")|$(sessions)" "0|main " "once the owner is gone, spawn goes on"
+stop_server
+echo "== a dead restoring/ owner: no wait =="
+sh -c 'exit 0' & dead=$!; wait "$dead" 2>/dev/null
+rm -rf "$SD/restoring"; mkdir -p "$SD/restoring"; ln -s "$dead Thu Jan  1 00:00:00 1970" "$SD/restoring/owner"
+t0=$(date +%s)
+R spawn w sh > /dev/null 2> "$SHAPE_TMP/d.err"; rc=$?
+assert_eq "$rc|$(grep -c waiting "$SHAPE_TMP/d.err")" "0|0" "spawn goes on at once, with no waiting line"
+assert_true "$([ $(( $(date +%s) - t0 )) -lt 5 ] && echo 0 || echo 1)" "...within 5 s"
+rm -rf "$SD/restoring"
+stop_server
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
+
+canary_check
+printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
+[ "$ROOST_TESTS_FAIL" -eq 0 ]

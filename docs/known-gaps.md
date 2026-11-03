@@ -235,6 +235,56 @@ server (scripts/lib/roost-shape.sh, roost_shape_auto).
   along. Severity: low.
 - **A lock held by a stopped saver is never broken by age** (the owner rule).
   doctor names a live owner held over 60 s; the wants wait for it.
+### Restore at login: what Part 5 rests on, and what it leaves (#192, #191 Part 5)
+
+Live risk, small. `roost persist on` installs a login job per server that
+places the fleet at login (`persist --at-login`), and the `client-attached[98]`
+hook resumes the agents at the first attach.
+
+- **Measured, once each** (docs/airig/probes/persist-5-*.md):
+  - Linux (Ubuntu 24.04, systemd 255, a throwaway VM): the unit's tmux
+    server survives the oneshot's exit, a `disable`, and even a `stop`; each
+    of `RemainAfterExit` and `KillMode=process`, removed, loses it. Without
+    linger the server ends about 10 s after the last session logs out; with
+    linger it survives, `KillUserProcesses=yes` included. A server started
+    from a login shell dies at logout under `KillUserProcesses=yes`.
+  - The placeholder under `dash` (ubuntu:24.04): wakes every 5 s, reads a
+    key at once, no busy loop; `test-shape-place` passes.
+  - macOS 26.3: quitting Terminal.app does not end a tmux server started from
+    it (attached or not), so the plan's R5 start path (Task 5.10) was not
+    built. Not checked: other terminal apps, a forced quit, newer macOS.
+- **Not verified on a real reboot** (the plan's deferred §8.2 items 1–5): the
+  whole login path has run only against stub `launchctl`/`systemctl` and a
+  VM unit of the same shape, never a real LaunchAgent at a real login; what
+  the Keychain shows at first attach; whether saves land in a shutdown's
+  last seconds; `roost upgrade` with a real loaded unit.
+- **`persist on` waits at most 30 s for a live saver's lock.** The spec says
+  it waits for the owner; it uses `roost save`'s own bounded wait, and after
+  30 s fails and leaves nothing behind. A saver holding `lock/` that long is
+  already a doctor warning (60 s).
+- **`declined` is read but not written yet.** The login job skips a save the
+  restore offer declined; the offer is Part 7.
+- **`roost doctor` does not ask launchd or systemd whether the job is
+  loaded** (no real `launchctl` runs from a test); `roost persist status`
+  does.
+- **The first-attach worker waits at most 15 min for a live `restoring/`
+  owner**, then exits; the next attach starts a new one.
+- **`ensure_session` also waits for a hand `roost restore`** holding
+  `restoring/` when `persist` is on: the owner rule cannot tell the two
+  apart, and the spec's rule is "a live owner".
+- **On Linux, `persist on` with the server running writes no
+  `login/<os-boot>` marker** (macOS gets one: the bootstrap's RunAtLoad runs
+  the job at once). So a `tmux kill-server` by hand (not `roost kill` or
+  `roost stop`, which record the fleet as closed) followed by `roost` in the
+  same boot places the fleet again on Linux. Behaviour kept as built; the
+  marker is written by the next login.
+- **systemd reads `service.env` and the unit line its own way.** Its
+  `EnvironmentFile=` parser takes quotes and backslashes in a value as
+  quoting, and `ExecStart=` expands `$` in the checkout path; `persist on`
+  refuses a quote or backslash only in the checkout and the shape root, not
+  in the other values (a `PATH` or a harness home). `persist status` and
+  `doctor` compare the file's text, not what systemd reads from it.
+
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-

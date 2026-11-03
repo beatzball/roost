@@ -1,6 +1,6 @@
 ---
 title: Persistent Sessions
-description: roost saves your fleet's sessions, windows and panes as a plain file on every change; put them back after a reboot or a crash with roost restore — agents resumed, paced, in their own directories — and bring one agent's conversation back with roost revive.
+description: roost saves your fleet's sessions, windows and panes as a plain file on every change; put them back after a reboot or a crash with roost restore — agents resumed, paced, in their own directories — or turn on roost persist to place them at login, and bring one agent's conversation back with roost revive.
 sidebar:
   order: 12
 ---
@@ -17,8 +17,10 @@ agent** in its own directory, two seconds apart.
 crashed, or that you `/exit`ed — in the same pane, with the same `%N`.
 
 Saving is automatic: roost saves the shape every time the fleet changes, so
-you rarely need `roost save` at all. Restoring is by hand: run `roost
-restore` after a reboot or a crash.
+you rarely need `roost save` at all. Restoring is by hand — run `roost
+restore` after a reboot or a crash — unless you turn on `roost persist`, which
+places the fleet when you log in and resumes the agents when you first attach
+(**Bring the fleet back at login** below).
 
 ## Save
 
@@ -257,6 +259,109 @@ session litro (exists - skipped, 9 panes not restored)
 its counts, and marks the one a plain `roost restore` uses. It ends with
 every pane still waiting, launching, failed or taken, with its state and,
 for a failed one, the reason.
+
+## Bring the fleet back at login: `roost persist`
+
+```sh
+roost persist on
+```
+
+Run it once, with roost running. From then on, after a reboot:
+
+1. **At login**, a login job places your fleet: every saved session, window
+   and pane, each agent's pane waiting in a placeholder that says `waiting to
+   resume claude - press any key for a shell`. No agent is started yet.
+2. **When you first attach** — `roost`, `roost session NAME`, `roost ssh`, or a
+   plain `tmux -L roost attach` — the agents come back, two seconds apart, in
+   their own directories, with any dialog in front of you. Detaching never
+   starts or stops anything.
+
+If you type `roost` while the login job is still placing, `roost` waits and
+says so (`waiting for the login restore (pid N)`, every 10 s), then attaches.
+If the login job did not run at all, the first `roost` of that boot does its
+work itself before attaching. A server you stop on purpose and start again in
+the same boot is left alone.
+
+`roost persist on` installs **one login job per roost server**:
+
+- macOS: `~/Library/LaunchAgents/dev.roosting.roost.<server>.plist`, loaded
+  with `launchctl bootstrap`. Run `persist on` from a session where you are
+  logged in at the Mac itself: over ssh with nobody logged in at the console,
+  loading into your login session fails, and `on` then leaves nothing
+  behind. (Not measured yet.)
+- Linux: `~/.config/systemd/user/roost-persist-<server>.service`, enabled
+  with `systemctl --user enable` (not started: it runs at your next login).
+  A systemd user service runs while you are logged in, and stops with your
+  last session unless linger is on; to keep the fleet across a logout and
+  start it at boot without a login, run `loginctl enable-linger` yourself
+  (`persist on` prints the line, it does not run it). Measured on Ubuntu
+  24.04: without linger the fleet ends about 10 s after your last session
+  does; with linger it survives a logout, `KillUserProcesses=yes` included.
+
+`roost persist on --name NAME` does the same for another named server.
+A name may hold letters, digits, `.`, `_` and `-`.
+
+### What runs, and with what
+
+The job runs `<this checkout>/bin/roost persist --at-login <server>` with the
+environment in `~/.local/state/roost/shapes/<server>/service.env`, a 0600
+file `persist on` writes: `HOME`, `PATH`, `LANG`/`LC_ALL`, the state, config
+and shape roots, `TMUX_TMPDIR`, and the harness homes you have set
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, `PI_CODING_AGENT_DIR`,
+`OPENCODE_CONFIG_DIR`). It **never** holds a variable whose name contains
+`KEY`, `TOKEN`, `SECRET` or `PASSWORD`: the job needs your roots, not your
+credentials. Only `roost persist on` writes it; `status`, `doctor`, `upgrade`
+and the login job read it and never rewrite it, so an edit you make there
+stays.
+
+What the login job did goes to `login.log` beside it (0600, cut to its newest
+half past 1 MB): which save it picked and why, what it placed, and how many
+agents wait for the first attach.
+
+The agents are resumed when you attach, inside your login session, not by
+the login job: a harness that keeps its credentials in the macOS Keychain
+reads them as it would in any terminal. (Not yet checked across a real
+reboot.)
+
+### Turn it off, or look at it
+
+```sh
+roost persist status
+roost persist off
+```
+
+`status` says whether it is on, where the job's file is, whether it is loaded
+and runs this checkout, whether `service.env`'s roots match yours, the newest
+save, how many agents still wait, and the last login line. `roost doctor`
+prints the same in one line and warns when something is off.
+
+`off` unloads the job (`launchctl bootout`; `systemctl --user disable`) and
+removes its file, the `persist` marker and `service.env`. **It never stops an
+agent**: it never runs `stop` or `--now`. Your saves, `history/` and any
+waiting resumes stay. Another server's job is not touched.
+
+`roost upgrade` rewrites a job that still runs another checkout to run the
+upgraded one, and says so.
+
+### When the old server is still there
+
+If a roost server is still running but its socket file is gone (a temp
+cleaner removed it), starting a second server under the same name would hide
+your fleet. roost refuses instead — `roost`, `roost spawn`, `roost restore` and
+the login job alike:
+
+```
+roost: the tmux server (pid 4182) is still running but its socket is gone; kill -USR1 4182 recreates it
+```
+
+`kill -USR1` makes tmux create its socket again, and your fleet is back.
+
+### Quitting the terminal app
+
+On macOS 26.3, quitting Terminal.app does not end a tmux server started from
+it, attached or not; this was measured, and roost starts its server the
+ordinary way. Other terminal apps, and newer macOS versions, have not been
+checked.
 
 ## Addressing a pane after a restore: `was:%N`
 

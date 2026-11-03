@@ -1100,7 +1100,71 @@ if _proot="$(roost_shape_saving)"; then
   if [ -f "$_psd/shape" ]; then
     _plast="; last save $(_phdr "$_psd/shape" saved) gen $(_phdr "$_psd/shape" gen) $(_phdr "$_psd/shape" trigger), $(grep -c '^session ' "$_psd/shape") sessions / $(grep -c '^pane ' "$_psd/shape") panes"
   fi
-  ok "persist: saving on; login restore off (not built yet: roost restore brings a saved fleet back by hand)$_plast"
+  # The login half (#192, spec §4.5): read back what `roost persist on`
+  # installed. READ-ONLY like everything here: service.env is written by
+  # `persist on` and only by it (another tool rewrote its unit on every
+  # start and lost people's edits), and no launchctl or systemctl is run —
+  # the unit file says what will run at the next login.
+  if [ -e "$_psd/persist" ]; then
+    ROOST_HOME="$(cd -P "$roost_root" && pwd)"
+    . "$roost_root/scripts/lib/roost-pending.sh"
+    . "$roost_root/scripts/lib/roost-persist.sh"
+    _pname="${_psd##*/}"
+    _pwarn=""
+    if _pos="$(roost_persist_os)"; then
+      _punit="$(roost_persist_unit_path "$_pos" "$_pname")"
+      if [ ! -f "$_punit" ]; then
+        _pu="no unit file at $_punit"
+        _pwarn="${_pwarn}the persist marker is set but there is no login unit at $_punit (roost persist on installs it)"$'\n'
+      else
+        _pc="$(roost_persist__unit_checkout "$_pos" "$_punit")"
+        if [ "$_pc" = "$ROOST_HOME/bin/roost" ]; then _pu="unit names this checkout"
+        else
+          _pu="unit names another checkout"
+          _pwarn="${_pwarn}the login unit runs ${_pc:-?}, not this checkout (roost upgrade or roost persist on rewrites it)"$'\n'
+        fi
+      fi
+    else
+      _pos="no launchd or systemd"; _pu="no unit"
+    fi
+    _proots="roots match"
+    if [ -f "$_psd/service.env" ]; then
+      _pdiff="$(roost_persist__roots_diff "$_psd/service.env")"
+      if [ -n "$_pdiff" ]; then
+        _proots="roots differ"
+        _pwarn="${_pwarn}service.env names roots you do not have: $(printf '%s' "$_pdiff" | tr '\n' ';' | sed 's/;$//;s/;/; /g') — the login restore reads those (roost persist on writes yours)"$'\n'
+      fi
+      # Every harness the newest save names must be on the unit's PATH, or
+      # its panes come back as "harness missing" after a reboot.
+      if [ -f "$_psd/shape" ]; then
+        _ppath="$(roost_persist__env_get "$_psd/service.env" PATH || true)"
+        for _ph in $(sed -n 's/^harness //p' "$_psd/shape" | sort -u); do
+          PATH="$_ppath" command -v "$_ph" >/dev/null 2>&1 && continue
+          _pwarn="${_pwarn}the login unit's PATH has no $_ph, which the newest save names: its panes would not resume after a reboot (roost persist on writes your PATH)"$'\n'
+        done
+      fi
+    else
+      _proots="no service.env"
+      _pwarn="${_pwarn}the persist marker is set but $_psd/service.env is missing (roost persist on writes it)"$'\n'
+    fi
+    _plogin="$(grep "login restore for\|placed \|nothing to restore\|nothing placed" "$_psd/login.log" 2>/dev/null | tail -1 || true)"
+    _pnp=0
+    if [ -n "$_pboot" ] && [ -d "$_psd/pending/$_pboot" ]; then
+      _pw=0 _pfl=0
+      for _pf2 in "$_psd/pending/$_pboot"/%*; do
+        [ -f "$_pf2" ] || continue
+        case "$(roost_pending_state "$_pf2" 2>/dev/null || true)" in
+          waiting) _pw=$((_pw + 1)) ;; failed-*) _pfl=$((_pfl + 1)) ;;
+        esac
+      done
+      _pnp=$((_pw + _pfl))
+      [ "$_pnp" -gt 0 ] && _pwarn="${_pwarn}$_pnp agent(s) of this server are not resumed yet ($_pw waiting, $_pfl failed): roost restore --resume brings the waiting ones back, --retry the failed ones; roost restore --list names them"$'\n'
+    fi
+    ok "persist: saving on; login restore on for '$_pname' ($_pos, $_pu; $_proots${_plast:+; }${_plast#; }; last login restore: ${_plogin:-none yet}; $_pnp pending)"
+    printf '%s' "$_pwarn" | while IFS= read -r _pl; do [ -n "$_pl" ] && warn "$_pl"; done
+  else
+    ok "persist: saving on; login restore off (roost persist on restores the fleet at login; roost restore brings a saved fleet back by hand)$_plast"
+  fi
   # R3: the saver's own failure record, quoted. Removed by the next save it
   # publishes, so while it is here nothing has been published since.
   if [ -f "$_psd/save.err" ]; then

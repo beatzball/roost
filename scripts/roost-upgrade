@@ -107,12 +107,46 @@ main() {
   fi
 
   reapply_wiring "$HERE" "$@"
+  follow_persist "$HERE" "$@"
 
   # An exec of the PATH, not a function sourced from it: the file on disk is
   # now the installer the pull fetched, so a release that adds an adapter
   # wires it in this same run. Anything read into this process before the
   # pull would be the old installer.
   exec "$HERE/scripts/roost-install" "$@"
+}
+
+# follow_persist HERE ARGS... — every login unit `roost persist on` installed
+# (#192, spec §4.4) runs a checkout's bin/roost by absolute path. When it
+# names another checkout than HERE, it is rewritten to HERE and reloaded, and
+# a line says so; a unit already naming HERE is left alone. Run AFTER the
+# pull, from the code the pull fetched (sourced in a subshell, so nothing of
+# it stays in this process). Every server under the shape root with a
+# `persist` marker is looked at: the units are per server. --dry-run: said,
+# not done. Never fatal: the installer still has to run.
+follow_persist() {
+  local here="$1" a dry=0
+  shift
+  for a in "$@"; do case "$a" in --dry-run) dry=1 ;; esac; done
+  [ -f "$here/scripts/lib/roost-persist.sh" ] || return 0
+  (
+    ROOST_HOME="$(cd -P "$here" && pwd)"
+    . "$here/scripts/lib/roost-shape.sh" && . "$here/scripts/lib/roost-persist.sh" || exit 0
+    root="$(roost_shape_saving)" || exit 0
+    os="$(roost_persist_os)" || exit 0
+    for d in "$root"/*/; do
+      [ -e "${d}persist" ] || continue
+      n="$(basename "$d")"
+      roost_persist_name_ok "$n" || continue
+      if [ "$dry" = 1 ]; then
+        u="$(roost_persist_unit_path "$os" "$n")"
+        [ "$(roost_persist__unit_checkout "$os" "$u" 2>/dev/null || true)" = "$ROOST_HOME/bin/roost" ] && continue
+        printf "roost: --dry-run: the login unit for '%s' would be rewritten to run this checkout (%s)\n" "$n" "$u"
+        continue
+      fi
+      roost_persist_rewrite_unit "$n"
+    done
+  ) || true
 }
 
 usage() {

@@ -316,6 +316,39 @@ assert_eq "$(G -C "$clone" rev-parse HEAD)" "$gone" "installer gone after the pu
 assert_eq "$(cat "$LOG")" "$log_before" "installer gone after the pull: no installer ran"
 seed_commit v8 >/dev/null   # puts the fake installer back for the cases below
 
+# --- a login unit follows the checkout (#192, Task 5.9) ------------------------
+# `persist on` (write-only: nothing is loaded) run from THIS checkout installs a
+# unit naming it; an upgrade of the clone rewrites that unit to the clone and
+# says so, and leaves service.env as it was. uname and launchctl are the
+# recording stubs of tests/lib-shape.sh; HOME and XDG_CONFIG_HOME for these
+# lines are the sandbox's own, never the canary.
+. "$HERE/tests/lib-shape.sh"
+PSTUBS="$TMP/persist-stubs"; persist_stubs "$PSTUBS"
+export PERSIST_LOG="$TMP/persist.log"
+UPSHAPES="$TMP/shapes"
+pup() { env XDG_CONFIG_HOME="$TMP/cfg" ROOST_SHAPE_DIR="$UPSHAPES" STUB_UNAME=Darwin PATH="$PSTUBS:$PATH" \
+  ROOST_PERSIST_WRITE_ONLY=1 "$@"; }
+pup env -u TMUX -u TMUX_PANE "$HERE/bin/roost" persist on --name up1 >/dev/null 2>&1
+UPUNIT="$HOME/Library/LaunchAgents/dev.roosting.roost.up1.plist"
+assert_contains "$(cat "$UPUNIT" 2>/dev/null)" "<string>$(cd -P "$HERE" && pwd)/bin/roost</string>" "(fixture) the unit runs the other checkout"
+printf 'HOME=/edited\n' >> "$UPSHAPES/up1/service.env"; cp "$UPSHAPES/up1/service.env" "$TMP/up-env.keep"
+reset_clone
+new="$(seed_commit v9)"; G -C "$clone" fetch -q origin
+OUT="$(pup bash "$clone/scripts/roost-upgrade" --dry-run 2>"$TMP/err")"; RC=$?
+assert_contains "$OUT" "roost: --dry-run: the login unit for 'up1' would be rewritten" "--dry-run: the unit that would move is named"
+assert_contains "$(cat "$UPUNIT")" "<string>$(cd -P "$HERE" && pwd)/bin/roost</string>" "...and not rewritten"
+reset_clone
+OUT="$(pup bash "$clone/scripts/roost-upgrade" --yes 2>"$TMP/err")"; RC=$?
+assert_eq "$RC" "0" "persist on: the upgrade exits 0"
+assert_contains "$OUT" "roost: the login unit for 'up1' now runs this checkout ($UPUNIT)" "...and says the unit now runs this checkout"
+assert_contains "$(cat "$UPUNIT")" "<string>$clone/bin/roost</string>" "...the unit names the upgraded checkout"
+cmp -s "$TMP/up-env.keep" "$UPSHAPES/up1/service.env"; assert_true $? "...and service.env is byte for byte the same"
+OUT="$(pup bash "$clone/scripts/roost-upgrade" --yes 2>"$TMP/err")"
+case "$OUT" in *"login unit"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "a unit that already runs this checkout: no line, nothing rewritten"
+assert_eq "$(cat "$PERSIST_LOG" 2>/dev/null)" "" "write-only: no launchctl call"
+rm -rf "$UPSHAPES" "$HOME/Library"
+
 # --- --dry-run passes through, and the pull is NOT dry -------------------------
 reset_clone
 new="$(seed_commit v6)"; G -C "$clone" fetch -q origin

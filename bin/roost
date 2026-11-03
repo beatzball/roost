@@ -51,6 +51,8 @@
 #   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). roost also saves by itself on every change to the fleet, keeping the last ROOST_SHAPE_KEEP saves in history/ (default 100). `rm -rf` that shapes directory forgets every shape and nothing else
 #   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--resume [--retry]] [--recent DAYS] [--pace SECONDS] [--only SEL ...] [--json]
 #                            put a saved shape back as shells in their saved directories, at their saved indices and layouts, then resume each agent in its own directory, --pace seconds apart (default 2). Until its turn an agent's pane waits in a placeholder; a key there keeps it as a shell (roost revive %N brings the agent back). --no-resume places only; --recent DAYS leaves out an agent whose transcript is older; --resume resumes the panes already placed and waiting, and --retry with it tries again the ones whose resume failed for a reason you have since fixed (never a pane you took). The report ends with one summary line; --json prints it as one document. A session that exists is skipped and named (exit 12); an agent not resumed is named (exit 13); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
+#   roost persist on|off|status [--name NAME]
+#                            bring this server's fleet back at login: `on` saves it and installs one login unit for this server (a LaunchAgent on macOS, a systemd user unit on Linux) that places the fleet at login; the agents come back when you first attach. `off` removes that unit and stops nothing; saves, history and pending resumes stay. `status` says what is installed and whether it names this checkout. Exit 17 on a machine with neither launchd nor systemd
 #   roost revive [--new-window] [--force] [--json] TGT
 #                            bring a pane's agent conversation back, in place, with the same %N — or, for a %N that is gone, in a new window from the pane's kept record (--new-window opens one beside a pane that is still there): the harness's own resume (claude --resume ID, codex resume ID, copilot --resume=ID, pi --session FILE) in the conversation's own directory. Checked before anything is killed: exit 13 when there is no recorded conversation, its key is stale or the harness no longer holds it, or another pane has it open; 14 the harness is not on PATH; 15 its directory is gone. Refuses a ⏳ working or 🛑 blocked agent, and a shell running a job, unless --force. Exit 0 means launched, not resumed: a dialog the harness opens is left on screen. opencode's command is printed, not run
 #   roost kill [--yes] [SESSION]
@@ -169,14 +171,155 @@ t() { tmux "$_SOCKET_FLAG" "$SOCKET" "$@"; }
 server_running()  { t list-sessions >/dev/null 2>&1; }        # ≥1 session exists
 session_exists()  { t has-session -t "=$1" 2>/dev/null; }      # exact-name match
 
+# server_lost_socket -> exit 0 when the server the newest save names is still
+# running although nothing answers on its socket; ROOST_LOST_PID is then its
+# pid. Called only when server_running is false and a server is about to be
+# started: ensure_session, restore's Server step (the `restore` arm) and
+# `persist --at-login` (scripts/lib/roost-persist.sh).
+#
+# Why (coordinator ruling R2, plan Task 5.4): in the field, an autostart tool,
+# a reconnecting client and an over-eager start path each started a SECOND
+# tmux server under the same name while the first still ran with its socket
+# file gone — a temp cleaner, or a crash of the socket's directory. The new
+# server took the name, and the live fleet in the old one could no longer be
+# reached. tmux recreates a server's socket on SIGUSR1, so the fleet is one
+# `kill -USR1` away — unless a second server has taken the path first.
+#
+# The newest save's `boot` is `START-PID` (#{start_time}-#{pid}, the save's
+# header, scripts/lib/roost-shape.sh). True only when all three hold:
+#   - `kill -0 PID` succeeds;
+#   - the process is tmux: `ps -o comm=` is `tmux` or a path ending in it on
+#     macOS, and `tmux: server` on Linux, where the server retitles itself
+#     (measured in ubuntu:24.04, tmux 3.4);
+#   - it started when the boot says: now minus `ps -o etime=` is within 2 s
+#     of START. This is what keeps a reused pid from blocking: after a
+#     reboot the saved pid may well be alive again as something else, even
+#     as another tmux, and a guard that refused then would leave a person
+#     with no way to start roost at all.
+# No save, saving off, or a boot line that is not two numbers: false, start
+# as before.
+server_lost_socket() {
+  local root f b st pid comm et d=0 x y z secs now
+  ROOST_LOST_PID=""
+  command -v roost_shape_saving >/dev/null 2>&1 || . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+  root="$(roost_shape_saving)" || return 1
+  f="$root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")/shape"
+  [ -f "$f" ] || return 1
+  b="$(sed -n 's/^boot //p;/^$/q' "$f" 2>/dev/null | head -1)"
+  case "$b" in ''|*[!0-9-]*|-*|*-|*-*-*) return 1 ;; *-*) ;; *) return 1 ;; esac
+  st="${b%-*}" pid="${b#*-}"
+  kill -0 "$pid" 2>/dev/null || return 1
+  comm="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+  # ps pads the column; only the leading blanks matter for the match.
+  comm="${comm#"${comm%%[![:space:]]*}"}"
+  case "${comm##*/}" in tmux|tmux\ *|tmux:*) ;; *) return 1 ;; esac
+  et="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+  # etime is [[dd-]hh:]mm:ss. 10# because a field like `08` is otherwise read
+  # as a bad octal number.
+  case "$et" in *-*) d="${et%%-*}" et="${et#*-}" ;; esac
+  IFS=: read -r x y z <<< "$et"
+  case "$x$y$z" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -n "$z" ]; then secs=$(( 10#$x * 3600 + 10#$y * 60 + 10#$z ))
+  else secs=$(( 10#$x * 60 + 10#$y )); fi
+  secs=$(( secs + 10#$d * 86400 ))
+  now="$(date +%s)"
+  x=$(( now - secs - st ))
+  [ "$x" -lt 0 ] && x=$(( -x ))
+  [ "$x" -le 2 ] || return 1
+  ROOST_LOST_PID="$pid"
+  return 0
+}
+
+# lost_socket_line — R2's line, with the pid server_lost_socket found.
+lost_socket_line() {
+  printf 'roost: the tmux server (pid %s) is still running but its socket is gone; kill -USR1 %s recreates it\n' \
+    "$ROOST_LOST_PID" "$ROOST_LOST_PID"
+}
+
+# login_restore_first — ensure_session's half of the login restore (#192,
+# spec §4.6), for a named server whose `persist` marker is set; a no-op
+# otherwise (persist off: a bare `roost` asks instead, §4.8, Part 7).
+#
+#   - restoring/ has a LIVE owner (§3.5's rule: pid and start time, never
+#     age): wait for it to go, printing `waiting for the login restore (pid
+#     N)` every 10 s. Never attach early on a timer: a live owner is still
+#     building, and --at-login may spend 60 s on its socket wait alone. Ctrl-C
+#     gets a person out; the restore carries on without them.
+#   - then, with the server not running, a `shape`, and NO login/<os-boot>
+#     marker for this OS boot: run --at-login here, under the same lock
+#     (it takes restoring/ itself), before attaching — so a login service
+#     that did not run, or has not run yet, is not a lost fleet. A server a
+#     person killed on purpose and started again in the same OS boot finds
+#     the marker and is left alone.
+login_restore_first() {
+  local root sd n ob tries=0
+  [ "$_SOCKET_FLAG" = -L ] || return 0
+  command -v roost_shape_saving >/dev/null 2>&1 || . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+  root="$(roost_shape_saving)" || return 0
+  sd="$root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+  [ -e "$sd/persist" ] || return 0
+  # A loop, bounded: the owner can change between the wait and this run's
+  # own take of restoring/ — the login job starting just then is the case
+  # (fix round 1). Losing that take means another restore is placing NOW, so
+  # back to the wait; going on would make the session that restore is about
+  # to place, and the restore would then skip it as existing. Each turn waits
+  # for a live owner (never by age), so 10 turns means ten restores in a row
+  # took the lock first; then ensure_session goes on as before.
+  while [ "$tries" -lt 10 ]; do
+    tries=$((tries + 1))
+    # The line goes by the clock (bash's SECONDS), at once and then each
+    # time 10 s have passed: each turn also runs a ps, so counting turns ran
+    # slow on a loaded machine (fix round 2, a CI runner).
+    n="$SECONDS"
+    while roost_shape_owner_live "$sd/restoring"; do
+      if [ "$SECONDS" -ge "$n" ]; then
+        printf 'waiting for the login restore (pid %s)\n' "${ROOST_SHAPE_OWNER_PID:-?}" >&2
+        n=$((SECONDS + 10))
+      fi
+      sleep 0.2
+    done
+    # The plan's seam: hold right after the wait, so a test can start an
+    # owner in exactly the gap this loop closes.
+    roost_shape__seam ROOST_TEST_LOGIN_HOLD
+    server_running && return 0
+    [ -f "$sd/shape" ] || return 0
+    command -v roost_persist_os_boot >/dev/null 2>&1 || {
+      . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+      . "$ROOST_HOME/scripts/lib/roost-persist.sh"
+    }
+    ob="$(roost_persist_os_boot || true)"
+    [ -n "$ob" ] && [ -e "$sd/login/$ob" ] && return 0
+    # R2 first: --at-login checks it too, but would only log it; here the
+    # person gets the line and the exit, as ensure_session gives it.
+    if server_lost_socket; then
+      lost_socket_line >&2
+      exit 1
+    fi
+    ROOST_PERSIST_LOST=0
+    roost_persist_at_login "$SOCKET" >&2 || true
+    [ "$ROOST_PERSIST_LOST" = 1 ] || return 0
+  done
+  return 0
+}
+
 # Create the session if missing. The first session boots the server with our
 # config (server/global options + bindings apply to every later session too).
 ensure_session() {
   local s="$1"
+  # With `persist` on (#192, spec §4.6): wait for a login restore that is
+  # still placing, or run the one the login service did not
+  # (login_restore_first). Persist off: nothing here, as before.
+  login_restore_first
   session_exists "$s" && return 0
   if server_running; then
     t new-session -d -s "$s" -c "$PWD"
   else
+    # R2: the server may still be running with its socket file gone. Starting
+    # one now would take the name and strand the live fleet (server_lost_socket).
+    if server_lost_socket; then
+      lost_socket_line >&2
+      exit 1
+    fi
     t -f "$CONF" new-session -d -s "$s" -c "$PWD"
     server_init
     # The first pane was created by the `new-session` above, BEFORE apply set
@@ -809,6 +952,11 @@ case "${1:-up}" in
     # command line saying so.
     ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2 restore_retry=0 restore_json=0
     ROOST_RESTORE_ONLY=()
+    # --resume --auto is the first-attach hook's form (tmux/roost.conf,
+    # client-attached[98]; spec §4.6). Its hidden flags, read only with
+    # --auto, are the hook's own: --socket PATH (#{socket_path}) and --boot
+    # KEY (#{start_time}-#{pid}, the server the hook fired in).
+    restore_auto=0 restore_sock="" restore_hboot=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --from) [ "$#" -ge 2 ] || { echo "roost restore: --from needs a file or a STAMP-GEN" >&2; exit 2; }
@@ -831,6 +979,11 @@ case "${1:-up}" in
         # waiting reason or `died` — once their cause is fixed (§4.6, §4.7
         # T14, T16). Never a taken, changed or replaced pane.
         --retry) restore_retry=1; shift ;;
+        --auto) restore_auto=1; shift ;;
+        --socket|--boot)
+              [ "$#" -ge 2 ] || exit 2
+              if [ "$1" = --socket ]; then restore_sock="$2"; else restore_hboot="$2"; fi
+              shift 2 ;;
         # The report as one JSON document on stdout as well (§4.3 Report);
         # stderr and the exit code are the same.
         --json) restore_json=1; shift ;;
@@ -845,6 +998,46 @@ case "${1:-up}" in
     . "$ROOST_HOME/scripts/lib/roost-restore.sh"
     . "$ROOST_HOME/scripts/lib/roost-resume.sh"
     ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+    if [ "$restore_mode" = resume ] && [ "$restore_auto" = 1 ]; then
+      # The first attach (§4.6): the hook runs this with `run-shell -b` on
+      # EVERY client-attached — `roost`, `roost session NAME`, `roost ssh`
+      # and a bare `tmux attach` alike — and a detach runs nothing. Silent
+      # and exit 0 whatever happens (the `run-shell -b` rule: its output
+      # would show to whoever is looking at the server).
+      exec >/dev/null 2>&1
+      if [ -n "$restore_sock" ]; then
+        . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+        roost_pending__server "$restore_sock"
+        _SOCKET_FLAG="$ROOST_PENDING_FLAG" SOCKET="$ROOST_PENDING_SOCK"
+        ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+      fi
+      server_running || exit 0
+      restore_root="$(roost_shape_saving)" || exit 0
+      restore_dir="$restore_root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+      # A hook's run is about ITS server (the Part 4 lesson, fix round 2): a
+      # `run-shell -b` of a server that was killed can start after the next
+      # server took the same socket. --boot is the boot the hook fired in;
+      # any other live boot is not this run's, and nothing is resumed.
+      restore_boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      [ -n "$restore_boot" ] || exit 0
+      [ -z "$restore_hboot" ] || [ "$restore_hboot" = "$restore_boot" ] || exit 0
+      # A bare `tmux attach` can fire this while `--at-login` is still
+      # placing (only ensure_session waits for it, §4.4): wait for
+      # restoring/'s live owner first (revision 3, F N6), by the owner rule,
+      # never by age. Bounded at 15 min so a wedged run cannot leave a
+      # process waiting for ever; the next attach starts a new one.
+      . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+      restore_i=0
+      while roost_shape_owner_live "$restore_dir/restoring" && [ "$restore_i" -lt 4500 ]; do
+        sleep 0.2; restore_i=$((restore_i + 1))
+      done
+      # The server may have changed during that wait.
+      [ "$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)" = "$restore_boot" ] || exit 0
+      # Nothing pending: nothing to do (and no resuming/ is taken).
+      ls "$restore_dir/pending/$restore_boot"/%* >/dev/null 2>&1 || exit 0
+      roost_pending_resume "$restore_dir" "$restore_boot" "$restore_pace" "$restore_retry" || true
+      exit 0
+    fi
     if [ "$restore_mode" = resume ]; then
       # Nothing is placed, so no save is read: the pending record of THIS
       # server's boot is the whole input (§4.6). With saving off there is no
@@ -870,6 +1063,13 @@ case "${1:-up}" in
     if [ "$restore_mode" = list ]; then
       roost_restore_list "$restore_dir"
       exit 0
+    fi
+    # The Server step (§4.3) starts a server when none answers: R2 first, as
+    # ensure_session does (server_lost_socket), before the save is even
+    # picked, so the refusal is the one line and nothing is placed.
+    if [ "$restore_mode" = run ] && ! server_running && server_lost_socket; then
+      lost_socket_line >&2
+      exit 1
     fi
     restore_rc=0
     roost_restore_pick "$restore_dir" "$restore_from" || exit $?
@@ -921,6 +1121,55 @@ case "${1:-up}" in
     fi
     rm -rf "${ROOST_RESTORE_PD:-}"
     exit "$restore_rc"
+    ;;
+  persist)
+    # `roost persist on|off|status [--name NAME]` (#192, spec §4.4): bring
+    # this server's fleet back at login, opt in — one login unit per server
+    # (a LaunchAgent on macOS, a systemd user unit on Linux), never stopped.
+    # `--at-login NAME` is the hidden form that unit runs. The work is in
+    # scripts/lib/roost-persist.sh; this arm parses flags and picks the
+    # server: --name NAME is the `-L NAME` server, else this one, which must
+    # then be a named server (a unit cannot name a socket path that will not
+    # exist after a reboot).
+    shift
+    persist_verb="${1:-}"; [ "$#" -gt 0 ] && shift
+    persist_name="" persist_named=0
+    case "$persist_verb" in
+      on|off|status) ;;
+      --at-login) [ "$#" -ge 1 ] || { echo "usage: roost persist --at-login NAME" >&2; exit 2; }
+                  persist_name="$1" persist_named=1; shift ;;
+      *) echo "usage: roost persist on|off|status [--name NAME]" >&2; exit 2 ;;
+    esac
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --name) [ "$#" -ge 2 ] || { echo "roost persist: --name needs a server name" >&2; exit 2; }
+                persist_name="$2" persist_named=1; shift 2 ;;
+        *) echo "usage: roost persist on|off|status [--name NAME]" >&2; exit 2 ;;
+      esac
+    done
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+    . "$ROOST_HOME/scripts/lib/roost-persist.sh"
+    if [ "$persist_named" = 0 ]; then
+      if [ "$_SOCKET_FLAG" != -L ]; then
+        echo "roost persist: this server is addressed by a socket path ($SOCKET), which does not survive a reboot; use --name NAME for a named server" >&2
+        exit 1
+      fi
+      persist_name="$SOCKET"
+    fi
+    if ! roost_persist_name_ok "$persist_name"; then
+      echo "roost persist: '$persist_name' cannot name a login unit: use letters, digits, '.', '_' and '-'" >&2
+      exit 1
+    fi
+    SOCKET="$persist_name" _SOCKET_FLAG="-L"
+    persist_rc=0
+    case "$persist_verb" in
+      on) roost_persist_on "$persist_name" || persist_rc=$? ;;
+      off) roost_persist_off "$persist_name" || persist_rc=$? ;;
+      status) roost_persist_status "$persist_name" || persist_rc=$? ;;
+      --at-login) roost_persist_at_login "$persist_name" || persist_rc=$? ;;
+    esac
+    exit "$persist_rc"
     ;;
   revive)
     # `roost revive [--new-window] [--force] [--json] TGT` (#57, spec §4.1): bring one pane's

@@ -1177,7 +1177,7 @@ roost_restore_drop_closed() {
 }
 
 roost_restore_run() {
-  local file="$1" sdir="$2" rc=0 r blk boot=0 own
+  local file="$1" sdir="$2" held="${3:-}" rc=0 r blk boot=0 own
   # restoring/ lives in the server's shape directory, where the saver (Part 4)
   # looks for it; with saving off there is no saver to hold off, and the run's
   # files go to a directory of its own.
@@ -1203,7 +1203,22 @@ roost_restore_run() {
   # same pid in the same second and the same 15-bit draw.
   ROOST_RESTORE_RUN="$$-$(date +%s)-$RANDOM"
   ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
-  own=0; roost_shape_owner_take "$ROOST_RESTORE_RD" || own=$?
+  # HELD, the third argument (0 or 2, the owner rule's own answer), means the
+  # caller already owns restoring/ and keeps it past this run: `persist
+  # --at-login` (scripts/lib/roost-persist.sh) takes it FIRST (§4.4), before
+  # its 60 s socket wait, and must still hold it when it writes the
+  # login/<os-boot> marker, or a `roost` typed in that gap would find neither
+  # a live restore to wait for nor the marker, and run a second login restore
+  # (§4.6). So in that mode this run neither takes nor drops it, and leaves
+  # its final save to the caller: while restoring/ has a live owner a save
+  # only records its want (§3.5 step 4).
+  #
+  # An ARGUMENT, never a variable (fix round 1): a prefix assignment on a
+  # function call is exported for its length, and the `tmux new-session`
+  # that starts the server carried it into the server's global environment
+  # and every pane, where it made a later `roost restore` skip its lock.
+  if [ -n "$held" ]; then own="$held"
+  else own=0; roost_shape_owner_take "$ROOST_RESTORE_RD" || own=$?; fi
   if [ "$own" = 3 ]; then
     printf 'roost restore: %s; nothing done\n' "${ROOST_SHAPE_OWNER_FAULT:-cannot own $ROOST_RESTORE_RD}" >&2
     rm -rf "$ROOST_RESTORE_PD"
@@ -1236,7 +1251,7 @@ roost_restore_run() {
     r=0; roost_restore__make_session "$blk" "$boot" || r=$?
     if [ "$boot" = 1 ]; then
       if [ "$r" = 1 ]; then
-        roost_shape_owner_drop "$ROOST_RESTORE_RD"
+        [ -n "$held" ] || roost_shape_owner_drop "$ROOST_RESTORE_RD"
         rm -rf "$ROOST_RESTORE_PD"
         return 1
       fi
@@ -1259,14 +1274,14 @@ roost_restore_run() {
   # run's panes, applied to this run's own.
   roost_restore__hold ROOST_TEST_HOLD_BEFORE_SWEEP
   server_running && roost_restore__settle_dead
-  roost_shape_owner_drop "$ROOST_RESTORE_RD"
+  [ -n "$held" ] || roost_shape_owner_drop "$ROOST_RESTORE_RD"
   rm -rf "$ROOST_RESTORE_PD"
   # Restore's own final save (#51, §3.4, §3.5 step 4): one coherent save of
   # the whole restore instead of sixty. Every hook during placement only
   # recorded its want, held off by restoring/; this save drains them all, so
   # its trigger names them beside `restore`. With saving off (no shape
   # directory) there is nothing to save.
-  [ -n "$sdir" ] && server_running && roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" restore
+  [ -n "$sdir" ] && [ -z "$held" ] && server_running && roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" restore
   # The plan's seam (ROOST_TEST_LOOP_HOLD): a hand restore waits here, after
   # placement and before its resume loop, so a test can read the placed
   # state — the pending files and their placeholders — before any launch.
