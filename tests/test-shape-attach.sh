@@ -399,6 +399,57 @@ assert_eq "$(launches)" "3" "the live boot's hook launches them"
 CLT kill-server 2>/dev/null
 stop_server
 
+# --- ensure_session waits for, or runs, the login restore (Task 5.8) ---------
+echo "== persist on, no server, no login marker: roost spawn runs the placement =="
+stop_server
+rm -rf "$SD"; mkdir -p "$SD"; mkshape
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+rm -rf "$SD/login"
+out="$(R spawn x sh 2>&1)"; rc=$?
+assert_eq "$rc" "0" "spawn exits 0 ($out)"
+assert_eq "$(sessions)" "k1 k2 k3 kn main " "it placed the saved fleet first, then made its own session"
+assert_eq "$([ -f "$SD/login/$OSBOOT" ] && echo yes)" "yes" "...and wrote the login marker"
+assert_eq "$(npend "$SD/pending/$(live_boot)")" "3" "...and left the keys pending for the first attach"
+assert_contains "$out" "login restore for 'roost'" "...saying what it did"
+echo "== the marker is there: a server killed on purpose is left alone =="
+stop_server
+out="$(R spawn x sh 2>&1)"; rc=$?
+assert_eq "$rc|$(sessions)" "0|main " "with login/<os-boot> present, spawn places nothing"
+stop_server
+
+echo "== persist off: unchanged =="
+rm -rf "$SD/login"
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
+R spawn x sh >/dev/null 2>&1
+assert_eq "$(sessions)" "main " "persist off, no marker: spawn places nothing"
+stop_server
+
+echo "== a live restoring/ owner: ensure_session waits, saying so every 10 s =="
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+mkdir -p "$SD/login"; : > "$SD/login/$OSBOOT"
+sleep 600 & LIVE=$!
+mkdir -p "$SD/restoring"; ln -s "$LIVE $(roost_shape__lstart "$LIVE")" "$SD/restoring/owner"
+( R spawn w sh > "$SHAPE_TMP/w.out" 2> "$SHAPE_TMP/w.err"; echo $? > "$SHAPE_TMP/w.rc" ) &
+wp=$!
+sleep 12
+assert_eq "$([ -e "$SHAPE_TMP/w.rc" ] || echo waiting)" "waiting" "spawn is still waiting after 12 s"
+assert_eq "$(grep -c "^waiting for the login restore (pid $LIVE)$" "$SHAPE_TMP/w.err")" "2" "...it said so twice (at 0 s and 10 s), naming the pid"
+assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "...and started nothing meanwhile"
+kill "$LIVE"; wait "$LIVE" 2>/dev/null
+wait "$wp"
+assert_eq "$(cat "$SHAPE_TMP/w.rc")|$(sessions)" "0|main " "once the owner is gone, spawn goes on"
+stop_server
+echo "== a dead restoring/ owner: no wait =="
+sh -c 'exit 0' & dead=$!; wait "$dead" 2>/dev/null
+rm -rf "$SD/restoring"; mkdir -p "$SD/restoring"; ln -s "$dead Thu Jan  1 00:00:00 1970" "$SD/restoring/owner"
+t0=$(date +%s)
+R spawn w sh > /dev/null 2> "$SHAPE_TMP/d.err"; rc=$?
+assert_eq "$rc|$(grep -c waiting "$SHAPE_TMP/d.err")" "0|0" "spawn goes on at once, with no waiting line"
+assert_true "$([ $(( $(date +%s) - t0 )) -lt 5 ] && echo 0 || echo 1)" "...within 5 s"
+rm -rf "$SD/restoring"
+stop_server
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
