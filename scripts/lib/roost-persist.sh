@@ -288,6 +288,14 @@ roost_persist_on() {
   printf "persist: on for '%s' (%s: %s)\n" "$name" "$os" "$unit"
   if [ "$os" = systemd ]; then
     printf 'the unit runs at your next login; to start it at boot without a login: loginctl enable-linger\n'
+    # With the server stopped (decided once, above), Linux does now what the
+    # next login would: `enable` without --now runs nothing, so `on` runs
+    # --at-login itself, in the foreground, and the person sees the same
+    # lines a login would write (§4.4, revision 9, C B2). On macOS the
+    # bootstrap's RunAtLoad already ran the job.
+    if [ "$running" = 0 ] && [ "${ROOST_PERSIST_WRITE_ONLY:-}" != 1 ]; then
+      roost_persist_at_login "$name"
+    fi
   fi
   return 0
 }
@@ -414,4 +422,205 @@ roost_persist_status() {
   f="$(grep -v '^$' "$sd/login.log" 2>/dev/null | tail -1 || true)"
   printf '  last login restore: %s\n' "${f:-none yet}"
   return 0
+}
+
+# roost_persist_os_boot -> this OS boot's id, the name of the login/<os-boot>
+# marker (§4.6): Linux's /proc/sys/kernel/random/boot_id, macOS's
+# `sysctl kern.boottime` seconds. Exit 1 when neither can be read.
+roost_persist_os_boot() {
+  local b=""
+  if [ -r /proc/sys/kernel/random/boot_id ]; then
+    b="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+  else
+    b="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^[{] *sec = \([0-9][0-9]*\).*/\1/p' | head -1)"
+  fi
+  case "$b" in ''|*[!0-9a-f-]*) return 1 ;; esac
+  printf '%s\n' "$b"
+}
+
+# roost_persist__log_trim FILE — login.log is truncated to its newest half
+# when it passes 1 MB (§4.4), by a temp file and a rename, kept 0600.
+roost_persist__log_trim() {
+  local f="$1" n tmp
+  [ -f "$f" ] || return 0
+  n="$(wc -c < "$f" | tr -d ' ')"
+  [ "$n" -gt 1048576 ] || return 0
+  tmp="$( (umask 077; mktemp "$f.XXXXXX") 2>/dev/null)" || return 0
+  # From the first whole line of the newer half on.
+  tail -c "$((n / 2))" "$f" | sed '1d' > "$tmp" && mv -f "$tmp" "$f" || rm -f "$tmp"
+}
+
+# roost_persist__say TEXT — one stamped login.log line (stdout, which the
+# caller points at login.log).
+roost_persist__say() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"; }
+
+# roost_persist__sweep SD BOOT — what earlier boots left (§4.6, §3.6a), run
+# AFTER this boot's own pending files are written:
+#   - pending/<other boot>/, and launch-claims/<server>/claims/<other boot>/
+#     (claims live under the state directory, never the shape directory:
+#     roost_resume_claims_dir). Only with this server's BOOT known: with no
+#     server there is no "this boot" to keep.
+#   - closed/<B>/ only when NO save left names boot B: not `shape`, not a
+#     file in history/, not `declined`, and not a live offer's pin
+#     (`offer/save` while offer/ has a live owner). closed/ is not swept with
+#     pending/: a save of an earlier boot still in the ring is restorable by
+#     `--from STAMP-GEN`, and its closed record is what keeps a pane closed
+#     on purpose out of it (§3.6 step 4).
+roost_persist__sweep() {
+  local sd="$1" boot="$2" d b keep=" " f cl
+  if [ -n "$boot" ]; then
+    for d in "$sd"/pending/*/; do
+      [ -d "$d" ] || continue
+      b="$(basename "$d")"
+      [ "$b" = "$boot" ] || rm -rf "$sd/pending/$b"
+    done
+    if roost_resume_claims_dir -L "$SOCKET" "$boot" >/dev/null 2>&1; then
+      cl="${ROOST_RESUME_CLAIMS%/*}"
+      for d in "$cl"/*/; do
+        [ -d "$d" ] || continue
+        b="$(basename "$d")"
+        [ "$b" = "$boot" ] || rm -rf "$cl/$b"
+      done
+    fi
+  fi
+  [ -d "$sd/closed" ] || return 0
+  for f in "$sd/shape" "$sd"/history/* "$sd/declined"; do
+    [ -f "$f" ] || continue
+    keep="$keep$(sed -n 's/^boot //p;/^$/q' "$f" | head -1) "
+  done
+  if [ -f "$sd/offer/save" ] && roost_shape_owner_live "$sd/offer"; then
+    keep="$keep$(sed -n 's/^boot //p;/^$/q' "$sd/offer/save" | head -1) "
+  fi
+  for d in "$sd"/closed/*/; do
+    [ -d "$d" ] || continue
+    b="$(basename "$d")"
+    case "$keep" in *" $b "*) ;; *) rm -rf "$sd/closed/$b" ;; esac
+  done
+}
+
+# roost_persist_at_login NAME -> the hidden form the login unit runs (§4.4,
+# §4.6): place the saved fleet and STOP. The agents come back at the first
+# attach (§9 Q1 A; the client-attached[98] hook, tmux/roost.conf). ALWAYS exit
+# 0: a skipped session is a line in the log, not a failed login job.
+#
+# Everything goes to login.log (0600, halved past 1 MB): launchd already
+# points stdout there; run from a terminal (Linux `on`, or ensure_session)
+# the lines this run wrote are printed to the caller as well, so a person
+# sees what a login would have done. Never a screen capture.
+roost_persist_at_login() {
+  local name="$1" sd log before=0 r=0
+  sd="$(roost_shape_dir -L "$name" 2>/dev/null)" || return 0
+  log="$sd/login.log"
+  ( umask 077; [ -e "$log" ] || : > "$log" ) 2>/dev/null || return 0
+  chmod 600 "$log" 2>/dev/null || true
+  roost_persist__log_trim "$log"
+  if [ /dev/stdout -ef "$log" ]; then
+    roost_persist__at_login "$name" "$sd" || true
+  else
+    before="$(wc -c < "$log" | tr -d ' ')"
+    roost_persist__at_login "$name" "$sd" >> "$log" 2>&1 || true
+    tail -c "+$((before + 1))" "$log" 2>/dev/null || true
+  fi
+  return 0
+}
+
+roost_persist__at_login() {
+  local name="$1" sd="$2" own=0 i dir osboot rc=0 sg dsg boot n
+  . "$ROOST_HOME/scripts/lib/roost-restore.sh"
+  . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+  ROOST_RESUME_TFLAG="-L" ROOST_RESUME_TSOCK="$SOCKET"
+  ROOST_SHAPE_TFLAG="-L" ROOST_SHAPE_TSOCK="$SOCKET"
+  # This form's own settings, never the environment's (the restore arm's
+  # rule): placement as a plain restore would do it, every key resumable.
+  ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT=""
+  ROOST_RESTORE_ONLY=()
+  osboot="$(roost_persist_os_boot || true)"
+  roost_persist__say "login restore for '$name' (pid $$, os boot ${osboot:-unknown})"
+  # restoring/ FIRST, under the owner rule (§4.4), so a `roost` typed
+  # meanwhile waits for this owner however long it takes (ensure_session,
+  # §4.6) — the socket wait below included.
+  roost_shape_owner_take "$sd/restoring" || own=$?
+  case "$own" in
+    1) roost_persist__say "another restore (pid ${ROOST_SHAPE_OWNER_PID:-?}) is placing panes; nothing done"; return 0 ;;
+    3) roost_persist__say "${ROOST_SHAPE_OWNER_FAULT:-cannot own $sd/restoring}; nothing done"; return 0 ;;
+  esac
+  # Up to 60 s for the socket directory to be writable: at login /tmp (or
+  # TMUX_TMPDIR) may not be ready yet, and a server started into a directory
+  # that is not there fails, or lands where nothing will look.
+  dir="${TMUX_TMPDIR:-/tmp}"
+  i=0
+  while [ "$i" -lt 60 ] && ! { [ -d "$dir" ] && [ -w "$dir" ]; }; do sleep 1; i=$((i + 1)); done
+  [ "$i" -ge 60 ] && roost_persist__say "the socket directory $dir is still not writable after 60 s; trying anyway"
+  # R2 before anything else is decided (plan Task 5.4): a server still
+  # running with its socket gone must not get a second one under its name.
+  if ! server_running && server_lost_socket; then
+    roost_persist__say "$(lost_socket_line)"
+    roost_shape_owner_drop "$sd/restoring"
+    return 0
+  fi
+  # Which save: §3.6's reading rule, steps 1 to 3 (its lines go to the log:
+  # which save it chose, and why).
+  r=0; roost_restore_pick "$sd" "" 2>&1 || r=$?
+  if [ "$r" != 0 ]; then
+    roost_persist__say "nothing to restore: no save for this server"
+    roost_persist__done "$sd" "$osboot" ""
+    return 0
+  fi
+  sg="$(roost_restore__stampgen "$ROOST_RESTORE_FILE")"
+  roost_persist__say "picked $sg ($ROOST_RESTORE_WHY)"
+  # A save a person declined at the restore offer is never restored by an
+  # automatic path (§4.4, §4.8): `declined` is a hard link to that save, so
+  # its header's boot and gen name it.
+  if [ -f "$sd/declined" ]; then
+    dsg="$(roost_restore__stampgen "$sd/declined")"
+    if [ "$dsg" = "$sg" ]; then
+      roost_persist__say "nothing placed: $sg was declined at the restore offer (roost restore --from $sg brings it back)"
+      roost_persist__done "$sd" "$osboot" ""
+      return 0
+    fi
+  fi
+  # §3.6 step 4 (the closed record), BEFORE the Server step: a fleet ended on
+  # purpose places nothing and so starts nothing (§8.1 test 8 (e)).
+  r=0; roost_restore_prepare "$ROOST_RESTORE_FILE" "$sd" 2>&1 || r=$?
+  if [ "$r" = 3 ]; then
+    roost_persist__say "nothing to restore: every saved pane was closed on purpose (roost restore --from $ROOST_RESTORE_FILE brings it back)"
+    rm -rf "${ROOST_RESTORE_PD:-}"
+    roost_persist__done "$sd" "$osboot" ""
+    return 0
+  fi
+  if [ "$r" != 0 ]; then
+    roost_persist__say "the save was refused (exit $r); nothing placed"
+    rm -rf "${ROOST_RESTORE_PD:-}"
+    roost_persist__done "$sd" "$osboot" ""
+    return 0
+  fi
+  # Placement, and NOT the loop: every keyed pane waits in its placeholder
+  # with its pending file, written before the placeholder starts (§4.6).
+  rc=0; ROOST_RESTORE_HELD="$own" roost_restore_run "$ROOST_RESTORE_FILE" "$sd" 2>&1 || rc=$?
+  rm -rf "${ROOST_RESTORE_PD:-}"
+  boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  n=0
+  if [ -n "$boot" ] && [ -d "$sd/pending/$boot" ]; then
+    n="$(ls "$sd/pending/$boot" 2>/dev/null | grep -c '^%' || true)"
+  fi
+  roost_persist__say "placed ${ROOST_RESTORE_SESSIONS:-0} sessions, ${ROOST_RESTORE_WINDOWS:-0} windows, ${ROOST_RESTORE_PANES:-0} panes (exit $rc); $n agents wait for the first attach"
+  roost_persist__done "$sd" "$osboot" "$boot"
+  # Restore's own final save, now that restoring/ is gone (§3.5 step 4).
+  server_running && roost_shape_save_now -L "$SOCKET" restore
+  return 0
+}
+
+# roost_persist__done SD OSBOOT BOOT — the end of every --at-login path that
+# got as far as reading the saves: the login/<os-boot> marker ("this OS
+# boot's fleet is accounted for", §4.4: without it a server a person later
+# kills on purpose in the same boot would be rebuilt by ensure_session), the
+# sweep of earlier boots, then restoring/ released — last, so a waiting
+# `roost` never sees the gap between the two.
+roost_persist__done() {
+  local sd="$1" osboot="$2" boot="$3"
+  if [ -n "$osboot" ]; then
+    ( umask 077; mkdir -p "$sd/login" && roost_persist__say "accounted for" > "$sd/login/$osboot" ) 2>/dev/null || true
+  fi
+  roost_persist__sweep "$sd" "$boot"
+  roost_shape_owner_drop "$sd/restoring"
 }
