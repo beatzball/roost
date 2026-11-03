@@ -291,6 +291,114 @@ for os in Darwin Linux; do
   STUB_UNAME=$os PATH="$STUBS:$PATH" R persist off >/dev/null 2>&1
 done
 
+# --- the first attach: client-attached[98] (Task 5.7) ------------------------
+CL="$TMUX_TMPDIR/cl"
+CLT() { tmux -S "$CL" "$@"; }
+# fresh_fleet: the fixture shape placed by --at-login on a new server, no
+# launch yet; the stubs identify with the key they were resumed with.
+fresh_fleet() {
+  CLT kill-server 2>/dev/null
+  stop_server
+  rm -rf "$SD" "$XDG_STATE_HOME/roost/launch-claims"; mkdir -p "$SD"
+  mkshape
+  R persist --at-login roost >/dev/null 2>&1
+  BOOT="$(live_boot)"; PEND="$SD/pending/$BOOT"
+  TL set-environment -g STUB_IDENTIFY 1
+  : > "$STUB_LOG"
+}
+# attach_from N SESSION: a real client, from a pane of a second throwaway
+# server whose window is 80x20 (the save's windows are 200x50).
+attach_from() {
+  if ! CLT has-session 2>/dev/null; then
+    CLT -f /dev/null new-session -d -s c0 -x 80 -y 20 "env -u TMUX tmux -S $SHAPE_SOCK attach -t '=$2'"
+  else
+    CLT new-window -d -t c0: "env -u TMUX tmux -S $SHAPE_SOCK attach -t '=$2'"
+  fi
+}
+launches() { grep -c -- "--resume " "$STUB_LOG" 2>/dev/null || true; }
+wait_launches() { local i=0; while [ "$(launches)" -lt "$1" ] && [ "$i" -lt "${2:-100}" ]; do sleep 0.1; i=$((i+1)); done; }
+clients() { TL list-clients 2>/dev/null | grep -c .; }
+wait_clients() { local i=0; while [ "$(clients)" -lt "$1" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done; }
+
+echo "== §8.1 test 11: a real attach resumes the agents, 2 s apart, in order =="
+fresh_fleet
+assert_eq "$(npend "$PEND")" "3" "(fixture) three agents wait"
+attach_from 1 k1; wait_clients 1
+wait_launches 3 100
+assert_eq "$(launches)" "3" "the attach launches exactly three"
+assert_eq "$(grep -- "--resume " "$STUB_LOG" | awk '{print $2}' | tr '\n' ' ')" "$D1 $D2 $D3 " "...in the saved order, each in its own directory"
+t1="$(awk 'NR==1{print $1}' "$STUB_LOG")"; t3="$(awk 'NR==3{print $1}' "$STUB_LOG")"
+assert_true "$([ $((t3 - t1)) -ge 3 ] && [ $((t3 - t1)) -le 6 ] && echo 0 || echo 1)" "...2 s apart (first to third: $((t3 - t1)) s)"
+i=0; while [ "$(ls "$PEND" 2>/dev/null | grep -c .)" != 0 ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+assert_eq "$(ls "$PEND" 2>/dev/null | tr '\n' ' ')" "" "...and each pending file is gone once its agent identified"
+assert_eq "$(TL display -p -t "$(first_pane k2)" '#{@roost-session}')" "$U2" "...the pane carries its key again"
+sleep 1
+assert_eq "$(launches)" "3" "no launch beyond the three"
+
+echo "== a detach starts nothing; with the hook deleted an attach starts nothing =="
+fresh_fleet
+TL set-hook -gu 'client-attached[98]'
+attach_from 1 k1; wait_clients 1
+sleep 4
+assert_eq "$(launches)" "0" "client-attached[98] deleted: an attach launches nothing"
+TL source-file "$PWD/tmux/roost.conf"
+TL show-hooks -g client-attached | grep -q 'restore --resume --auto'; assert_true $? "(fixture) the hook is back"
+TL detach-client -a 2>/dev/null; TL detach-client 2>/dev/null
+CLT kill-server 2>/dev/null
+sleep 4
+assert_eq "$(launches)|$(npend "$PEND")" "0|3" "a detach launches nothing, and all three still wait"
+
+echo "== two clients in the same second: each agent once =="
+fresh_fleet
+attach_from 1 k1; attach_from 2 k2; wait_clients 2
+wait_launches 3 100; sleep 2
+assert_eq "$(launches)" "3" "two attaches: three launches"
+assert_eq "$(grep -- "--resume " "$STUB_LOG" | awk '{print $NF}' | sort -u | grep -c .)" "3" "...each key once"
+
+echo "== a worker held past 10 s keeps resuming/; a second attach adds nothing =="
+fresh_fleet
+"$ROOST" restore --resume --auto --pace 8 >/dev/null 2>&1 &
+wp=$!
+wait_launches 1 50
+sleep 11
+owner="$(readlink "$SD/resuming/owner" 2>/dev/null)"
+attach_from 1 k1; wait_clients 1
+sleep 2
+assert_eq "${owner%% *}" "$wp" "(fixture) at 12 s resuming/ names the first worker"
+assert_eq "$(readlink "$SD/resuming/owner" 2>/dev/null | cut -d' ' -f1)" "$wp" "after the second attach resuming/ still names the first"
+wait "$wp" 2>/dev/null
+assert_eq "$(launches)" "3" "...and nothing extra was launched (three in all)"
+
+echo "== (d) must still launch: rc banners, a small client, rc files that block =="
+for variant in banner block; do
+  cp "$HOME/.bash_profile" "$SHAPE_TMP/bp.keep"; cp "$HOME/.bashrc" "$SHAPE_TMP/brc.keep"
+  for f in .bash_profile .bashrc .zshrc .profile; do
+    printf '%s\n' 'echo "BANNER from an rc file"' >> "$HOME/$f"
+    [ "$variant" = block ] && printf '%s\n' 'read -r x' >> "$HOME/$f"
+  done
+  fresh_fleet
+  attach_from 1 k1; wait_clients 1
+  wait_launches 3 100; sleep 1
+  assert_eq "$(launches)" "3" "$variant: all three launch"
+  assert_eq "$(ls "$PEND" 2>/dev/null | grep -c '\.taken$\|\.failed$')" "0" "$variant: ...none .taken or .failed"
+  cp "$SHAPE_TMP/bp.keep" "$HOME/.bash_profile"; cp "$SHAPE_TMP/brc.keep" "$HOME/.bashrc"; rm -f "$HOME/.zshrc" "$HOME/.profile"
+done
+
+echo "== a late hook of a killed server resumes nothing on the next one =="
+fresh_fleet
+OLD_BOOT="$BOOT"
+stop_server
+mkshape; R persist --at-login roost >/dev/null 2>&1
+BOOT="$(live_boot)"; PEND="$SD/pending/$BOOT"; TL set-environment -g STUB_IDENTIFY 1; : > "$STUB_LOG"
+"$ROOST" restore --resume --auto --socket "$SHAPE_SOCK" --boot "$OLD_BOOT" >/dev/null 2>&1; rc=$?
+sleep 1
+assert_eq "$rc|$(launches)|$(npend "$PEND")" "0|0|3" "the old boot's hook: exit 0, nothing launched, all three still wait"
+"$ROOST" restore --resume --auto --socket "$SHAPE_SOCK" --boot "$BOOT" >/dev/null 2>&1
+wait_launches 3 100
+assert_eq "$(launches)" "3" "the live boot's hook launches them"
+CLT kill-server 2>/dev/null
+stop_server
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

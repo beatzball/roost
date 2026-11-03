@@ -882,6 +882,11 @@ case "${1:-up}" in
     # command line saying so.
     ROOST_RESTORE_NORESUME=0 ROOST_RESTORE_RECENT="" restore_pace=2 restore_retry=0 restore_json=0
     ROOST_RESTORE_ONLY=()
+    # --resume --auto is the first-attach hook's form (tmux/roost.conf,
+    # client-attached[98]; spec §4.6). Its hidden flags, read only with
+    # --auto, are the hook's own: --socket PATH (#{socket_path}) and --boot
+    # KEY (#{start_time}-#{pid}, the server the hook fired in).
+    restore_auto=0 restore_sock="" restore_hboot=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --from) [ "$#" -ge 2 ] || { echo "roost restore: --from needs a file or a STAMP-GEN" >&2; exit 2; }
@@ -904,6 +909,11 @@ case "${1:-up}" in
         # waiting reason or `died` — once their cause is fixed (§4.6, §4.7
         # T14, T16). Never a taken, changed or replaced pane.
         --retry) restore_retry=1; shift ;;
+        --auto) restore_auto=1; shift ;;
+        --socket|--boot)
+              [ "$#" -ge 2 ] || exit 2
+              if [ "$1" = --socket ]; then restore_sock="$2"; else restore_hboot="$2"; fi
+              shift 2 ;;
         # The report as one JSON document on stdout as well (§4.3 Report);
         # stderr and the exit code are the same.
         --json) restore_json=1; shift ;;
@@ -918,6 +928,46 @@ case "${1:-up}" in
     . "$ROOST_HOME/scripts/lib/roost-restore.sh"
     . "$ROOST_HOME/scripts/lib/roost-resume.sh"
     ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+    if [ "$restore_mode" = resume ] && [ "$restore_auto" = 1 ]; then
+      # The first attach (§4.6): the hook runs this with `run-shell -b` on
+      # EVERY client-attached — `roost`, `roost session NAME`, `roost ssh`
+      # and a bare `tmux attach` alike — and a detach runs nothing. Silent
+      # and exit 0 whatever happens (the `run-shell -b` rule: its output
+      # would show to whoever is looking at the server).
+      exec >/dev/null 2>&1
+      if [ -n "$restore_sock" ]; then
+        . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+        roost_pending__server "$restore_sock"
+        _SOCKET_FLAG="$ROOST_PENDING_FLAG" SOCKET="$ROOST_PENDING_SOCK"
+        ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
+      fi
+      server_running || exit 0
+      restore_root="$(roost_shape_saving)" || exit 0
+      restore_dir="$restore_root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
+      # A hook's run is about ITS server (the Part 4 lesson, fix round 2): a
+      # `run-shell -b` of a server that was killed can start after the next
+      # server took the same socket. --boot is the boot the hook fired in;
+      # any other live boot is not this run's, and nothing is resumed.
+      restore_boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      [ -n "$restore_boot" ] || exit 0
+      [ -z "$restore_hboot" ] || [ "$restore_hboot" = "$restore_boot" ] || exit 0
+      # A bare `tmux attach` can fire this while `--at-login` is still
+      # placing (only ensure_session waits for it, §4.4): wait for
+      # restoring/'s live owner first (revision 3, F N6), by the owner rule,
+      # never by age. Bounded at 15 min so a wedged run cannot leave a
+      # process waiting for ever; the next attach starts a new one.
+      . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+      restore_i=0
+      while roost_shape_owner_live "$restore_dir/restoring" && [ "$restore_i" -lt 4500 ]; do
+        sleep 0.2; restore_i=$((restore_i + 1))
+      done
+      # The server may have changed during that wait.
+      [ "$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)" = "$restore_boot" ] || exit 0
+      # Nothing pending: nothing to do (and no resuming/ is taken).
+      ls "$restore_dir/pending/$restore_boot"/%* >/dev/null 2>&1 || exit 0
+      roost_pending_resume "$restore_dir" "$restore_boot" "$restore_pace" "$restore_retry" || true
+      exit 0
+    fi
     if [ "$restore_mode" = resume ]; then
       # Nothing is placed, so no save is read: the pending record of THIS
       # server's boot is the whole input (§4.6). With saving off there is no
