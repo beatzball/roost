@@ -141,6 +141,16 @@ assert_contains "$(cat "$SD/login.log")" "agents wait for the first attach" "log
 assert_contains "$out" "login restore for 'roost'" "run from a terminal, the same lines are printed"
 assert_eq "$([ -n "$OSBOOT" ] && [ -f "$SD/login/$OSBOOT" ] && echo yes)" "yes" "the login/<os-boot> marker is written"
 assert_eq "$([ -e "$SD/restoring" ] && echo held || echo free)" "free" "restoring/ is released"
+# Nothing of --at-login's own bookkeeping reaches the server's environment
+# (fix round 1): a variable that told restore "your caller holds restoring/"
+# would make every later `roost restore` typed in a pane skip its lock and
+# its final save.
+TL show-environment -g ROOST_RESTORE_HELD >/dev/null 2>&1
+assert_eq "$?" "1" "the server's global environment has no ROOST_RESTORE_HELD"
+TL new-window -d -t '=kn:' "env > $SHAPE_TMP/pane.env"
+wait_file "$SHAPE_TMP/pane.env"; sleep 0.2
+assert_eq "$(grep -c '^ROOST_RESTORE_\|^ROOST_PERSIST_' "$SHAPE_TMP/pane.env")" "0" "...and a new pane's environment has no ROOST_RESTORE_* or ROOST_PERSIST_* variable"
+TL kill-window -t "$(TL list-windows -t '=kn' -F '#{window_id}' | tail -1)"
 p3="$(first_pane k3)"
 TL send-keys -t "$p3" x
 wait_file "$PEND/$p3.taken"; assert_true $? "a key in a placeholder takes the pane (%N.taken)"
@@ -423,6 +433,34 @@ STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >
 R spawn x sh >/dev/null 2>&1
 assert_eq "$(sessions)" "main " "persist off, no marker: spawn places nothing"
 stop_server
+
+echo "== a login job that takes restoring/ after the wait: spawn waits again, never makes main first =="
+# Fix round 1: the wait ended, then the login job took restoring/ before
+# ensure_session's own --at-login could; that one lost, and ensure_session
+# made `main` itself, so the job skipped the saved `main` and its agents were
+# never placed. The seam holds ensure_session right after its wait.
+stop_server
+rm -rf "$SD"; mkdir -p "$SD"; MKSHAPE_SESSIONS="main work" mkshape
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1
+rm -rf "$SD/login"
+LH="$SHAPE_TMP/login.hold"; rm -f "$LH" "$LH".at.*
+( ROOST_TEST_LOGIN_HOLD="$LH" R spawn x sh > "$SHAPE_TMP/x.out" 2> "$SHAPE_TMP/x.err"; echo $? > "$SHAPE_TMP/x.rc" ) &
+xp=$!
+wait_at_file() { local i=0; while [ "$i" -lt 100 ]; do ls "$1".at.* >/dev/null 2>&1 && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+wait_at_file "$LH"; assert_true $? "(fixture) spawn is held after its owner wait"
+sleep 600 & JOB=$!
+mkdir -p "$SD/restoring"; ln -s "$JOB $(roost_shape__lstart "$JOB")" "$SD/restoring/owner"
+: > "$LH"
+sleep 3
+assert_eq "$([ -e "$SHAPE_TMP/x.rc" ] || echo waiting)" "waiting" "the job holds restoring/: spawn waits again"
+assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "...and makes no server, no main of its own"
+kill "$JOB"; wait "$JOB" 2>/dev/null
+wait "$xp"
+assert_eq "$(cat "$SHAPE_TMP/x.rc")" "0" "once the job is gone, spawn exits 0"
+assert_eq "$(sessions)" "main work " "...and the saved main was placed, not skipped (work too)"
+assert_eq "$(TL list-windows -t '=main' -F '#{window_name}' 2>/dev/null | grep -c '^x$')" "1" "...with spawn's window x added to it"
+stop_server
+STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
 
 echo "== a live restoring/ owner: ensure_session waits, saying so every 10 s =="
 STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/dev/null 2>&1

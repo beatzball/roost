@@ -418,7 +418,7 @@ roost_persist_status() {
   else
     printf '  newest save: none yet\n'
   fi
-  printf '  pending: %s' "$(roost_persist__pending "$sd")"
+  printf '  pending: %s\n' "$(roost_persist__pending "$sd")"
   f="$(grep -v '^$' "$sd/login.log" 2>/dev/null | tail -1 || true)"
   printf '  last login restore: %s\n' "${f:-none yet}"
   return 0
@@ -541,7 +541,12 @@ roost_persist__at_login() {
   # §4.6) — the socket wait below included.
   roost_shape_owner_take "$sd/restoring" || own=$?
   case "$own" in
-    1) roost_persist__say "another restore (pid ${ROOST_SHAPE_OWNER_PID:-?}) is placing panes; nothing done"; return 0 ;;
+    # ROOST_PERSIST_LOST tells a caller in this shell (ensure_session's
+    # login_restore_first) that it lost restoring/ to another restore, which
+    # is still placing: it must wait for that one again, not go on and make
+    # a session the restore is about to place (fix round 1).
+    1) ROOST_PERSIST_LOST=1
+       roost_persist__say "another restore (pid ${ROOST_SHAPE_OWNER_PID:-?}) is placing panes; nothing done"; return 0 ;;
     3) roost_persist__say "${ROOST_SHAPE_OWNER_FAULT:-cannot own $sd/restoring}; nothing done"; return 0 ;;
   esac
   # Up to 60 s for the socket directory to be writable: at login /tmp (or
@@ -596,7 +601,7 @@ roost_persist__at_login() {
   fi
   # Placement, and NOT the loop: every keyed pane waits in its placeholder
   # with its pending file, written before the placeholder starts (§4.6).
-  rc=0; ROOST_RESTORE_HELD="$own" roost_restore_run "$ROOST_RESTORE_FILE" "$sd" 2>&1 || rc=$?
+  rc=0; roost_restore_run "$ROOST_RESTORE_FILE" "$sd" "$own" 2>&1 || rc=$?
   rm -rf "${ROOST_RESTORE_PD:-}"
   boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
   n=0

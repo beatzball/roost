@@ -132,6 +132,8 @@ assert_contains "$out" "names this checkout" "status: the unit names this checko
 assert_contains "$out" "roots match" "status: service.env's roots match the caller's"
 assert_contains "$out" "persist-on" "status: the newest save's trigger"
 assert_contains "$out" "pending:" "status: the pending record's counts"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^  pending: .*)$')" "1" "status: the pending line ends at its counts (fix round 1)"
+assert_eq "$(printf '%s\n' "$out" | grep -c '^  last login restore: ')" "1" "status: the last login line is a line of its own"
 out="$(STUB_UNAME=Darwin PATH="$STUBS:$PATH" R persist off 2>&1)"; rc=$?
 assert_eq "$rc" "0" "macOS: off exits 0 ($out)"
 log="$(cat "$PERSIST_LOG")"

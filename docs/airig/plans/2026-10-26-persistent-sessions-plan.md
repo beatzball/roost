@@ -336,6 +336,7 @@ them, this plan does): `--boot KEY` (the hook's `#{start_time}-#{pid}`),
 | `ROOST_TEST_PUBLISH_FAIL=1` | the saver's publish step fails as a refused `mv` would, in a writable directory (this plan's seam, for R3's `save.err` case) | 4.5 |
 | `ROOST_SHUTDOWN_AT=EPOCH` | a stub shutdown record; set and empty = no readable record | 4.9b |
 | `ROOST_PERSIST_WRITE_ONLY=1` | `persist on` writes the unit and does not load it | 5.5 |
+| `ROOST_TEST_LOGIN_HOLD=FILE` | `ensure_session`'s login half waits right after its wait for `restoring/`, before its own `--at-login` (marks `FILE.at.<pid>`) | fix round 1 of Part 5 |
 | `ROOST_TEST_OFFER_TIMEOUT=SECONDS` | the offer's 60 s no-answer bound | 7.4 |
 
 ---

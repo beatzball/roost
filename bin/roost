@@ -252,31 +252,48 @@ lost_socket_line() {
 #     person killed on purpose and started again in the same OS boot finds
 #     the marker and is left alone.
 login_restore_first() {
-  local root sd n=0 ob
+  local root sd n ob tries=0
   [ "$_SOCKET_FLAG" = -L ] || return 0
   command -v roost_shape_saving >/dev/null 2>&1 || . "$ROOST_HOME/scripts/lib/roost-shape.sh"
   root="$(roost_shape_saving)" || return 0
   sd="$root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")"
   [ -e "$sd/persist" ] || return 0
-  while roost_shape_owner_live "$sd/restoring"; do
-    [ $((n % 50)) = 0 ] && printf 'waiting for the login restore (pid %s)\n' "${ROOST_SHAPE_OWNER_PID:-?}" >&2
-    sleep 0.2; n=$((n + 1))
+  # A loop, bounded: the owner can change between the wait and this run's
+  # own take of restoring/ — the login job starting just then is the case
+  # (fix round 1). Losing that take means another restore is placing NOW, so
+  # back to the wait; going on would make the session that restore is about
+  # to place, and the restore would then skip it as existing. Each turn waits
+  # for a live owner (never by age), so 10 turns means ten restores in a row
+  # took the lock first; then ensure_session goes on as before.
+  while [ "$tries" -lt 10 ]; do
+    tries=$((tries + 1))
+    n=0
+    while roost_shape_owner_live "$sd/restoring"; do
+      [ $((n % 50)) = 0 ] && printf 'waiting for the login restore (pid %s)\n' "${ROOST_SHAPE_OWNER_PID:-?}" >&2
+      sleep 0.2; n=$((n + 1))
+    done
+    # The plan's seam: hold right after the wait, so a test can start an
+    # owner in exactly the gap this loop closes.
+    roost_shape__seam ROOST_TEST_LOGIN_HOLD
+    server_running && return 0
+    [ -f "$sd/shape" ] || return 0
+    command -v roost_persist_os_boot >/dev/null 2>&1 || {
+      . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+      . "$ROOST_HOME/scripts/lib/roost-persist.sh"
+    }
+    ob="$(roost_persist_os_boot || true)"
+    [ -n "$ob" ] && [ -e "$sd/login/$ob" ] && return 0
+    # R2 first: --at-login checks it too, but would only log it; here the
+    # person gets the line and the exit, as ensure_session gives it.
+    if server_lost_socket; then
+      lost_socket_line >&2
+      exit 1
+    fi
+    ROOST_PERSIST_LOST=0
+    roost_persist_at_login "$SOCKET" >&2 || true
+    [ "$ROOST_PERSIST_LOST" = 1 ] || return 0
   done
-  server_running && return 0
-  [ -f "$sd/shape" ] || return 0
-  command -v roost_persist_os_boot >/dev/null 2>&1 || {
-    . "$ROOST_HOME/scripts/lib/roost-pending.sh"
-    . "$ROOST_HOME/scripts/lib/roost-persist.sh"
-  }
-  ob="$(roost_persist_os_boot || true)"
-  [ -n "$ob" ] && [ -e "$sd/login/$ob" ] && return 0
-  # R2 first: --at-login checks it too, but would only log it; here the
-  # person gets the line and the exit, as ensure_session gives it.
-  if server_lost_socket; then
-    lost_socket_line >&2
-    exit 1
-  fi
-  roost_persist_at_login "$SOCKET" >&2 || true
+  return 0
 }
 
 # Create the session if missing. The first session boots the server with our
