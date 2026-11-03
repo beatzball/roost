@@ -272,6 +272,18 @@ hook resumes the agents at the first attach.
 - **`ensure_session` also waits for a hand `roost restore`** holding
   `restoring/` when `persist` is on: the owner rule cannot tell the two
   apart, and the spec's rule is "a live owner".
+- **On Linux, `persist on` with the server running writes no
+  `login/<os-boot>` marker** (macOS gets one: the bootstrap's RunAtLoad runs
+  the job at once). So a `tmux kill-server` by hand (not `roost kill` or
+  `roost stop`, which record the fleet as closed) followed by `roost` in the
+  same boot places the fleet again on Linux. Behaviour kept as built; the
+  marker is written by the next login.
+- **systemd reads `service.env` and the unit line its own way.** Its
+  `EnvironmentFile=` parser takes quotes and backslashes in a value as
+  quoting, and `ExecStart=` expands `$` in the checkout path; `persist on`
+  refuses a quote or backslash only in the checkout and the shape root, not
+  in the other values (a `PATH` or a harness home). `persist status` and
+  `doctor` compare the file's text, not what systemd reads from it.
 
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 

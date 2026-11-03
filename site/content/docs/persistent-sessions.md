@@ -285,7 +285,10 @@ the same boot is left alone.
 `roost persist on` installs **one login job per roost server**:
 
 - macOS: `~/Library/LaunchAgents/dev.roosting.roost.<server>.plist`, loaded
-  with `launchctl bootstrap`.
+  with `launchctl bootstrap`. Run `persist on` from a session where you are
+  logged in at the Mac itself: over ssh with nobody logged in at the console,
+  loading into your login session fails, and `on` then leaves nothing
+  behind. (Not measured yet.)
 - Linux: `~/.config/systemd/user/roost-persist-<server>.service`, enabled
   with `systemctl --user enable` (not started: it runs at your next login).
   A systemd user service runs while you are logged in, and stops with your
