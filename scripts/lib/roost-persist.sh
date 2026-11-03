@@ -624,3 +624,34 @@ roost_persist__done() {
   roost_persist__sweep "$sd" "$boot"
   roost_shape_owner_drop "$sd/restoring"
 }
+
+# roost_persist_rewrite_unit NAME -> when NAME's `persist` marker is set and
+# its login unit runs another checkout's bin/roost (an upgrade or a relink
+# moved checkouts), the unit is written again naming THIS checkout
+# ($ROOST_HOME) and reloaded, and one line says so. `roost upgrade` calls it
+# (§4.4: "the unit must follow"). The unit's environment is read from the
+# existing service.env, which is NOT rewritten: only `persist on` writes it,
+# so a person's edit to it survives an upgrade. Exit 0 always; a unit it
+# cannot write is one line on stderr.
+roost_persist_rewrite_unit() {
+  local name="$1" os sd root unit c r=0
+  root="$(roost_shape_saving)" || return 0
+  sd="$root/$name"
+  [ -e "$sd/persist" ] && [ -f "$sd/service.env" ] || return 0
+  os="$(roost_persist_os)" || return 0
+  unit="$(roost_persist_unit_path "$os" "$name")"
+  c="$(roost_persist__unit_checkout "$os" "$unit" 2>/dev/null || true)"
+  [ "$c" = "$ROOST_HOME/bin/roost" ] && return 0
+  if [ "$os" = launchd ]; then roost_persist__plist "$name" "$sd" | roost_persist__write "$unit" || r=$?
+  else roost_persist__unit "$name" "$sd" | roost_persist__write "$unit" || r=$?; fi
+  if [ "$r" != 0 ]; then
+    printf "roost: could not rewrite the login unit for '%s' (%s); run roost persist on\n" "$name" "$unit" >&2
+    return 0
+  fi
+  if [ "${ROOST_PERSIST_WRITE_ONLY:-}" != 1 ]; then
+    roost_persist__load "$os" "$name" "$unit" || \
+      printf "roost: rewrote %s but could not load it; run roost persist on\n" "$unit" >&2
+  fi
+  printf "roost: the login unit for '%s' now runs this checkout (%s)\n" "$name" "$unit"
+  return 0
+}
