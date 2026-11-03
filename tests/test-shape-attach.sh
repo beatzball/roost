@@ -467,11 +467,25 @@ STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist on >/
 mkdir -p "$SD/login"; : > "$SD/login/$OSBOOT"
 sleep 600 & LIVE=$!
 mkdir -p "$SD/restoring"; ln -s "$LIVE $(roost_shape__lstart "$LIVE")" "$SD/restoring/owner"
-( R spawn w sh > "$SHAPE_TMP/w.out" 2> "$SHAPE_TMP/w.err"; echo $? > "$SHAPE_TMP/w.rc" ) &
+# A slowed run (fix round 2): CI's macOS runner once took over 12 s for the
+# 50 turns the wait used to count as 10 s, and printed one line. Here every
+# `sleep` of spawn's own takes 0.3 s longer, so 50 turns take 25 s or more:
+# the line must follow the clock, not the turns.
+SLOW="$SHAPE_TMP/slow-sleep"; mkdir -p "$SLOW"
+REAL_SLEEP="$(command -v sleep)"
+printf '#!/bin/sh\nexec %s "$(awk -v s="$1" '"'"'BEGIN { print s + 0.3 }'"'"')"\n' "$REAL_SLEEP" > "$SLOW/sleep"
+chmod +x "$SLOW/sleep"
+( PATH="$SLOW:$PATH" R spawn w sh > "$SHAPE_TMP/w.out" 2> "$SHAPE_TMP/w.err"; echo $? > "$SHAPE_TMP/w.rc" ) &
 wp=$!
-sleep 12
-assert_eq "$([ -e "$SHAPE_TMP/w.rc" ] || echo waiting)" "waiting" "spawn is still waiting after 12 s"
-assert_eq "$(grep -c "^waiting for the login restore (pid $LIVE)$" "$SHAPE_TMP/w.err")" "2" "...it said so twice (at 0 s and 10 s), naming the pid"
+t0=$(date +%s); i=0
+while [ "$i" -lt 200 ]; do
+  [ "$(grep -c "^waiting for the login restore (pid $LIVE)$" "$SHAPE_TMP/w.err" 2>/dev/null)" -ge 2 ] && break
+  sleep 0.1; i=$((i+1))
+done
+t2=$(( $(date +%s) - t0 ))
+assert_eq "$([ -e "$SHAPE_TMP/w.rc" ] || echo waiting)" "waiting" "spawn is still waiting ($t2 s)"
+assert_eq "$(grep -c "^waiting for the login restore (pid $LIVE)$" "$SHAPE_TMP/w.err")" "2" "...it said so twice within 20 s (at 0 s and 10 s), naming the pid"
+assert_true "$([ "$t2" -ge 9 ] && echo 0 || echo 1)" "...and not before 10 s had passed (second line at $t2 s)"
 assert_eq "$(TL ls >/dev/null 2>&1 && echo up || echo down)" "down" "...and started nothing meanwhile"
 kill "$LIVE"; wait "$LIVE" 2>/dev/null
 wait "$wp"
