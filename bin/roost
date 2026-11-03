@@ -169,6 +169,71 @@ t() { tmux "$_SOCKET_FLAG" "$SOCKET" "$@"; }
 server_running()  { t list-sessions >/dev/null 2>&1; }        # ≥1 session exists
 session_exists()  { t has-session -t "=$1" 2>/dev/null; }      # exact-name match
 
+# server_lost_socket -> exit 0 when the server the newest save names is still
+# running although nothing answers on its socket; ROOST_LOST_PID is then its
+# pid. Called only when server_running is false and a server is about to be
+# started: ensure_session, restore's Server step (the `restore` arm) and
+# `persist --at-login` (scripts/lib/roost-persist.sh).
+#
+# Why (coordinator ruling R2, plan Task 5.4): in the field, an autostart tool,
+# a reconnecting client and an over-eager start path each started a SECOND
+# tmux server under the same name while the first still ran with its socket
+# file gone — a temp cleaner, or a crash of the socket's directory. The new
+# server took the name, and the live fleet in the old one could no longer be
+# reached. tmux recreates a server's socket on SIGUSR1, so the fleet is one
+# `kill -USR1` away — unless a second server has taken the path first.
+#
+# The newest save's `boot` is `START-PID` (#{start_time}-#{pid}, the save's
+# header, scripts/lib/roost-shape.sh). True only when all three hold:
+#   - `kill -0 PID` succeeds;
+#   - the process is tmux: `ps -o comm=` is `tmux` or a path ending in it on
+#     macOS, and `tmux: server` on Linux, where the server retitles itself
+#     (measured in ubuntu:24.04, tmux 3.4);
+#   - it started when the boot says: now minus `ps -o etime=` is within 2 s
+#     of START. This is what keeps a reused pid from blocking: after a
+#     reboot the saved pid may well be alive again as something else, even
+#     as another tmux, and a guard that refused then would leave a person
+#     with no way to start roost at all.
+# No save, saving off, or a boot line that is not two numbers: false, start
+# as before.
+server_lost_socket() {
+  local root f b st pid comm et d=0 x y z secs now
+  ROOST_LOST_PID=""
+  command -v roost_shape_saving >/dev/null 2>&1 || . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+  root="$(roost_shape_saving)" || return 1
+  f="$root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")/shape"
+  [ -f "$f" ] || return 1
+  b="$(sed -n 's/^boot //p;/^$/q' "$f" 2>/dev/null | head -1)"
+  case "$b" in ''|*[!0-9-]*|-*|*-|*-*-*) return 1 ;; *-*) ;; *) return 1 ;; esac
+  st="${b%-*}" pid="${b#*-}"
+  kill -0 "$pid" 2>/dev/null || return 1
+  comm="$(ps -o comm= -p "$pid" 2>/dev/null || true)"
+  # ps pads the column; only the leading blanks matter for the match.
+  comm="${comm#"${comm%%[![:space:]]*}"}"
+  case "${comm##*/}" in tmux|tmux\ *|tmux:*) ;; *) return 1 ;; esac
+  et="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+  # etime is [[dd-]hh:]mm:ss. 10# because a field like `08` is otherwise read
+  # as a bad octal number.
+  case "$et" in *-*) d="${et%%-*}" et="${et#*-}" ;; esac
+  IFS=: read -r x y z <<< "$et"
+  case "$x$y$z" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -n "$z" ]; then secs=$(( 10#$x * 3600 + 10#$y * 60 + 10#$z ))
+  else secs=$(( 10#$x * 60 + 10#$y )); fi
+  secs=$(( secs + 10#$d * 86400 ))
+  now="$(date +%s)"
+  x=$(( now - secs - st ))
+  [ "$x" -lt 0 ] && x=$(( -x ))
+  [ "$x" -le 2 ] || return 1
+  ROOST_LOST_PID="$pid"
+  return 0
+}
+
+# lost_socket_line — R2's line, with the pid server_lost_socket found.
+lost_socket_line() {
+  printf 'roost: the tmux server (pid %s) is still running but its socket is gone; kill -USR1 %s recreates it\n' \
+    "$ROOST_LOST_PID" "$ROOST_LOST_PID"
+}
+
 # Create the session if missing. The first session boots the server with our
 # config (server/global options + bindings apply to every later session too).
 ensure_session() {
@@ -177,6 +242,12 @@ ensure_session() {
   if server_running; then
     t new-session -d -s "$s" -c "$PWD"
   else
+    # R2: the server may still be running with its socket file gone. Starting
+    # one now would take the name and strand the live fleet (server_lost_socket).
+    if server_lost_socket; then
+      lost_socket_line >&2
+      exit 1
+    fi
     t -f "$CONF" new-session -d -s "$s" -c "$PWD"
     server_init
     # The first pane was created by the `new-session` above, BEFORE apply set
@@ -870,6 +941,13 @@ case "${1:-up}" in
     if [ "$restore_mode" = list ]; then
       roost_restore_list "$restore_dir"
       exit 0
+    fi
+    # The Server step (§4.3) starts a server when none answers: R2 first, as
+    # ensure_session does (server_lost_socket), before the save is even
+    # picked, so the refusal is the one line and nothing is placed.
+    if [ "$restore_mode" = run ] && ! server_running && server_lost_socket; then
+      lost_socket_line >&2
+      exit 1
     fi
     restore_rc=0
     roost_restore_pick "$restore_dir" "$restore_from" || exit $?
