@@ -789,6 +789,23 @@ out="$(SHIM="$OCSHIM" shim_run PATH="$HERE/shims:/usr/bin:/bin" "$in_roost" -- -
 assert_contains "$out" "roost: no opencode found on PATH after roost's shim" "no real opencode on PATH: the shim says so"
 assert_contains "$out" "rc=127" "no real opencode on PATH: exit 127, never a loop"
 
+# A broken lib must never stop opencode starting. dash, /bin/sh on Ubuntu,
+# exits at a `.` of a file with a syntax error and skips the `||` after it, so
+# the shim is run under dash here when the machine has one (macOS and Ubuntu
+# both do), and under its own /bin/sh otherwise.
+OCB="$B/ocbroken"; mkdir -p "$OCB/shims" "$OCB/scripts/lib"
+: > "$OCB/shims/.roost-shim"
+if [ -x /bin/dash ]; then
+  sed '1s|.*|#!/bin/dash|' "$OCSHIM" > "$OCB/shims/opencode"
+else
+  cp "$OCSHIM" "$OCB/shims/opencode"
+fi
+chmod +x "$OCB/shims/opencode"
+printf 'roost_which() {\nif then fi\n' > "$OCB/scripts/lib/roost-have.sh"
+out="$(SHIM="$OCB/shims/opencode" shim_run PATH="$OCB/shims:$B/real:/usr/bin:/bin" "$in_roost" -- -c --prompt hi; echo "rc=$?")"
+assert_contains "$out" "REAL -c --prompt hi" "a lib with a syntax error: the shim still runs the real opencode"
+assert_contains "$out" "rc=0" "...and exits as the real opencode did"
+
 # =============================================================================
 printf '\n== roost_have: roost'"'"'s own shims are not an installed harness ==\n'
 # The side effect a shim named opencode would have had without this: in a

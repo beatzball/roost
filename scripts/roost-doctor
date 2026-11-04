@@ -1107,7 +1107,7 @@ if [ -n "$_mps" ]; then
       # shellcheck disable=SC2086 # split on purpose: ps gives one string
       _mini_args $_prest || { set +f; continue; }
       set +f
-      warn "$_id ($_where) is running opencode mini, which does not load roost's opencode plugin — that pane shows no badge, and roost read and roost wait-done cannot see its turns. Quit it and run plain opencode there."
+      warn "$_id ($_where) is running opencode mini, which does not load roost's opencode plugin — that pane shows no badge, and roost read and roost wait-done cannot see its turns. Quit it and run plain opencode there, unless you started it with ROOST_ALLOW_MINI=1 on purpose."
       break
     done <<< "$_mps"
   done <<< "$_mpanes"

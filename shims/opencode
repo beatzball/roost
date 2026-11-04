@@ -68,8 +68,14 @@ fi
 # cannot disagree. If the lib cannot be read — a moved or half-updated
 # checkout — the command runs: this shim exists to warn about a missing badge,
 # and must never be the reason opencode does not start.
+#
+# The `sh -n` parse check comes first because `.` is a special builtin: when
+# the file it reads has a syntax error, dash — /bin/sh on Debian and Ubuntu —
+# exits the whole shim at once, so the `||` after it never runs. bash and
+# macOS sh do run it. Parsing first keeps the promise above on every sh.
 lib="${0%/*}/../scripts/lib/roost-have.sh"
-[ -f "$lib" ] || exec "$real" "$@"
+[ -f "$lib" ] && [ -r "$lib" ] || exec "$real" "$@"
+sh -n "$lib" 2>/dev/null || exec "$real" "$@"
 # shellcheck source=../scripts/lib/roost-have.sh
 . "$lib" || exec "$real" "$@"
 roost_opencode_is_mini "$@" || exec "$real" "$@"
