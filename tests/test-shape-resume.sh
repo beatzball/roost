@@ -1070,8 +1070,8 @@ claims_for() { ls "$CLB" 2>/dev/null | grep -c "$1" || true; }
 # loaded runner the saver can start after shape_settle's 0.3 s look and
 # settle returns before anything ran (main CI, 2026-11-03: "want [died|0] got
 # [|1]"). Wait for the file the hook writes, or removes, first; bounded, and
-# the assertion that follows still fails if it never comes.
-wait_gone() { local i=0 n="${2:-50}"; while [ "$i" -lt "$n" ]; do [ -e "$1" ] || return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+# the assertion that follows still fails if it never comes (wait_file and
+# wait_gone are defined near the top of this file).
 U41=3fa3c0de-4141-4abc-8def-000000000041; stub_store_add "$U41" "$D1"
 reset_run
 shape_of "y1|%1101|$D1|harness claude;session_id $U41"
