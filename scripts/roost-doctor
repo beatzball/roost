@@ -590,7 +590,9 @@ if [ "$oc_v2" = 1 ]; then
         warn "$ocplug is roost's opencode 1.x plugin — opencode 2 cannot load it and shows \"1 plugin failed\" because of it. It does nothing on 2.x; to remove it, run: rm \"$ocplug\"" ;;
     esac
   fi
-elif command -v opencode >/dev/null 2>&1; then
+# roost_have, not `command -v`: in a roost pane that finds roost's own
+# shims/opencode on a machine with no opencode (scripts/lib/roost-have.sh).
+elif roost_have opencode; then
   if [ -L "$ocplug" ] && [ ! -e "$ocplug" ]; then
     # -e follows symlinks, so a DANGLING link (target moved/deleted, e.g. an
     # old checkout that got removed) reads as simply absent, and the "not
@@ -1072,6 +1074,44 @@ EOF
   case "$_rpid" in ''|*[!0-9]*) continue ;; esac
   warn "$_id ($_where) refused a '$_rst' report $((now - 10#$_rat))s ago from pid $_rpid: that process carried this pane's TMUX_PANE but is not in its process tree — see docs/known-gaps.md, \"The report filter\""
 done <<< "$panes"
+
+# A pane running `opencode mini`. It never badges: mini does not load
+# terminal-side plugins, so roost's opencode 2 adapter never runs in it
+# (scripts/lib/roost-have.sh, roost_opencode_is_mini, has the measurement).
+# shims/opencode refuses mini in a roost pane, but not one started by absolute
+# path, with ROOST_ALLOW_MINI, or before this roost — and nothing else would
+# say why that pane is silent, because its plugin link reads fine above.
+#
+# One `ps -A` for every pane rather than one `ps -t` each: the pane's own
+# processes are matched by terminal, which `#{pane_tty}` names as /dev/ttysNNN
+# (macOS) or /dev/pts/N (Linux) and ps prints without the /dev/. Measured on
+# macOS with opencode 2.1.3: the process reads `/opt/homebrew/bin/opencode
+# mini --standalone`, and the shell that launched it is a separate line whose
+# program is the shell, so only a line whose PROGRAM is opencode is asked.
+# Its words are split on spaces, which is all ps gives; a quoted argument with
+# a space in it can split wrong, and the worst that does is a missed or an
+# extra line of advice. No ps, or no server, prints nothing.
+_mini_args() { roost_opencode_is_mini "$@"; }
+_mpanes="$(roost_cfg_tmux list-panes -a -F '#{pane_id}|#{session_name}:#{window_index}|#{pane_tty}' 2>/dev/null || true)"
+_mps=""
+[ -z "$_mpanes" ] || _mps="$(ps -A -o tty=,args= 2>/dev/null || true)"
+if [ -n "$_mps" ]; then
+  while IFS='|' read -r _id _where _tty; do
+    case "$_id" in %[0-9]*) : ;; *) continue ;; esac
+    _t="${_tty#/dev/}"
+    [ -n "$_t" ] || continue
+    while read -r _ptty _pcmd _prest; do
+      [ "$_ptty" = "$_t" ] || continue
+      [ "${_pcmd##*/}" = opencode ] || continue
+      set -f
+      # shellcheck disable=SC2086 # split on purpose: ps gives one string
+      _mini_args $_prest || { set +f; continue; }
+      set +f
+      warn "$_id ($_where) is running opencode mini, which does not load roost's opencode plugin — that pane shows no badge, and roost read and roost wait-done cannot see its turns. Quit it and run plain opencode there, unless you started it with ROOST_ALLOW_MINI=1 on purpose."
+      break
+    done <<< "$_mps"
+  done <<< "$_mpanes"
+fi
 
 # --- persistent sessions: what saving does on this server (#51, #191 Part 4) ---
 # Spec §4.5 and ruling R3. The first line always names BOTH halves, saving and

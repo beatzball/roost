@@ -491,7 +491,12 @@ trap on_exit EXIT
 # word here to keep. HUP is the same case with the terminal window closed.
 trap 'exit 130' INT TERM HUP PIPE
 
-have() { command -v "$1" >/dev/null 2>&1; }
+# roost_have, from scripts/lib/roost-have.sh (sourced through roost-adapters.sh
+# above): a harness counts as installed only if it is on PATH outside roost's
+# shim directories. `command -v` would count roost's own shims/claude and
+# shims/opencode, so a tester with no opencode, running this from a roost pane,
+# would be reported as having one.
+have() { roost_have "$1"; }
 
 # ver CMD — one line, the harness's own version string, or "" if it will not
 # give one. Bounded: a harness that blocks on stdin or on a network check at
@@ -569,7 +574,7 @@ say SKIP."
         codex)    v="$(ver codex --version)" ;;
         copilot)  v="$(ver copilot --version)" ;;
       esac
-      printf '| %s | yes | `%s` | `%s` |\n' "$h" "${v:-(would not print one)}" "$(command -v "$h")" | redact >> "$BODY"
+      printf '| %s | yes | `%s` | `%s` |\n' "$h" "${v:-(would not print one)}" "$(roost_which "$h")" | redact >> "$BODY"
       [ "$h" = codex ] && CODEX_VER_START="$v"
     else
       printf '| %s | no | — | — |\n' "$h" >> "$BODY"

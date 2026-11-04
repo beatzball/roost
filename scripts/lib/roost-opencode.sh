@@ -13,6 +13,18 @@
 # config directory, where 1.x reads it AS WELL — measured, see roost_opencode_v2
 # below.
 
+# "Is opencode on PATH?" is asked through roost_which / roost_have, never a bare
+# `command -v opencode`: inside a roost pane roost's own shims/opencode is first
+# on PATH, and `command -v` would find that wrapper on a machine with no
+# opencode at all (scripts/lib/roost-have.sh says what that broke). Sourced by
+# path relative to THIS file, for the reason scripts/lib/roost-adapters.sh
+# gives for sourcing this one: an inherited $ROOST_HOME may name a different
+# checkout. Guarded, because the scripts that source this file may have
+# sourced that one already.
+if ! declare -f roost_have >/dev/null 2>&1; then
+  . "$(cd -P "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/roost-have.sh"
+fi
+
 # roost_opencode_version -> print the version number of the `opencode` on PATH,
 # or nothing. Never fails, and never takes more than about six seconds.
 #
@@ -61,11 +73,15 @@
 # caller does with that is its own decision, and the two decide differently on
 # purpose: see roost_opencode_takes_config_dir.
 roost_opencode_version() {
-  command -v opencode >/dev/null 2>&1 || return 0
+  # The REAL opencode, by path: through the shim, `--version` would still reach
+  # it, but a shim with no opencode behind it would answer for one that is not
+  # there.
+  local oc
+  oc="$(roost_which opencode)" || return 0
   (
     d="$(mktemp -d 2>/dev/null)" && [ -n "$d" ] || exit 0
     XDG_CONFIG_HOME="$d" XDG_DATA_HOME="$d" XDG_CACHE_HOME="$d" XDG_STATE_HOME="$d" TMPDIR="$d" \
-      opencode --version </dev/null >"$d/.roost-version" 2>/dev/null &
+      "$oc" --version </dev/null >"$d/.roost-version" 2>/dev/null &
     probe=$!
     { sleep 5; kill "$probe"; sleep 1; kill -9 "$probe"; } </dev/null >/dev/null 2>&1 &
     dog=$!
@@ -135,7 +151,7 @@ roost_opencode_v2() {
 # version" needed an opencode that printed nothing. With it, a 2.x that is
 # merely slow on a loaded machine lands here too.
 roost_opencode_takes_config_dir() {
-  command -v opencode >/dev/null 2>&1 || return 0
+  roost_have opencode || return 0
   local v
   v="$(roost_opencode_version)"
   [ -n "$v" ] || return 1

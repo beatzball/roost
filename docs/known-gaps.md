@@ -2123,6 +2123,37 @@ where most of them come from.
 - **A retrying-but-alive provider** reads `error` mid-turn, as on 1.x — the
   entry "An opencode pane on a retrying-but-alive provider wears `error`
   mid-turn" above, carried over unchanged.
+- **`opencode mini` never badges, and the guard against it has holes.**
+  Medium: it was hit for real, on a second machine running opencode 2.2.5.
+  Mini, opencode 2's minimal interface, does not load terminal-side plugins,
+  so this adapter never runs in it. Measured on 2.1.3 (this Mac), isolated —
+  a throwaway `-L` socket, every home redirected, `--standalone`, a spy plugin
+  under `plugins/`: the full TUI called its `setup()`, and mini, fully
+  started, did not in 12 s. 2.2.5 was compared only as text (its `mini`
+  command and plugin loader match 2.1.3's), not run. `shims/opencode` now
+  refuses `opencode mini` in a roost pane (exit 2, the reason, and
+  `ROOST_ALLOW_MINI=1` as the way past), and `roost doctor` names a pane
+  already running it. What still gets through, each a silent pane:
+  `opencode mini` by absolute path; a pane opened before the shim existed,
+  or on a server with `roost wiring off` (the shim directory is put on PATH
+  only on a wired server); and mini started from a script that runs opencode
+  by some other name. The shim decides from the words alone (the first
+  non-flag word is `mini`), so on opencode 1.x — which has no `mini` — it
+  also refuses a project directory named `mini` given as `opencode mini`.
+  Not checked: whether any opencode setting makes plain `opencode` open
+  mini, and whether mini loads a plugin later than startup.
+- **A question the agent asks you leaves the pane on `working`.** Medium,
+  shown offline, not on a live opencode. opencode 2 has a built-in `question`
+  tool, allowed by default for its Build and Plan agents, and in 2.1.3 and
+  2.2.5 it opens a FORM (`form.created` / `form.replied` /
+  `form.cancelled`, listed by `data.session.form.list`), not a permission.
+  `ask()` (`adapters/opencode/v2/tui.js`) reads only
+  `session.permission.list`, so the pane reads ⏳ while opencode waits for
+  an answer, and `roost send` — which refuses only 🛑 — can type into the
+  question. Driven through the real adapter with a fake context: a pending
+  permission gave `working -> blocked`, a pending form stayed `working`. The
+  fix is to ask `session.form` as well; it wants a recorded form event first,
+  since the fixtures here are recordings, not inventions.
 - **Inferred, not measured: a user's own `OPENCODE_CONFIG_DIR` may hide the
   link.** `roost install` links under `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins/roost`
   and does not read `OPENCODE_CONFIG_DIR`. opencode 2 reads a directory named

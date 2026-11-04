@@ -1,0 +1,113 @@
+#!/bin/sh
+# roost's opencode shim — refuses `opencode mini` inside a roost pane, and
+# hands every other opencode command to the real opencode untouched.
+#
+# Why: `opencode mini`, opencode 2's minimal interface, does not load
+# terminal-side plugins, and roost's opencode 2 adapter
+# (adapters/opencode/v2/tui.js) is one. Measured on 2.1.3 — the full TUI called
+# a spy plugin's setup() and mini never did; the rule and its measurement are
+# written once, in scripts/lib/roost-have.sh (roost_opencode_is_mini). So a
+# mini pane shows no badge, `roost read` gets no reply from it, and `roost
+# wait-done` cannot see it finish — a fleet that looks fine and cannot be
+# driven. An agent that runs `roost spawn w "opencode mini"` gets told so here,
+# at once, instead of a pane that silently never reports.
+#
+# How it gets in front of the real opencode: the same way shims/claude does —
+# roost-pane-shell puts this directory first on PATH when a roost pane's shell
+# starts, and `roost spawn` / `roost split` do the same for the command they
+# run. Read shims/claude for why the server's own PATH cannot do it.
+#
+# POSIX sh, not bash: this runs on every `opencode` typed inside roost, on
+# whatever /bin/sh the machine has. Every path that is not a refusal is one
+# `exec` of the real opencode with the argv exactly as given; nothing is added,
+# unlike the claude shim — opencode's badges come from its plugin, not from a
+# flag.
+#
+# Ways past the refusal, cheapest first, all of which exec the real opencode:
+#   - any command that is not `opencode mini`
+#   - not inside a roost server
+#   - ROOST_ALLOW_MINI set to anything non-empty (per run, per shell): the
+#     person knows there will be no badge and wants mini anyway
+#   - ROOST_NO_SHIM set to anything non-empty, the shims' common way out
+#   - @roost-wiring-enabled off on this server (roost wiring off)
+# A path the shim is not on — `/opt/homebrew/bin/opencode mini` — never reaches
+# it at all; that is a gap docs/known-gaps.md records, not a way out this file
+# offers.
+
+# --- the real opencode ------------------------------------------------------
+# The first `opencode` on PATH that is not in a directory marked as a roost
+# shim directory, by the same marker rule shims/claude uses and for the same
+# reason: two checkouts' shim directories on one PATH still find the real
+# binary rather than each other. Inline rather than sourced from
+# scripts/lib/roost-have.sh's roost_which: this lookup runs on every opencode
+# start, and a shim that could not find its lib must still find opencode.
+real=""
+set -f
+_ifs=$IFS
+IFS=:
+for d in $PATH; do
+  # An empty entry means the current directory to a POSIX shell; see
+  # shims/claude for why it is not followed.
+  case "$d" in '' | .) continue ;; esac
+  [ -f "$d/.roost-shim" ] && continue
+  if [ -f "$d/opencode" ] && [ -x "$d/opencode" ]; then
+    real="$d/opencode"
+    break
+  fi
+done
+IFS=$_ifs
+set +f
+
+if [ -z "$real" ]; then
+  echo "roost: no opencode found on PATH after roost's shim" >&2
+  exit 127
+fi
+
+# --- is this `opencode mini`? -----------------------------------------------
+# The rule is roost_opencode_is_mini, shared with `roost doctor` so the two
+# cannot disagree. If the lib cannot be read — a moved or half-updated
+# checkout — the command runs: this shim exists to warn about a missing badge,
+# and must never be the reason opencode does not start.
+#
+# The `sh -n` parse check comes first because `.` is a special builtin: when
+# the file it reads has a syntax error, dash — /bin/sh on Debian and Ubuntu —
+# exits the whole shim at once, so the `||` after it never runs. bash and
+# macOS sh do run it. Parsing first keeps the promise above on every sh.
+lib="${0%/*}/../scripts/lib/roost-have.sh"
+[ -f "$lib" ] && [ -r "$lib" ] || exec "$real" "$@"
+sh -n "$lib" 2>/dev/null || exec "$real" "$@"
+# shellcheck source=../scripts/lib/roost-have.sh
+. "$lib" || exec "$real" "$@"
+roost_opencode_is_mini "$@" || exec "$real" "$@"
+
+# --- is this roost? ---------------------------------------------------------
+# The rule shims/claude and scripts/lib/roost-socket.sh apply: the socket path
+# in $TMUX ends in /roost. Outside roost there is no badge to lose.
+sock=${TMUX%%,*}
+case "$sock" in
+  */roost) : ;;
+  *) exec "$real" "$@" ;;
+esac
+
+# Non-EMPTY, not merely set, the distinction shims/claude draws for
+# ROOST_NO_SHIM: an `export ROOST_ALLOW_MINI=` in a profile is not a request.
+[ -z "${ROOST_ALLOW_MINI:-}" ] || exec "$real" "$@"
+[ -z "${ROOST_NO_SHIM:-}" ] || exec "$real" "$@"
+
+# The server switch, asked live, through ROOST_TMUX for the reason shims/claude
+# gives (a pane's PATH need not contain tmux). Asked only here, after the
+# command is known to be mini, so an ordinary `opencode` costs no tmux call. A
+# switch that cannot be read leaves the refusal on, the same side shims/claude
+# errs on: "wiring is on" is what doctor reports for an unreadable switch.
+if [ "$("${ROOST_TMUX:-tmux}" -S "$sock" show-options -gqv @roost-wiring-enabled 2>/dev/null)" = off ]; then
+  exec "$real" "$@"
+fi
+
+# Three lines on stderr, each starting `roost:` so a person scanning a pane, or
+# an agent reading one with `roost read`, sees whose message it is. Exit 2 —
+# not 127, which would read as "opencode is not installed", and not 1, which
+# opencode itself uses for its own failures.
+echo "roost: opencode mini does not report to roost yet — this pane would show no badge, and roost read and roost wait-done could not see its turns." >&2
+echo "roost: run plain opencode instead (the full interface badges)." >&2
+echo "roost: to run mini anyway, with no badge: ROOST_ALLOW_MINI=1 opencode mini" >&2
+exit 2

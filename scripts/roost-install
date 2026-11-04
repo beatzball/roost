@@ -684,7 +684,11 @@ for h in $HARNESSES; do
   # not "not found" — an install report should be about this machine, and a
   # list of five harnesses of which the user has two is noise they have to
   # read past every single run.
-  command -v "$h" >/dev/null 2>&1 || continue
+  #
+  # roost_have, not `command -v`: run from a roost pane, `command -v opencode`
+  # finds roost's own shims/opencode, so a machine with no opencode would get
+  # an opencode adapter linked (scripts/lib/roost-have.sh).
+  roost_have "$h" || continue
   DETECTED="$DETECTED $h"
 
   # One binary, two adapters, and the version decides. opencode 1.x loads a
