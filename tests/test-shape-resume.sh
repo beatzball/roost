@@ -1066,12 +1066,18 @@ X0="$SHAPE_TMP/x0-bin"; mkdir -p "$X0"; cp "$STUB_WRAP/claude-exit0" "$X0/claude
 wait_dead() { local i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$1" '#{pane_dead}' 2>/dev/null)" != 1 ]; do sleep 0.1; i=$((i+1)); done; }
 first_line() { head -1 "$1" 2>/dev/null; }
 claims_for() { ls "$CLB" 2>/dev/null | grep -c "$1" || true; }
+# A pane-died or pane-exited hook starts its saver with run-shell -b, so on a
+# loaded runner the saver can start after shape_settle's 0.3 s look and
+# settle returns before anything ran (main CI, 2026-11-03: "want [died|0] got
+# [|1]"). Wait for the file the hook writes, or removes, first; bounded, and
+# the assertion that follows still fails if it never comes (wait_file and
+# wait_gone are defined near the top of this file).
 U41=3fa3c0de-4141-4abc-8def-000000000041; stub_store_add "$U41" "$D1"
 reset_run
 shape_of "y1|%1101|$D1|harness claude;session_id $U41"
 place_only 1; p1="$(first_pane y1)"
 env PATH="$X1:$PATH" "${RB[@]}" restore --resume >/dev/null 2>&1
-wait_dead "$p1"; shape_settle "$SD"
+wait_dead "$p1"; wait_file "$PEND/$p1.failed" 100; shape_settle "$SD"
 assert_eq "$(first_line "$PEND/$p1.failed")|$(claims_for "$U41")" "died|0" "Released: a resume that exits 1 → %N.failed died, its claim gone (pane-died)"
 R restore --resume --retry >/dev/null 2>&1; rc=$?
 wait_log "$U41" 50
@@ -1086,7 +1092,7 @@ shape_of "y2|%1102|$D1|harness claude;session_id $U42" "y2b|%1112|$D1"
 place_only 1; p2="$(first_pane y2)"
 env PATH="$X0:$PATH" "${RB[@]}" restore --resume >/dev/null 2>&1
 i=0; while [ "$i" -lt 50 ] && TL list-panes -a -F '#{pane_id}' | grep -qx "$p2"; do sleep 0.1; i=$((i+1)); done
-shape_settle "$SD"
+wait_file "$PEND/$p2.failed" 100; shape_settle "$SD"
 assert_eq "$(first_line "$PEND/$p2.failed")|$(claims_for "$U42")" "exited|0" "the pane is gone, its file %N.failed exited, no claim"
 assert_contains "$(R restore --list 2>&1)" "$p2.failed" "...and --list names it"
 n0="$(TL list-windows -a | wc -l | tr -d ' ')"
@@ -1141,13 +1147,13 @@ U45=3fa3c0de-4545-4abc-8def-000000000045; U46=3fa3c0de-4646-4abc-8def-0000000000
 for u in "$U45" "$U46" "$U47"; do stub_store_add "$u" "$D1"; done
 shape_of "y5|%1105|$D1|harness claude;session_id $U45" "y6|%1106|$D1|harness claude;session_id $U46" "y7|%1107|$D1|harness claude;session_id $U47"
 place_only 3; k5="$(first_pane y5)"; k7="$(first_pane y7)"
-TL kill-pane -t "$k5"; shape_settle "$SD"
+TL kill-pane -t "$k5"; wait_gone "$PEND/$k5" 100; shape_settle "$SD"
 [ ! -e "$PEND/$k5" ]; assert_true $? "kill-pane of a waiting pane: its file is removed"
 wait_screen "$k7" "waiting to resume claude"
 TL send-keys -t "$k7" x; wait_file "$PEND/$k7.taken" 50; shells_wait "$k7"
 TL send-keys -t "$k7" 'exit' Enter
 i=0; while [ "$i" -lt 50 ] && TL list-panes -a -F '#{pane_id}' | grep -qx "$k7"; do sleep 0.1; i=$((i+1)); done
-shape_settle "$SD"
+wait_gone "$PEND/$k7.taken" 100; shape_settle "$SD"
 [ ! -e "$PEND/$k7.taken" ]; assert_true $? "a taken pane exited: its file is removed (pane-exited)"
 R restore --resume --pace 0 >/dev/null 2>&1
 wait_log "$U46" 50
