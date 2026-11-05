@@ -1115,8 +1115,12 @@ printf '%s\n' 'roost-shape 1' 'server x' "socket $O1" 'boot 1-1' 'saved 2026-10-
 env -u TMUX -u TMUX_PANE PATH="$X1:$PATH" ROOST_SOCKET="$O1" "$ROOST" restore --pace 0 >/dev/null 2>&1
 op="$(tmux -S "$O1" list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)"
 i=0; while [ "$i" -lt 50 ] && [ "$(tmux -S "$O1" display -p -t "$op" '#{pane_dead}' 2>/dev/null)" != 1 ]; do sleep 0.1; i=$((i+1)); done
-sleep 1.5
+# Wait for the file the pane-died hook's saver writes, not a fixed 1.5 s: the
+# hook starts the saver with run-shell -b, and on a loaded runner it started
+# later than that (CI, 2026-11-05: "want [died] got []"). Bounded at 10 s; the
+# assertion below still fails if the file never comes.
 OB="$(tmux -S "$O1" display -p '#{start_time}-#{pid}' 2>/dev/null)"
+wait_file "$OSD/pending/$OB/$op.failed" 100
 assert_eq "$(tmux -S "$O1" list-panes -a -F '#{pane_dead}' 2>/dev/null | tr '\n' ' ')" "1 " "the server is still running and lists one dead pane"
 assert_eq "$(first_line "$OSD/pending/$OB/$op.failed")" "died" "...its file %N.failed died"
 tmux -S "$O1" kill-server 2>/dev/null
