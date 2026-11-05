@@ -293,6 +293,8 @@ roost_test_teardown
 
 # With no server running, the row reads the saved file, and a hand-written
 # line without quotes counts.
+# A socket path that cannot exist, so this run can never reach a live server.
+export ROOST_CONFIG_SOCK="/nonexistent/roost-no-server"
 printf 'set -g status-position bottom\n' > "$tbcfg/roost/roost.conf"
 tb_run ""
 # The menu is shown twice in this run (pick the row, Esc, then quit), so the

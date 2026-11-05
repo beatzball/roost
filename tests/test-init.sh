@@ -60,7 +60,7 @@ assert_contains "$(cat "$conf")" 'set -g status-position "bottom"' "re-running i
 assert_eq "$(grep -c 'status-position' "$conf")" "1" "...on one line"
 # Written by hand, the way the tmux manual writes it: no quotes, or with a
 # comment after it. Each is kept, and comes back in roost's quoted form.
-for hand in 'set -g status-position bottom' 'set-option -g status-position bottom # mine'; do
+for hand in 'set -g status-position bottom' "set -g status-position 'bottom'" 'set-option -g status-position bottom # mine'; do
   grep -v 'status-position' "$conf" > "$conf.t" && mv "$conf.t" "$conf"
   printf '%s\n' "$hand" >> "$conf"
   printf 'n\ny\ndark\nroost\nemoji\nskip\n' | ROOST_INIT_ANSWERS=- "$INIT" >/dev/null 2>&1
