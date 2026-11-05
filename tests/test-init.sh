@@ -50,6 +50,18 @@ printf 'n\ny\ndark\nroost\nemoji\nskip\n' | ROOST_INIT_ANSWERS=- "$INIT" >/dev/n
 ls "$cfgdir/roost/"*.bak >/dev/null 2>&1 && assert_eq ok ok "backs up existing config" \
   || assert_eq "" backup "backs up existing config"
 
+# The tab bar's place is set in `roost settings`, not asked by init, so a
+# re-run keeps it. A fresh config writes no line (roost.conf's `top` stands),
+# and a value tmux would reject is not carried.
+assert_eq "$(grep -c 'status-position' "$conf")" "0" "a config with no tab-bar choice gets no status-position line"
+printf 'set -g status-position "bottom"\n' >> "$conf"
+printf 'n\ny\ndark\nroost\nemoji\nskip\n' | ROOST_INIT_ANSWERS=- "$INIT" >/dev/null 2>&1
+assert_contains "$(cat "$conf")" 'set -g status-position "bottom"' "re-running init keeps the tab bar at the bottom"
+assert_eq "$(grep -c 'status-position' "$conf")" "1" "...on one line"
+sed 's/"bottom"/"left"/' "$conf" > "$conf.t" && mv "$conf.t" "$conf"
+printf 'n\ny\ndark\nroost\nemoji\nskip\n' | ROOST_INIT_ANSWERS=- "$INIT" >/dev/null 2>&1
+assert_eq "$(grep -c 'status-position' "$conf")" "0" "a value tmux does not accept is not carried"
+
 # light/dark mode drives the default theme when no theme name is given.
 # (Empty theme answer → mode's default: light picks catppuccin-latte, dark roost.)
 cfgL="$(mktemp -d /tmp/amx.XXXX)"

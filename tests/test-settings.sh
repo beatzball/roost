@@ -236,3 +236,58 @@ assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv @roost-color-logo-bg)"
 
 roost_test_teardown
 rm -rf "$seamcfg"; if [ -n "$SEAM_XDG_SAVE" ]; then export XDG_CONFIG_HOME="$SEAM_XDG_SAVE"; else unset XDG_CONFIG_HOME; fi
+
+# ---- tab bar: top or bottom, picked in the real TUI loop ----
+# A fake fzf stands in for the person: the main menu picks the "tab bar" row
+# the first time and quits the second; the "tab bar" submenu picks
+# $FAKE_TAB_PICK. Every menu it is shown is logged, so the row's current value
+# can be checked. --filter (the focus probe) fails, so the plain pick is used.
+tbcfg="$(mktemp -d /tmp/amx.XXXX)"; TB_XDG_SAVE="${XDG_CONFIG_HOME:-}"; export XDG_CONFIG_HOME="$tbcfg"
+fakefzf="$tbcfg/fzf"; tblog="$tbcfg/menus"; tbn="$tbcfg/n"
+cat > "$fakefzf" <<'FZF'
+#!/usr/bin/env bash
+prompt=""
+for a in "$@"; do
+  case "$a" in --filter*) exit 1 ;; --prompt=*) prompt="${a#--prompt=}" ;; esac
+done
+in="$(cat)"
+printf '== %s\n%s\n' "$prompt" "$in" >> "$TB_LOG"
+case "$prompt" in
+  "settings > ")
+    n="$(cat "$TB_N" 2>/dev/null || echo 0)"; echo $((n + 1)) > "$TB_N"
+    [ "$n" = 0 ] && printf '%s\n' "$in" | grep '^tabbar' ;;
+  "tab bar > ") printf '%s\n' "$FAKE_TAB_PICK" ;;
+esac
+exit 0
+FZF
+chmod +x "$fakefzf"
+tb_run() { rm -f "$tbn"; : > "$tblog"; TB_LOG="$tblog" TB_N="$tbn" FAKE_TAB_PICK="$1" ROOST_FZF="$fakefzf" "$HERE/scripts/roost-settings" </dev/null >/dev/null 2>&1; }
+tb_reload() {
+  tmux -S "$ROOST_TEST_SOCK" source-file "$HERE/tmux/roost.conf" >/dev/null 2>&1
+  tmux -S "$ROOST_TEST_SOCK" source-file -q "$tbcfg/roost/roost.conf" >/dev/null 2>&1
+}
+
+roost_test_server; export ROOST_CONFIG_SOCK="$ROOST_TEST_SOCK"
+tmux -S "$ROOST_TEST_SOCK" set-option -g @roost-home "$HERE"
+tmux -S "$ROOST_TEST_SOCK" set-option -g @roost-user-conf "$tbcfg/roost/roost.conf"
+tmux -S "$ROOST_TEST_SOCK" source-file "$HERE/tmux/roost.conf" >/dev/null 2>&1
+assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "top" "(fixture) roost.conf puts the tab bar at the top"
+
+tb_run bottom
+assert_contains "$(cat "$tblog")" "tab bar       top" "the settings menu has a tab bar row showing top"
+assert_contains "$(cat "$tblog")" "$(printf '== tab bar > \ntop\nbottom')" "the tab bar submenu offers top and bottom"
+assert_contains "$(cat "$tbcfg/roost/roost.conf")" 'set -g status-position "bottom"' "picking bottom saves it to the user conf"
+assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "bottom" "picking bottom moves the bar on the running server"
+tb_reload
+assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "bottom" "a reload (prefix r) keeps it at the bottom"
+
+tb_run top
+assert_contains "$(cat "$tblog")" "tab bar       bottom" "the row now shows bottom"
+assert_eq "$(grep -c 'status-position' "$tbcfg/roost/roost.conf")" "1" "picking top replaces the line, no duplicate"
+assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "top" "picking top moves it back"
+
+tb_run ""
+assert_contains "$(cat "$tbcfg/roost/roost.conf")" 'set -g status-position "top"' "Esc in the submenu changes nothing"
+
+roost_test_teardown
+rm -rf "$tbcfg"; if [ -n "$TB_XDG_SAVE" ]; then export XDG_CONFIG_HOME="$TB_XDG_SAVE"; else unset XDG_CONFIG_HOME; fi

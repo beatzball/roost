@@ -82,9 +82,11 @@ Pick one in `roost init`, or set `@roost-color-*` options by hand in `~/.config/
 
 ## Changing settings later
 
-`roost settings` opens an fzf menu to change the **theme**, **glyph set**, **separator**, and **notifications** — one at a time. Each pick applies live to the running server (no restart) and is saved to `~/.config/roost/roost.conf`. Inside roost, press **`prefix S`** (`Ctrl-s S`) to open it right where you are.
+`roost settings` opens an fzf menu to change the **theme**, **glyph set**, **separator**, **notifications**, and **tab bar** — one at a time. Each pick applies live to the running server (no restart) and is saved to `~/.config/roost/roost.conf`. Inside roost, press **`prefix S`** (`Ctrl-s S`) to open it right where you are.
 
 Unlike `roost init` (which regenerates the whole config), `roost settings` edits just the one line it changes, leaving any hand-added config untouched.
+
+**Tab bar** puts the row of tabs at the **top** (the default) or the **bottom** of the screen. tmux draws that row only across the screen, so a column of tabs on the left or right is not a setting; [#224](https://github.com/beatzball/roost/issues/224) tracks it. The choice is saved as tmux's own `set -g status-position "bottom"` line, so you can also write that line by hand, and `roost init` keeps it when it rewrites the file.
 
 The **theme**, **glyph**, and **separator** pickers preview live: as you move through the list the bar updates on the running server, **Enter** commits the choice, and **Esc** reverts to what you had. The currently-saved option is marked with a `✓`.
 

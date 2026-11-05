@@ -46,7 +46,7 @@
 #   roost upgrade            pull new roost code into this checkout (fast-forward only), then wire every agent to it; refused on a dev tree
 #   roost update             the same as `upgrade`
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
-#   roost settings           change theme/glyphs/separator/notifications, live
+#   roost settings           change theme/glyphs/separator/notifications/tab bar, live
 #   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
 #   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). roost also saves by itself on every change to the fleet, keeping the last ROOST_SHAPE_KEEP saves in history/ (default 100). `rm -rf` that shapes directory forgets every shape and nothing else
 #   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--resume [--retry]] [--recent DAYS] [--pace SECONDS] [--only SEL ...] [--json]

@@ -90,6 +90,11 @@ while :; do
   ct="$(roost_current_theme)"; cg="$(roost_current_glyphset)"
   cs="$(roost_opt @roost-sep-left)"; [ -n "$cs" ] && cs=triangle || cs=none
   cn="$(roost_opt @roost-notify-backend)"; [ "$cn" = tmux ] && cn=off || cn=on
+  # Where the tab bar sits. Saved as tmux's own status-position line in the
+  # user conf, which is sourced after tmux/roost.conf's `top`, so it wins on
+  # start and on every reload. tmux draws the bar only as one row, so top and
+  # bottom are the only places it can go.
+  cb="$(roost_opt status-position)"; [ "$cb" = bottom ] || cb=top
   v=""   # the value picked this iteration; only a real pick triggers apply-live
   # Hidden field 1 = the key (for cut -f1); field 2 = the display, with the label
   # padded to a fixed width so the value column aligns. A plain tab here would snap
@@ -99,6 +104,7 @@ while :; do
         glyphs        glyphs        "$cg" \
         separator     separator     "$cs" \
         notifications notifications "$cn" \
+        tabbar        "tab bar"     "$cb" \
         quit          quit          "" \
         | "$FZF" --reverse --no-info --with-nth=2 --delimiter='\t' --prompt='settings > ' | cut -f1)"
   case "$sel" in
@@ -108,6 +114,8 @@ while :; do
                [ -n "$v" ] && { s="$(roost_sep "$v")"; roost_cfg_set @roost-sep-left "$s"; roost_cfg_set @roost-sep-right "$s"; } ;;
     notifications) v="$(printf 'on\noff\n' | pick notifications)"
                [ -n "$v" ] && { [ "$v" = off ] && nb=tmux || nb=auto; roost_cfg_set @roost-notify-backend "$nb"; } ;;
+    tabbar)  v="$(printf 'top\nbottom\n' | pick "tab bar")"
+             [ -n "$v" ] && roost_cfg_set status-position "$v" ;;
     quit|"") break ;;
   esac
   # Apply live only when something was actually picked. A cancelled submenu (Esc)

@@ -18,6 +18,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The tab bar can sit at the bottom of the screen.** `roost settings` (or
+  `prefix S`) has a new **tab bar** row: pick **top** or **bottom**. The bar
+  moves at once and stays there after a reload. It is saved as
+  `set -g status-position "bottom"` in `~/.config/roost/roost.conf`, and
+  `roost init` keeps it. Tabs stacked in a column on the left or right are
+  not possible as a setting, because tmux draws the bar only as a row; #224
+  tracks that.
+
 - **`roost persist on` brings your fleet back by itself after a reboot
   (#192, #191).** Run it once: a login job (a LaunchAgent on macOS, a systemd
   user unit on Linux, one per roost server) places every saved session, window
