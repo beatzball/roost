@@ -14,7 +14,7 @@ roost session b   # a second workspace, sharing the same server
 roost new api     # open a new agent window named "api" and attach
 roost status      # list running sessions + agents and their states
 roost kill a      # kill session "a" (omit the name to stop the whole server)
-roost settings    # change theme/glyphs/separator/notifications, live
+roost settings    # change theme/glyphs/separator/notifications/tab bar, live
 ```
 
 `roost kill` with no session name stops the whole server: every session and every agent on it ends. `roost stop` and `roost down` are the same command. On a terminal it asks first. It prints what will end, for example `This ends 14 agents in 6 sessions.`, and stops the server only when you type `y`. Off a terminal (a script, a pipe) it does not ask: it refuses and exits 1 unless you pass `--yes` (or `-y`). `roost kill NAME` names one session and never asks.
@@ -44,7 +44,7 @@ The prefix is **`Ctrl-s`** and the bindings mirror a typical GNU-Screen-style tm
 | `prefix a` | **agent switcher** — fzf popup of all agents + state + elapsed time, with a live preview (see [below](#the-agent-switcher)) |
 | `prefix b` | **go to the most urgent agent** (error, else blocked) |
 | `prefix r` | reload roost config |
-| `prefix S` | **settings** — change theme/glyphs/separator/notifications, live |
+| `prefix S` | **settings** — change theme/glyphs/separator/notifications/tab bar, live |
 
 ## At-a-glance signals
 
