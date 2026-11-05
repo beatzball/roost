@@ -274,7 +274,7 @@ tmux -S "$ROOST_TEST_SOCK" source-file "$HERE/tmux/roost.conf" >/dev/null 2>&1
 assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "top" "(fixture) roost.conf puts the tab bar at the top"
 
 tb_run bottom
-assert_contains "$(cat "$tblog")" "tab bar       top" "the settings menu has a tab bar row showing top"
+assert_eq "$(grep -c "^tabbar$(printf '\t')tab bar *top\$" "$tblog")" "1" "the settings menu has a tab bar row showing top"
 assert_contains "$(cat "$tblog")" "$(printf '== tab bar > \ntop\nbottom')" "the tab bar submenu offers top and bottom"
 assert_contains "$(cat "$tbcfg/roost/roost.conf")" 'set -g status-position "bottom"' "picking bottom saves it to the user conf"
 assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "bottom" "picking bottom moves the bar on the running server"
@@ -282,7 +282,7 @@ tb_reload
 assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "bottom" "a reload (prefix r) keeps it at the bottom"
 
 tb_run top
-assert_contains "$(cat "$tblog")" "tab bar       bottom" "the row now shows bottom"
+assert_eq "$(grep -c "^tabbar$(printf '\t')tab bar *bottom\$" "$tblog")" "1" "the row now shows bottom"
 assert_eq "$(grep -c 'status-position' "$tbcfg/roost/roost.conf")" "1" "picking top replaces the line, no duplicate"
 assert_eq "$(tmux -S "$ROOST_TEST_SOCK" show-options -gqv status-position)" "top" "picking top moves it back"
 
@@ -290,4 +290,13 @@ tb_run ""
 assert_contains "$(cat "$tbcfg/roost/roost.conf")" 'set -g status-position "top"' "Esc in the submenu changes nothing"
 
 roost_test_teardown
+
+# With no server running, the row reads the saved file, and a hand-written
+# line without quotes counts.
+printf 'set -g status-position bottom\n' > "$tbcfg/roost/roost.conf"
+tb_run ""
+# The menu is shown twice in this run (pick the row, Esc, then quit), so the
+# row is there twice; neither may show top.
+assert_eq "$(grep -c "^tabbar$(printf '\t')tab bar *bottom\$" "$tblog")|$(grep -c "^tabbar$(printf '\t')tab bar *top\$" "$tblog")" "2|0" "no server: the row shows a hand-written bottom from the file"
+
 rm -rf "$tbcfg"; if [ -n "$TB_XDG_SAVE" ]; then export XDG_CONFIG_HOME="$TB_XDG_SAVE"; else unset XDG_CONFIG_HOME; fi

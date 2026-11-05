@@ -94,7 +94,9 @@ while :; do
   # user conf, which is sourced after tmux/roost.conf's `top`, so it wins on
   # start and on every reload. tmux draws the bar only as one row, so top and
   # bottom are the only places it can go.
-  cb="$(roost_opt status-position)"; [ "$cb" = bottom ] || cb=top
+  if roost_cfg_tmux has-session 2>/dev/null; then cb="$(roost_opt status-position)"
+  else cb="$(roost_cfg_file_tab_position "$(roost_cfg_path)")"; fi
+  [ "$cb" = bottom ] || cb=top
   v=""   # the value picked this iteration; only a real pick triggers apply-live
   # Hidden field 1 = the key (for cut -f1); field 2 = the display, with the label
   # padded to a fixed width so the value column aligns. A plain tab here would snap

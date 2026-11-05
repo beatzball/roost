@@ -90,7 +90,7 @@ Unlike `roost init` (which regenerates the whole config), `roost settings` edits
 
 The **theme**, **glyph**, and **separator** pickers preview live: as you move through the list the bar updates on the running server, **Enter** commits the choice, and **Esc** reverts to what you had. The currently-saved option is marked with a `✓`.
 
-![The roost settings menu: theme, glyphs, separator and notifications](/roost-settings.png)
+![The roost settings menu: theme, glyphs, separator, notifications and tab bar](/roost-settings.png)
 
 Drilling into **glyphs** shows each set with its own icons, and `✓` marks the
 one currently saved:

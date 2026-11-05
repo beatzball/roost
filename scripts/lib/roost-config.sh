@@ -131,6 +131,22 @@ roost_cfg_file_has() {
   [ -f "$1" ] && grep -q "^set -g $2 " "$1" 2>/dev/null
 }
 
+# roost_cfg_file_tab_position FILE -> top or bottom, from the last
+# status-position line in FILE; empty when there is none or its value is
+# neither.
+#
+# Its own reader, not roost_cfg_file_opt: that one reads only the quoted
+# `set -g KEY "VALUE"` form roost itself writes, and status-position is a tmux
+# option people also write by hand, as `set -g status-position bottom` or
+# `set-option -g status-position bottom # note`. Each of those must be read,
+# or `roost init` drops the line and `roost settings` shows the wrong value.
+roost_cfg_file_tab_position() {
+  local file="$1" v
+  [ -f "$file" ] || return 0
+  v="$(sed -n 's/^[[:space:]]*set\(-option\)\{0,1\}[[:space:]][[:space:]]*-g[[:space:]][[:space:]]*status-position[[:space:]][[:space:]]*"\{0,1\}\([a-z]*\)"\{0,1\}[[:space:]]*\(#.*\)\{0,1\}$/\2/p' "$file" 2>/dev/null | tail -1)"
+  case "$v" in top|bottom) printf '%s' "$v" ;; *) : ;; esac
+}
+
 # roost_opt KEY -> current value: from the running server, else the config file.
 roost_opt() {
   local key="$1"
