@@ -191,6 +191,17 @@ wait_cmd() { # PANE NAME — up to 5 s for the pane's foreground to be NAME
   while [ "$i" -lt 50 ]; do [ "$(TL display -p -t "$1" '#{pane_current_command}')" = "$2" ] && return 0; sleep 0.1; i=$((i+1)); done
   return 1
 }
+# log_quiet -> prints the stub log after watching it stay empty for 1 s. A
+# launch is asynchronous (a respawn, a background job), so a log read at once
+# can be empty while a launch is still on its way; a mutant that ran the
+# newest line in the background passed an immediate read (Task 6.6). A line
+# that lands in that second ends the wait and is printed, so the assertion
+# fails on it.
+log_quiet() {
+  local i=0
+  while [ "$i" -lt 10 ] && [ ! -s "$STUB_LOG" ]; do sleep 0.1; i=$((i+1)); done
+  cat "$STUB_LOG"
+}
 # after FILE TEXT N — the N lines right after the first line of FILE holding
 # TEXT (a fixed string), one per line.
 after() { awk -v t="$2" -v n="$3" 'f && n-- > 0 { print; next } !f && index($0, t) { f = 1 }' "$1"; }
@@ -210,7 +221,7 @@ assert_eq "$(after "$SHAPE_TMP/err" "no session id)" 4)" \
   "roost revive: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
 $CL" "...then every conversation of the pane's directory, newest first"
 assert_eq "$(cat "$SHAPE_TMP/out")" "" "...nothing on stdout"
-assert_eq "$(cat "$STUB_LOG")|$(ppid_of "$P")" "|$pid0" "...nothing launched (the stub log is empty), the pane untouched"
+assert_eq "$(log_quiet)|$(ppid_of "$P")" "|$pid0" "...nothing launched (the stub log is empty), the pane untouched"
 TL kill-pane -t "$P"
 
 : > "$STUB_LOG"
@@ -221,7 +232,7 @@ assert_eq "$rc|$(head -n 1 "$SHAPE_TMP/err")" "13|roost revive: '$P' has no reco
 assert_eq "$(after "$SHAPE_TMP/err" "no session id)" 4)" \
   "roost revive: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
 $CL" "...and the harness its command names gets the listing"
-assert_eq "$(cat "$STUB_LOG")" "" "...nothing launched"
+assert_eq "$(log_quiet)" "" "...nothing launched"
 TL kill-pane -t "$P"
 
 : > "$STUB_LOG"
@@ -233,7 +244,7 @@ assert_eq "$(after "$SHAPE_TMP/err" "no session id)" 3)" \
   "roost revive: codex holds these conversations for $DIR, newest first (printed, not run; pick one):
   codex resume $CX2
   codex resume $CX1" "...then its rollouts, newest first"
-assert_eq "$(cat "$STUB_LOG")" "" "...nothing launched"
+assert_eq "$(log_quiet)" "" "...nothing launched"
 TL kill-pane -t "$P"
 
 : > "$STUB_LOG"
@@ -324,8 +335,7 @@ assert_eq "$(after "$SHAPE_TMP/err" "$pcx ran codex with no recorded conversatio
   codex resume $CX2
   codex resume $CX1" "...a codex pane with no key: its rollouts"
 assert_contains "$(cat "$SHAPE_TMP/err")" "launched 0 agents" "...launched 0 agents"
-sleep 1
-assert_eq "$(cat "$STUB_LOG")" "" "nothing was launched from any listing (the stub log is empty)"
+assert_eq "$(log_quiet)" "" "nothing was launched from any listing (the stub log is empty)"
 for s in lnk lcmd lst lnest lcx; do TL kill-session -t "=$s" 2>/dev/null; done
 
 canary_check
