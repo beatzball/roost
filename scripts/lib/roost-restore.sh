@@ -476,15 +476,27 @@ roost_restore__respawn() {
 # (roost_restore_report): the save already judged it not the pane's agent,
 # so there was nothing to resume. --recent's choice is the person's, and is
 # not named here.
+#
+# A pane that ran an agent with NO key — a `harness` with no `session_id`, or
+# no identity and a `command` naming a harness (roost_restore__cmd_harness) —
+# whose directory is gone gets the same line and the same 13 (fix round 1):
+# --dry-run's action says `directory gone` for it and sets the 13, and the
+# real run must say and exit what the dry run said. It gets no §5.6 listing
+# (roost_restore__listing_of): every line would name a directory that is gone.
 roost_restore__not_resumed() {
   local h i d
+  d="$(roost_shape_get "$2" cwd)"
   if h="$(roost_shape_get "$2" harness)" && i="$(roost_shape_get "$2" session_id)"; then
-    d="$(roost_shape_get "$2" cwd)"
     if [ ! -d "$d" ]; then
       printf 'roost restore: pane %s (%s): %s %s not resumed: directory gone (%s)\n' \
         "$(roost_restore__addr "$2")" "$1" "$h" "$i" "$d" >&2
       ROOST_RESTORE_NOTRES=1
     fi
+  elif [ ! -d "$d" ] && ! roost_shape_get "$2" stale_reason >/dev/null 2>&1 \
+       && { h="$(roost_shape_get "$2" harness)" || h="$(roost_restore__cmd_harness "$2")"; }; then
+    printf 'roost restore: pane %s (%s): %s with no recorded conversation, not resumed: directory gone (%s)\n' \
+      "$(roost_restore__addr "$2")" "$1" "$h" "$d" >&2
+    ROOST_RESTORE_NOTRES=1
   fi
   return 0
 }
@@ -533,8 +545,10 @@ roost_restore__rec() {
   if h="$(roost_shape_get "$b" harness)"; then
     i="$(roost_shape_get "$b" session_id 2>/dev/null || true)"
     if [ -z "$r" ]; then
-      if [ -z "$i" ]; then r="no key"
-      elif [ ! -d "$(roost_shape_get "$b" cwd)" ]; then r="directory gone"
+      # `directory gone` before `no key` (fix round 1): --dry-run's action
+      # decides in that order, and the report must say what it said.
+      if [ ! -d "$(roost_shape_get "$b" cwd)" ]; then r="directory gone"
+      elif [ -z "$i" ]; then r="no key"
       elif [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ]; then r="--no-resume"
       elif roost_restore__will_resume "$b"; then r=pending
       else r="older than --recent"; fi
@@ -543,7 +557,9 @@ roost_restore__rec() {
     [ -n "$r" ] || r="stale $(roost_shape_get "$b" stale_reason 2>/dev/null || true)"
     sid="$(roost_shape_get "$b" stale_session_id 2>/dev/null || true)"
   elif h="$(roost_restore__cmd_harness "$b")"; then
-    [ -n "$r" ] || r="no key"
+    if [ -z "$r" ]; then
+      if [ ! -d "$(roost_shape_get "$b" cwd)" ]; then r="directory gone"; else r="no key"; fi
+    fi
   else
     h=""
   fi
@@ -586,19 +602,25 @@ roost_restore__cmd_harness() {
 # directory is the block's `cwd`, the pane's own: §5.6 lists "every
 # transcript whose own first `cwd` is the pane's directory".
 roost_restore__listing_of() {
-  local h r
+  local h r sh
   ROOST_RESTORE_LH="" ROOST_RESTORE_LS="" ROOST_RESTORE_LD=""
   if h="$(roost_shape_get "$1" harness)"; then
     roost_shape_get "$1" session_id >/dev/null 2>&1 && return 1
   elif r="$(roost_shape_get "$1" stale_reason)"; then
-    h="$(roost_restore__cmd_harness "$1")" || h="$(roost_shape_get "$1" stale_harness 2>/dev/null || true)"
-    [ "$r" = exited ] && ROOST_RESTORE_LS="$(roost_shape_get "$1" stale_session_id 2>/dev/null || true)"
+    sh="$(roost_shape_get "$1" stale_harness 2>/dev/null || true)"
+    h="$(roost_restore__cmd_harness "$1")" || h="$sh"
+    # The stale id goes first only in its OWN harness's list (fix round 1):
+    # an id of codex's store is no `claude --resume` line.
+    [ "$r" = exited ] && [ "$h" = "$sh" ] && ROOST_RESTORE_LS="$(roost_shape_get "$1" stale_session_id 2>/dev/null || true)"
   else
     h="$(roost_restore__cmd_harness "$1")" || return 1
   fi
   case "$h" in claude|codex) ;; *) return 1 ;; esac
   ROOST_RESTORE_LH="$h"
   ROOST_RESTORE_LD="$(roost_shape_get "$1" cwd)" || return 1
+  # A directory that is gone has nothing to list, and a line naming it would
+  # be one a person cannot run (fix round 1): the pane is "directory gone".
+  [ -d "$ROOST_RESTORE_LD" ] || return 1
   return 0
 }
 
@@ -1689,8 +1711,12 @@ roost_restore__action() {
     else printf -- '-|shell, not resumed: stale (%s %s)\n' "$r" "$sh"; fi
   elif h="$(roost_restore__cmd_harness "$1")"; then
     # No identity, and a command that names a harness (#191 Part 6, §5.6): the
-    # pane ran an agent roost has no key for, which the report names too.
-    if [ "$gone" = 1 ]; then printf '%s|shell in ~, not resumed: directory gone\n' "$h"
+    # pane ran an agent roost has no key for, which the report names too. A
+    # gone directory is the 13 the harness branch above gives, and the real
+    # run's (roost_restore__not_resumed; fix round 1).
+    if [ "$gone" = 1 ]; then
+      printf '%s|shell in ~, not resumed: directory gone\n' "$h"
+      [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ] || ROOST_RESTORE_NOTRES=1
     else printf '%s|shell, not resumed: no key\n' "$h"; fi
   elif [ "$gone" = 1 ]; then printf -- '-|shell in ~: directory gone\n'
   else printf -- '-|shell\n'; fi

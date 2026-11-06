@@ -372,7 +372,11 @@ roost_resume__claude_folder() {
 # by a second, untested reader names the wrong directory.
 roost_resume__codex_cwd() {
   local l v
-  IFS= read -r l < "$1" 2>/dev/null || [ -n "$l" ] || return 1
+  # The redirection's own error (a rollout no one may read, a file removed
+  # since `find` listed it) goes to /dev/null with it: `2>/dev/null` written
+  # after `< "$1"` on the `read` silences `read`, not the redirection, and a
+  # person saw a raw "Permission denied" (fix round 1).
+  { IFS= read -r l < "$1"; } 2>/dev/null || [ -n "$l" ] || return 1
   case "$l" in *'"type":"session_meta"'*) ;; *) return 1 ;; esac
   v="$(printf '%s\n' "$l" | grep -o '"cwd":"[^"]*"' | head -n 1)"
   [ -n "$v" ] || return 1
@@ -437,7 +441,12 @@ roost_resume_listing() {
           [ "$d" = "$dir" ] || continue
           m="$(roost_resume__mtime "$f")" || m=0
           rows="$rows$m $id"$'\n'
-        done <<< "$(find "$root" -type f -name 'rollout-*.jsonl' 2>/dev/null || true)"
+        # -H: follow `root` itself when it is a symbolic link (a store kept on
+        # another disk), which `find` otherwise lists as one link and never
+        # enters (fix round 1). Links below it are still not followed, so a
+        # link loop inside the store cannot run away. Claude's side needs
+        # nothing: a glob resolves a linked projects/ like any path.
+        done <<< "$(find -H "$root" -type f -name 'rollout-*.jsonl' 2>/dev/null || true)"
       fi ;;
   esac
   if [ -n "$st" ]; then
@@ -465,6 +474,11 @@ roost_resume_listing() {
 # differently. Prints nothing for a harness with no listing.
 roost_resume_print_listing() {
   case "$2" in claude|codex) ;; *) return 0 ;; esac
+  # DIR is printed in both lines, so it must be a path roost would use: a
+  # newline in it would print a line of its own that looks like roost's
+  # (fix round 1). roost_resume_listing refuses such a DIR too; this keeps
+  # the "holds no conversation" line from naming it.
+  roost_resume__path_ok "$3" || return 0
   local out
   if out="$(roost_resume_listing "$2" "$3" "${4:-}")"; then
     printf '%s: %s holds these conversations for %s, newest first (printed, not run; pick one):\n' "$1" "$2" "$3"
@@ -1149,6 +1163,15 @@ roost_revive() {
   case "$agree" in
     nested|other)
       echo "roost revive: '$raw' runs '$cmd', not $h: its $h key ${sid:-(none)} is stale — nothing resumed" >&2
+      # §9 Q4, revision 1: a stale key counts as none, so the same §5.6
+      # listing as the no-key branch below follows (fix round 1). Its
+      # harness is the one the pane's OWN command names, never the stale
+      # key's: a Claude pane carrying a nested codex key lists Claude's
+      # store, as restore does (roost_restore__listing_of). A command that
+      # names no harness (`other`: an editor) has nothing to list.
+      roost_close_harness "" "$cmd" ""; lh="$ROOST_CLOSE_HARNESS"
+      ld="$pcwd"; [ -n "$ld" ] || ld="$scwd"
+      [ -n "$lh" ] && [ -n "$ld" ] && roost_resume_print_listing "roost revive" "$lh" "$ld" >&2
       return 13 ;;
   esac
   if [ -z "$h" ] || [ -z "$sid" ]; then

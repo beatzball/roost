@@ -493,8 +493,10 @@ roost revive: claude holds these conversations for /home/me/w/roost, newest firs
 
 For codex the lines are `codex resume ID`. `restore` prints the same lines
 under the pane's own line in its report, and `restore --dry-run` prints them
-under the pane in its plan. When the agent in the pane had exited, its own
-last conversation is listed first.
+under the pane in its plan. In `restore`, when the agent in the pane had
+exited, its own last conversation is listed first. (`revive` does not list
+for such a pane: it resumes that conversation, as above.) A directory that
+is gone gets no lines, since none of them could run there.
 
 **roost prints these lines and never runs them.** Several panes often share
 one directory, so the newest conversation there may belong to another pane.

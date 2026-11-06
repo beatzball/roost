@@ -17,9 +17,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
   newest first, as `claude --resume ID` or `codex resume ID` lines.
   `restore --dry-run` shows the same lines in its plan. roost prints them
   and runs none: several panes can share a directory, so you pick the one
-  that was this pane's. When the agent had exited, its own conversation is
-  listed first. `restore` also now names a pane that ran Claude or codex
-  with no recorded conversation, which it skipped without a word before.
+  that was this pane's. In `restore`, when the agent had exited, its own
+  conversation is listed first. `restore` also now names a pane that ran
+  Claude, codex, pi, copilot or opencode with no recorded conversation,
+  which it skipped without a word before; only Claude and codex get the
+  list.
 
 - **The tab bar can sit at the bottom of the screen.** `roost settings` (or
   `prefix S`) has a new **tab bar** row: pick **top** or **bottom**. The bar
