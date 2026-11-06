@@ -1558,10 +1558,22 @@ roost_restore__reading_rule() {
 # ROOST_RESTORE_WHY; exit 2 when there is nothing to restore.
 #
 # Which save (§4.3, §3.6). No --from: this server's `shape` (Part 4 adds the
-# reading rule). --from STAMP-GEN: `shape` when it is that save, else
-# `history/STAMP-GEN` (Part 7 adds the offer's pin and `declined`). --from
-# FILE: that file, the caller's own choice. The SERVER is always the caller's
-# (`-L`/`-S`, ROOST_SOCKET), never the file's `socket` line.
+# reading rule). --from STAMP-GEN: looked for in four places, in this order
+# (§4.8, revisions 7 and 8), each matched by its own header's STAMP-GEN:
+#   1. `shape` — the newest save has no history/ name until the next save
+#      lands (§3.5 step 2), and with the server down no next save is coming;
+#   2. `history/STAMP-GEN`;
+#   3. `offer/save` — the restore offer's pin (scripts/lib/roost-offer.sh),
+#      there only while an offer holds offer/. It covers a pinned save the
+#      ring has dropped and nobody has declined yet, so the offer's `r` and
+#      `p` and a second terminal's `--dry-run --from STAMP-GEN` are one code
+#      path, with §3.6 step 4 applied, and the offer needs no private "file
+#      plus step 4" way in;
+#   4. `declined` — a save a person turned down at the offer: the line the
+#      offer printed names it by STAMP-GEN, and it must keep working after
+#      the ring has dropped the save.
+# --from FILE: that file, the caller's own choice. The SERVER is always the
+# caller's (`-L`/`-S`, ROOST_SOCKET), never the file's `socket` line.
 roost_restore_pick() {
   local sdir="$1" from="$2"
   ROOST_RESTORE_FILE="" ROOST_RESTORE_WHY="" ROOST_RESTORE_BYFILE=0
@@ -1581,6 +1593,10 @@ roost_restore_pick() {
         ROOST_RESTORE_FILE="$sdir/shape"
       elif [ -n "$sdir" ] && [ -f "$sdir/history/$from" ]; then
         ROOST_RESTORE_FILE="$sdir/history/$from"
+      elif [ -n "$sdir" ] && [ -f "$sdir/offer/save" ] && [ "$(roost_restore__stampgen "$sdir/offer/save")" = "$from" ]; then
+        ROOST_RESTORE_FILE="$sdir/offer/save"
+      elif [ -n "$sdir" ] && [ -f "$sdir/declined" ] && [ "$(roost_restore__stampgen "$sdir/declined")" = "$from" ]; then
+        ROOST_RESTORE_FILE="$sdir/declined"
       else
         printf 'roost restore: no save %s for this server (roost restore --list shows them)\n' "$from" >&2
         return 2
@@ -1803,27 +1819,52 @@ roost_restore_dry_run() {
   return "$rc"
 }
 
+# roost_restore__bootgen FILE -> "BOOT GEN" from a save's header: what names
+# one save, whatever file holds it (§4.8: `declined` is matched by its
+# header's boot and gen, never by boot alone, which every save of one
+# server's run shares).
+roost_restore__bootgen() { printf '%s %s\n' "$(roost_restore__hdr "$1" boot)" "$(roost_restore__hdr "$1" gen)"; }
+
 # roost_restore_list SHAPEDIR -> prints every save (§3.6 --list): `shape`,
 # then `history/` newest first, one line each with its STAMP-GEN, trigger
-# and counts; `*` marks the one a restore with no --from picks.
+# and counts; `*` marks the one a restore with no --from picks. The save a
+# person declined at the restore offer (§4.8) is marked `declined`, and when
+# the ring has dropped it — it is in neither `shape` nor history/ — it is
+# listed last, from `declined` itself, since `--from STAMP-GEN` still finds
+# it there (F N9).
 roost_restore_list() {
-  local sdir="$1" f mark where pick=""
-  if [ -z "$sdir" ] || { [ ! -f "$sdir/shape" ] && [ ! -d "$sdir/history" ]; }; then
+  local sdir="$1" f mark where pick="" dbg="" dseen=0
+  if [ -z "$sdir" ] || { [ ! -f "$sdir/shape" ] && [ ! -d "$sdir/history" ] && [ ! -f "$sdir/declined" ]; }; then
     printf 'roost restore: no saves for this server\n'
     roost_restore__list_pending "$sdir"
     return 0
   fi
   # The one the reading rule picks (§3.6 steps 1 to 3), marked `*`.
   if [ -f "$sdir/shape" ]; then roost_restore__reading_rule "$sdir"; pick="$ROOST_RESTORE_FILE"; fi
+  # The declined save, and whether the ring still holds it: decided here,
+  # before the listing's pipe, whose loop runs in a subshell and could not
+  # tell this shell what it saw.
+  if [ -f "$sdir/declined" ]; then
+    dbg="$(roost_restore__bootgen "$sdir/declined")"
+    for f in "$sdir/shape" "$sdir"/history/*; do
+      [ -f "$f" ] && [ "$(roost_restore__bootgen "$f")" = "$dbg" ] && { dseen=1; break; }
+    done
+  fi
   { [ -f "$sdir/shape" ] && printf '%s\n' "$sdir/shape"
     # `|| true`: with no history/ yet `ls` fails, and under bin/roost's
     # `set -e -o pipefail` that failure ended --list before the rest of it
     # ran (found by Task 3.11, whose pending listing comes after this loop).
     ls -1 "$sdir/history" 2>/dev/null | sort -r | while IFS= read -r f; do printf '%s\n' "$sdir/history/$f"; done || true
+    [ -n "$dbg" ] && [ "$dseen" = 0 ] && printf '%s\n' "$sdir/declined"
   } | while IFS= read -r f; do
     [ -f "$f" ] || continue
-    if [ "$f" = "$sdir/shape" ]; then where="shape"; else where="history"; fi
+    if [ "$f" = "$sdir/shape" ]; then where="shape"
+    elif [ "$f" = "$sdir/declined" ]; then where="kept only as declined"
+    else where="history"; fi
     if [ "$f" = "$pick" ]; then mark="*" where="$where (restore picks this)"; else mark=" "; fi
+    if [ -n "$dbg" ] && [ "$(roost_restore__bootgen "$f")" = "$dbg" ]; then
+      where="$where; declined at the restore offer"
+    fi
     printf '%s %s  %s  %s sessions, %s windows, %s panes  %s\n' "$mark" "$(roost_restore__stampgen "$f")" \
       "$(roost_restore__hdr "$f" trigger)" "$(grep -c '^session ' "$f")" "$(grep -c '^window ' "$f")" \
       "$(grep -c '^pane ' "$f")" "$where"
