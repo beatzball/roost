@@ -423,7 +423,11 @@ assert_eq "$(after "$SHAPE_TMP/dry2" "session gmix" 3 | sed 's/  */ /g' | tail -
 R restore >/dev/null 2>"$SHAPE_TMP/err2"; rrc=$?
 first_pane() { TL list-panes -s -t "=$1:" -F '#{pane_id}' 2>/dev/null | head -1; }
 pg="$(first_pane gcmd)"; pk="$(first_pane gkey)"; pm="$(first_pane gmix)"
-assert_eq "$rrc" "$drc" "the real run exits as --dry-run said it would ($drc)"
+# The value is pinned, not only the agreement (fix round 2, the jury's
+# ruling): a pane with NO key never makes restore exit 13, gone directory or
+# not. Spec §8.1 test 3 gives 13 only to a pane that had a key, and the same
+# no-key pane with its directory present exits 0.
+assert_eq "$drc|$rrc" "0|0" "a no-key pane in a gone directory: --dry-run and the real run both exit 0"
 assert_contains "$(grep -F -- "($pg)" "$SHAPE_TMP/err2")" "directory gone" "the report: the no-identity pane's line says 'directory gone'"
 assert_contains "$(grep -F -- "($pk)" "$SHAPE_TMP/err2")" "directory gone" "the report: the harness-with-no-id pane's line says 'directory gone'"
 assert_eq "$(grep -c -F -- "--resume" "$SHAPE_TMP/err2" | tr -d ' ')|$(grep -c -F 'holds these conversations for '"$GONE" "$SHAPE_TMP/err2" | tr -d ' ')" "3|0" \
@@ -432,6 +436,20 @@ assert_eq "$(after "$SHAPE_TMP/err2" "$pm carries a stale codex key" 2 | tail -n
   "the report: an exited key of another harness is not put first"
 assert_eq "$(log_quiet)" "" "nothing launched"
 for s in gcmd gkey gmix; do TL kill-session -t "=$s" 2>/dev/null; done
+
+echo "== a pane WITH a key in a gone directory still exits 13, in both runs (fix round 2 control) =="
+{ printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' \
+    'saved 2026-11-06T12:00:00Z' 'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' ''
+  gblk gkeyed 960 "$GONE" "harness claude
+session_id $U1"
+} > "$SD/shape"
+R restore --dry-run >/dev/null 2>&1; drc=$?
+: > "$STUB_LOG"
+R restore >/dev/null 2>"$SHAPE_TMP/err3"; rrc=$?
+assert_eq "$drc|$rrc" "13|13" "a keyed pane in a gone directory: --dry-run and the real run both exit 13"
+assert_contains "$(cat "$SHAPE_TMP/err3")" "claude $U1 not resumed: directory gone" "...and the report says why"
+assert_eq "$(log_quiet)" "" "...nothing launched"
+TL kill-session -t "=gkeyed" 2>/dev/null
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

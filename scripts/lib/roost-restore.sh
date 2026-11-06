@@ -479,10 +479,13 @@ roost_restore__respawn() {
 #
 # A pane that ran an agent with NO key — a `harness` with no `session_id`, or
 # no identity and a `command` naming a harness (roost_restore__cmd_harness) —
-# whose directory is gone gets the same line and the same 13 (fix round 1):
-# --dry-run's action says `directory gone` for it and sets the 13, and the
-# real run must say and exit what the dry run said. It gets no §5.6 listing
-# (roost_restore__listing_of): every line would name a directory that is gone.
+# whose directory is gone gets the same words (fix round 1) but NOT the 13
+# (fix round 2, the jury's ruling): §8.1 test 3 gives 13 only to a pane that
+# had a key, and the same no-key pane with its directory present exits 0 —
+# there was never anything to resume, so a gone directory loses nothing.
+# --dry-run's action says the same and sets no 13 either. It gets no §5.6
+# listing (roost_restore__listing_of): every line would name a directory
+# that is gone.
 roost_restore__not_resumed() {
   local h i d
   d="$(roost_shape_get "$2" cwd)"
@@ -496,7 +499,6 @@ roost_restore__not_resumed() {
        && { h="$(roost_shape_get "$2" harness)" || h="$(roost_restore__cmd_harness "$2")"; }; then
     printf 'roost restore: pane %s (%s): %s with no recorded conversation, not resumed: directory gone (%s)\n' \
       "$(roost_restore__addr "$2")" "$1" "$h" "$d" >&2
-    ROOST_RESTORE_NOTRES=1
   fi
   return 0
 }
@@ -1697,7 +1699,12 @@ roost_restore__action() {
   if h="$(roost_shape_get "$1" harness)"; then
     if [ "$gone" = 1 ]; then
       printf '%s|shell in ~, not resumed: directory gone\n' "$h"
-      [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ] || ROOST_RESTORE_NOTRES=1
+      # The real run's 13 is for a pane that HAD a key (§8.1 test 3; fix
+      # round 2): a harness with no session id in a gone directory exits 0,
+      # as it does with its directory present (roost_restore__not_resumed).
+      if [ "${ROOST_RESTORE_NORESUME:-0}" != 1 ] && roost_shape_get "$1" session_id >/dev/null 2>&1; then
+        ROOST_RESTORE_NOTRES=1
+      fi
     elif ! roost_shape_get "$1" session_id >/dev/null 2>&1; then
       # A harness with no session id: §4.3's `no key`. Before Part 6 this
       # fell through to will_resume's refusal and read "older than --recent".
@@ -1712,11 +1719,9 @@ roost_restore__action() {
   elif h="$(roost_restore__cmd_harness "$1")"; then
     # No identity, and a command that names a harness (#191 Part 6, §5.6): the
     # pane ran an agent roost has no key for, which the report names too. A
-    # gone directory is the 13 the harness branch above gives, and the real
-    # run's (roost_restore__not_resumed; fix round 1).
-    if [ "$gone" = 1 ]; then
-      printf '%s|shell in ~, not resumed: directory gone\n' "$h"
-      [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ] || ROOST_RESTORE_NOTRES=1
+    # gone directory is said, and is no 13: no key, nothing to resume (fix
+    # round 2; roost_restore__not_resumed).
+    if [ "$gone" = 1 ]; then printf '%s|shell in ~, not resumed: directory gone\n' "$h"
     else printf '%s|shell, not resumed: no key\n' "$h"; fi
   elif [ "$gone" = 1 ]; then printf -- '-|shell in ~: directory gone\n'
   else printf -- '-|shell\n'; fi

@@ -28,9 +28,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
   and runs none: several panes can share a directory, so you pick the one
   that was this pane's. In `restore`, when the agent had exited, its own
   conversation is listed first. `restore` also now names a pane that ran
-  Claude, codex, pi, copilot or opencode with no recorded conversation,
-  which it skipped without a word before; only Claude and codex get the
-  list.
+  Claude, codex, copilot or opencode with no recorded conversation, which it
+  skipped without a word before; only Claude and codex get the list.
 
 - **The tab bar can sit at the bottom of the screen.** `roost settings` (or
   `prefix S`) has a new **tab bar** row: pick **top** or **bottom**. The bar
