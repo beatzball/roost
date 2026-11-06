@@ -184,6 +184,168 @@ assert_contains "$(cat "$SD/login.log")" "declined at the restore offer" "...and
 stop_server
 rm -f "$SD/persist"
 
+# ============================================================================
+# The outer server: a real terminal for `roost` (§8.1 test 12's opening)
+# ============================================================================
+CL="$TMUX_TMPDIR/cl"
+CLT() { tmux -S "$CL" "$@"; }
+# Every agent marker of §4.8 (with Task 7.1's additions) and every name the
+# live smoke tests clear (tests/live/claude-decline-smoke.sh), and the
+# offer's own switch: a case that wants one sets it back on its own line.
+OFFER_UNSET="-u TMUX -u TMUX_PANE -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDE_CODE_SESSION_ID
+  -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_EXECPATH -u CLAUDE_PID
+  -u CLAUDE_EFFORT -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN
+  -u CLAUDE_CODE_SESSION_ATTENDED -u CODEX_THREAD_ID -u COPILOT_CLI -u COPILOT_AGENT_SESSION_ID
+  -u PI_CODING_AGENT -u AI_AGENT -u ROOST_NO_OFFER"
+OFFER_UNSET="$(printf '%s' "$OFFER_UNSET" | tr '\n' ' ')"
+NP=0
+# opane "VAR=x ..." [ARGS...] — `roost ARGS` in a new pane of the outer
+# server; OP is the pane, ON its number. Everything the pane prints goes to
+# $SHAPE_TMP/pl.ON (pipe-pane: the lines printed before an attach stay
+# readable after the attach has taken the screen), and roost's exit code to
+# $SHAPE_TMP/rc.ON. The pane waits for its go file, so pipe-pane is in place
+# before roost prints its first byte. The wrapper shell traps INT with a
+# handler (never ignores it: an ignored signal is inherited, and roost could
+# then not trap it): a Ctrl-C reaches the whole foreground group, and without
+# it the wrapper dies before it can write roost's exit code (measured).
+opane() {
+  local extra="$1" go cmd; shift
+  NP=$((NP + 1)); ON="$NP"; go="$SHAPE_TMP/go.$ON"
+  cmd="trap true INT; i=0; while [ ! -e $go ] && [ \$i -lt 100 ]; do sleep 0.1; i=\$((i+1)); done; env $OFFER_UNSET ROOST_SOCKET=roost $extra $ROOST $*; echo \$? > $SHAPE_TMP/rc.$ON; exec sleep 600"
+  if ! CLT has-session 2>/dev/null; then
+    CLT -f /dev/null new-session -d -s c0 -x 220 -y 50 "$cmd"
+    OP="$(CLT display -p -t c0: '#{pane_id}')"
+  else
+    OP="$(CLT new-window -d -P -F '#{pane_id}' -t c0: "$cmd")"
+  fi
+  CLT pipe-pane -t "$OP" "cat >> $SHAPE_TMP/pl.$ON"
+  : > "$go"
+}
+plog() { cat "$SHAPE_TMP/pl.$1" 2>/dev/null | tr -d '\r'; }
+in_log() { plog "$1" | grep -qF -- "$2"; }
+rc_of() { cat "$SHAPE_TMP/rc.$1" 2>/dev/null; }
+# The pid in offer/'s owner record (§3.5's owner rule: "PID LSTART").
+offer_pid() { readlink "$SD/offer/owner" 2>/dev/null | cut -d' ' -f1; }
+SUMMARY="roost: a saved fleet from"
+done_outer() { CLT kill-server 2>/dev/null; stop_server; }
+
+# ============================================================================
+# Task 7.3 — when the offer is asked, its lock, and the pin
+# ============================================================================
+echo "== §8.1 test 12 (a): shown, and pinned =="
+fresh_dir
+S0="$(sg "$SD/shape")"
+opane "ROOST_TEST_NOW=$(( $(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' 2026-11-01T10:00:00Z +%s 2>/dev/null || date -u -d 2026-11-01T10:00:00Z +%s) + 7200 ))"
+wait_for "in_log $ON '$SUMMARY'" 10; assert_true $? "a bare roost shows the summary"
+sl="$(plog "$ON" | grep -F "$SUMMARY" | head -1)"
+assert_contains "$sl" "2 sessions" "...naming 2 sessions"
+assert_contains "$sl" "4 panes" "...4 panes"
+assert_contains "$sl" "1 of 2 agents would resume" "...1 of 2 agents would resume"
+assert_contains "$sl" "from 2 h ago" "...and an age from ROOST_TEST_NOW"
+assert_true "$(in_log "$ON" "l restore at login from now on: off" && echo 0 || echo 1)" "...then the keys line, l off"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "no inner server exists while it waits"
+pid="$(offer_pid)"
+assert_contains "$(ps -o args= -p "$pid" 2>/dev/null)" "bin/roost" "offer/ names the offer's pid"
+assert_eq "$(ino "$SD/offer/save")" "$(ino "$SD/shape")" "offer/save is the planted save (its inode)"
+assert_eq "$(cat "$SD/offer/stamp" 2>/dev/null)" "$S0" "offer/stamp holds its STAMP-GEN"
+out="$(R restore --dry-run --from "$S0" 2>&1)"
+assert_contains "$out" "from $S0" "a second terminal's --dry-run --from STAMP-GEN finds it"
+CLT send-keys -t "$OP" C-c
+wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+assert_eq "$(rc_of "$ON")|$([ -e "$SD/offer" ] && echo held || echo free)" "130|free" "Ctrl-C: exit 130, offer/ released"
+opane "" new x
+wait_for "in_log $ON '$SUMMARY'" 10; assert_true $? "roost new x with the server down asks too"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+done_outer
+
+echo "== §8.1 test 12 (b): not shown without a person =="
+for how in stdin pipe; do
+  fresh_dir
+  if [ "$how" = stdin ]; then out="$(env $OFFER_UNSET ROOST_SOCKET=roost "$ROOST" < /dev/null 2>&1)"
+  else out="$(env $OFFER_UNSET ROOST_SOCKET=roost "$ROOST" 2>&1 | cat)"; fi
+  assert_not_contains "$out" "$SUMMARY" "$how: no summary line"
+  wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+  assert_eq "$(sessions)" "main " "$how: the inner server starts with today's one session"
+  assert_eq "$([ -e "$SD/declined" ] && echo yes || echo no)" "no" "$how: declined is not written"
+done
+for m in CLAUDECODE=1 CODEX_THREAD_ID=x COPILOT_CLI=1 PI_CODING_AGENT=1 AI_AGENT=1 ROOST_NO_OFFER=1 --no-offer; do
+  fresh_dir
+  case "$m" in --*) opane "" "$m" ;; *) opane "$m" ;; esac
+  wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+  assert_eq "$(sessions)" "main " "$m: within 5 s the inner server holds today's one session"
+  assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "$m: ...no summary line"
+  assert_eq "$([ -e "$SD/declined" ] || [ -e "$SD/offer" ] && echo yes || echo no)" "no" "$m: ...neither declined nor offer/"
+  done_outer
+done
+
+echo "== §8.1 test 12 (c): not shown when declined; a new save of it is =="
+fresh_dir
+ln "$SD/shape" "$SD/declined"
+opane ""
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+assert_eq "$(sessions)" "main " "declined: the inner server starts as today"
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "...with no summary line"
+done_outer
+rm -f "$SD/shape"; plant shared 6
+opane ""
+wait_for "in_log $ON '$SUMMARY'" 10; assert_true $? "the same fleet saved again (another gen) is asked about"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+done_outer
+
+echo "== §8.1 test 12 (d): not shown when the service is on =="
+fresh_dir
+: > "$SD/persist"; rm -rf "$SD/login"
+opane ""
+wait_for "[ \"\$(sessions)\" = 'main work ' ]" 10
+assert_eq "$(sessions)" "main work " "persist marker, no login marker: the self-restore places the fleet"
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "...and no prompt"
+done_outer
+rm -f "$SD/persist"
+
+echo "== §8.1 test 12 (e): not shown when nothing is worth offering, or not here =="
+fresh_dir
+mkdir -p "$SD/closed/$OLDBOOT"; printf '%%1\n%%2\n%%3\n%%4\n' > "$SD/closed/$OLDBOOT/close.1"
+opane ""
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "closed on purpose: no prompt"
+done_outer
+fresh_dir one
+opane ""
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "one unkeyed shell: no prompt"
+done_outer
+fresh_dir
+opane "ROOST_SHAPE_DIR="
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "ROOST_SHAPE_DIR=: no prompt"
+done_outer
+fresh_dir
+opane "" spawn x sh
+wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+assert_eq "$(rc_of "$ON")" "0" "roost spawn x sh with the server down: exit 0"
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "...and no prompt"
+done_outer
+stop_server; rm -rf "$SD"; mkdir -p "$SD"; PLANT_HOST=elsewhere.example plant shared
+opane ""
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+assert_true "$(in_log "$ON" "$SUMMARY" && echo 1 || echo 0)" "another host: no prompt"
+assert_true "$(in_log "$ON" "roost: a fleet saved on elsewhere.example is not offered here (roost restore --list)" && echo 0 || echo 1)" "...and the not-offered-here line"
+done_outer
+
+echo "== §8.1 test 12 (j), the lock half: two terminals, one offer =="
+fresh_dir
+opane ""; A="$OP" AN="$ON"
+opane ""; B="$OP" BN="$ON"
+wait_for "{ in_log $AN '$SUMMARY' || in_log $BN '$SUMMARY'; } && { in_log $AN 'waiting for the restore offer in another terminal' || in_log $BN 'waiting for the restore offer in another terminal'; }" 10
+if in_log "$AN" "$SUMMARY"; then F="$A" FN="$AN" W="$B" WN="$BN"; else F="$B" FN="$BN" W="$A" WN="$AN"; fi
+assert_true "$(in_log "$FN" "$SUMMARY" && echo 0 || echo 1)" "one terminal shows the summary"
+assert_true "$(in_log "$WN" "waiting for the restore offer in another terminal (pid $(offer_pid))" && echo 0 || echo 1)" "...the other waits for it, naming its pid"
+assert_true "$(in_log "$WN" "$SUMMARY" && echo 1 || echo 0)" "...and shows no summary"
+kill -9 "$(offer_pid)"
+wait_for "in_log $WN '$SUMMARY'" 10; assert_true $? "kill -9 the first: the second takes offer/ over and asks"
+CLT send-keys -t "$W" C-c; wait_for "[ -n \"\$(rc_of $WN)\" ]" 10
+done_outer
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

@@ -1759,9 +1759,15 @@ roost_restore__renumbers() {
 # revision 6: the one format, so the restore offer reuses it) and returns the
 # exit code the real run would give. Reads files only: it never starts a
 # server, and with no server running it skips nothing as existing.
+#
+# ROOST_RESTORE_DRY_S, _W, _P, _K and _R count, as it prints them, the
+# sessions it would make (a group's later member included), windows, panes,
+# panes with a key, and panes it would resume: the restore offer's summary
+# (§4.8) is these counts, so it can never disagree with the tree under it.
 roost_restore_dry_run() {
   local f a rc=0 name g wf pf idx wn n pn h act running=0
   ROOST_RESTORE_NOTRES=0
+  ROOST_RESTORE_DRY_S=0 ROOST_RESTORE_DRY_W=0 ROOST_RESTORE_DRY_P=0 ROOST_RESTORE_DRY_K=0 ROOST_RESTORE_DRY_R=0
   server_running && running=1
   if [ "$running" = 1 ]; then
     ROOST_SHAPE_TFLAG="$_SOCKET_FLAG" ROOST_SHAPE_TSOCK="$SOCKET"
@@ -1777,7 +1783,7 @@ roost_restore_dry_run() {
     name="$(roost_restore__addr "$f")"
     if g="$(roost_shape_get "$f" group)"; then
       if roost_restore__exists "$name"; then printf 'session %s (exists - skipped)\n' "$name"; rc=12
-      else printf "session %s (joins %s's group)\n" "$name" "$g"; fi
+      else printf "session %s (joins %s's group)\n" "$name" "$g"; ROOST_RESTORE_DRY_S=$((ROOST_RESTORE_DRY_S + 1)); fi
       continue
     fi
     n=0
@@ -1788,11 +1794,13 @@ roost_restore_dry_run() {
       printf 'session %s (exists - skipped, %s panes not restored)\n' "$name" "$n"; rc=12; continue
     fi
     printf 'session %s\n' "$name"
+    ROOST_RESTORE_DRY_S=$((ROOST_RESTORE_DRY_S + 1))
     while IFS= read -r wf; do
       [ -n "$wf" ] || continue
       a="$(roost_restore__addr "$wf")"; idx="${a##*:}"
       wn="$(roost_shape_get "$wf" name)" || wn="-"
       printf '  window %s %s\n' "$idx" "$wn"
+      ROOST_RESTORE_DRY_W=$((ROOST_RESTORE_DRY_W + 1))
       while IFS= read -r pf; do
         [ -n "$pf" ] || continue
         pn="$(roost_shape_get "$pf" name)" || pn="-"
@@ -1801,6 +1809,9 @@ roost_restore_dry_run() {
         act="$(cat "$ROOST_RESTORE_PD/.act")"; h="${act%%|*}" act="${act#*|}"
         printf '    pane %s %-12s %-30s %-8s %s\n' "$(roost_restore__addr "$pf" | sed 's/.*\.//')" \
           "$pn" "$(roost_shape_get "$pf" cwd)" "$h" "$act"
+        ROOST_RESTORE_DRY_P=$((ROOST_RESTORE_DRY_P + 1))
+        roost_shape_get "$pf" session_id >/dev/null 2>&1 && ROOST_RESTORE_DRY_K=$((ROOST_RESTORE_DRY_K + 1))
+        [ "$act" = resume ] && ROOST_RESTORE_DRY_R=$((ROOST_RESTORE_DRY_R + 1))
         # §5.6's store listing, indented under the pane it is for (#191 Part
         # 6): the same lines the real run's report prints, without its
         # header, since the pane line above already says why. Printed, never

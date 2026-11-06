@@ -376,6 +376,33 @@ pane_cmd_wired() { [ "$(t show-options -gqv @roost-wiring-active 2>/dev/null || 
 
 attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$1"; }
 
+# offer_first KIND SESSION — the restore offer (#191 Part 7, spec §4.8), for
+# the three verbs that attach a person: a bare `roost` (KIND up), `roost
+# session NAME` and `roost new` (it ends in an attach, and if it did not ask,
+# the server it starts would end the offer for good). `roost spawn` and every
+# other verb that calls ensure_session without attaching never ask: those are
+# scripts and agents, not a person waiting to attach.
+#
+# After it, OFFER_SESSION is the session to attach to (SESSION, unless `r`
+# restored a fleet with no "main" for a bare `roost`). The caller then runs
+# ensure_session as today, offer_end, and its `exec`. When no offer was
+# asked — not a person, the server running, saving off, persist on, nothing
+# worth offering — nothing is printed and nothing differs from before.
+offer_first() {
+  OFFER_SESSION="$2"
+  . "$ROOST_HOME/scripts/lib/roost-offer.sh"
+  roost_offer_ask "$1" "$2"
+}
+
+# offer_end — the offer's last steps before the attach, in §4.8's order:
+# release offer/ last, just before the `exec`, so whoever waits on it finds
+# the server running. A no-op when no offer was asked.
+offer_end() {
+  [ -n "${ROOST_OFFER_CHOICE:-}" ] || return 0
+  roost_offer_release
+  trap - EXIT INT TERM HUP
+}
+
 # @N (window-id) / %N (pane-id) / anything with a colon → verbatim; a bare word → default session.
 target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
 
@@ -704,21 +731,35 @@ render_stdin() {
   return 0
 }
 
+# A leading `--no-offer` (`roost --no-offer`, `roost --no-offer session
+# NAME`): no restore offer for this call (§4.8 check 2b), the switch for a
+# script that attaches through a pty on purpose. Only before the verb.
+ROOST_OFFER_FLAG_OFF=0
+if [ "${1:-}" = --no-offer ]; then ROOST_OFFER_FLAG_OFF=1; shift; fi
+
 case "${1:-up}" in
   up|start|"")
-    attach_session "$DEFAULT_SESSION"
+    offer_first up "$DEFAULT_SESSION"
+    ensure_session "$OFFER_SESSION"
+    offer_end
+    exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$OFFER_SESSION"
     ;;
   session|s)
     need_arg "${2:-}" "usage: roost session NAME"; sess="$2"
-    attach_session "$sess"
+    offer_first session "$sess"
+    ensure_session "$OFFER_SESSION"
+    offer_end
+    exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$OFFER_SESSION"
     ;;
   new)
     name="${2:-agent}"; sess="${3:-$DEFAULT_SESSION}"
     reject_bad_name "$name" new
+    offer_first new "$sess"; sess="$OFFER_SESSION"
     ensure_session "$sess"
     # `=$sess:` — trailing colon so a numeric session name isn't parsed as a window
     # index (matches spawn; a bare `=0` fails "index 0 in use").
     t new-window -t "=$sess:" -n "$name" -c "$PWD"
+    offer_end
     exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$sess"
     ;;
   state)
