@@ -262,10 +262,14 @@ EOF
 # stub_store_add ID CWD — a conversation in the stub Claude store:
 # $CLAUDE_CONFIG_DIR/projects/<folder>/<ID>.jsonl holding one "cwd" line.
 # The folder is CWD with every `/` and `.` written as `-` (the measured rule,
-# spec §2.1: the project folder's name is not "`/` as `-`" alone).
+# spec §2.1: the project folder's name is not "`/` as `-`" alone), and since
+# Probe 6.1 (docs/airig/probes/persist-6-claude-folders.md) every other ASCII
+# byte that is not a letter or digit too: `_` and a space are `-` as well.
+# Only the listing (#191 Part 6) reads a folder name, and only to narrow; the
+# paths given here are ASCII, so a byte is a character.
 stub_store_add() {
   local id="$1" cwd="$2" folder
-  folder="$(printf '%s' "$cwd" | tr '/.' '--')"
+  folder="$(printf '%s' "$cwd" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
   mkdir -p "$CLAUDE_CONFIG_DIR/projects/$folder"
   printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$cwd" "$id" \
     > "$CLAUDE_CONFIG_DIR/projects/$folder/$id.jsonl"
