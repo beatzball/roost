@@ -371,7 +371,12 @@ roost_resume__claude_folder() {
 # roost_resume_first_cwd's rule, for the same reason: a JSON escape decoded
 # by a second, untested reader names the wrong directory.
 roost_resume__codex_cwd() {
-  local l v
+  # `l` starts empty, not merely declared: when the read below fails (an
+  # unreadable rollout) it assigns nothing, and bash 5 under `set -u` then
+  # stops at `[ -n "$l" ]` with "l: unbound variable" — bash 3.2 reads a
+  # declared-only local as empty, so only CI's Ubuntu runner, a normal
+  # user who cannot read a mode-000 file, saw it (fix round 3).
+  local l="" v
   # The redirection's own error (a rollout no one may read, a file removed
   # since `find` listed it) goes to /dev/null with it: `2>/dev/null` written
   # after `< "$1"` on the `read` silences `read`, not the redirection, and a
