@@ -399,6 +399,7 @@ offer_first() {
 # the server running. A no-op when no offer was asked.
 offer_end() {
   [ -n "${ROOST_OFFER_CHOICE:-}" ] || return 0
+  roost_offer_lines "$OFFER_SESSION"
   roost_offer_release
   trap - EXIT INT TERM HUP
 }

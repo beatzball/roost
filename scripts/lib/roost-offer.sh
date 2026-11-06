@@ -282,11 +282,11 @@ roost_offer__keys() {
 
 # roost_offer_ask KIND SESSION -> ROOST_OFFER_CHOICE: empty when no offer was
 # asked (`roost` goes on exactly as today, with nothing printed), else the
-# person's answer. While a choice is set, offer/ is held, and the caller
-# releases it (roost_offer_release) just before its `exec`. Ctrl-C, end of
-# input, or any other way out releases it through the trap, starts nothing,
-# declines nothing, and exits 130: leaving is not a decision, so the next
-# `roost` asks again.
+# person's answer: r, n, enter or timeout. While a choice is set, offer/ is
+# held, and the caller releases it (roost_offer_release) just before its
+# `exec`. Ctrl-C, end of input, or any other way out releases it through the
+# trap, starts nothing, declines nothing, and exits 130: leaving is not a
+# decision, so the next `roost` asks again.
 roost_offer_ask() {
   ROOST_OFFER_CHOICE="" ROOST_OFFER_HELD=0 ROOST_OFFER_L=off ROOST_OFFER_SD="" ROOST_OFFER_STAMP=""
   roost_offer__person || return 0
@@ -301,15 +301,120 @@ roost_offer_ask() {
   fi
   roost_offer__summary
   roost_offer__prompt
+  # `n` writes `declined` FIRST, before any server exists (§4.8: then
+  # ensure_session, then the line, then the attach), so a login job that `l`
+  # starts later meets a pin already declined.
+  [ "$ROOST_OFFER_CHOICE" = n ] && roost_offer__decline
+  return 0
 }
 
-# roost_offer__prompt — one key at a time from stdin, which check 2 proved
-# is a terminal; plain lines on stdout. No TUI library, no new dependency.
+# roost_offer__prompt -> ROOST_OFFER_CHOICE. One key at a time from stdin,
+# which check 2 proved is a terminal; plain lines on stdout. No TUI library
+# and no new dependency: bash 3.2's `read -rsn1`.
+#
+# The no-answer bound (check 2d) is on the FIRST read only (revision 8, F N1):
+# one key proves a person, so every later read waits for ever, and a person
+# who pressed `p` and is reading a long tree is not started fresh under
+# them. An unattended pty never sends a key, so the net still closes in
+# 60 s. ROOST_TEST_OFFER_TIMEOUT=SECONDS is the plan's seam for it.
 roost_offer__prompt() {
-  local k rc
+  local k rc first=1 tmo="${ROOST_TEST_OFFER_TIMEOUT:-60}" t0
+  case "$tmo" in ''|*[!0-9]*|0) tmo=60 ;; esac
+  ROOST_OFFER_TMO="$tmo"
   while :; do
-    rc=0; IFS= read -rsn1 k || rc=$?
+    rc=0 t0="$SECONDS"
+    if [ "$first" = 1 ]; then IFS= read -rsn1 -t "$tmo" k || rc=$?
+    else IFS= read -rsn1 k || rc=$?; fi
+    # A timeout, told from end of input. bash 4 and later report a timeout
+    # as a status above 128; bash 3.2 (macOS /bin/bash) reports 1 for both
+    # (measured), so there the clock decides: a read that failed after the
+    # whole bound timed out. SECONDS counts whole seconds, so a real timeout
+    # reads at least tmo - 1; the input end that a closed terminal gives
+    # comes at once.
+    if [ "$first" = 1 ] && [ "$rc" != 0 ] && \
+       { [ "$rc" -gt 128 ] || [ $((SECONDS - t0)) -ge $((tmo - 1)) ]; }; then
+      ROOST_OFFER_CHOICE=timeout; return 0
+    fi
     if [ "$rc" != 0 ]; then roost_offer_release; exit 130; fi
-    roost_offer__keys
+    first=0
+    case "$k" in
+      # Enter: start fresh, WITHOUT declining (revision 7, F N1). Nothing is
+      # restored, and no agent launched, without an `r`; and a reflex Enter
+      # through a familiar start must not silence the offer for good — only
+      # `n` does that.
+      "") ROOST_OFFER_CHOICE=enter; return 0 ;;
+      n|N) ROOST_OFFER_CHOICE=n; return 0 ;;
+      p|P) roost_offer__preview ;;
+      # Any other key: the keys again.
+      *) roost_offer__keys ;;
+    esac
   done
+}
+
+# roost_offer__preview — `p`: the pin's `--dry-run` tree, the same text
+# `roost restore --dry-run --from STAMP-GEN` prints, by the same functions
+# and the same lookup (roost_offer__tree), worked out again now: a server a
+# script started meanwhile changes what would be skipped (§8.1 test 12 (k2)).
+# No pager: a long fleet scrolls, and the summary and keys are printed again
+# under it so they are on screen.
+roost_offer__preview() {
+  if roost_offer__tree "$ROOST_OFFER_TREE"; then
+    cat "$ROOST_OFFER_TREE.err" >&2
+    cat "$ROOST_OFFER_TREE"
+  else
+    cat "$ROOST_OFFER_TREE.err" >&2
+  fi
+  roost_offer__summary
+}
+
+# roost_offer__decline — `n`: `declined`, a hard link to the pin, in the
+# shape directory, 0600 like every file there. A link and not a line naming
+# `boot` and `gen`, because a busy day's saves push the pinned save out of
+# the 100-entry ring, and the `--from STAMP-GEN` line printed at `n` must
+# keep working (roost_restore_pick looks at `declined` last). One fixed temp
+# name, then a rename (revision 7, F N4): a `mktemp` name already exists, and
+# a plain `ln` onto it fails; only the holder of offer/ writes it. Only the
+# newest decline is kept: a second `n` replaces the first.
+roost_offer__decline() {
+  local sd="$ROOST_OFFER_SD"
+  if ! ( umask 077; ln -f "$sd/offer/save" "$sd/declined.new" && mv -f "$sd/declined.new" "$sd/declined" ) 2>/dev/null; then
+    rm -f "$sd/declined.new"
+    printf 'roost: could not record the decline in %s; the offer may ask again\n' "$sd" >&2
+  fi
+}
+
+# roost_offer__q WORD -> WORD, single-quoted when a shell would split it.
+roost_offer__q() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._/=+:@%-]*) roost_sq "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# roost_offer_lines SESSION — the lines `n`, Enter and No answer print
+# before the attach (revision 8, F N6: after `exec tmux attach` nothing
+# prints; a line printed before it is on screen again when the person
+# detaches). Each names `--from STAMP-GEN`, never a bare `roost restore`:
+# the fresh server saves at once, so from then on a bare restore picks the
+# fresh fleet, and the old one is reached only by name.
+#
+# THE HINT (revision 7, C note). When the pin holds a session of the name
+# the fresh server uses (SESSION: `main` for a bare `roost`), that restore
+# would skip it as existing, and if every saved pane is in it, restore
+# nothing. Renaming the fresh session frees the name and kills nothing; the
+# client stays attached to it. Written with this server's own `-L NAME` or
+# `-S PATH`, so it can be pasted as it is.
+roost_offer_lines() {
+  local s="$1" st="$ROOST_OFFER_STAMP"
+  case "$ROOST_OFFER_CHOICE" in
+    n) printf 'not restored; roost restore --from %s brings it back (doctor names it too)\n' "$st" ;;
+    enter) printf 'not restored, not declined; roost restore --from %s brings it back\n' "$st" ;;
+    timeout) printf 'roost: no answer in %s s; started fresh, nothing declined (roost restore --from %s brings it back)\n' \
+               "$ROOST_OFFER_TMO" "$st" ;;
+    *) return 0 ;;
+  esac
+  if grep -qxF "session $s" "$ROOST_OFFER_SD/offer/save" 2>/dev/null; then
+    printf 'the saved "%s" is skipped while a "%s" runs: tmux %s %s rename-session -t %s %s, then roost restore --from %s\n' \
+      "$s" "$s" "$_SOCKET_FLAG" "$(roost_offer__q "$SOCKET")" "$(roost_offer__q "$s")" "$(roost_offer__q "$s-fresh")" "$st"
+  fi
 }

@@ -346,6 +346,119 @@ wait_for "in_log $WN '$SUMMARY'" 10; assert_true $? "kill -9 the first: the seco
 CLT send-keys -t "$W" C-c; wait_for "[ -n \"\$(rc_of $WN)\" ]" 10
 done_outer
 
+# ============================================================================
+# Task 7.4 — the prompt: p, n, Enter, no answer, Ctrl-C
+# ============================================================================
+KEEP="$SHAPE_TMP/planted.keep"
+# replant — the inner server stopped by its path, the planted save made
+# `shape` again (`rm shape && ln SAVE shape`), offer and decline untouched.
+replant() { done_outer; rm -f "$SD/shape"; ln "$KEEP" "$SD/shape"; }
+NOW_T="$(( $(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' 2026-11-01T10:00:00Z +%s 2>/dev/null || date -u -d 2026-11-01T10:00:00Z +%s) + 7200 ))"
+asked() { wait_for "in_log $1 '$SUMMARY'" 10; }
+
+echo "== §8.1 test 12 (b): no answer =="
+fresh_dir; rm -f "$KEEP"; ln "$SD/shape" "$KEEP"; S0="$(sg "$SD/shape")"
+opane "ROOST_TEST_OFFER_TIMEOUT=2"
+asked "$ON"; assert_true $? "(fixture) asked"
+wait_for "in_log $ON 'roost: no answer in 2 s; started fresh, nothing declined (roost restore --from $S0 brings it back)'" 10
+assert_true $? "2 s later, the no-answer line"
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 5
+assert_eq "$(sessions)" "main " "...the inner server holds one fresh main"
+assert_eq "$([ -e "$SD/declined" ] && echo yes || echo no)|$([ -e "$SD/offer" ] && echo held || echo free)" "no|free" "...no declined, offer/ gone"
+replant
+opane ""
+asked "$ON"; assert_true $? "re-planted: roost asks again"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+done_outer
+
+echo "== §8.1 test 12 (f): p previews, then asks again; the bound ends at the first key =="
+fresh_dir; S0="$(sg "$SD/shape")"
+opane "ROOST_TEST_NOW=$NOW_T ROOST_TEST_OFFER_TIMEOUT=2"
+asked "$ON"
+CLT send-keys -t "$OP" p
+wait_for "[ \"\$(plog $ON | grep -cF '$SUMMARY')\" -ge 2 ]" 10
+want="$(ROOST_TEST_NOW=$NOW_T R restore --dry-run --from "$S0" 2>/dev/null)"
+got="$(plog "$ON")"
+case "$got" in *"$want"*) r=0 ;; *) r=1 ;; esac
+assert_true "$r" "p prints, line for line, what a separate restore --dry-run --from STAMP-GEN prints"
+assert_contains "$(printf '%s\n' "$got" | grep '^    pane ' | grep "$DG")" "directory gone" "...the gone directory's pane reads directory gone"
+after="$(printf '%s\n' "$got" | sed -n '/^from /,$p')"
+assert_contains "$after" "$SUMMARY" "...and below it the summary again"
+assert_contains "$(printf '%s\n' "$after" | tail -2)" "l restore at login from now on: off" "...and the keys line"
+assert_not_contains "$got" "restoring the newest save" "ROOST_SHUTDOWN_AT= empty: no 'restoring the newest save' line"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "...the inner server still does not exist"
+sleep 5
+assert_true "$(in_log "$ON" "no answer in" && echo 1 || echo 0)" "timeout 2, p, then 5 s of silence: no no-answer line"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "...no inner server"
+assert_contains "$(CLT capture-pane -p -J -t "$OP" | grep -v '^$' | tail -2)" "l restore at login from now on" "...the keys line still on screen, last"
+CLT send-keys -t "$OP" n
+wait_for "[ -e '$SD/declined' ]" 10
+assert_eq "$(ino "$SD/declined")" "$(ino "$SD/shape")" "then n writes declined, a link to the pin"
+done_outer
+
+echo "== §8.1 test 12 (h): n records the decline =="
+fresh_dir; S0="$(sg "$SD/shape")"; PIN_INO="$(ino "$SD/shape")"
+opane "ROOST_SHAPE_KEEP=2"
+asked "$ON"
+CLT send-keys -t "$OP" n
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 10
+assert_eq "$(ino "$SD/declined")" "$PIN_INO" "declined is a hard link to the pin"
+assert_eq "$(ls -l "$SD/declined" | cut -c1-10)" "-rw-------" "...0600"
+wait_for "in_log $ON 'not restored; roost restore --from $S0 brings it back (doctor names it too)'" 5
+assert_true $? "the screen names roost restore --from STAMP-GEN"
+hint="$(plog "$ON" | grep -F 'the saved "main" is skipped while a "main" runs' | head -1)"
+assert_contains "$hint" "tmux -L roost rename-session -t main main-fresh, then roost restore --from $S0" "...and the rename hint"
+assert_eq "$(sessions)" "main " "...the inner server holds one fresh main"
+assert_eq "$([ -e "$SD/offer" ] && echo held || echo free)" "free" "...and offer/ is released"
+for i in 1 2 3 4 5; do ROOST_SHAPE_KEEP=2 R spawn "s$i" sh >/dev/null 2>&1; shape_settle "$SD" || true; done
+assert_eq "$(ls "$SD/history" | grep -c "^$S0\$" || true)" "0" "(fixture) the ring has dropped the declined save"
+last="$(R restore --list 2>&1 | grep -v '^    ' | grep -v '^pending' | tail -1)"
+assert_contains "$last" "$S0" "restore --list lists it last"
+assert_contains "$last" "declined" "...marked declined"
+c1="$(printf '%s' "$hint" | sed 's/.*runs: //; s/, then .*//')"
+c2="$(printf '%s' "$hint" | sed 's/.*, then //')"
+eval "$c1"; assert_eq "$?" "0" "the hint's first command runs as printed ($c1)"
+case "$c2" in "roost restore --from $S0") ;; *) echo "  (unexpected second command: $c2)" ;; esac
+R restore --from "$S0" >/dev/null 2>&1
+assert_contains "$(sessions)" "main main-fresh" "...then its second: main is restored, the fresh one is main-fresh"
+assert_contains "$(sessions)" "work" "...and work is restored"
+done_outer
+
+echo "== §8.1 test 12 (i): Enter starts fresh without declining; Ctrl-C leaves =="
+fresh_dir; rm -f "$KEEP"; ln "$SD/shape" "$KEEP"; S0="$(sg "$SD/shape")"
+opane ""
+asked "$ON"
+CLT send-keys -t "$OP" Enter
+wait_for "[ \"\$(sessions)\" = 'main ' ]" 10
+assert_eq "$(sessions)" "main " "Enter: one fresh main"
+wait_for "in_log $ON 'not restored, not declined; roost restore --from $S0 brings it back'" 5
+assert_true $? "...the line says not declined"
+assert_eq "$([ -e "$SD/declined" ] && echo yes || echo no)" "no" "...no declined"
+replant
+opane ""
+asked "$ON"; assert_true $? "re-planted: asked again"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+assert_eq "$(rc_of "$ON")" "130" "Ctrl-C exits 130"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "...starts no server"
+assert_eq "$([ -e "$SD/declined" ] && echo yes || echo no)" "no" "...writes no declined"
+opane ""
+asked "$ON"; assert_true $? "...and the next roost asks"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+done_outer
+
+echo "== §8.1 test 12 (j), the n half: the other terminal attaches, never asked =="
+fresh_dir
+opane ""; A="$OP" AN="$ON"
+opane ""; B="$OP" BN="$ON"
+wait_for "{ in_log $AN '$SUMMARY' || in_log $BN '$SUMMARY'; } && { in_log $AN 'waiting for the restore offer' || in_log $BN 'waiting for the restore offer'; }" 10
+if in_log "$AN" "$SUMMARY"; then F="$A" W="$B" WN="$BN"; else F="$B" W="$A" WN="$AN"; fi
+CLT send-keys -t "$F" n
+wait_for "[ \"\$(TL list-clients 2>/dev/null | grep -c .)\" -ge 2 ]" 10
+assert_eq "$(TL list-clients 2>/dev/null | grep -c .)" "2" "n in the first: the second attaches to the running server"
+assert_true "$(in_log "$WN" "$SUMMARY" && echo 1 || echo 0)" "...and never shows a summary line"
+assert_eq "$(sessions)" "main " "...one main, no prompt"
+done_outer
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
