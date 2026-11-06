@@ -308,6 +308,202 @@ roost_resume_store_check() {
 }
 
 # ---------------------------------------------------------------------------
+# The printed store listings (#191 Part 6, §5.6, §2.8's "source if roost has
+# no key" column, §9 Q4 = A). For a pane that ran Claude or codex and has no
+# usable key — no id recorded (the 13 Claude panes of §2.6, every codex pane
+# under #145), or a stale one (§3.2) — every conversation the harness holds
+# for the pane's directory, newest first, as ready-to-type resume lines.
+#
+# PRINTED, NEVER RUN. Several panes share one directory, so the newest
+# conversation in it is a guess, and a guessed resume into the wrong pane is
+# exactly what §5.1 exists to stop. Nothing here returns an argv, and no
+# caller passes these lines to anything but stderr: a person reads them and
+# picks one.
+
+# roost_resume__mtime FILE -> prints FILE's mtime in epoch seconds; 1 when it
+# cannot be read. stat's two dialects, GNU first and each answer checked to be
+# a number: GNU stat ALSO takes `-f %m` (`-f` is its file-system mode) and
+# prints something that is not an mtime (found in the container by Part 3's
+# --recent, roost_restore__will_resume, which reads it the same way).
+roost_resume__mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || true)"
+  case "$m" in ''|*[!0-9]*) m="$(stat -f %m "$1" 2>/dev/null || true)" ;; esac
+  case "$m" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$m"
+}
+
+# roost_resume__claude_folder DIR -> prints the name Claude gives DIR's
+# project folder under projects/, by the rule Probe 6.1 MEASURED
+# (docs/airig/probes/persist-6-claude-folders.md, Claude Code 2.1.319): every
+# UTF-16 code unit of the path that is not an ASCII letter or digit is `-`.
+# So `/`, `.`, `_` and a space are each `-` (`w_1`, `w.1` and `w 1` share one
+# folder), a two- or three-byte UTF-8 character is one `-`, and a four-byte
+# one — two UTF-16 code units — is `--`.
+#
+# Read byte by byte under LC_ALL=C, whatever the caller's locale: a bracket
+# like `[^A-Za-z0-9]` matches a CHARACTER in a UTF-8 locale and a BYTE in C,
+# so the same sed would give `é` one `-` on one machine and two on another. In
+# C the UTF-8 shape is spelled out instead: a lead byte and its continuation
+# bytes become one `-`, or two for a four-byte lead. A stray continuation byte
+# (a path that is not UTF-8, unmeasured) is a `-` of its own; the name may then
+# be wrong, and a wrong name only shortens the list (§5.6).
+#
+# This name only NARROWS which files are opened. It decides nothing: a folder
+# holds other directories' conversations too, so each transcript is kept by
+# its own first `cwd` (roost_resume_listing). Past 200 characters Claude cuts
+# the name and adds `-` and a suffix this probe did not decode; the caller
+# globs for that.
+roost_resume__claude_folder() {
+  local b0 b1 b2 b3 b4
+  b0="$(printf '\200')"; b1="$(printf '\277')"
+  b2="$(printf '\300')"; b3="$(printf '\357')"; b4="$(printf '\360')"
+  printf '%s\n' "$1" | LC_ALL=C sed \
+    -e "s/[$b4-$(printf '\367')][$b0-$b1]*/--/g" \
+    -e "s/[$b2-$b3][$b0-$b1]*/-/g" \
+    -e 's/[^A-Za-z0-9]/-/g'
+}
+
+# roost_resume__codex_cwd FILE -> prints the `cwd` of a codex rollout's
+# `session_meta`, read from its FIRST LINE only (§2.8, the plan's Task 6.4:
+# `grep -o`, no parser); 1 when the first line is not a session_meta or holds
+# no usable cwd. Refused, never decoded, when the value holds a backslash —
+# roost_resume_first_cwd's rule, for the same reason: a JSON escape decoded
+# by a second, untested reader names the wrong directory.
+roost_resume__codex_cwd() {
+  # `l` starts empty, not merely declared: when the read below fails (an
+  # unreadable rollout) it assigns nothing, and bash 5 under `set -u` then
+  # stops at `[ -n "$l" ]` with "l: unbound variable" — bash 3.2 reads a
+  # declared-only local as empty, so only CI's Ubuntu runner, a normal
+  # user who cannot read a mode-000 file, saw it (fix round 3).
+  local l="" v
+  # The redirection's own error (a rollout no one may read, a file removed
+  # since `find` listed it) goes to /dev/null with it: `2>/dev/null` written
+  # after `< "$1"` on the `read` silences `read`, not the redirection, and a
+  # person saw a raw "Permission denied" (fix round 1).
+  { IFS= read -r l < "$1"; } 2>/dev/null || [ -n "$l" ] || return 1
+  case "$l" in *'"type":"session_meta"'*) ;; *) return 1 ;; esac
+  v="$(printf '%s\n' "$l" | grep -o '"cwd":"[^"]*"' | head -n 1)"
+  [ -n "$v" ] || return 1
+  v="${v#\"cwd\":\"}"; v="${v%\"}"
+  case "$v" in *\\*) return 1 ;; esac
+  roost_resume__path_ok "$v" || return 1
+  printf '%s\n' "$v"
+}
+
+# roost_resume_listing HARNESS DIR [STALE_ID] -> prints one resume line per
+# conversation of DIR, newest first; exit 1, printing nothing, when there is
+# none (or HARNESS has no listing, or DIR is not an absolute path).
+#
+#   claude  `claude --resume <id>` for every projects/<folder>/<id>.jsonl
+#           whose own first `cwd` (roost_resume_first_cwd, §5.1's read) is
+#           DIR byte for byte. <folder> is roost_resume__claude_folder DIR,
+#           or, past 200 characters, its first 200 and `-*`.
+#   codex   `codex resume <id>` for every $CODEX_HOME/sessions/**/
+#           rollout-*-<id>.jsonl whose session_meta `cwd` is DIR byte for
+#           byte. No folder narrows it: codex files by date, not directory.
+#
+# STALE_ID, when it is a session id, is printed FIRST and only once (§5.6:
+# "A pane with `stale_reason exited` gets the same line with its own stale id
+# first, so a person who wants it back types one command") — whether or not
+# the store still holds it: it is the pane's own, and the line is only
+# printed. pi, copilot and opencode have no listing in §5.6.
+#
+# Newest first is by each file's mtime, sorted numerically by `sort`, with
+# the id as the tie-break, so GNU and BSD give the same order (an `ls -t`
+# tie is broken differently by each).
+roost_resume_listing() {
+  local h="$1" dir="$2" st="${3:-}" root folder f d id m rows="" n=0
+  roost_resume__path_ok "$dir" || return 1
+  case "$h" in claude|codex) ;; *) return 1 ;; esac
+  roost_resume__uuid "$st" || st=""
+  case "$h" in
+    claude)
+      root="$(roost_resume__claude_home)/projects"
+      folder="$(roost_resume__claude_folder "$dir")"
+      # Only the trailing `*` is a glob: root and folder are quoted, so a
+      # home holding a space or a `[` is taken byte for byte
+      # (roost_resume__one_file's rule).
+      if [ "${#folder}" -gt 200 ]; then set -- "$root/${folder:0:200}"-*/*.jsonl
+      else set -- "$root/$folder"/*.jsonl; fi
+      for f in "$@"; do
+        [ -f "$f" ] || continue
+        id="${f##*/}"; id="${id%.jsonl}"
+        roost_resume__uuid "$id" || continue
+        d="$(roost_resume_first_cwd "$f")" || continue
+        [ "$d" = "$dir" ] || continue
+        m="$(roost_resume__mtime "$f")" || m=0
+        rows="$rows$m $id"$'\n'
+      done ;;
+    codex)
+      root="$(roost_resume__codex_home)/sessions"
+      if [ -d "$root" ]; then
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          id="${f##*/}"; id="${id%.jsonl}"; id="${id: -36}"
+          roost_resume__uuid "$id" || continue
+          d="$(roost_resume__codex_cwd "$f")" || continue
+          [ "$d" = "$dir" ] || continue
+          m="$(roost_resume__mtime "$f")" || m=0
+          rows="$rows$m $id"$'\n'
+        # -H: follow `root` itself when it is a symbolic link (a store kept on
+        # another disk), which `find` otherwise lists as one link and never
+        # enters (fix round 1). Links below it are still not followed, so a
+        # link loop inside the store cannot run away. Claude's side needs
+        # nothing: a glob resolves a linked projects/ like any path.
+        done <<< "$(find -H "$root" -type f -name 'rollout-*.jsonl' 2>/dev/null || true)"
+      fi ;;
+  esac
+  if [ -n "$st" ]; then
+    roost_resume__listing_line "$h" "$st"; n=1
+  fi
+  while IFS=' ' read -r m id; do
+    [ -n "$id" ] || continue
+    [ "$id" = "$st" ] && continue
+    roost_resume__listing_line "$h" "$id"; n=$((n + 1))
+  done <<< "$(printf '%s' "$rows" | LC_ALL=C sort -k1,1nr -k2,2)"
+  [ "$n" -gt 0 ]
+}
+
+# roost_resume_print_listing PREFIX HARNESS DIR [STALE_ID] — §5.6's line for a
+# person, on stdout (each caller sends it to stderr, beside its other words):
+#
+#   PREFIX: HARNESS holds these conversations for DIR, newest first (printed, not run; pick one):
+#     claude --resume <id>
+#     ...
+#
+# or `PREFIX: HARNESS holds no conversation for DIR` when there is none. The
+# lines are indented two spaces and hold nothing but the command, so a person
+# copies one whole; "printed, not run" says why roost did not pick. One
+# function for `revive` and the restore report, so the two never word it
+# differently. Prints nothing for a harness with no listing.
+roost_resume_print_listing() {
+  case "$2" in claude|codex) ;; *) return 0 ;; esac
+  # DIR is printed in both lines, so it must be a path roost would use: a
+  # newline in it would print a line of its own that looks like roost's
+  # (fix round 1). roost_resume_listing refuses such a DIR too; this keeps
+  # the "holds no conversation" line from naming it.
+  roost_resume__path_ok "$3" || return 0
+  local out
+  if out="$(roost_resume_listing "$2" "$3" "${4:-}")"; then
+    printf '%s: %s holds these conversations for %s, newest first (printed, not run; pick one):\n' "$1" "$2" "$3"
+    printf '%s\n' "$out" | sed 's/^/  /'
+  else
+    printf '%s: %s holds no conversation for %s\n' "$1" "$2" "$3"
+  fi
+  return 0
+}
+
+# roost_resume__listing_line HARNESS ID — one printed line, §2.8's "resume by
+# id" column as a person types it.
+roost_resume__listing_line() {
+  case "$1" in
+    claude) printf 'claude --resume %s\n' "$2" ;;
+    codex)  printf 'codex resume %s\n' "$2" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # Claims (§4.1 step 5a, §4.6): one per conversation being launched, by ANY
 # launcher — `revive` in place, `revive` of a gone pane or into a new window,
 # and from Part 3 a hand restore and the first-attach worker. A store check
@@ -805,7 +1001,7 @@ roost_resume__exited_file() {
 roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
-  local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess
+  local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess lh ld
   ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
@@ -972,6 +1168,15 @@ roost_revive() {
   case "$agree" in
     nested|other)
       echo "roost revive: '$raw' runs '$cmd', not $h: its $h key ${sid:-(none)} is stale — nothing resumed" >&2
+      # §9 Q4, revision 1: a stale key counts as none, so the same §5.6
+      # listing as the no-key branch below follows (fix round 1). Its
+      # harness is the one the pane's OWN command names, never the stale
+      # key's: a Claude pane carrying a nested codex key lists Claude's
+      # store, as restore does (roost_restore__listing_of). A command that
+      # names no harness (`other`: an editor) has nothing to list.
+      roost_close_harness "" "$cmd" ""; lh="$ROOST_CLOSE_HARNESS"
+      ld="$pcwd"; [ -n "$ld" ] || ld="$scwd"
+      [ -n "$lh" ] && [ -n "$ld" ] && roost_resume_print_listing "roost revive" "$lh" "$ld" >&2
       return 13 ;;
   esac
   if [ -z "$h" ] || [ -z "$sid" ]; then
@@ -980,6 +1185,17 @@ roost_revive() {
     else
       echo "roost revive: '$raw' has no recorded conversation (no harness, no session id)" >&2
     fi
+    # §5.6, after the exit-13 line (#191 Part 6): what the store holds for
+    # the pane's directory, printed and never run — there is no key, so any
+    # one of them is a guess, and a person picks. The harness is the
+    # identity's, or for a pane with none (the 13 Claude panes of §2.6, a
+    # codex pane under #145) the one its own command names, by close's table
+    # (Claude runs as its version string). The directory is where the pane
+    # is now, else the record's.
+    lh="$h"
+    if [ -z "$lh" ]; then roost_close_harness "" "$cmd" ""; lh="$ROOST_CLOSE_HARNESS"; fi
+    ld="$pcwd"; [ -n "$ld" ] || ld="$scwd"
+    [ -n "$ld" ] && roost_resume_print_listing "roost revive" "$lh" "$ld" >&2
     return 13
   fi
   rc=0; roost_resume_command "$h" "$sid" "$tr" >/dev/null || rc=$?

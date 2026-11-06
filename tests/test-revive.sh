@@ -96,9 +96,11 @@ roost_resume_dir codex "" "" "" >/dev/null; rc=$?
 assert_eq "$rc" "1" "codex: neither directory: refused"
 
 echo "== roost_resume_store_check and the exact-id lookup (§5.1a, §2.8) =="
-# Claude: the folder is the measured rule (/ and . -> -), dotted path.
+# Claude: the folder is the measured rule (every byte not a letter or digit,
+# `/` and `.` among them, as `-`: Probe 6.1), dotted path, built by
+# stub_store_folder — a `_` in the runner's temp directory is `-` too.
 stub_store_add "$U1" "$WT"
-f1="$CLAUDE_CONFIG_DIR/projects/$(printf '%s' "$WT" | tr '/.' '--')/$U1.jsonl"
+f1="$CLAUDE_CONFIG_DIR/projects/$(stub_store_folder "$WT")/$U1.jsonl"
 [ -f "$f1" ]; assert_true $? "(fixture) the stub store has $U1 in a dotted-path folder"
 roost_resume_store_check claude "$U1" ""; rc=$?
 assert_eq "$rc|$ROOST_RESUME_FILE" "0|$f1" "claude, no recorded file: exactly one projects/*/<id>.jsonl is found"

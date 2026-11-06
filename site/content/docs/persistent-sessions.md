@@ -179,7 +179,10 @@ roost restore: restored 3 sessions, 7 windows, 14 panes; launched 5 agents; skip
 
 Above it, one line for each pane not resumed and why; a pane that was started
 with a command (`roost view`, `roost spawn NAME CMD`) says what it was
-started as, for you to run again. An agent that was mid-turn at the save
+started as, for you to run again. A Claude or codex pane with no recorded
+conversation, or a stale one, also gets the resume lines of
+[An agent with no recorded conversation](#an-agent-with-no-recorded-conversation):
+printed for you, never run. An agent that was mid-turn at the save
 comes back at rest: its conversation is back, its turn is not, so re-prompt
 it. `--json` prints the same as one document on stdout:
 `{"restored":[{"was","pane","session","window","launched","reason"}],"skipped":[…],"from":"STAMP-GEN"}`.
@@ -471,6 +474,39 @@ running it.
 
 `--json` prints `{"pane","was","harness","session_id","command","cwd"}` for
 a program.
+
+### An agent with no recorded conversation
+
+Some panes ran Claude Code or codex but roost never learned which
+conversation they had. A Claude pane started before roost recorded ids is
+one; most codex panes are another (#145). A pane whose agent left a key
+that no longer fits it (a stale key) counts the same. `revive` exits `13`
+for such a pane, and `restore` leaves it a shell. Then both print every
+conversation the harness still has for the pane's directory, newest first:
+
+```
+roost revive: '%34' has no recorded conversation (harness claude, no session id)
+roost revive: claude holds these conversations for /home/me/w/roost, newest first (printed, not run; pick one):
+  claude --resume 3fa3c0de-2222-4abc-8def-000000000002
+  claude --resume 3fa3c0de-3333-4abc-8def-000000000003
+```
+
+For codex the lines are `codex resume ID`. `restore` prints the same lines
+under the pane's own line in its report, and `restore --dry-run` prints them
+under the pane in its plan. In `restore`, when the agent in the pane had
+exited, its own last conversation is listed first. (`revive` does not list
+for such a pane: it resumes that conversation, as above.) A directory that
+is gone gets no lines, since none of them could run there.
+
+**roost prints these lines and never runs them.** Several panes often share
+one directory, so the newest conversation there may belong to another pane.
+A guess would open the wrong conversation in the wrong pane. Pick the one
+you want and type it in the pane, in that directory.
+
+A conversation is listed only when its own file names this exact directory.
+For Claude Code, roost reads only the folder Claude keeps for that
+directory, so a conversation filed somewhere else is not listed. Missing a
+conversation makes the list shorter; it never adds a wrong one.
 
 ## The file
 

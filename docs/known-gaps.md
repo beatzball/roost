@@ -106,7 +106,9 @@ conversation. What it does NOT know:
 - **codex panes usually have no key.** Under codex's shared app-server the
   hooks' parent is the app-server, so identity is skipped (#145, the entry
   below), and `revive` of such a pane says it has no recorded conversation
-  (13). The live smoke sets the key by hand to test the resume itself.
+  (13), then prints the rollouts of its directory (Part 6, the entry on the
+  printed resume lines). The live smoke sets the key by hand to test the
+  resume itself.
 - **Claims live in one place, saving on or off:**
   `${XDG_STATE_HOME:-~/.local/state}/roost/launch-claims/<server>/claims/<boot>/`,
   never the shape directory (coordinator ruling, Part 2 review round 2). Round 1 put them in the shape
@@ -284,6 +286,42 @@ hook resumes the agents at the first attach.
   refuses a quote or backslash only in the checkout and the shape root, not
   in the other values (a `PATH` or a harness home). `persist status` and
   `doctor` compare the file's text, not what systemd reads from it.
+
+### The printed resume lines: what Part 6 rests on (#191 Part 6)
+
+Live risk, small. For a Claude or codex pane roost has no key for (no id, or
+a stale one), `revive` and `restore` print every conversation the harness
+holds for the pane's directory as `claude --resume <id>` / `codex resume
+<id>` lines, newest first, and run none of them.
+
+- **Claude's folder rule, measured once** on Claude Code 2.1.319
+  (docs/airig/probes/persist-6-claude-folders.md): every UTF-16 code unit
+  of the path that is not an ASCII letter or digit is `-` (so `_`, a space
+  and `.` share a folder; `é` is one `-`, a four-byte emoji `--`), and a
+  name past 200 characters is cut to 200 plus `-` and a six-character
+  suffix that was not decoded. roost uses the rule only to pick which
+  folder to open; each transcript is kept by its own first `cwd`, byte for
+  byte. A Claude that changes the rule makes the list shorter, silently —
+  never wrong. A transcript filed under another directory's folder (a
+  resume elsewhere on an older Claude, spec §2.1) is not listed either.
+- **pi's folder rule, measured once** on pi 1.5.0
+  (docs/airig/probes/persist-6-pi-folders.md): `--` + the path with each
+  `/` as `-` + `--`; `.`, `_` and a space are kept. Recorded only: pi has
+  no listing, and its resume never derives a folder. That run's first pass
+  saw the real `~/.pi/agent` directory's mtime change with no file in it
+  changed; two watched controls and a full re-run did not reproduce it.
+- **A pane with no identity is known by its command only.** The save writes
+  no `harness` line without a session id, so restore names such a pane by
+  its saved `command` (Claude's version string, or `codex`): a pane that ran
+  Claude under another process name (a wrapper script) gets no line and no
+  listing.
+- **codex rollouts are read in full each time.** Every
+  `$CODEX_HOME/sessions/**/rollout-*.jsonl` has its first line read, once
+  per listed pane; a store of thousands of rollouts makes a restore with
+  many codex panes slower by that much. Not measured.
+- **Newest first is by file mtime, to the second**, with the id breaking a
+  tie; a transcript touched by something else (a backup restore, a `touch`)
+  moves up the list.
 
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 

@@ -502,7 +502,7 @@ tfile() { ls "$CLAUDE_CONFIG_DIR"/projects/*/"$1.jsonl" 2>/dev/null | head -1; }
 for u in "$U1" "$U3" "$U8" "$U9" "$U10"; do stub_store_add "$u" "$D1"; done
 # U4: filed under the WORKTREE's folder, its first cwd the repository root
 # (Task 2.2's worktree case): the resume runs in the root.
-f4d="$CLAUDE_CONFIG_DIR/projects/$(printf '%s' "$WT" | tr '/.' '--')"; mkdir -p "$f4d"
+f4d="$CLAUDE_CONFIG_DIR/projects/$(stub_store_folder "$WT")"; mkdir -p "$f4d"
 printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$REPO" "$U4" > "$f4d/$U4.jsonl"
 # U5: its first cwd removed since.
 stub_store_add "$U5" "$SHAPE_TMP/w/removed"
