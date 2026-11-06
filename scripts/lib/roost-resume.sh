@@ -364,6 +364,24 @@ roost_resume__claude_folder() {
     -e 's/[^A-Za-z0-9]/-/g'
 }
 
+# roost_resume__codex_cwd FILE -> prints the `cwd` of a codex rollout's
+# `session_meta`, read from its FIRST LINE only (§2.8, the plan's Task 6.4:
+# `grep -o`, no parser); 1 when the first line is not a session_meta or holds
+# no usable cwd. Refused, never decoded, when the value holds a backslash —
+# roost_resume_first_cwd's rule, for the same reason: a JSON escape decoded
+# by a second, untested reader names the wrong directory.
+roost_resume__codex_cwd() {
+  local l v
+  IFS= read -r l < "$1" 2>/dev/null || [ -n "$l" ] || return 1
+  case "$l" in *'"type":"session_meta"'*) ;; *) return 1 ;; esac
+  v="$(printf '%s\n' "$l" | grep -o '"cwd":"[^"]*"' | head -n 1)"
+  [ -n "$v" ] || return 1
+  v="${v#\"cwd\":\"}"; v="${v%\"}"
+  case "$v" in *\\*) return 1 ;; esac
+  roost_resume__path_ok "$v" || return 1
+  printf '%s\n' "$v"
+}
+
 # roost_resume_listing HARNESS DIR [STALE_ID] -> prints one resume line per
 # conversation of DIR, newest first; exit 1, printing nothing, when there is
 # none (or HARNESS has no listing, or DIR is not an absolute path).
@@ -372,13 +390,15 @@ roost_resume__claude_folder() {
 #           whose own first `cwd` (roost_resume_first_cwd, §5.1's read) is
 #           DIR byte for byte. <folder> is roost_resume__claude_folder DIR,
 #           or, past 200 characters, its first 200 and `-*`.
+#   codex   `codex resume <id>` for every $CODEX_HOME/sessions/**/
+#           rollout-*-<id>.jsonl whose session_meta `cwd` is DIR byte for
+#           byte. No folder narrows it: codex files by date, not directory.
 #
 # STALE_ID, when it is a session id, is printed FIRST and only once (§5.6:
 # "A pane with `stale_reason exited` gets the same line with its own stale id
 # first, so a person who wants it back types one command") — whether or not
 # the store still holds it: it is the pane's own, and the line is only
-# printed. pi, copilot and opencode have no listing in §5.6; codex comes in
-# Task 6.4.
+# printed. pi, copilot and opencode have no listing in §5.6.
 #
 # Newest first is by each file's mtime, sorted numerically by `sort`, with
 # the id as the tie-break, so GNU and BSD give the same order (an `ls -t`
@@ -386,7 +406,7 @@ roost_resume__claude_folder() {
 roost_resume_listing() {
   local h="$1" dir="$2" st="${3:-}" root folder f d id m rows="" n=0
   roost_resume__path_ok "$dir" || return 1
-  case "$h" in claude) ;; *) return 1 ;; esac
+  case "$h" in claude|codex) ;; *) return 1 ;; esac
   roost_resume__uuid "$st" || st=""
   case "$h" in
     claude)
@@ -406,6 +426,19 @@ roost_resume_listing() {
         m="$(roost_resume__mtime "$f")" || m=0
         rows="$rows$m $id"$'\n'
       done ;;
+    codex)
+      root="$(roost_resume__codex_home)/sessions"
+      if [ -d "$root" ]; then
+        while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          id="${f##*/}"; id="${id%.jsonl}"; id="${id: -36}"
+          roost_resume__uuid "$id" || continue
+          d="$(roost_resume__codex_cwd "$f")" || continue
+          [ "$d" = "$dir" ] || continue
+          m="$(roost_resume__mtime "$f")" || m=0
+          rows="$rows$m $id"$'\n'
+        done <<< "$(find "$root" -type f -name 'rollout-*.jsonl' 2>/dev/null || true)"
+      fi ;;
   esac
   if [ -n "$st" ]; then
     roost_resume__listing_line "$h" "$st"; n=1
@@ -418,11 +451,36 @@ roost_resume_listing() {
   [ "$n" -gt 0 ]
 }
 
+# roost_resume_print_listing PREFIX HARNESS DIR [STALE_ID] — §5.6's line for a
+# person, on stdout (each caller sends it to stderr, beside its other words):
+#
+#   PREFIX: HARNESS holds these conversations for DIR, newest first (printed, not run; pick one):
+#     claude --resume <id>
+#     ...
+#
+# or `PREFIX: HARNESS holds no conversation for DIR` when there is none. The
+# lines are indented two spaces and hold nothing but the command, so a person
+# copies one whole; "printed, not run" says why roost did not pick. One
+# function for `revive` and the restore report, so the two never word it
+# differently. Prints nothing for a harness with no listing.
+roost_resume_print_listing() {
+  case "$2" in claude|codex) ;; *) return 0 ;; esac
+  local out
+  if out="$(roost_resume_listing "$2" "$3" "${4:-}")"; then
+    printf '%s: %s holds these conversations for %s, newest first (printed, not run; pick one):\n' "$1" "$2" "$3"
+    printf '%s\n' "$out" | sed 's/^/  /'
+  else
+    printf '%s: %s holds no conversation for %s\n' "$1" "$2" "$3"
+  fi
+  return 0
+}
+
 # roost_resume__listing_line HARNESS ID — one printed line, §2.8's "resume by
 # id" column as a person types it.
 roost_resume__listing_line() {
   case "$1" in
     claude) printf 'claude --resume %s\n' "$2" ;;
+    codex)  printf 'codex resume %s\n' "$2" ;;
   esac
 }
 
@@ -924,7 +982,7 @@ roost_resume__exited_file() {
 roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
-  local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess
+  local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess lh ld
   ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
@@ -1099,6 +1157,17 @@ roost_revive() {
     else
       echo "roost revive: '$raw' has no recorded conversation (no harness, no session id)" >&2
     fi
+    # §5.6, after the exit-13 line (#191 Part 6): what the store holds for
+    # the pane's directory, printed and never run — there is no key, so any
+    # one of them is a guess, and a person picks. The harness is the
+    # identity's, or for a pane with none (the 13 Claude panes of §2.6, a
+    # codex pane under #145) the one its own command names, by close's table
+    # (Claude runs as its version string). The directory is where the pane
+    # is now, else the record's.
+    lh="$h"
+    if [ -z "$lh" ]; then roost_close_harness "" "$cmd" ""; lh="$ROOST_CLOSE_HARNESS"; fi
+    ld="$pcwd"; [ -n "$ld" ] || ld="$scwd"
+    [ -n "$ld" ] && roost_resume_print_listing "roost revive" "$lh" "$ld" >&2
     return 13
   fi
   rc=0; roost_resume_command "$h" "$sid" "$tr" >/dev/null || rc=$?

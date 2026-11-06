@@ -140,6 +140,193 @@ LF="$(claude_folder "$LONG")"
 transcript "$U1" "$LONG" "${LF:0:200}-ab12cd" 202611010109
 got="$(roost_resume_listing claude "$LONG")"
 assert_eq "$got" "claude --resume $U1" "a folder name past 200 characters is found by its first 200 and any suffix"
+rm -f "$PROJ/${LF:0:200}-ab12cd/$U1.jsonl"
+
+echo "== roost_resume_listing codex: rollouts whose session_meta cwd is the directory (§5.6, Task 6.4) =="
+CX1=019a0f0f-6a8b-7c71-9d2e-0000000000c1
+CX2=019a0f0f-6a8b-7c71-9d2e-0000000000c2
+CX3=019a0f0f-6a8b-7c71-9d2e-0000000000c3
+CX4=019a0f0f-6a8b-7c71-9d2e-0000000000c4
+CX5=019a0f0f-6a8b-7c71-9d2e-0000000000c5
+CX9=019a0f0f-6a8b-7c71-9d2e-0000000000c9
+# rollout DAY ID CWD-AS-WRITTEN STAMP [SECOND-LINE] — one rollout the way
+# codex files it: sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl, whose first
+# line is the session_meta naming its cwd. With SECOND-LINE, the first line is
+# something else and the session_meta comes second.
+rollout() {
+  local d="$CODEX_HOME/sessions/2026/11/$1" f
+  mkdir -p "$d"; f="$d/rollout-2026-11-$1T08-00-00-$2.jsonl"
+  local meta="{\"timestamp\":\"2026-11-$1T08:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"$2\",\"timestamp\":\"2026-11-$1T08:00:00Z\",\"cwd\":\"$3\",\"originator\":\"codex_cli_rs\",\"cli_version\":\"0.163.0\"}}"
+  if [ -n "${5:-}" ]; then printf '%s\n' '{"type":"event_msg","payload":{"type":"other"}}' "$meta" > "$f"
+  else printf '%s\n' "$meta" '{"type":"response_item","payload":{"cwd":"/elsewhere"}}' > "$f"; fi
+  touch -t "$4" "$f"
+}
+rollout 01 "$CX1" "$DIR" 202611010201
+rollout 02 "$CX2" "$DIR" 202611020202
+rollout 02 "$CX3" "$DOT" 202611020203
+rollout 03 "$CX4" "${DIR%?}\\u0031" 202611030204
+rollout 03 "$CX5" "$DIR" 202611030205 second
+got="$(roost_resume_listing codex "$DIR")"; rc=$?
+assert_eq "$rc|$(printf '%s\n' "$got" | lines)" "0|codex resume $CX2 codex resume $CX1" \
+  "two lines, newest first; another directory's, an escaped cwd and a session_meta not on the first line are not listed"
+got="$(roost_resume_listing codex "$DIR" "$CX1")"
+assert_eq "$(printf '%s\n' "$got" | lines)" "codex resume $CX1 codex resume $CX2" "a stale codex id first, once"
+got="$(roost_resume_listing codex "$EMPTY")"; rc=$?
+assert_eq "$rc|$got" "1|" "a directory with no rollout: exit 1, nothing printed"
+
+# --- the verbs print it: revive, the restore report, --dry-run (Task 6.4) ----
+ROOST="$PWD/bin/roost"
+R() { env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost "$ROOST" "$@"; }
+# `roost wiring apply` runs when restore starts a server, and writes under
+# XDG_CONFIG_HOME: a temp dir here, not the canary (tests/test-shape-resume.sh).
+export XDG_CONFIG_HOME="$SHAPE_TMP/config"
+# No shutdown record unless a case sets one: on a Mac `last reboot` would
+# otherwise decide which save a restore picks (tests/test-shape-attach.sh).
+export ROOST_SHUTDOWN_AT=""
+popt() { TL show-options -pqv -t "$1" "$2" 2>/dev/null; }
+ppid_of() { TL display -p -t "$1" '#{pane_pid}'; }
+stubpane() { TL new-window -d -P -F '#{pane_id}' -t shp: -c "$2" "$STUB_BIN/$1 600"; }
+wait_cmd() { # PANE NAME — up to 5 s for the pane's foreground to be NAME
+  local i=0
+  while [ "$i" -lt 50 ]; do [ "$(TL display -p -t "$1" '#{pane_current_command}')" = "$2" ] && return 0; sleep 0.1; i=$((i+1)); done
+  return 1
+}
+# after FILE TEXT N — the N lines right after the first line of FILE holding
+# TEXT (a fixed string), one per line.
+after() { awk -v t="$2" -v n="$3" 'f && n-- > 0 { print; next } !f && index($0, t) { f = 1 }' "$1"; }
+CL="  claude --resume $U2
+  claude --resume $U3
+  claude --resume $U1"
+
+echo "== revive of a no-key pane prints the listing after its exit-13 line, and runs nothing =="
+: > "$STUB_LOG"
+P="$(stubpane claude "$DIR")"; wait_cmd "$P" claude
+TL set-option -p -t "$P" @roost-harness claude
+pid0="$(ppid_of "$P")"
+R revive "$P" >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "13" "no session id: still exit 13"
+assert_eq "$(head -n 1 "$SHAPE_TMP/err")" "roost revive: '$P' has no recorded conversation (harness claude, no session id)" "...its exit-13 line first"
+assert_eq "$(after "$SHAPE_TMP/err" "no session id)" 4)" \
+  "roost revive: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
+$CL" "...then every conversation of the pane's directory, newest first"
+assert_eq "$(cat "$SHAPE_TMP/out")" "" "...nothing on stdout"
+assert_eq "$(cat "$STUB_LOG")|$(ppid_of "$P")" "|$pid0" "...nothing launched (the stub log is empty), the pane untouched"
+TL kill-pane -t "$P"
+
+: > "$STUB_LOG"
+P="$(stubpane claude "$DIR")"; wait_cmd "$P" claude
+R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(head -n 1 "$SHAPE_TMP/err")" "13|roost revive: '$P' has no recorded conversation (no harness, no session id)" \
+  "a Claude pane with no identity at all: exit 13, as before"
+assert_eq "$(after "$SHAPE_TMP/err" "no session id)" 4)" \
+  "roost revive: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
+$CL" "...and the harness its command names gets the listing"
+assert_eq "$(cat "$STUB_LOG")" "" "...nothing launched"
+TL kill-pane -t "$P"
+
+: > "$STUB_LOG"
+P="$(stubpane codex "$DIR")"; wait_cmd "$P" codex
+TL set-option -p -t "$P" @roost-harness codex
+R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" "13" "a codex pane with no key (#145): exit 13"
+assert_eq "$(after "$SHAPE_TMP/err" "no session id)" 3)" \
+  "roost revive: codex holds these conversations for $DIR, newest first (printed, not run; pick one):
+  codex resume $CX2
+  codex resume $CX1" "...then its rollouts, newest first"
+assert_eq "$(cat "$STUB_LOG")" "" "...nothing launched"
+TL kill-pane -t "$P"
+
+: > "$STUB_LOG"
+P="$(stubpane claude "$EMPTY")"; wait_cmd "$P" claude
+TL set-option -p -t "$P" @roost-harness claude
+R revive "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc|$(sed -n 2p "$SHAPE_TMP/err")" "13|roost revive: claude holds no conversation for $EMPTY" \
+  "a directory the store has nothing for: said in one line"
+TL kill-pane -t "$P"
+
+echo "== the restore report and --dry-run print it under a pane with a stale or missing key =="
+SD="$ROOST_SHAPE_DIR/roost"; mkdir -p "$SD"
+# Five sessions of one pane each, every pane in DIR:
+#   lnk    harness claude, no session id            -> no key: the listing
+#   lcmd   no identity, command Claude's version    -> no key: the listing
+#   lst    stale claude key, exited                 -> its own id first
+#   lnest  a claude pane carrying a nested codex key -> CLAUDE's listing, no
+#          stale id first: the key is the nested agent's, not the pane's
+#   lcx    no identity, command codex (#145)        -> the rollouts
+mkshape() {
+  local n=0
+  blk() { # SESSION ID EXTRA-LINES
+    printf '%s\n' "session $1" "id \$$n" '' "window $1:1" "id @$n" "layout b25d,200x50,0,0,$n" 'active 1' '' \
+      "pane $1:1.0" "id $2" "cwd $DIR" "$3" ''
+    n=$((n+1))
+  }
+  { printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" 'boot 1-1' \
+      'saved 2026-11-06T12:00:00Z' 'gen 1' 'trigger save' 'roost 0.10.0' 'tmux 3.6' 'host h' ''
+    blk lnk %940 "harness claude"
+    blk lcmd %941 "command 2.1.319"
+    blk lst %942 "stale_reason exited
+stale_harness claude
+stale_session_id $US
+command bash"
+    blk lnest %943 "stale_reason nested
+stale_harness codex
+stale_session_id $CX9
+command claude"
+    blk lcx %944 "command codex"
+  } > "$SD/shape"
+}
+mkshape
+out="$(R restore --dry-run 2>"$SHAPE_TMP/err")"; rc=$?
+printf '%s\n' "$out" > "$SHAPE_TMP/dry"
+assert_eq "$(after "$SHAPE_TMP/dry" "session lnk" 5 | sed 's/  */ /g')" \
+  " window 1 -
+ pane 0 - $DIR claude shell, not resumed: no key
+ claude --resume $U2
+ claude --resume $U3
+ claude --resume $U1" "--dry-run: a harness with no session id says 'no key', its listing indented under it"
+assert_eq "$(after "$SHAPE_TMP/dry" "session lcmd" 2 | sed 's/  */ /g')" \
+  " window 1 -
+ pane 0 - $DIR claude shell, not resumed: no key" "--dry-run: a pane whose command is Claude's version, with no identity, is a Claude pane with no key"
+assert_eq "$(after "$SHAPE_TMP/dry" "session lst" 6 | sed 's/  */ /g')" \
+  " window 1 -
+ pane 0 - $DIR - shell, not resumed: stale (exited claude)
+ claude --resume $US
+ claude --resume $U2
+ claude --resume $U3
+ claude --resume $U1" "--dry-run: an exited pane's own stale id first"
+assert_eq "$(after "$SHAPE_TMP/dry" "session lnest" 3 | sed 's/  */ /g' | tail -n 1)" " claude --resume $U2" \
+  "--dry-run: a nested key lists the PANE's harness (claude), not the nested one"
+assert_eq "$(after "$SHAPE_TMP/dry" "session lcx" 4 | sed 's/  */ /g')" \
+  " window 1 -
+ pane 0 - $DIR codex shell, not resumed: no key
+ codex resume $CX2
+ codex resume $CX1" "--dry-run: a codex pane with no key lists its rollouts"
+TL ls -F '#{session_name}' 2>/dev/null | grep -q '^l'; assert_eq "$?" "1" "--dry-run made no session"
+
+: > "$STUB_LOG"
+R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
+first_pane() { TL list-panes -s -t "=$1:" -F '#{pane_id}' 2>/dev/null | head -1; }
+pnk="$(first_pane lnk)"; pcmd="$(first_pane lcmd)"; pst="$(first_pane lst)"; pnest="$(first_pane lnest)"; pcx="$(first_pane lcx)"
+assert_eq "$(after "$SHAPE_TMP/err" "$pnk ran claude with no recorded conversation" 4)" \
+  "roost restore: $pnk: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
+$CL" "the report: a no-key pane's line, then its listing"
+assert_eq "$(after "$SHAPE_TMP/err" "$pcmd ran claude with no recorded conversation" 1)" \
+  "roost restore: $pcmd: claude holds these conversations for $DIR, newest first (printed, not run; pick one):" \
+  "...a pane whose command was Claude's version is named a Claude pane with no key, and listed"
+assert_eq "$(after "$SHAPE_TMP/err" "$pst carries a stale claude key" 2)" \
+  "roost restore: $pst: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
+  claude --resume $US" "...a stale exited key: its own id first"
+assert_eq "$(after "$SHAPE_TMP/err" "$pnest carries a stale codex key" 2)" \
+  "roost restore: $pnest: claude holds these conversations for $DIR, newest first (printed, not run; pick one):
+  claude --resume $U2" "...a nested key: the pane's own harness's listing"
+assert_eq "$(after "$SHAPE_TMP/err" "$pcx ran codex with no recorded conversation" 3)" \
+  "roost restore: $pcx: codex holds these conversations for $DIR, newest first (printed, not run; pick one):
+  codex resume $CX2
+  codex resume $CX1" "...a codex pane with no key: its rollouts"
+assert_contains "$(cat "$SHAPE_TMP/err")" "launched 0 agents" "...launched 0 agents"
+sleep 1
+assert_eq "$(cat "$STUB_LOG")" "" "nothing was launched from any listing (the stub log is empty)"
+for s in lnk lcmd lst lnest lcx; do TL kill-session -t "=$s" 2>/dev/null; done
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

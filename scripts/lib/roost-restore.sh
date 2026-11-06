@@ -509,14 +509,27 @@ roost_restore__was() {
 
 # roost_restore__rec PANE BLOCKFILE [REASON] — one placed pane, for the
 # report (§4.3 Report) and --json. Appends to ROOST_RESTORE_RECS one line:
-#   was|pane|session|window|harness|reason|stale-id|launch hint
+#   was|pane|session|window|harness|reason|stale-id|listing|launch hint
 # the launch hint LAST, since it is the one field that may hold a `|`.
 # REASON, when not given, is what placement decided: `pending` (a waiting
 # placeholder, settled by the loop's result), `directory gone`, `--no-resume`,
 # `older than --recent`, `stale <why>`, `no key` (a harness with no session
-# id), or empty for a pane that names no conversation.
+# id, or no identity at all on a pane whose command names a harness — the
+# 13 Claude panes of §2.6, a codex pane under #145), or empty for a pane that
+# names no conversation.
+#
+# LISTING is empty, or `N:HARNESS:STALE-ID` when the report prints §5.6's
+# store listing under this pane (roost_restore__listing_of): HARNESS and
+# STALE-ID are a name from a fixed set and a checked UUID, so neither holds a
+# `|`; the directory may, so it is kept in ROOST_RESTORE_LDIRS[N] instead.
 roost_restore__rec() {
-  local b="$2" r="${3:-}" h="" i="" sid="" addr sess win hint
+  local b="$2" r="${3:-}" h="" i="" sid="" addr sess win hint lst=""
+  if roost_restore__listing_of "$b"; then
+    ROOST_RESTORE_NL="${ROOST_RESTORE_NL:-0}"
+    ROOST_RESTORE_LDIRS[$ROOST_RESTORE_NL]="$ROOST_RESTORE_LD"
+    lst="$ROOST_RESTORE_NL:$ROOST_RESTORE_LH:$ROOST_RESTORE_LS"
+    ROOST_RESTORE_NL=$((ROOST_RESTORE_NL + 1))
+  fi
   if h="$(roost_shape_get "$b" harness)"; then
     i="$(roost_shape_get "$b" session_id 2>/dev/null || true)"
     if [ -z "$r" ]; then
@@ -529,11 +542,64 @@ roost_restore__rec() {
   elif h="$(roost_shape_get "$b" stale_harness)"; then
     [ -n "$r" ] || r="stale $(roost_shape_get "$b" stale_reason 2>/dev/null || true)"
     sid="$(roost_shape_get "$b" stale_session_id 2>/dev/null || true)"
+  elif h="$(roost_restore__cmd_harness "$b")"; then
+    [ -n "$r" ] || r="no key"
+  else
+    h=""
   fi
   addr="$(roost_restore__addr "$b")"
   sess="${addr%:*}"; win="${addr##*:}"; win="${win%%.*}"
   hint="$(roost_shape_get "$b" launch 2>/dev/null || true)"
-  ROOST_RESTORE_RECS="${ROOST_RESTORE_RECS:-}$(roost_shape_get "$b" id)|$1|$sess|$win|$h|$r|$sid|$hint"$'\n'
+  ROOST_RESTORE_RECS="${ROOST_RESTORE_RECS:-}$(roost_shape_get "$b" id)|$1|$sess|$win|$h|$r|$sid|$lst|$hint"$'\n'
+}
+
+# roost_restore__cmd_harness BLOCKFILE -> prints the harness the saved pane's
+# `command` names, by roost-close.sh's table (roost_close_harness: the five
+# names, and Claude's version string, which is what a Claude pane's
+# #{pane_current_command} reads); 1 when it names none. A pane with no
+# identity is saved with no `harness` line (the writer writes one only with a
+# session id, §3.2), so this is the only place a restore can see that such a
+# pane ran an agent at all (§5.6: "%34 ran claude with no recorded
+# conversation").
+roost_restore__cmd_harness() {
+  local c
+  c="$(roost_shape_get "$1" command 2>/dev/null)" || return 1
+  roost_close_harness "" "$c" ""
+  [ -n "$ROOST_CLOSE_HARNESS" ] || return 1
+  printf '%s\n' "$ROOST_CLOSE_HARNESS"
+}
+
+# roost_restore__listing_of BLOCKFILE -> exit 0 when §5.6's store listing goes
+# under this pane, and then ROOST_RESTORE_LH is the harness to list, _LS the
+# stale id to list first (or empty), _LD the directory (#191 Part 6). A pane
+# "with a harness and no usable key":
+#   - a `harness` with no `session_id`: that harness;
+#   - no identity at all, a `command` naming a harness: that harness;
+#   - a stale key (§3.2): the harness the pane's own `command` names when it
+#     names one — a Claude pane carrying a NESTED codex key lists Claude's
+#     store, since the key was the nested agent's — else the stale
+#     harness. Only `stale_reason exited` puts its own stale id first (§5.6:
+#     the agent that exited was the pane's own, and its id is the one a
+#     person most likely wants back).
+# A live key (`harness` and `session_id`) gets no listing: it is resumed, or
+# named by the loop's own reason. Only Claude and codex have a listing. The
+# directory is the block's `cwd`, the pane's own: §5.6 lists "every
+# transcript whose own first `cwd` is the pane's directory".
+roost_restore__listing_of() {
+  local h r
+  ROOST_RESTORE_LH="" ROOST_RESTORE_LS="" ROOST_RESTORE_LD=""
+  if h="$(roost_shape_get "$1" harness)"; then
+    roost_shape_get "$1" session_id >/dev/null 2>&1 && return 1
+  elif r="$(roost_shape_get "$1" stale_reason)"; then
+    h="$(roost_restore__cmd_harness "$1")" || h="$(roost_shape_get "$1" stale_harness 2>/dev/null || true)"
+    [ "$r" = exited ] && ROOST_RESTORE_LS="$(roost_shape_get "$1" stale_session_id 2>/dev/null || true)"
+  else
+    h="$(roost_restore__cmd_harness "$1")" || return 1
+  fi
+  case "$h" in claude|codex) ;; *) return 1 ;; esac
+  ROOST_RESTORE_LH="$h"
+  ROOST_RESTORE_LD="$(roost_shape_get "$1" cwd)" || return 1
+  return 0
 }
 
 # roost_restore_report FROM-STAMPGEN JSON — the report (§4.3), on stderr,
@@ -550,11 +616,11 @@ roost_restore__rec() {
 # {"restored":[{"was","pane","session","window","launched","reason"}],
 #  "skipped":[…],"from":"STAMP-GEN"}.
 roost_restore_report() {
-  local from="$1" json="${2:-0}" line was pane sess win h r sid hint res l a=0 nr=0 nb=0
+  local from="$1" json="${2:-0}" line was pane sess win h r sid lst hint res l a=0 nr=0 nb=0
   local codex="" ncodex=0 first_codex="" j="" sk="" n
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    IFS='|' read -r was pane sess win h r sid hint <<< "$line"
+    IFS='|' read -r was pane sess win h r sid lst hint <<< "$line"
     l=0
     if [ "$r" = pending ]; then
       res="$(printf '%s' "${ROOST_PENDING_RESULTS:-}" | grep -- "^$pane|" | tail -1 || true)"
@@ -584,6 +650,14 @@ roost_restore_report() {
         printf 'roost restore: %s carries a stale %s key (%s…) %s; not resumed\n' "$pane" "$h" "${sid:0:8}" "$n" >&2 ;;
       "no key")
         printf 'roost restore: %s ran %s with no recorded conversation; roost revive %s cannot resume it\n' "$pane" "$h" "$pane" >&2 ;;
+    esac
+    # §5.6's store listing under the line that named the pane, printed and
+    # never run (#191 Part 6). Only for the two reasons above: a pane that was
+    # resumed, or that the loop named for its own reason, has a key.
+    case "$r:$lst" in
+      "stale "*:?*|"no key":?*)
+        roost_resume_print_listing "roost restore: $pane" "$(printf '%s' "$lst" | cut -d: -f2)" \
+          "${ROOST_RESTORE_LDIRS[${lst%%:*}]}" "${lst##*:}" >&2 ;;
     esac
     [ -n "$hint" ] && printf "roost restore: %s was started as '%s'\n" "$pane" "$hint" >&2
     if [ "$json" = 1 ]; then
@@ -1187,7 +1261,7 @@ roost_restore_run() {
   # or, with saving off, in this run's own directory — the loop that reads it
   # runs in this same process, and each placeholder names its file by path.
   ROOST_RESTORE_SD="${ROOST_RESTORE_RD%/restoring}" ROOST_RESTORE_BOOT=""
-  ROOST_RESTORE_NOTRES=0 ROOST_RESTORE_BUSY="" ROOST_RESTORE_RECS="" ROOST_RESTORE_SKIPPED=""
+  ROOST_RESTORE_NOTRES=0 ROOST_RESTORE_BUSY="" ROOST_RESTORE_RECS="" ROOST_RESTORE_SKIPPED="" ROOST_RESTORE_NL=0
   # The alias map (§5.4): in the shape directory only, under the save's own
   # boot as OLDBOOT.
   ROOST_RESTORE_MAPDIR="" ROOST_RESTORE_OLDBOOT="$(roost_restore__hdr "$file" boot 2>/dev/null || true)"
@@ -1602,6 +1676,10 @@ roost_restore__action() {
     if [ "$gone" = 1 ]; then
       printf '%s|shell in ~, not resumed: directory gone\n' "$h"
       [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ] || ROOST_RESTORE_NOTRES=1
+    elif ! roost_shape_get "$1" session_id >/dev/null 2>&1; then
+      # A harness with no session id: §4.3's `no key`. Before Part 6 this
+      # fell through to will_resume's refusal and read "older than --recent".
+      printf '%s|shell, not resumed: no key\n' "$h"
     elif roost_restore__will_resume "$1"; then printf '%s|resume\n' "$h"
     elif [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ]; then printf '%s|shell, not resumed: --no-resume\n' "$h"
     else printf '%s|shell, not resumed: older than --recent %s days\n' "$h" "${ROOST_RESTORE_RECENT:-}"; fi
@@ -1609,6 +1687,11 @@ roost_restore__action() {
     sh="$(roost_shape_get "$1" stale_harness)"
     if [ "$gone" = 1 ]; then printf -- '-|shell in ~, not resumed: directory gone\n'
     else printf -- '-|shell, not resumed: stale (%s %s)\n' "$r" "$sh"; fi
+  elif h="$(roost_restore__cmd_harness "$1")"; then
+    # No identity, and a command that names a harness (#191 Part 6, §5.6): the
+    # pane ran an agent roost has no key for, which the report names too.
+    if [ "$gone" = 1 ]; then printf '%s|shell in ~, not resumed: directory gone\n' "$h"
+    else printf '%s|shell, not resumed: no key\n' "$h"; fi
   elif [ "$gone" = 1 ]; then printf -- '-|shell in ~: directory gone\n'
   else printf -- '-|shell\n'; fi
 }
@@ -1671,6 +1754,13 @@ roost_restore_dry_run() {
         act="$(cat "$ROOST_RESTORE_PD/.act")"; h="${act%%|*}" act="${act#*|}"
         printf '    pane %s %-12s %-30s %-8s %s\n' "$(roost_restore__addr "$pf" | sed 's/.*\.//')" \
           "$pn" "$(roost_shape_get "$pf" cwd)" "$h" "$act"
+        # §5.6's store listing, indented under the pane it is for (#191 Part
+        # 6): the same lines the real run's report prints, without its
+        # header, since the pane line above already says why. Printed, never
+        # run, here as there. A directory that is gone has nothing to list.
+        if [ -d "$(roost_shape_get "$pf" cwd)" ] && roost_restore__listing_of "$pf"; then
+          roost_resume_listing "$ROOST_RESTORE_LH" "$ROOST_RESTORE_LD" "$ROOST_RESTORE_LS" | sed 's/^/      /' || true
+        fi
       done <<< "$(roost_restore__panes "$a")"
     done <<< "$(roost_restore__windows "$name")"
   done
