@@ -18,6 +18,18 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A Claude or codex pane with no recorded conversation now shows you how
+  to get it back (#191).** When roost does not know which conversation a
+  pane had (an older Claude pane, most codex panes, or a pane whose agent
+  left a key that no longer fits it), `roost revive` and `roost restore` now
+  list every conversation the harness holds for that pane's directory,
+  newest first, as `claude --resume ID` or `codex resume ID` lines.
+  `restore --dry-run` shows the same lines in its plan. roost prints them
+  and runs none: several panes can share a directory, so you pick the one
+  that was this pane's. When the agent had exited, its own conversation is
+  listed first. `restore` also now names a pane that ran Claude or codex
+  with no recorded conversation, which it skipped without a word before.
+
 - **The tab bar can sit at the bottom of the screen.** `roost settings` (or
   `prefix S`) has a new **tab bar** row: pick **top** or **bottom**. The bar
   moves at once and stays there after a reload. It is saved as
