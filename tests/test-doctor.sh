@@ -1451,6 +1451,18 @@ assert_eq "$(cat "$PERSIST_LOG" 2>/dev/null)" "" "doctor called no launchctl or 
 penv ROOST_PERSIST_WRITE_ONLY=1 "$HERE/bin/roost" persist off --name "$PNAME" >/dev/null 2>&1
 out="$(pdoc2)"
 assert_contains "$out" "persist: saving on; login restore off (roost persist on restores the fleet at login" "persist off: login restore off, and how to turn it on"
+# A decline at the restore offer (#191 Part 7, §4.5, §4.8): `declined` is a
+# hard link to the save a person turned down, and the persist line names it
+# by STAMP-GEN, with the command that brings it back.
+case "$out" in *"declined at the restore offer"*) r=1 ;; *) r=0 ;; esac
+assert_true $r "no declined file: the persist line names no decline"
+ln "$PSD/shape" "$PSD/declined"
+dsg="$(sed -n 's/^saved //p;/^$/q' "$PSD/declined" | tr -d ':-')-$(sed -n 's/^gen //p;/^$/q' "$PSD/declined")"
+out="$(pdoc2)"
+pl="$(printf '%s\n' "$out" | grep 'persist: saving on' | head -1)"
+case "$pl" in *"; declined at the restore offer: $dsg (roost restore --from $dsg)") r=0 ;; *) r=1 ;; esac
+assert_true $r "a declined save: the persist line ends naming it and the way back ($pl)"
+rm -f "$PSD/declined"
 tmux -S "$PSOCK" kill-server 2>/dev/null; rm -rf "$PS_D"
 
 # --- nothing escaped the sandbox --------------------------------------------

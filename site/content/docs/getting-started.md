@@ -330,6 +330,21 @@ Detach with the prefix then `d`, like any tmux. The prefix is `Ctrl-s`.
 To have the fleet come back by itself after a reboot, run `roost persist on`
 once: see [Persistent Sessions](/docs/persistent-sessions).
 
+**If roost was not shut down cleanly** — a crash, a reboot — and `persist` is
+off, the next `roost` asks before it starts anything:
+
+```
+roost: a saved fleet from 2 h ago (2026-10-24 20:51): 2 sessions, 3 windows, 4 panes; 1 of 2 agents would resume.
+  r restore it   p preview   n start fresh, do not ask again   l restore at login from now on: off
+  Enter starts fresh (nothing is restored without an r).
+```
+
+`r` brings the fleet back and resumes its agents after you attach, `p` shows
+the plan first, `n` starts fresh and does not ask about that save again, and
+Enter starts fresh without deciding anything. `l` turns on `roost persist`,
+which makes this automatic from then on: the fleet is placed at login and
+nothing is asked.
+
 `roost help` prints the full command list, with the owl on top:
 
 ![The roost help output: an ASCII owl above the full command list](/roost-help.png)
