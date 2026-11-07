@@ -736,6 +736,32 @@ assert_eq "$(ck "$C/gap")" "1|line 2: no readable first line (want roost-shape 1
 assert_eq "$(ck "$C/nb2")" "1|line 3: the header has no boot" "a header fault names the header's own line, under the notes"
 { printf '# a note\n'; good 'cwd /var'; } > "$C/rep2"
 assert_contains "$(ck "$C/rep2")" "line 24: repeated key cwd" "a body fault's line number counts the note lines"
+echo "== the notes' odd bytes (#234, fix round 1) =="
+# A session name with a byte that is not UTF-8 (0xFF, built with printf):
+# GNU grep under a UTF-8 locale calls such a line binary and drops it, so the
+# note filter (roost_shape__nocomment) must read bytes, or the session would
+# vanish from --list and from the offer's session pick.
+ff="$(printf 'a\377b')"
+# LC_ALL=C on sed too: BSD sed under a UTF-8 locale stops at that byte
+# ("illegal byte sequence") and leaves a file with no session at all.
+{ printf '# a note\n'; good | LC_ALL=C sed "s/^session main\$/session $ff/;s/^window main:1\$/window $ff:1/;s/^pane main:1.0\$/pane $ff:1.0/"; } > "$C/ff"
+assert_eq "$(LC_ALL=C grep -c "^session a.b\$" "$C/ff")|$(LC_ALL=C grep -c "^pane a.b:1.0\$" "$C/ff")|$(ck "$C/ff")" "1|1|0|" \
+  "(the control) the save holds session a<0xFF>b and its pane, and passes the checker"
+assert_eq "$(LANG=C.UTF-8 LC_ALL=C.UTF-8 roost_shape__nocomment "$C/ff" | LC_ALL=C grep -c "^session a.b\$")" "1" \
+  "roost_shape__nocomment keeps a line with a non-UTF-8 byte (under C.UTF-8)"
+assert_eq "$(LANG=C.UTF-8 LC_ALL=C.UTF-8 roost_shape__nocomment "$C/ff" | grep -c '^#')" "0" "...and still drops the notes"
+# A server key holding a backslash: `awk -v` reads `\n` in it as a newline,
+# which split a note line, and the checker then refused every save of that
+# server. The key reaches awk through its environment instead, byte for byte.
+bk='a\nb'
+nk="$(ROOST_SHAPE_BODY="$(sed '1,/^$/d' "$FX")" roost_shape__notes "$bk" 2026-10-28T12:00:00Z save)"
+assert_eq "$(printf '%s\n' "$nk" | head -1)" "# A saved roost fleet: server a\\nb, saved 2026-10-28T12:00:00Z, because of: save" \
+  "a server key a\\nb is written as it is, on the first note line"
+assert_eq "$(printf '%s\n' "$nk" | grep -vc '^#')" "0" "...every note line still starts with #"
+# Built with printf: sed would read the `\n` in its replacement as a newline.
+{ printf '%s\n' "$nk" 'roost-shape 1' "server $bk"; sed '1,2d' "$FX"; } > "$C/bk"
+assert_eq "$(sed -n 8p "$C/bk")" "server a\\nb" "(the control) the save's server line is a\\nb, one line"
+assert_eq "$(ck "$C/bk")" "0|" "...and that save passes the checker"
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

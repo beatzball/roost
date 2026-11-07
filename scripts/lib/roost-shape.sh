@@ -869,8 +869,14 @@ roost_shape__build() {
 # because the block holds the stamp and the triggers, which change at every
 # save, that test would then publish a new gen every time. One awk, LC_ALL=C:
 # a name is bytes, and BWK awk (macOS) and mawk/gawk (Ubuntu) agree on bytes.
+#
+# The key, stamp and triggers reach awk through its ENVIRONMENT, never `-v`:
+# `-v` reads backslash escapes, so a server named `a\nb` became a newline in
+# the first note line, the part after it a line with no `#`, and the checker
+# then refused every save of that server (fix round 1). ENVIRON is the value
+# byte for byte. Set on awk alone, so nothing else inherits them.
 roost_shape__notes() {
-  printf '%s\n' "$ROOST_SHAPE_BODY" | LC_ALL=C awk -v key="$1" -v stamp="$2" -v why="$3" '
+  printf '%s\n' "$ROOST_SHAPE_BODY" | ROOST_NOTES_KEY="$1" ROOST_NOTES_STAMP="$2" ROOST_NOTES_WHY="$3" LC_ALL=C awk '
     function endblock() {
       if (kind == "window") { nw++; tw++; if (nw <= 8) wins = wins (wins == "" ? "" : ", ") wname }
       if (kind == "pane") {
@@ -919,6 +925,7 @@ roost_shape__notes() {
       }
     }
     END {
+      key = ENVIRON["ROOST_NOTES_KEY"]; stamp = ENVIRON["ROOST_NOTES_STAMP"]; why = ENVIRON["ROOST_NOTES_WHY"]
       endblock(); endsession()
       print "# A saved roost fleet: server " key ", saved " stamp ", because of: " why
       print "# " ts (ts == 1 ? " session, " : " sessions, ") tw (tw == 1 ? " window, " : " windows, ") \
@@ -940,7 +947,10 @@ roost_shape_hdr() { sed -n "s/^$2 //p;/^\$/q" "$1" 2>/dev/null | head -1; }
 # roost_shape__nocomment FILE -> FILE without its `#` lines, for a reader
 # that is not line-by-line (the awk paragraph readers): a note sitting at the
 # top of a block would otherwise make that paragraph start with `#`.
-roost_shape__nocomment() { grep -v '^#' "$1" 2>/dev/null || true; }
+# LC_ALL=C: GNU grep under a UTF-8 locale calls a line with a byte that is not
+# UTF-8 binary and drops it, so a session named `a<0xFF>b` vanished from
+# --list and the offer's session pick (fix round 1). A name is bytes.
+roost_shape__nocomment() { LC_ALL=C grep -v '^#' "$1" 2>/dev/null || true; }
 
 # roost_shape__header KEY GEN TRIGGER -> the notes (roost_shape__notes) and
 # the header lines (no blank line). The stamp is read once, so the notes and
