@@ -217,7 +217,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
   stopping. A manager that held its socket but did not answer made that
   question wait about 25 s, and a `roost save` typed meanwhile waited up to
   30 s and then gave up. The question now gives up after 2 s and the save
-  goes ahead as before.
+  goes ahead as before. A logout also no longer leaves a save error behind
+  for `roost doctor` to report at the next login.
 
 - **No `grep: write error: Broken pipe` line in the login job's `login.log`
   (#239).** On a machine whose login records hold many shutdowns, the
