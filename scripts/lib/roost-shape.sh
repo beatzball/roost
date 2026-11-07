@@ -850,10 +850,117 @@ roost_shape__build() {
   return 0
 }
 
-# roost_shape__header KEY GEN TRIGGER -> the header lines (no blank line).
+# roost_shape__notes KEY STAMP TRIGGER -> the comment block a save starts
+# with (#234): what the fleet is, when and why it was saved, and how to see
+# the whole tree. Read from ROOST_SHAPE_BODY, the lines the save is about to
+# write, so it holds nothing the file does not already hold: names, harnesses
+# and counts — no directory, no host, no id.
+#
+# Why it exists: a person opened a save cold and could not say what the fleet
+# was (§8.2 item 7 of #191 failed). The format stays `roost-shape 1` (the
+# human's choice, option A of #234); every reader skips a line that starts
+# with `#` (roost_shape_check, roost_shape_parse, roost_shape__nocomment), and
+# the header's own readers (`sed -n 's/^KEY //p;/^$/q'`) never match one.
+#
+# The block has NO blank line in it and none after it: `roost-shape 1` comes
+# on the very next line. Every header reader stops at the first blank line
+# and the saver's "nothing changed" test drops everything up to it (`sed
+# '1,/^$/d'`), so a blank line here would hide the header from both — and
+# because the block holds the stamp and the triggers, which change at every
+# save, that test would then publish a new gen every time. One awk, LC_ALL=C:
+# a name is bytes, and BWK awk (macOS) and mawk/gawk (Ubuntu) agree on bytes.
+#
+# The key, stamp and triggers reach awk through its ENVIRONMENT, never `-v`:
+# `-v` reads backslash escapes, so a server named `a\nb` became a newline in
+# the first note line, the part after it a line with no `#`, and the checker
+# then refused every save of that server (fix round 1). ENVIRON is the value
+# byte for byte. Set on awk alone, so nothing else inherits them.
+roost_shape__notes() {
+  printf '%s\n' "$ROOST_SHAPE_BODY" | ROOST_NOTES_KEY="$1" ROOST_NOTES_STAMP="$2" ROOST_NOTES_WHY="$3" LC_ALL=C awk '
+    function endblock() {
+      if (kind == "window") { nw++; tw++; if (nw <= 8) wins = wins (wins == "" ? "" : ", ") wname }
+      if (kind == "pane") {
+        np++; tp++
+        a = ""
+        if (h != "") a = h
+        else if (sh != "") a = sh
+        if (a != "") {
+          na++; ta++
+          if (pname != "") a = a " \"" pname "\""
+          if (h == "" && sr != "") a = a " (" (sr == "exited" ? "exited" : sr == "nested" ? "a nested key, not this pane'"'"'s" : "not running") ")"
+          if (na <= 8) ags = ags (ags == "" ? "" : ", ") a
+        }
+      }
+      kind = ""
+    }
+    function endsession() {
+      if (sess == "") return
+      if (grp != "") line = sess ": the same windows as " grp " (a session group)"
+      else {
+        line = sess ": " nw (nw == 1 ? " window" : " windows") " (" wins (nw > 8 ? ", and " (nw - 8) " more" : "") "), " \
+          np (np == 1 ? " pane" : " panes") "; "
+        if (na == 0) line = line "no agents"
+        else line = line (na == 1 ? "agent: " : "agents: ") ags (na > 8 ? ", and " (na - 8) " more" : "")
+      }
+      out[++nout] = line
+      sess = ""
+    }
+    /^$/ { endblock(); next }
+    kind == "" {
+      kind = $1; v = substr($0, length($1) + 2)
+      if (kind == "session") { endsession(); sess = v; ts++; grp = ""; nw = 0; np = 0; na = 0; wins = ""; ags = "" }
+      else if (kind == "window") { wname = v; sub(/.*:/, "", wname) }
+      else if (kind == "pane") { pname = ""; h = ""; sh = ""; sr = "" }
+      next
+    }
+    {
+      k = $1; v = substr($0, length(k) + 2)
+      if (kind == "session" && k == "group") grp = v
+      else if (kind == "window" && k == "name") wname = "\"" v "\""
+      else if (kind == "pane") {
+        if (k == "name") pname = v
+        else if (k == "harness") h = v
+        else if (k == "stale_harness") sh = v
+        else if (k == "stale_reason") sr = v
+      }
+    }
+    END {
+      key = ENVIRON["ROOST_NOTES_KEY"]; stamp = ENVIRON["ROOST_NOTES_STAMP"]; why = ENVIRON["ROOST_NOTES_WHY"]
+      endblock(); endsession()
+      print "# A saved roost fleet: server " key ", saved " stamp ", because of: " why
+      print "# " ts (ts == 1 ? " session, " : " sessions, ") tw (tw == 1 ? " window, " : " windows, ") \
+        tp (tp == 1 ? " pane, " : " panes, ") ta (ta == 1 ? " agent" : " agents")
+      for (i = 1; i <= nout; i++) print "#   " out[i]
+      print "# run `roost restore --dry-run --from <this file>` to see the full tree"
+      print "# (a line that starts with # is a note for people; roost skips it)"
+    }'
+}
+
+# roost_shape_hdr FILE KEY -> one header value of a save, or nothing. THE
+# header reader: restore, --list, the offer, doctor, persist and bin/roost's
+# lost-socket check all ask this one, so there is one place that knows where
+# the header is. It stops at the first blank line, the header's end; the `#`
+# notes above the header (#234) never match `KEY `, and hold no blank line
+# (roost_shape__notes).
+roost_shape_hdr() { sed -n "s/^$2 //p;/^\$/q" "$1" 2>/dev/null | head -1; }
+
+# roost_shape__nocomment FILE -> FILE without its `#` lines, for a reader
+# that is not line-by-line (the awk paragraph readers): a note sitting at the
+# top of a block would otherwise make that paragraph start with `#`.
+# LC_ALL=C: GNU grep under a UTF-8 locale calls a line with a byte that is not
+# UTF-8 binary and drops it, so a session named `a<0xFF>b` vanished from
+# --list and the offer's session pick (fix round 1). A name is bytes.
+roost_shape__nocomment() { LC_ALL=C grep -v '^#' "$1" 2>/dev/null || true; }
+
+# roost_shape__header KEY GEN TRIGGER -> the notes (roost_shape__notes) and
+# the header lines (no blank line). The stamp is read once, so the notes and
+# the `saved` line never disagree across a second boundary.
 roost_shape__header() {
+  local st
+  st="$(roost_shape__stamp)"
+  roost_shape__notes "$1" "$st" "$3"
   printf 'roost-shape 1\nserver %s\nsocket %s\nboot %s\nsaved %s\ngen %s\ntrigger %s\nroost %s\ntmux %s\nhost %s\n' \
-    "$1" "$ROOST_SHAPE_SPATH" "$ROOST_SHAPE_BOOT" "$(roost_shape__stamp)" "$2" "$3" \
+    "$1" "$ROOST_SHAPE_SPATH" "$ROOST_SHAPE_BOOT" "$st" "$2" "$3" \
     "${ROOST_VERSION:-unknown}" "$ROOST_SHAPE_VER" "$(uname -n)"
 }
 
@@ -1090,7 +1197,9 @@ roost_shape__round() {
   roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_LIST
   # The body (everything after the header's blank line) equal to `shape`'s
   # means nothing is written: the header alone never makes a save worth
-  # keeping (§3.2).
+  # keeping (§3.2). The `#` notes sit above the header with no blank line
+  # between (#234), so `1,/^$/d` drops them with it: they carry the stamp
+  # and the triggers, and compared they would make every save a new gen.
   if [ -f "$dir/shape" ] && [ "$(sed '1,/^$/d' "$dir/shape")" = "$ROOST_SHAPE_BODY" ]; then
     ROOST_SHAPE_LAST=same
     return 0
@@ -1124,8 +1233,8 @@ roost_shape__round() {
     return 1
   fi
   if [ -f "$dir/shape" ]; then
-    oldsaved="$(sed -n 's/^saved //p;/^$/q' "$dir/shape")"
-    oldgen="$(sed -n 's/^gen //p;/^$/q' "$dir/shape")"
+    oldsaved="$(roost_shape_hdr "$dir/shape" saved)"
+    oldgen="$(roost_shape_hdr "$dir/shape" gen)"
     old="$(printf '%s' "$oldsaved" | tr -d ':-')-${oldgen:-0}"
     ( umask 077; mkdir -p "$dir/history" ) 2>/dev/null
     [ -e "$dir/history/$old" ] || ln "$dir/shape" "$dir/history/$old" 2>/dev/null || true
@@ -1351,8 +1460,13 @@ roost_shape_save_now() {
 # is evaluated: no eval, no source.
 #
 # The rules, in order:
-#   - the first line is `roost-shape N`; no readable first line, or a larger
-#     N, is a refusal (the number moves only when a key changes meaning);
+#   - a line that starts with `#` is a note for people (#234: every save
+#     starts with a few), skipped wherever it is, as if it were not there;
+#     line numbers still count it, so a fault names the line an editor shows;
+#   - the first other line is `roost-shape N`; no readable first line, or a
+#     larger N, is a refusal (the number moves only when a key changes
+#     meaning). A blank line before it is that refusal too: every header
+#     reader stops at the first blank line (roost_shape__notes says why);
 #   - a line with no space has no value; a value holding a tab or any other
 #     control character is refused (the writer never writes one, probe 1.3);
 #   - a key repeated inside one block is a hand-edit error;
@@ -1382,7 +1496,7 @@ roost_shape_check() {
     case "$kind" in
       header)
         for key in roost-shape server boot saved gen trigger; do
-          case "$keys" in *" $key "*) ;; *) ROOST_SHAPE_FAULT="line 1: the header has no $key"; return 1 ;; esac
+          case "$keys" in *" $key "*) ;; *) ROOST_SHAPE_FAULT="line $bstart: the header has no $key"; return 1 ;; esac
         done ;;
       session)
         case "$keys" in *" id "*) ;; *) ROOST_SHAPE_FAULT="line $bstart: session $addr has no id"; return 1 ;; esac ;;
@@ -1407,16 +1521,17 @@ roost_shape_check() {
   }
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
+    case "$line" in '#'*) continue ;; esac
     if [ "$first" = 1 ]; then
       first=0
       case "$line" in
         "roost-shape "*)
           val="${line#roost-shape }"
-          case "$val" in ''|*[!0-9]*) ROOST_SHAPE_FAULT="line 1: no readable first line (want roost-shape 1)"; return 1 ;; esac
-          if [ "$val" -gt 1 ]; then ROOST_SHAPE_FAULT="line 1: roost-shape $val is newer than this roost reads (1)"; return 1; fi ;;
-        *) ROOST_SHAPE_FAULT="line 1: no readable first line (want roost-shape 1)"; return 1 ;;
+          case "$val" in ''|*[!0-9]*) ROOST_SHAPE_FAULT="line $n: no readable first line (want roost-shape 1)"; return 1 ;; esac
+          if [ "$val" -gt 1 ]; then ROOST_SHAPE_FAULT="line $n: roost-shape $val is newer than this roost reads (1)"; return 1; fi ;;
+        *) ROOST_SHAPE_FAULT="line $n: no readable first line (want roost-shape 1)"; return 1 ;;
       esac
-      kind=header bstart=1 keys=" roost-shape "
+      kind=header bstart=$n keys=" roost-shape "
       continue
     fi
     if [ -z "$line" ]; then
@@ -1462,6 +1577,8 @@ roost_shape_check() {
     keys="$keys $key "
     [ "$kind" = session ] && [ "$key" = group ] && gchk="$gchk$bstart $addr $val$nl"
   done < "$file"
+  # Nothing but notes: no header was ever read.
+  if [ "$first" = 1 ]; then ROOST_SHAPE_FAULT="line $n: no readable first line (want roost-shape 1)"; return 1; fi
   [ -n "$kind" ] && { roost_shape__endblock || return 1; }
   # The cross-block checks, once every block is known: parents, then groups.
   local ln a g
@@ -1506,11 +1623,13 @@ roost_shape_check() {
 # roost_shape_parse FILE DIR -> one file per block in DIR, named NNNN.<kind>
 # (0000.header, then session, window and pane blocks in file order), each
 # holding that block's lines verbatim. Call it only after roost_shape_check
-# passed. An unknown block is not written: restore never sees it.
+# passed. An unknown block is not written: restore never sees it, and nor is
+# a `#` note line (#234), wherever it sits.
 roost_shape_parse() {
   local file="$1" dir="$2" line n=0 cur="" kind=""
   ( umask 077; mkdir -p "$dir" ) || return 1
   while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '#'*) continue ;; esac
     if [ -z "$line" ]; then cur=""; continue; fi
     if [ -z "$cur" ]; then
       case "${line%% *}" in

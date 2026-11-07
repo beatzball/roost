@@ -156,6 +156,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A saved fleet now starts with a few lines you can read (#234).** Open
+  `~/.local/state/roost/shapes/roost/shape` and the top says which server it
+  is, when and why it was saved, and what the fleet was: one line per
+  session, with its windows, panes and agents by name. One of them gives
+  the command that prints the whole tree: `roost restore --dry-run --from`
+  the file. Each line starts with `#`, and roost skips every `#` line, so
+  you can add your own notes to a copy. A save without them still restores.
+
 - **A bare `roost stop`, `roost kill` or `roost down` asks before it ends
   the whole server (#207).** With no session name it used to stop every
   session and every agent at once, with no count and no question. On a
@@ -189,6 +197,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
   copilot and pi still ping at once, and `error` always does.
 
 ### Fixed
+
+- **The restore offer and `roost restore --dry-run` no longer promise a
+  resume that cannot happen (#232).** A Claude, codex, copilot or pi pane
+  whose conversation its harness no longer holds was counted in "N of M
+  agents would resume" and listed as `resume`, and then came back as a
+  shell with `store miss`. The preview now asks the harness's store the way
+  the resume does: such a pane reads `shell, not resumed: store miss` in the
+  tree and in `p`, and is not counted.
 
 - **`opencode mini` is refused in a roost pane, because it never shows a
   badge.** opencode 2's minimal interface does not load the plugin roost's

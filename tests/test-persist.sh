@@ -134,6 +134,16 @@ assert_contains "$out" "persist-on" "status: the newest save's trigger"
 assert_contains "$out" "pending:" "status: the pending record's counts"
 assert_eq "$(printf '%s\n' "$out" | grep -c '^  pending: .*)$')" "1" "status: the pending line ends at its counts (fix round 1)"
 assert_eq "$(printf '%s\n' "$out" | grep -c '^  last login restore: ')" "1" "status: the last login line is a line of its own"
+# #234: the newest save starts with `#` notes; the same save without them (a
+# save an older roost wrote) gives the same newest-save line.
+nsl() { printf '%s\n' "$1" | grep '^  newest save: '; }
+withn="$(nsl "$out")"
+assert_eq "$(head -c 1 "$SD/shape")" "#" "(the control) the save status read starts with its notes"
+cp -p "$SD/shape" "$SHAPE_TMP/shape.notes"; grep -v '^#' "$SHAPE_TMP/shape.notes" > "$SD/shape"
+out="$(STUB_UNAME=Darwin PATH="$STUBS:$PATH" R persist status 2>&1)"
+assert_eq "$(nsl "$out")" "$withn" "status: the same newest-save line for a save with notes and one without ($withn)"
+assert_contains "$withn" "gen $(cat "$SD/gen") persist-on, $(grep -c '^session ' "$SD/shape") sessions / $(grep -c '^pane ' "$SD/shape") panes" "...and it reads the header (gen, trigger) and the counts"
+cp -p "$SHAPE_TMP/shape.notes" "$SD/shape"
 out="$(STUB_UNAME=Darwin PATH="$STUBS:$PATH" R persist off 2>&1)"; rc=$?
 assert_eq "$rc" "0" "macOS: off exits 0 ($out)"
 log="$(cat "$PERSIST_LOG")"

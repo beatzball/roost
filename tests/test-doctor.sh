@@ -1462,6 +1462,13 @@ out="$(pdoc2)"
 pl="$(printf '%s\n' "$out" | grep 'persist: saving on' | head -1)"
 case "$pl" in *"; declined at the restore offer: $dsg (roost restore --from $dsg)") r=0 ;; *) r=1 ;; esac
 assert_true $r "a declined save: the persist line ends naming it and the way back ($pl)"
+# #234: the save starts with `#` notes; the same save without them (a save an
+# older roost wrote) — as shape and as declined — gives the same persist line.
+assert_eq "$(head -c 1 "$PSD/shape")" "#" "(the control) the save doctor read starts with its notes"
+grep -v '^#' "$PSD/shape" > "$PSD/shape.old"; chmod 600 "$PSD/shape.old"
+rm -f "$PSD/declined"; mv -f "$PSD/shape.old" "$PSD/shape"; ln "$PSD/shape" "$PSD/declined"
+out="$(pdoc2)"
+assert_eq "$(printf '%s\n' "$out" | grep 'persist: saving on' | head -1)" "$pl" "doctor: the same persist line for a save with notes and without"
 rm -f "$PSD/declined"
 tmux -S "$PSOCK" kill-server 2>/dev/null; rm -rf "$PS_D"
 
