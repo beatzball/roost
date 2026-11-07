@@ -20,7 +20,9 @@ Saving is automatic: roost saves the shape every time the fleet changes, so
 you rarely need `roost save` at all. Restoring is by hand — run `roost
 restore` after a reboot or a crash — unless you turn on `roost persist`, which
 places the fleet when you log in and resumes the agents when you first attach
-(**Bring the fleet back at login** below).
+(**Bring the fleet back at login** below). With `persist` off, the first
+`roost` after a crash **asks** whether to bring the saved fleet back
+(**Persist off: roost asks after a crash** below).
 
 ## Save
 
@@ -303,6 +305,88 @@ the same boot is left alone.
 
 `roost persist on --name NAME` does the same for another named server.
 A name may hold letters, digits, `.`, `_` and `-`.
+
+### Persist off: roost asks after a crash
+
+Which one runs when: with `persist` **on**, the login job places the fleet
+and nothing is asked. With it **off**, nothing happens at login, and the next
+`roost`, `roost session NAME` or `roost new` you type after a crash or a
+reboot asks first, before it starts anything:
+
+```
+roost: a saved fleet from 2 h ago (2026-10-24 20:51): 13 sessions, 21 windows, 47 panes; 31 of 35 agents would resume.
+  r restore it   p preview   n start fresh, do not ask again   l restore at login from now on: off
+  Enter starts fresh (nothing is restored without an r).
+```
+
+- **`r`** restores that fleet: the sessions, windows and panes are placed,
+  then roost attaches, and the agents come back after the attach, two seconds
+  apart, as with the login restore. A fleet with no `main` session is
+  attached at its own active session, and roost says which.
+- **`p`** prints the plan — exactly what `roost restore --dry-run --from
+  STAMP-GEN` prints for that save — then asks again. Nothing is started.
+- **`n`** starts fresh and **declines** that save: you are not asked about it
+  again, and the login restore will never place it either, even if you turn
+  `persist` on later. Nothing is deleted.
+- **Enter** starts fresh **without** declining: the same as `n`, except that
+  the save is not marked. It is the default, so nothing is restored, and no
+  agent is started, without an `r`.
+- **`l`** turns "restore at login from now on" on or off. It decides nothing
+  by itself: press `r`, `n` or Enter after it. With it on, `roost persist on`
+  runs once your choice has built the server, just before the attach. If it
+  fails, roost says so and attaches anyway.
+- **No key in 60 s**: the same as Enter. The 60 s apply only before the first
+  key: after `p`, take as long as you like.
+- **Ctrl-C** leaves with nothing started and nothing declined; the next
+  `roost` asks again.
+
+It is asked only when the server is not running, saving is on, `persist` is
+off, the save was made on this machine, and it holds something worth
+restoring (a pane with an agent, or more than one pane; a fleet you closed on
+purpose with `roost kill` or `roost stop` holds nothing). Two terminals
+opening at once get one question: the other waits (`waiting for the restore
+offer in another terminal (pid N)`) and then attaches.
+
+**Who is asked.** A script with no terminal (`roost < /dev/null`, `roost |
+cat`) is never asked: `roost` does what it always did. A caller that sets
+`ROOST_NO_OFFER=1`, or runs `roost --no-offer` (`roost --no-offer session
+NAME`), is not asked either. Neither is a caller with one of these agent
+markers set:
+
+| harness | marker |
+|---|---|
+| Claude Code | `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION` |
+| codex | `CODEX_THREAD_ID` |
+| GitHub Copilot CLI | `COPILOT_CLI`, `COPILOT_AGENT_SESSION_ID` |
+| pi | `PI_CODING_AGENT`, `AI_AGENT` |
+| opencode | none known |
+
+Any other caller that attaches through a terminal — an agent of a harness
+with no known marker, say — sees the question, and after 60 s with no key is
+started fresh with nothing declined.
+
+**After `n`, Enter or no answer**, roost prints the way back before it
+attaches, for example:
+
+```
+not restored; roost restore --from 20261024T205102Z-4182 brings it back (doctor names it too)
+the saved "main" is skipped while a "main" runs: tmux -L roost rename-session -t main main-fresh, then roost restore --from 20261024T205102Z-4182
+```
+
+The line names the save by its `STAMP-GEN`, not a bare `roost restore`: the
+fresh server saves at once, so a bare restore would pick the fresh fleet. The
+second line appears when the saved fleet has a session of the name you just
+started (`main`): a restore skips a session that exists, so renaming the
+fresh one first frees the name. Renaming kills nothing, and you stay attached
+to it.
+
+**The decline** is a file, `declined`, in the shape directory: a hard link to
+the save you turned down. `roost restore --from STAMP-GEN` finds it even after
+the history ring has dropped that save, `roost restore --list` marks it
+`declined` (listing it last when the ring has dropped it), and `roost doctor`
+names it. Only the newest decline is kept: a second `n` replaces the first.
+To keep an older one, copy `declined` first; `roost restore --from COPY`
+restores the copy as a file. `rm` of `declined` forgets the decline.
 
 ### What runs, and with what
 

@@ -10,6 +10,7 @@
 # switcher roll up across every session.
 #
 #   roost                    start/attach the default session ("main")
+#                            after a crash with `persist` off, `roost`, `roost session` and `roost new` first offer the saved fleet (r restore, p preview, n start fresh and do not ask again, Enter start fresh, l restore at login from now on); roost --no-offer, ROOST_NO_OFFER=1 or a known agent marker skips it, a script with no terminal is never asked, and any other caller is started fresh after 60 s with nothing declined
 #   roost session NAME       start/attach a named session (roost session a, ...)
 #   roost new NAME [SESSION] open a new agent window and attach (default session "main")
 #   roost spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target

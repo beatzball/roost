@@ -9,6 +9,21 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **After a crash, `roost` asks whether to bring your fleet back (#191).**
+  With `roost persist` off, the first `roost`, `roost session NAME` or
+  `roost new` after a crash or a reboot shows what was saved — sessions,
+  windows, panes, and how many agents would resume — and waits for a key:
+  `r` restores it (the agents come back after you attach, two seconds
+  apart), `p` shows the plan first, `n` starts fresh and does not ask about
+  that save again, `l` turns on the login restore from then on, and Enter
+  starts fresh without deciding anything. Nothing is started while it asks,
+  and after 60 s with no key it starts fresh and declines nothing. A script
+  with no terminal is never asked; `roost --no-offer`, `ROOST_NO_OFFER=1`
+  and a known agent's environment skip it. A save you decline stays
+  reachable with the `roost restore --from STAMP-GEN` line it prints, even
+  after the history has moved on, and `roost doctor` and `roost restore
+  --list` name it.
+
 - **A Claude or codex pane with no recorded conversation now shows you how
   to get it back (#191).** When roost does not know which conversation a
   pane had (an older Claude pane, most codex panes, or a pane whose agent
