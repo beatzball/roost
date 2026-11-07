@@ -1875,7 +1875,11 @@ roost_restore_list() {
     # `set -e -o pipefail` that failure ended --list before the rest of it
     # ran (found by Task 3.11, whose pending listing comes after this loop).
     ls -1 "$sdir/history" 2>/dev/null | sort -r | while IFS= read -r f; do printf '%s\n' "$sdir/history/$f"; done || true
-    [ -n "$dbg" ] && [ "$dseen" = 0 ] && printf '%s\n' "$sdir/declined"
+    # `|| true`, as for the `ls` above: with no declined save this test is
+    # the group's last command, and its false would end --list under
+    # bin/roost's `set -e -o pipefail` (found by the suite: test-shape-place's
+    # --list case).
+    { [ -n "$dbg" ] && [ "$dseen" = 0 ] && printf '%s\n' "$sdir/declined"; } || true
   } | while IFS= read -r f; do
     [ -f "$f" ] || continue
     if [ "$f" = "$sdir/shape" ]; then where="shape"
