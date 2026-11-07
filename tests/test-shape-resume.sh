@@ -1063,9 +1063,18 @@ echo "== §8.1 test 11, the hook half: Released, retry (B) =="
 TL set -g @roost-home "$PWD"; TL source-file tmux/roost.conf
 X1="$SHAPE_TMP/x1-bin"; mkdir -p "$X1"; cp "$STUB_WRAP/claude-exit1" "$X1/claude"
 X0="$SHAPE_TMP/x0-bin"; mkdir -p "$X0"; cp "$STUB_WRAP/claude-exit0" "$X0/claude"
-wait_dead() { local i=0; while [ "$i" -lt 50 ] && [ "$(TL display -p -t "$1" '#{pane_dead}' 2>/dev/null)" != 1 ]; do sleep 0.1; i=$((i+1)); done; }
+# wait_until SECS CMD... — until CMD succeeds, bounded by the clock (bash's
+# SECONDS), never by loop turns (#231): on a loaded runner each turn's tmux
+# and ls calls take longer than their sleep, so 50 turns of `sleep 0.1` ran
+# out before a -b hook's saver released a claim (CI, ubuntu shard 1/4, twice:
+# want [1|0] got [1|1]). Exit 1 when the time ran out.
+wait_until() { local end=$((SECONDS + $1)); shift; while ! "$@"; do [ "$SECONDS" -lt "$end" ] || return 1; sleep 0.1; done; }
+pane_is_dead() { [ "$(TL display -p -t "$1" '#{pane_dead}' 2>/dev/null)" = 1 ]; }
+wait_dead() { wait_until 20 pane_is_dead "$1"; }
 first_line() { head -1 "$1" 2>/dev/null; }
 claims_for() { ls "$CLB" 2>/dev/null | grep -c "$1" || true; }
+no_claims() { [ "$(claims_for "$1")" = 0 ]; }
+pane_runs() { [ "$(TL display -p -t "$1" '#{pane_current_command}' 2>/dev/null)" = "$2" ]; }
 # A pane-died or pane-exited hook starts its saver with run-shell -b, so on a
 # loaded runner the saver can start after shape_settle's 0.3 s look and
 # settle returns before anything ran (main CI, 2026-11-03: "want [died|0] got
@@ -1129,19 +1138,19 @@ echo "== a kill releases a revive's claim at once; so does a death (§8.1 test 6
 reset_run
 U44=3fa3c0de-4444-4abc-8def-000000000444; stub_store_add "$U44" "$D1"
 TL new-session -d -s y4 -c "$D1" 'ENV= exec /bin/sh'
-pv="$(TL new-window -d -P -F '#{pane_id}' -t '=y4:' -c "$D1" "$STUB_BIN/claude 600")"; i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$pv" '#{pane_current_command}')" != claude ]; do sleep 0.1; i=$((i+1)); done
+pv="$(TL new-window -d -P -F '#{pane_id}' -t '=y4:' -c "$D1" "$STUB_BIN/claude 600")"; wait_until 20 pane_runs "$pv" claude
 TL set -p -t "$pv" @roost-harness claude \; set -p -t "$pv" @roost-session "$U44" \; set -p -t "$pv" @roost-cwd "$D1" \; set -p -t "$pv" @agent_state idle
 R revive "$pv" >/dev/null 2>&1
 assert_eq "$(claims_for "$U44")|$(ls "$PEND" 2>/dev/null | grep -c "^$pv")" "1|0" "(fixture) a revive whose stub never identifies holds claims/<boot>/claude-<id>, and has no pending file"
 TL kill-pane -t "$pv"
-i=0; while [ "$i" -lt 50 ] && [ "$(claims_for "$U44")" != 0 ]; do sleep 0.1; i=$((i+1)); done
+wait_until 20 no_claims "$U44"
 assert_eq "$(claims_for "$U44")" "0" "kill-pane: the claim is released, bounded (the -b hook's saver)"
 TL new-window -d -t '=y4:' -c "$D1" "$STUB_BIN/claude 600"; pv="$(TL list-panes -t '=y4:' -F '#{pane_id}' | tail -1)"
-i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$pv" '#{pane_current_command}')" != claude ]; do sleep 0.1; i=$((i+1)); done
+wait_until 20 pane_runs "$pv" claude
 TL set -p -t "$pv" @roost-harness claude \; set -p -t "$pv" @roost-session "$U44" \; set -p -t "$pv" @roost-cwd "$D1" \; set -p -t "$pv" @agent_state idle
 env PATH="$X1:$PATH" ROOST_SOCKET=roost "$ROOST" revive "$pv" >/dev/null 2>&1
 wait_dead "$pv"
-i=0; while [ "$i" -lt 50 ] && [ "$(claims_for "$U44")" != 0 ]; do sleep 0.1; i=$((i+1)); done
+wait_until 20 no_claims "$U44"
 assert_eq "$(TL display -p -t "$pv" '#{pane_dead}')|$(claims_for "$U44")" "1|0" "the revived pane dies (exit 1, remain-on-exit failed): released by pane-died"
 kill_sess y4
 

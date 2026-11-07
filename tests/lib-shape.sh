@@ -345,8 +345,14 @@ case "\$1" in
   *) exit 0 ;;
 esac
 EOF2
+  # `--user is-system-running` is answered `running` and NOT logged: every
+  # save asks it before it publishes (#235, roost_shape__stopping), and a
+  # read of the manager's state is not the load, enable or stop these
+  # tests count. `persist on` saves, so logging it made "calls no
+  # systemctl" fail on a save, not on a unit call.
   cat > "$d/systemctl" <<EOF2
 #!/bin/sh
+[ "\$*" = "--user is-system-running" ] && { echo running; exit 0; }
 printf 'systemctl %s\n' "\$*" >> "\$PERSIST_LOG"
 for a in "\$@"; do case "\$a" in stop|--now) exit 1 ;; esac; done
 [ "\$1" = --user ] && shift

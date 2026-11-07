@@ -500,6 +500,38 @@ assert_eq "$rc|$(grep -c waiting "$SHAPE_TMP/d.err")" "0|0" "spawn goes on at on
 assert_true "$([ $(( $(date +%s) - t0 )) -lt 5 ] && echo 0 || echo 1)" "...within 5 s"
 rm -rf "$SD/restoring"
 stop_server
+
+echo "== login.log: this run's own waits, and no Broken pipe when SIGPIPE is ignored (#235 F2, F3) =="
+# The Linux check (#235): a systemd service runs with SIGPIPE ignored
+# (IgnoreSIGPIPE=yes), so a pipe into `head -1` that closed early made bash
+# print `printf: write error: Broken pipe` into login.log, once per window of
+# two or more panes. `trap '' PIPE` in a subshell is that service: an ignored
+# signal stays ignored in every child. And the summary counted every pending
+# file of the server, so a second run that placed nothing said "1 agents
+# wait" for the first run's files.
+rm -rf "$SD"; mkdir -p "$SD"
+TL -f /dev/null new-session -d -s tri -x 200 -y 50 -c "$D1" 'exec /bin/sh'
+TL split-window -d -t '=tri:' -c "$D1" 'exec /bin/sh'
+TL split-window -d -t '=tri:' -c "$D1" 'exec /bin/sh'
+w2="$(TL new-window -d -P -F '#{window_id}' -t '=tri:' -c "$D1" 'exec /bin/sh')"
+TL split-window -d -t "$w2" -c "$D1" 'exec /bin/sh'
+R save >/dev/null 2>&1
+stop_server
+# One key, in the first pane block (a live save would demote a pane that runs
+# a shell, so it is written into the saved block, with its store entry).
+awk -v u="$U1" '{print} /^cwd / && !done {print "harness claude"; print "session_id " u; done=1}' "$SD/shape" > "$SD/shape.k" \
+  && mv "$SD/shape.k" "$SD/shape"
+assert_eq "$(grep -c '^session_id ' "$SD/shape")|$(grep -c '^pane ' "$SD/shape")" "1|5" "(fixture) five panes in two windows, one keyed"
+out="$( (trap '' PIPE; R persist --at-login roost) 2>&1)"; rc=$?
+assert_eq "$rc|$(counts)" "0|1/2/5" "SIGPIPE ignored: --at-login places the fleet"
+assert_not_contains "$out" "Broken pipe" "...and prints no Broken pipe"
+assert_not_contains "$(cat "$SD/login.log")" "Broken pipe" "...nor writes one to login.log"
+assert_contains "$(grep '^.* placed ' "$SD/login.log" | tail -1)" "(exit 0); 1 agent waits for the first attach" \
+  "one keyed pane: \"1 agent waits\""
+out="$( (trap '' PIPE; R persist --at-login roost) 2>&1)"
+assert_contains "$(grep '^.* placed ' "$SD/login.log" | tail -1)" "placed 0 sessions, 0 windows, 0 panes (exit 12); 0 agents wait" \
+  "a second run that places nothing counts its own waits: 0, not the first run's file"
+stop_server
 STUB_UNAME=Darwin PATH="$STUBS:$PATH" ROOST_PERSIST_WRITE_ONLY=1 R persist off >/dev/null 2>&1
 
 canary_check

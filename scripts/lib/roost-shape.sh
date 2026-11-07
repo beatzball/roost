@@ -1151,10 +1151,35 @@ roost_shape__prune() {
   done
 }
 
+# roost_shape__stopping -> exit 0 when the user's systemd manager says it is
+# stopping: a logout (without linger) or a shutdown is ending this user's
+# processes, and a save now would list the teardown (#235).
+#
+# Measured (docs/airig/probes/persist-logout.md): stopping the user manager
+# ends every pane's tmux-spawn scope about 5 s before it SIGKILLs the server.
+# Each agent's pane-died hook then saved its pane as a shell, with every key
+# demoted to `stale_reason`, and that save was the newest at the next login:
+# the fleet came back with no agent. A reboot has the same death save, but
+# there §3.6's shutdown window walks past it; a logout leaves no record, so
+# the save itself must not be written. Every hook of that teardown read
+# `stopping` here, 9 to 31 ms after the manager began to stop (it is in that
+# state before it signals any scope); a normal death of one agent reads
+# `running`, and still demotes.
+#
+# Asked only where `systemctl` is on PATH, so macOS is untouched. Any answer
+# but `stopping` — `running`, `degraded`, nothing at all when there is no
+# manager or no XDG_RUNTIME_DIR — saves as before. About 4.5 ms, and only
+# for a round that would publish.
+roost_shape__stopping() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  [ "$(systemctl --user is-system-running 2>/dev/null)" = stopping ]
+}
+
 # roost_shape__round DIR KEY TRIGGERS -> one round of §3.5 step 2, after the
 # drain. Sets ROOST_SHAPE_LAST: published, same (the body equals `shape`'s,
-# nothing written), failed (save.err written) or lost (the lock went: nothing
-# published). Exit 0 for published and same, 1 otherwise.
+# nothing written), failed (save.err written), lost (the lock went: nothing
+# published) or teardown (the user manager is stopping: nothing published,
+# roost_shape__stopping). Exit 0 for published and same, 1 otherwise.
 roost_shape__round() {
   local dir="$1" key="$2" triggers="$3" r=0 gen=0 had_gen=0 hdr tmp old oldgen oldsaved boot
   ROOST_SHAPE_LAST=failed
@@ -1203,6 +1228,16 @@ roost_shape__round() {
   if [ -f "$dir/shape" ] && [ "$(sed '1,/^$/d' "$dir/shape")" = "$ROOST_SHAPE_BODY" ]; then
     ROOST_SHAPE_LAST=same
     return 0
+  fi
+  # A logout's or a shutdown's teardown (#235): the save before it, keys
+  # intact, stays the newest. Asked here, after the listing, for EVERY round
+  # and not only a death's: a round a hook started just before the logout
+  # (an `identify`) lists the same dead panes when it runs late. Not a
+  # failure, so no save.err.
+  if roost_shape__stopping; then
+    printf 'roost save: the user manager is stopping (a logout or a shutdown); nothing written\n' >&2
+    ROOST_SHAPE_LAST=teardown
+    return 1
   fi
   if [ -f "$dir/gen" ]; then had_gen=1; read -r gen < "$dir/gen" 2>/dev/null || true; fi
   case "$gen" in ''|*[!0-9]*) gen=0 ;; esac
@@ -1300,8 +1335,10 @@ roost_shape__saver() {
       r=0; roost_shape__round "$dir" "$key" "$triggers" || r=1
       # "lost": the server changed under this round; its wants were not the
       # live server's. Not a failure: go on, so a want the new server left
-      # meanwhile is drained and saved by this same saver.
-      if [ "$r" = 1 ] && [ "$ROOST_SHAPE_LAST" = lost ]; then r=0; continue; fi
+      # meanwhile is drained and saved by this same saver. "teardown" (the
+      # user manager is stopping, #235) is not one either: the next round
+      # asks again and writes nothing.
+      if [ "$r" = 1 ] && { [ "$ROOST_SHAPE_LAST" = lost ] || [ "$ROOST_SHAPE_LAST" = teardown ]; }; then r=0; continue; fi
       [ "$r" = 0 ] || break
     done
     roost_shape__mine "$dir" && roost_shape_owner_drop "$dir/lock"

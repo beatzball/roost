@@ -216,14 +216,25 @@ roost_restore__windows() {
   done
 }
 
-# roost_restore__panes SESSION:INDEX -> the window's pane block files, in order.
+# roost_restore__panes SESSION:INDEX [first] -> the window's pane block
+# files, in order; with `first`, only the first, and it stops there.
+#
+# `first` instead of `| head -1` (#235 F3): head exits after one line, and the
+# next printf here writes into a closed pipe. Under a systemd service SIGPIPE
+# is ignored (IgnoreSIGPIPE=yes), so bash did not die quietly on it but
+# printed `printf: write error: Broken pipe` into login.log, once per window
+# of two or more panes, at every login restore.
 roost_restore__panes() {
   local f a
   for f in "$ROOST_RESTORE_PD"/*.pane; do
     [ -e "$f" ] || continue
     a="$(roost_restore__addr "$f")"
-    [ "${a%.*}" = "$1" ] && printf '%s\n' "$f"
+    if [ "${a%.*}" = "$1" ]; then
+      printf '%s\n' "$f"
+      [ "${2:-}" = first ] && return 0
+    fi
   done
+  return 0
 }
 
 # roost_restore__size SESSION -> "W H", the largest root cell of the
@@ -453,6 +464,12 @@ roost_restore__respawn() {
     # would not know there was anything to resume.
     roost_restore__pending_root || true
     if f="$(roost_restore__pending_write "$1" "$3")"; then
+      # This run's own count of panes left waiting for the first attach:
+      # the login summary says it (#235 F2). Counting the files in
+      # pending/<boot>/ instead counted another run's too — a `roost` typed
+      # before the login unit, whose unit run then placed nothing and still
+      # said "1 agents wait".
+      ROOST_RESTORE_WAITING=$((${ROOST_RESTORE_WAITING:-0} + 1))
       t set-option -p -t "$1" remain-on-exit failed 2>/dev/null || true
       t respawn-pane -k -t "$1" -c "$2" "$ROOST_HOME/scripts/roost-placeholder" "$f" "$ROOST_RESTORE_WR_H" 2>/dev/null || true
       return 0
@@ -998,7 +1015,7 @@ roost_restore__make_session() {
   while IFS= read -r wf; do [ -n "$wf" ] && wins+=("$wf"); done <<< "$(roost_restore__windows "$name")"
   [ "${#wins[@]}" -gt 0 ] || return 0
   wfirst="${wins[0]}"
-  pfirst="$(roost_restore__panes "$(roost_restore__addr "$wfirst")" | head -1)"
+  pfirst="$(roost_restore__panes "$(roost_restore__addr "$wfirst")" first)"
   [ -n "$pfirst" ] || return 0
   npanes=0
   for wf in "${wins[@]}"; do
@@ -1117,7 +1134,7 @@ roost_restore__make_session() {
     if [ "$wf" != "$wfirst" ]; then
       local -a nf=()
       wname="$(roost_shape_get "$wf" name)" && nf=(-n "$wname")
-      pfirst="$(roost_restore__panes "$(roost_restore__addr "$wf")" | head -1)"
+      pfirst="$(roost_restore__panes "$(roost_restore__addr "$wf")" first)"
       [ -n "$pfirst" ] || continue
       roost_restore__new_file; f="$ROOST_RESTORE_F"
       # The window name goes in as saved: `new-window -n` stores it as given
@@ -1299,7 +1316,7 @@ roost_restore_run() {
   # boot as OLDBOOT.
   ROOST_RESTORE_MAPDIR="" ROOST_RESTORE_OLDBOOT="$(roost_restore__hdr "$file" boot 2>/dev/null || true)"
   [ -n "$sdir" ] && ROOST_RESTORE_MAPDIR="$sdir/aliases"
-  ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0
+  ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0 ROOST_RESTORE_WAITING=0
   # The bootstrap's name record (roost_restore__respawn_claimed) is this
   # run's alone: a value from the environment is never one (review round 8,
   # Fable N1).

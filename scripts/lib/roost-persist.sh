@@ -525,7 +525,7 @@ roost_persist_at_login() {
 }
 
 roost_persist__at_login() {
-  local name="$1" sd="$2" own=0 i dir osboot rc=0 sg dsg boot n
+  local name="$1" sd="$2" own=0 i dir osboot rc=0 sg dsg boot n w
   . "$ROOST_HOME/scripts/lib/roost-restore.sh"
   . "$ROOST_HOME/scripts/lib/roost-resume.sh"
   ROOST_RESUME_TFLAG="-L" ROOST_RESUME_TSOCK="$SOCKET"
@@ -604,11 +604,13 @@ roost_persist__at_login() {
   rc=0; roost_restore_run "$ROOST_RESTORE_FILE" "$sd" "$own" 2>&1 || rc=$?
   rm -rf "${ROOST_RESTORE_PD:-}"
   boot="$(t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
-  n=0
-  if [ -n "$boot" ] && [ -d "$sd/pending/$boot" ]; then
-    n="$(ls "$sd/pending/$boot" 2>/dev/null | grep -c '^%' || true)"
-  fi
-  roost_persist__say "placed ${ROOST_RESTORE_SESSIONS:-0} sessions, ${ROOST_RESTORE_WINDOWS:-0} windows, ${ROOST_RESTORE_PANES:-0} panes (exit $rc); $n agents wait for the first attach"
+  # THIS run's waits (roost_restore__respawn counts each pending file it
+  # writes), not every file in pending/<boot>/: those also hold an earlier
+  # run's on the same server, and a run that placed nothing said "1 agents
+  # wait" for them (#235 F2).
+  n="${ROOST_RESTORE_WAITING:-0}"
+  if [ "$n" = 1 ]; then w="agent waits"; else w="agents wait"; fi
+  roost_persist__say "placed ${ROOST_RESTORE_SESSIONS:-0} sessions, ${ROOST_RESTORE_WINDOWS:-0} windows, ${ROOST_RESTORE_PANES:-0} panes (exit $rc); $n $w for the first attach"
   roost_persist__done "$sd" "$osboot" "$boot"
   # Restore's own final save, now that restoring/ is gone (§3.5 step 4).
   server_running && roost_shape_save_now -L "$SOCKET" restore
