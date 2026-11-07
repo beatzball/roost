@@ -1170,9 +1170,24 @@ roost_shape__prune() {
 # but `stopping` — `running`, `degraded`, nothing at all when there is no
 # manager or no XDG_RUNTIME_DIR — saves as before. About 4.5 ms, and only
 # for a round that would publish.
+#
+# Bounded (#239): a user manager that holds its socket but does not answer
+# makes the read wait for the D-Bus timeout, about 25 s, and this round
+# holds lock/ all that time (a by-hand `roost save` gives up on the lock
+# after 30 s). `timeout 2` where `timeout` exists, which is every Linux, the
+# only place a systemctl is: a read cut off prints nothing, which is "not
+# stopping", so the round saves as today. Every read the probe made in a
+# stopping manager answered (`stopping`), so the bound cuts off only a
+# manager that is stuck. Without `timeout`, the plain read.
 roost_shape__stopping() {
+  local a
   command -v systemctl >/dev/null 2>&1 || return 1
-  [ "$(systemctl --user is-system-running 2>/dev/null)" = stopping ]
+  if command -v timeout >/dev/null 2>&1; then
+    a="$(timeout 2 systemctl --user is-system-running 2>/dev/null)"
+  else
+    a="$(systemctl --user is-system-running 2>/dev/null)"
+  fi
+  [ "$a" = stopping ]
 }
 
 # roost_shape__round DIR KEY TRIGGERS -> one round of §3.5 step 2, after the

@@ -345,6 +345,27 @@ if ! PATH="$NOSC" command -v systemctl >/dev/null 2>&1; then
 else
   echo "  (skip: this machine has a systemctl in /usr/bin; the no-answer case covers it)"
 fi
+# A user manager that holds its socket but does not answer (#239): the read
+# would wait for the D-Bus timeout, about 25 s, holding lock/ while it did,
+# and a by-hand `roost save` waits up to 30 s for that lock. Bounded with
+# `timeout 2` where `timeout` exists (every Linux, which is the only place a
+# systemctl is); a read cut off is "not stopping", so the round saves as
+# today. macOS has no `timeout` (nor a systemctl), so there it is not run.
+if command -v timeout >/dev/null 2>&1; then
+  mkdir -p "$SC/hang"
+  printf '#!/bin/sh\necho "$*" >> "%s/calls"\nexec sleep 20\n' "$SC" > "$SC/hang/systemctl"
+  chmod +x "$SC/hang/systemctl"
+  tmux -S "$S3" rename-window -t "$p3" manager-hangs
+  gh="$(gen_of "$SD3")"; : > "$SC/calls"; t0=$SECONDS
+  PATH="$SC/hang:$PATH" ROOST_SOCKET="$S3" "$ROOST" save --auto --trigger pane-died
+  t1=$((SECONDS - t0))
+  assert_eq "$(gen_of "$SD3")|$(cat "$SC/calls")" "$((gh + 1))|--user is-system-running" \
+    "a manager that does not answer: the save publishes (asked once)"
+  [ "$t1" -lt 12 ]; assert_true $? "...within a bound, not the read's own wait (took ${t1} s; the stub sleeps 20)"
+  [ ! -e "$SD3/lock" ]; assert_true $? "...and lock/ is released"
+else
+  echo "  (skip: no timeout on PATH; the read is not bounded here, and there is no systemctl either)"
+fi
 tmux -S "$S3" kill-server 2>/dev/null
 
 # --- roost's own verbs save, and the hooks save the rest (Task 4.7) ----------
