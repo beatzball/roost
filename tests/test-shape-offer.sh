@@ -170,11 +170,21 @@ stop_server
 rm -rf "$SD/login"; rm -f "$SD/shape"; ln "$SD/declined" "$SD/shape"; : > "$SD/login.log"
 R spawn x sh >/dev/null 2>&1
 shape_settle "$SD" || true
-inner="$(TL list-windows -a -F '#{session_name} #{window_name} #{window_panes}' | sort)"
+# What 12 (h2) means is "no saved session was placed": the same sessions,
+# windows and pane counts as a server with no shape directory. A window's
+# AUTOMATIC name is not part of that: it is whatever its pane runs at the
+# instant of listing (`roost`, `sleep`, the shell), a race between two
+# servers, and CI's macOS runner lost it once (fix round 1: `main roost 1`
+# against `main  1`). So an automatically named window lists as `auto`; a
+# name roost or a person set (the spawn's `x`, a saved window's name) is
+# compared as it is. tmux prints #{automatic-rename} as 1 or 0 (measured on
+# 3.4, 3.6 and 3.8).
+WSHAPE='#{session_name} #{?#{==:#{automatic-rename},1},auto,#{window_name}} #{window_panes}'
+inner="$(TL list-windows -a -F "$WSHAPE" | sort)"
 # The control: the same spawn on a third throwaway server with saving off.
 CTL="$TMUX_TMPDIR/ctl"
 env -u TMUX -u TMUX_PANE ROOST_SOCKET="$CTL" ROOST_SHAPE_DIR= "$ROOST" spawn x sh >/dev/null 2>&1
-ctl="$(tmux -S "$CTL" list-windows -a -F '#{session_name} #{window_name} #{window_panes}' | sort)"
+ctl="$(tmux -S "$CTL" list-windows -a -F "$WSHAPE" | sort)"
 tmux -S "$CTL" kill-server 2>/dev/null
 assert_eq "$inner" "$ctl" "roost spawn: the ordinary fresh 'spawn x sh' shape (as on a server with no shape directory)"
 assert_eq "$(TL has-session -t =work 2>/dev/null && echo yes || echo no)" "no" "...no work session"
