@@ -248,6 +248,9 @@ pid="$(offer_pid)"
 assert_contains "$(ps -o args= -p "$pid" 2>/dev/null)" "bin/roost" "offer/ names the offer's pid"
 assert_eq "$(ino "$SD/offer/save")" "$(ino "$SD/shape")" "offer/save is the planted save (its inode)"
 assert_eq "$(cat "$SD/offer/stamp" 2>/dev/null)" "$S0" "offer/stamp holds its STAMP-GEN"
+# The shape directory's rule (§3.1, §8.1's guards): 0700, every file 0600.
+assert_eq "$(ls -ld "$SD/offer" | cut -c1-10)" "drwx------" "offer/ is 0700"
+assert_eq "$(find "$SD/offer" -type f ! -perm 600 | sed "s|$SD/||" | tr '\n' ' ')" "" "...and every file in it 0600"
 out="$(R restore --dry-run --from "$S0" 2>&1)"
 assert_contains "$out" "from $S0" "a second terminal's --dry-run --from STAMP-GEN finds it"
 CLT send-keys -t "$OP" C-c

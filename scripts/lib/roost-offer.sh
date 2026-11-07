@@ -174,7 +174,9 @@ roost_offer__pin() {
 # purpose) go to OUT.err.
 roost_offer__tree() {
   local out="$1" r=0
-  : > "$out.err"
+  # Made 0600 first, like every file in the shape directory (§3.1); the
+  # redirections below then truncate them and keep that mode.
+  ( umask 077; : > "$out"; : > "$out.err" ) 2>/dev/null || return 1
   roost_restore_pick "$ROOST_OFFER_SD" "$ROOST_OFFER_STAMP" 2>>"$out.err" || return 1
   roost_restore_prepare "$ROOST_RESTORE_FILE" "$ROOST_OFFER_SD" 2>>"$out.err" || r=$?
   if [ "$r" != 0 ]; then rm -rf "${ROOST_RESTORE_PD:-}"; return 1; fi
