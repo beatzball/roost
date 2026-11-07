@@ -289,6 +289,7 @@ roost_offer__keys() {
 # decision, so the next `roost` asks again.
 roost_offer_ask() {
   ROOST_OFFER_CHOICE="" ROOST_OFFER_HELD=0 ROOST_OFFER_L=off ROOST_OFFER_SD="" ROOST_OFFER_STAMP=""
+  ROOST_OFFER_ATTACH="$2" ROOST_OFFER_NOTE=""
   roost_offer__person || return 0
   roost_offer__libs
   trap 'roost_offer_release' EXIT
@@ -304,7 +305,10 @@ roost_offer_ask() {
   # `n` writes `declined` FIRST, before any server exists (§4.8: then
   # ensure_session, then the line, then the attach), so a login job that `l`
   # starts later meets a pin already declined.
-  [ "$ROOST_OFFER_CHOICE" = n ] && roost_offer__decline
+  case "$ROOST_OFFER_CHOICE" in
+    n) roost_offer__decline ;;
+    r) roost_offer__restore "$1" "$2" ;;
+  esac
   return 0
 }
 
@@ -344,7 +348,14 @@ roost_offer__prompt() {
       # `n` does that.
       "") ROOST_OFFER_CHOICE=enter; return 0 ;;
       n|N) ROOST_OFFER_CHOICE=n; return 0 ;;
+      r|R) ROOST_OFFER_CHOICE=r; return 0 ;;
       p|P) roost_offer__preview ;;
+      # `l` toggles "restore at login from now on" and decides nothing by
+      # itself (revision 9, C B1): it is a key, so it ends the no-answer
+      # bound, and the person must still press r, n or Enter. Until then the
+      # offer waits, with no server started and no service enabled.
+      l|L) if [ "$ROOST_OFFER_L" = on ]; then ROOST_OFFER_L=off; else ROOST_OFFER_L=on; fi
+           roost_offer__keys ;;
       # Any other key: the keys again.
       *) roost_offer__keys ;;
     esac
@@ -383,6 +394,76 @@ roost_offer__decline() {
   fi
 }
 
+# roost_offer__restore KIND SESSION — `r`: §4.3 from the pin, UP TO
+# PLACEMENT, the `--at-login` stop point: the pending record and its waiting
+# placeholders are written and no agent is launched here. The attach that
+# follows fires client-attached[98] (§4.6), which starts the paced resume:
+# placement now, agents at the first attach, 2 s apart, with the person
+# right there for any dialog (Q1).
+#
+# The pin is restored by its STAMP-GEN — the treatment `--from STAMP-GEN`
+# gets, with §3.6 step 4 applied for the pin's boot — never as a `--from
+# FILE`, which would skip step 4 and bring back a pane closed on purpose.
+# `--offer` (a hidden flag of the restore arm) is "no foreground loop": the
+# same arm, the same placement, its report printed to this terminal. A
+# server a script started meanwhile is restored into, and its sessions are
+# skipped and named (exit 12), never merged. No login/<os-boot> marker is
+# written: that marker belongs to the service. A restore that fails still
+# attaches: ensure_session then makes the session as today.
+#
+# Which session (revision 7, F N2): `roost session NAME` and `roost new`
+# named theirs. A bare `roost` attaches to `main` when it exists, else to
+# the pin's `active 1` session — a person who just restored a fleet should
+# not land in a new, empty one — with one line saying so.
+roost_offer__restore() {
+  local kind="$1" s="$2" line a n pick="" first=""
+  ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" restore --from "$ROOST_OFFER_STAMP" --offer || true
+  [ "$kind" = up ] || return 0
+  session_exists "$s" && return 0
+  # The pin's sessions in order, each "1 NAME" when it carries `active 1`
+  # (an attached session), "0 NAME" otherwise. A window's own `active 1` is
+  # in a window block and is not read.
+  while IFS= read -r line; do
+    a="${line%% *}" n="${line#* }"
+    session_exists "$n" || continue
+    [ -n "$first" ] || first="$n"
+    if [ "$a" = 1 ]; then pick="$n"; break; fi
+  done <<EOF2
+$(awk -v RS= '/^session / { n = $0; sub(/^session /, "", n); sub(/\n.*/, "", n)
+    print (($0 ~ /\nactive 1(\n|$)/) ? 1 : 0) " " n }' "$ROOST_OFFER_SD/offer/save" 2>/dev/null)
+EOF2
+  if [ -n "$pick" ]; then
+    ROOST_OFFER_ATTACH="$pick"
+    ROOST_OFFER_NOTE="$(printf 'roost: attaching to "%s", the restored fleet'"'"'s active session (it has no "%s")' "$pick" "$s")"
+  elif [ -n "$first" ]; then
+    ROOST_OFFER_ATTACH="$first"
+    ROOST_OFFER_NOTE="$(printf 'roost: attaching to "%s", a restored session (the fleet has no "%s")' "$first" "$s")"
+  fi
+  return 0
+}
+
+# roost_offer_persist — `l` on: `roost persist on` (§4.4), AFTER the
+# choice's server is built — after `r`'s placement, restoring/ gone; after
+# ensure_session and, for `n`, after `declined` is written — and BEFORE the
+# attach. The order matters on macOS: RunAtLoad runs `--at-login` at once,
+# and it must meet a live fleet and skip every session, not race a placement
+# or find a pin not yet declined. Order alone is not enough, because the
+# fresh server's own `after-new-session` save runs in the background: `on`'s
+# own save waits for that saver and is published before the unit is loaded
+# (§4.4, revision 8, F B1; roost_persist_on). Never fatal: a failure prints
+# its own message and one line, and the attach goes on.
+roost_offer_persist() {
+  [ "${ROOST_OFFER_L:-off}" = on ] || return 0
+  if ! ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" persist on; then
+    if [ "$ROOST_OFFER_CHOICE" = r ]; then
+      printf 'roost: persist on failed; the fleet is restored this time only\n'
+    else
+      printf 'roost: persist on failed; started fresh\n'
+    fi
+  fi
+  return 0
+}
+
 # roost_offer__q WORD -> WORD, single-quoted when a shell would split it.
 roost_offer__q() {
   case "$1" in
@@ -411,6 +492,8 @@ roost_offer_lines() {
     enter) printf 'not restored, not declined; roost restore --from %s brings it back\n' "$st" ;;
     timeout) printf 'roost: no answer in %s s; started fresh, nothing declined (roost restore --from %s brings it back)\n' \
                "$ROOST_OFFER_TMO" "$st" ;;
+    r) [ -z "$ROOST_OFFER_NOTE" ] || printf '%s\n' "$ROOST_OFFER_NOTE"
+       return 0 ;;
     *) return 0 ;;
   esac
   if grep -qxF "session $s" "$ROOST_OFFER_SD/offer/save" 2>/dev/null; then

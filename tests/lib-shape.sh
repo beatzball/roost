@@ -319,6 +319,10 @@ shape_settle() {
 # BACKGROUND on `bootstrap`, the way RunAtLoad runs the job at once (Task
 # 5.6: a stopped server's `on`). `systemctl enable` without --now runs
 # nothing, as the real one does: on Linux `on` runs --at-login itself.
+# PERSIST_ON_ENABLE is the same for `systemctl --user enable`, and only for
+# a test that wants a Linux job to meet the fleet at once whatever `on` does
+# itself (§8.1 test 12 (h3), Part 7): a separate name, so test 9's Linux
+# case, which sets PERSIST_ON_LOAD, still sees the real `enable`.
 persist_stubs() {
   local d="$1" real_uname
   real_uname="$(command -v uname)"
@@ -342,7 +346,9 @@ printf 'systemctl %s\n' "\$*" >> "\$PERSIST_LOG"
 for a in "\$@"; do case "\$a" in stop|--now) exit 1 ;; esac; done
 [ "\$1" = --user ] && shift
 case "\$1" in
-  enable) : > "$d/state/enabled.\$2"; exit 0 ;;
+  enable) : > "$d/state/enabled.\$2"
+          [ -n "\${PERSIST_ON_ENABLE:-}" ] && { sh -c "\$PERSIST_ON_ENABLE" </dev/null >/dev/null 2>&1 & }
+          exit 0 ;;
   disable) rm -f "$d/state/enabled.\$2"; exit 0 ;;
   is-enabled) if [ -e "$d/state/enabled.\$2" ]; then echo enabled; else echo disabled; exit 1; fi ;;
   *) exit 0 ;;

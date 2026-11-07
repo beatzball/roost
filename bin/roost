@@ -392,6 +392,7 @@ offer_first() {
   OFFER_SESSION="$2"
   . "$ROOST_HOME/scripts/lib/roost-offer.sh"
   roost_offer_ask "$1" "$2"
+  [ -z "$ROOST_OFFER_CHOICE" ] || OFFER_SESSION="$ROOST_OFFER_ATTACH"
 }
 
 # offer_end — the offer's last steps before the attach, in §4.8's order:
@@ -399,6 +400,7 @@ offer_first() {
 # the server running. A no-op when no offer was asked.
 offer_end() {
   [ -n "${ROOST_OFFER_CHOICE:-}" ] || return 0
+  roost_offer_persist
   roost_offer_lines "$OFFER_SESSION"
   roost_offer_release
   trap - EXIT INT TERM HUP
@@ -998,7 +1000,7 @@ case "${1:-up}" in
     # client-attached[98]; spec §4.6). Its hidden flags, read only with
     # --auto, are the hook's own: --socket PATH (#{socket_path}) and --boot
     # KEY (#{start_time}-#{pid}, the server the hook fired in).
-    restore_auto=0 restore_sock="" restore_hboot=""
+    restore_auto=0 restore_sock="" restore_hboot="" restore_offer=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --from) [ "$#" -ge 2 ] || { echo "roost restore: --from needs a file or a STAMP-GEN" >&2; exit 2; }
@@ -1022,6 +1024,13 @@ case "${1:-up}" in
         # T14, T16). Never a taken, changed or replaced pane.
         --retry) restore_retry=1; shift ;;
         --auto) restore_auto=1; shift ;;
+        # The restore offer's `r` (#191 Part 7, §4.8; scripts/lib/roost-
+        # offer.sh): placement and its report, and NO foreground loop — the
+        # `--at-login` stop point. The agents wait in their placeholders for
+        # the attach the offer makes next, whose client-attached[98] hook
+        # resumes them, paced, with the person watching. Hidden: the offer's
+        # own form, not a person's.
+        --offer) restore_offer=1; shift ;;
         --socket|--boot)
               [ "$#" -ge 2 ] || exit 2
               if [ "$1" = --socket ]; then restore_sock="$2"; else restore_hboot="$2"; fi
@@ -1150,7 +1159,7 @@ case "${1:-up}" in
         # worker, over the pending files placement just wrote. 12 wins over
         # 13 when both (§4.3 Report); a loop that could not run at all (1)
         # does not hide a placement code.
-        if [ "$ROOST_RESTORE_NORESUME" != 1 ] && [ -n "${ROOST_RESTORE_BOOT:-}" ] && [ "$restore_rc" != 1 ]; then
+        if [ "$restore_offer" != 1 ] && [ "$ROOST_RESTORE_NORESUME" != 1 ] && [ -n "${ROOST_RESTORE_BOOT:-}" ] && [ "$restore_rc" != 1 ]; then
           rr=0; roost_pending_resume "$ROOST_RESTORE_SD" "$ROOST_RESTORE_BOOT" "$restore_pace" || rr=$?
           case "$rr" in
             13) [ "$restore_rc" = 12 ] || restore_rc=13 ;;
@@ -1158,6 +1167,7 @@ case "${1:-up}" in
           esac
         fi
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        ROOST_RESTORE_DEFER="$restore_offer"
         roost_restore_report "$(roost_restore__stampgen "$ROOST_RESTORE_FILE")" "$restore_json" || true
       fi
     fi

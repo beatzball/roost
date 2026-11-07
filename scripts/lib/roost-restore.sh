@@ -640,7 +640,7 @@ roost_restore__listing_of() {
 # {"restored":[{"was","pane","session","window","launched","reason"}],
 #  "skipped":[…],"from":"STAMP-GEN"}.
 roost_restore_report() {
-  local from="$1" json="${2:-0}" line was pane sess win h r sid lst hint res l a=0 nr=0 nb=0
+  local from="$1" json="${2:-0}" line was pane sess win h r sid lst hint res l a=0 nr=0 nb=0 nw=0
   local codex="" ncodex=0 first_codex="" j="" sk="" n
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -650,11 +650,17 @@ roost_restore_report() {
       res="$(printf '%s' "${ROOST_PENDING_RESULTS:-}" | grep -- "^$pane|" | tail -1 || true)"
       if [ -n "$res" ]; then
         l="$(printf '%s' "$res" | cut -d'|' -f2)"; r="$(printf '%s' "$res" | cut -d'|' -f3)"
+      elif [ "${ROOST_RESTORE_DEFER:-0}" = 1 ]; then
+        # The restore offer's `r` (restore --offer): no loop ran by design;
+        # the pane waits for the attach's resume (§4.8), and is counted so.
+        l=2
       else
         r="not reached"
       fi
     fi
-    if [ "$l" = 1 ]; then
+    if [ "$l" = 2 ]; then
+      nw=$((nw + 1))
+    elif [ "$l" = 1 ]; then
       a=$((a + 1))
       if [ "$h" = codex ]; then
         ncodex=$((ncodex + 1)); [ -n "$first_codex" ] || first_codex="$pane"
@@ -696,6 +702,9 @@ roost_restore_report() {
   fi
   n="$(printf '%s' "${ROOST_RESTORE_SKIPPED:-}" | grep -c . || true)"
   line="restored ${ROOST_RESTORE_SESSIONS:-0} sessions, ${ROOST_RESTORE_WINDOWS:-0} windows, ${ROOST_RESTORE_PANES:-0} panes; launched $a agents; skipped $n (existing); $nr not resumed (reasons listed above)"
+  if [ "${ROOST_RESTORE_DEFER:-0}" = 1 ]; then
+    line="restored ${ROOST_RESTORE_SESSIONS:-0} sessions, ${ROOST_RESTORE_WINDOWS:-0} windows, ${ROOST_RESTORE_PANES:-0} panes; $nw agents resume when you attach, 2 s apart; skipped $n (existing); $nr not resumed (reasons listed above)"
+  fi
   if [ -n "${ROOST_RESTORE_BUSY:-}" ]; then
     nb="$(printf '%s\n' $ROOST_RESTORE_BUSY | grep -c .)"
     line="$line; $nb were working or blocked at the save — re-prompt by hand: $ROOST_RESTORE_BUSY"

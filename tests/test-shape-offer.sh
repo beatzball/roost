@@ -459,6 +459,200 @@ assert_true "$(in_log "$WN" "$SUMMARY" && echo 1 || echo 0)" "...and never shows
 assert_eq "$(sessions)" "main " "...one main, no prompt"
 done_outer
 
+# ============================================================================
+# Task 7.5 — r and l
+# ============================================================================
+PLIST="$HOME/Library/LaunchAgents/dev.roosting.roost.roost.plist"
+UNIT="$XDG_CONFIG_HOME/systemd/user/roost-persist-roost.service"
+FAILSTUBS="$SHAPE_TMP/fail-stubs"; mkdir -p "$FAILSTUBS"
+printf '%s\n' '#!/bin/sh' 'printf "launchctl %s\n" "$*" >> "$PERSIST_LOG"' 'exit 1' > "$FAILSTUBS/launchctl"
+cp "$STUBS/uname" "$FAILSTUBS/uname"; chmod +x "$FAILSTUBS/launchctl"
+clients() { TL list-clients 2>/dev/null | grep -c .; }
+launches() { grep -c -- "--resume " "$STUB_LOG" 2>/dev/null || true; }
+attached_to() { TL list-clients -F '#{client_session}' 2>/dev/null | head -1; }
+persist_off() { stop_server; rm -f "$PLIST" "$UNIT" "$SD/persist" "$SD/service.env"; }
+WRITE_ONLY="ROOST_PERSIST_WRITE_ONLY=1 STUB_UNAME=Darwin PATH=$STUBS:$PATH"
+
+echo "== §8.1 test 12 (g): l then r — placement first, the service after, agents after the attach =="
+fresh_dir g; : > "$STUB_LOG"
+H="$SHAPE_TMP/place.hold"; rm -f "$H"
+opane "$WRITE_ONLY ROOST_TEST_PLACE_HOLD=$H"
+asked "$ON"
+CLT send-keys -t "$OP" l
+wait_for "[ \"\$(CLT capture-pane -p -J -t $OP | grep -c 'l restore at login from now on: on')\" -ge 1 ]" 5
+assert_true $? "after l the keys line reads on"
+CLT send-keys -t "$OP" r
+wait_for "[ -e '$SD/restoring' ] && TL ls >/dev/null 2>&1" 10
+sleep 0.5
+assert_eq "$([ -e "$SD/restoring" ] && echo held || echo free)" "held" "r: while placement is held, restoring/ exists"
+assert_eq "$([ -e "$PLIST" ] || [ -e "$SD/persist" ] && echo yes || echo no)" "no" "...and neither the unit nor the persist marker exists"
+assert_eq "$(launches)" "0" "...and nothing is launched"
+: > "$H"
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$([ -e "$PLIST" ] && [ -e "$SD/persist" ] && echo yes || echo no)" "yes" "released: the unit and the persist marker exist"
+assert_eq "$([ -e "$SD/restoring" ] && echo held || echo free)" "free" "...restoring/ is gone"
+assert_eq "$(sessions)" "main work " "...the inner server holds both saved sessions"
+assert_eq "$([ -e "$SD/offer" ] && echo held || echo free)" "free" "...and offer/ is released"
+wait_for "[ \"\$(launches)\" -ge 2 ]" 15; sleep 2.5
+assert_eq "$(launches)" "2" "the two agents are launched, once each"
+assert_eq "$(grep -- '--resume ' "$STUB_LOG" | awk '{print $NF}' | sort | tr '\n' ' ')" "$U1 $U2 " "...each its own key"
+ca="$(TL list-clients -F '#{client_created}' 2>/dev/null | sort -n | head -1)"
+l1="$(grep -- '--resume ' "$STUB_LOG" | awk 'NR==1{print $1}')"; l2="$(grep -- '--resume ' "$STUB_LOG" | awk 'NR==2{print $1}')"
+assert_true "$([ -n "$ca" ] && [ "$l1" -ge "$ca" ] && echo 0 || echo 1)" "...only after the attach (attach $ca, first launch $l1)"
+assert_true "$([ $((l2 - l1)) -ge 1 ] && [ $((l2 - l1)) -le 4 ] && echo 0 || echo 1)" "...2 s apart ($((l2 - l1)) s)"
+done_outer; persist_off
+
+echo "== (g) a failing persist on is never fatal =="
+fresh_dir g
+opane "STUB_UNAME=Darwin PATH=$FAILSTUBS:$PATH"
+asked "$ON"
+CLT send-keys -t "$OP" l; sleep 0.3; CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_true "$(in_log "$ON" "roost: persist on failed; the fleet is restored this time only" && echo 0 || echo 1)" "persist on failed is on the screen"
+assert_eq "$(clients)" "1" "...and the client is attached anyway"
+done_outer; persist_off
+
+echo "== (g) the shared fixture: r writes one pending file only =="
+fresh_dir; : > "$STUB_LOG"
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+B="$(live_boot)"
+wait_for "[ \"\$(launches)\" -ge 1 ]" 10; sleep 2.5
+assert_eq "$(ls "$SD/pending/$B" 2>/dev/null | grep -c .)" "1" "one pending file (the gone directory's pane gets none)"
+assert_eq "$(grep -c -- "$U3" "$STUB_LOG" || true)" "0" "...and that pane is never launched"
+done_outer
+
+echo "== (g) which session: a fleet with no main attaches to its active session =="
+fresh_dir ops
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$(attached_to)" "ops" "the client is attached to ops, the pin's active session"
+assert_true "$(in_log "$ON" 'roost: attaching to "ops", the restored fleet'"'"'s active session (it has no "main")' && echo 0 || echo 1)" "...the screen names it"
+assert_eq "$(sessions)" "ops work " "...and no main exists"
+done_outer
+
+echo "== (g) l then silence: still waiting, nothing started, nothing enabled =="
+fresh_dir g; : > "$PERSIST_LOG"
+opane "$WRITE_ONLY ROOST_TEST_OFFER_TIMEOUT=2"
+asked "$ON"; CLT send-keys -t "$OP" l
+sleep 5
+assert_contains "$(CLT capture-pane -p -J -t "$OP" | grep -v '^$' | tail -2)" "l restore at login from now on: on" "the offer still waits, the keys line reads on"
+assert_true "$(in_log "$ON" "no answer in" && echo 1 || echo 0)" "...no no-answer line"
+TL ls >/dev/null 2>&1; assert_eq "$?" "1" "...no inner server"
+assert_eq "$([ -e "$PLIST" ] || [ -e "$SD/persist" ] && echo yes || echo no)|$(grep -c . "$PERSIST_LOG" || true)" "no|0" "...no service: no unit, no marker, no load call"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+done_outer; persist_off
+
+echo "== §8.1 test 12 (h3): l with a login job that really runs, and a planted lock =="
+for branch in n Enter linux; do
+  fresh_dir; P0="$(ino "$SD/shape")"; G0="$(cat "$SD/gen")"; : > "$PERSIST_LOG"
+  os=Darwin; [ "$branch" = linux ] && os=Linux
+  # The lock/ of a saver that never finishes: a sleep this test owns, in
+  # §3.5 step 1's owner format, so every saver meets a live owner.
+  sleep 120 & SLEEPER=$!
+  mkdir -p "$SD/lock"; ln -s "$SLEEPER $(roost_shape__lstart_read "$SLEEPER")" "$SD/lock/owner"
+  ONLOAD="env -u TMUX -u TMUX_PANE ROOST_SOCKET=roost $ROOST persist --at-login roost"
+  opane "STUB_UNAME=$os PATH=$STUBS:$PATH PERSIST_ON_LOAD='$ONLOAD' PERSIST_ON_ENABLE='$ONLOAD'"
+  asked "$ON"; CLT send-keys -t "$OP" l; sleep 0.3
+  case "$branch" in n|linux) CLT send-keys -t "$OP" n ;; Enter) CLT send-keys -t "$OP" Enter ;; esac
+  wait_for "TL has-session -t =main 2>/dev/null" 10; sleep 2
+  assert_eq "$(grep -c 'bootstrap\|enable' "$PERSIST_LOG" || true)" "0" "$branch: while the lock's owner lives, no load call"
+  assert_eq "$([ -e "$PLIST" ] || [ -e "$UNIT" ] && echo yes || echo no)" "no" "$branch: ...no unit file"
+  assert_eq "$(ino "$SD/shape")" "$P0" "$branch: ...shape is still the planted save"
+  if [ "$branch" = Enter ]; then
+    assert_eq "$([ -e "$SD/declined" ] && echo yes || echo no)" "no" "$branch: ...no declined"
+  else
+    assert_eq "$(ino "$SD/declined")" "$P0" "$branch: ...declined exists"
+  fi
+  kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null; SLEEPER=""
+  wait_for "grep -q 'bootstrap\|enable' '$PERSIST_LOG'" 40
+  assert_true $? "$branch: the owner gone, persist on saves and the load is logged"
+  wait_for "grep -q 'placed ' '$SD/login.log' 2>/dev/null" 15
+  assert_contains "$(cat "$SD/login.log" 2>/dev/null)" "placed 0 sessions" "$branch: login.log: the job ran and skipped every session"
+  B="$(live_boot)"
+  assert_eq "$(ls "$SD/pending/$B" 2>/dev/null | grep -c . || true)" "0" "$branch: ...no pending file"
+  assert_eq "$(sessions)" "main " "$branch: ...one fresh main only"
+  if [ "$branch" = linux ]; then
+    assert_contains "$(cat "$PERSIST_LOG")" "systemctl --user enable roost-persist-roost.service" "linux: the recorded argv"
+    assert_not_contains "$(cat "$PERSIST_LOG")" "--now" "linux: ...holds no --now"
+  fi
+  done_outer; persist_off; rm -rf "$SD/lock"
+done
+
+echo "== §8.1 test 12 (k): a script starts the server mid-prompt =="
+fresh_dir; S0="$(sg "$SD/shape")"
+opane ""
+asked "$ON"
+R spawn x sh >/dev/null 2>&1
+wait_for "[ \"\$(sed -n 's/^boot //p;/^\$/q' '$SD/shape')\" = \"\$(live_boot)\" ]" 10
+assert_true $? "(fixture) the script's fresh save names the live boot"
+CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_true "$(in_log "$ON" "roost restore: session 'main' exists" && echo 0 || echo 1)" "r: the report skips the saved main as existing"
+assert_eq "$(sessions)" "main work " "...restores work from the pin"
+assert_eq "$(TL list-panes -t =work -s 2>/dev/null | grep -c .)" "2" "...with both its saved panes"
+assert_eq "$(clients)" "1" "...and the client attaches"
+done_outer
+
+echo "== §8.1 test 12 (k2): the ring turns over while the offer waits =="
+fresh_dir; S0="$(sg "$SD/shape")"; P0="$(ino "$SD/shape")"
+mkdir -p "$SD/closed/$OLDBOOT"; printf '%%3\n' > "$SD/closed/$OLDBOOT/close.3"
+opane "ROOST_TEST_NOW=$NOW_T"
+asked "$ON"
+assert_contains "$(plog "$ON" | grep -F "$SUMMARY" | head -1)" "3 panes" "(fixture) the closed pane is not counted: 3 panes"
+ROOST_SHAPE_KEEP=3 R spawn k1 sh >/dev/null 2>&1
+for i in 2 3 4 5 6; do
+  if [ $((i % 2)) = 0 ]; then ROOST_SHAPE_KEEP=3 R split -t main:k1 sh >/dev/null 2>&1; else ROOST_SHAPE_KEEP=3 R spawn "k$i" sh >/dev/null 2>&1; fi
+  shape_settle "$SD" || true
+done
+assert_eq "$(ls "$SD/history" | grep -c "^$S0\$" || true)" "0" "(fixture) the pinned save has no history/ name left"
+R persist --at-login roost >/dev/null 2>&1
+assert_eq "$([ -d "$SD/closed/$OLDBOOT" ] && echo kept || echo swept)" "kept" "an --at-login cleanup meanwhile keeps the pin's closed/ record"
+CLT send-keys -t "$OP" p
+wait_for "[ \"\$(plog $ON | grep -cF '$SUMMARY')\" -ge 2 ]" 10
+want="$(ROOST_TEST_NOW=$NOW_T R restore --dry-run --from "$S0" 2>/dev/null)"
+got="$(plog "$ON")"
+assert_eq "$(cat "$SD/offer/stamp")|$(ino "$SD/offer/save")" "$S0|$P0" "p: offer/stamp and offer/save are still the pin"
+tree="$(printf '%s\n' "$got" | sed -n "/^from $S0/,/^roost: a saved fleet/p")"
+assert_contains "$tree" "session main (exists - skipped" "...the tree names the saved main as existing and skipped"
+assert_contains "$tree" "$DG" "...its work block holds the saved %4"
+assert_eq "$(printf '%s\n' "$tree" | grep -c '^session work' || true)" "1" "...and work is in it"
+assert_eq "$(printf '%s\n' "$tree" | grep -A3 '^session work' | grep -c '^    pane ' || true)" "1" "...still without %3 (one pane in work)"
+case "$got" in *"$want"*) r=0 ;; *) r=1 ;; esac
+assert_true "$r" "...and it is line for line a same-moment restore --dry-run --from STAMP-GEN"
+CLT send-keys -t "$OP" n
+wait_for "[ -e '$SD/declined' ]" 10
+assert_eq "$(ino "$SD/declined")" "$P0" "n: declined has the pin's inode"
+assert_eq "$([ -d "$SD/closed/$OLDBOOT" ] && echo kept || echo swept)" "kept" "...closed/<boot>/ still exists"
+wait_for "[ \"\$(clients)\" -ge 1 ]" 10
+TL kill-session -t =work 2>/dev/null
+R restore --from "$S0" >/dev/null 2>&1
+assert_eq "$(TL list-panes -s -t =work 2>/dev/null | grep -c .)" "1" "roost restore --from STAMP-GEN restores work without %3"
+done_outer
+
+echo "== §8.1 test 12 (k3): r on a pin with a closed pane =="
+fresh_dir k3; : > "$STUB_LOG"
+mkdir -p "$SD/closed/$OLDBOOT"; printf '%%3\n' > "$SD/closed/$OLDBOOT/close.3"
+opane ""
+asked "$ON"
+sl="$(plog "$ON" | grep -F "$SUMMARY" | head -1)"
+assert_contains "$sl" "2 sessions" "the summary counts 2 sessions"
+assert_contains "$sl" "2 panes" "...2 panes"
+assert_contains "$sl" "2 of 2 agents would resume" "...2 of 2 agents would resume"
+CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+B="$(live_boot)"
+assert_eq "$(TL list-panes -s -t =work 2>/dev/null | grep -c .)" "1" "the restored work has one pane"
+assert_eq "$(TL list-panes -a -F '#{@roost-was}' | grep -cx '%3' || true)" "0" "...no pane carries @roost-was %3"
+assert_eq "$(grep -l '^was %2$' "$SD/pending/$B"/%* 2>/dev/null | grep -c . || true)" "1" "...%2 has its pending file"
+wait_for "[ \"\$(launches)\" -ge 2 ]" 15; sleep 2.5
+assert_eq "$(grep -c -- "$U2" "$STUB_LOG" || true)|$(grep -c -- "$U1" "$STUB_LOG" || true)" "1|1" "after the attach %2's id and %1's are launched once each"
+l1="$(grep -- '--resume ' "$STUB_LOG" | awk 'NR==1{print $1}')"; l2="$(grep -- '--resume ' "$STUB_LOG" | awk 'NR==2{print $1}')"
+assert_true "$([ $((l2 - l1)) -ge 1 ] && [ $((l2 - l1)) -le 4 ] && echo 0 || echo 1)" "...2 s apart ($((l2 - l1)) s)"
+done_outer
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
