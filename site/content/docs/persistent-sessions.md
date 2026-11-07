@@ -307,7 +307,9 @@ the same boot is left alone.
   start it at boot without a login, run `loginctl enable-linger` yourself
   (`persist on` prints the line, it does not run it). Measured on Ubuntu
   24.04: without linger the fleet ends about 10 s after your last session
-  does; with linger it survives a logout, `KillUserProcesses=yes` included.
+  does, and your next login brings it back the way a reboot does, agents
+  resuming at your first attach; with linger it survives a logout,
+  `KillUserProcesses=yes` included.
 
 `roost persist on --name NAME` does the same for another named server.
 A name may hold letters, digits, `.`, `_` and `-`.

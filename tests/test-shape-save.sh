@@ -282,6 +282,71 @@ R2 save --auto --trigger after-rename-window
 assert_eq "$(gen_of "$SD2")|$(nhist "$SD2")" "1|0" "the next save makes a fresh directory whose gen starts at 1"
 tmux -S "$S2" kill-server 2>/dev/null
 
+echo "== the user manager stopping: a logout's teardown publishes nothing (#235) =="
+# Measured (docs/airig/probes/persist-logout.md): a Linux logout without
+# linger stops the user manager, which ends every agent's scope about 5 s
+# before it kills the server; the server's pane-died save demoted every key,
+# and the next login restored shells. Every hook of that teardown reads
+# `systemctl --user is-system-running` = stopping; a normal death reads
+# running. A stub systemctl on PATH answers from a file, so this runs the
+# same on macOS (which has no systemctl) and on Linux.
+SC="$SHAPE_TMP/sysctl"; mkdir -p "$SC"
+printf '#!/bin/sh\necho "$*" >> "%s/calls"\n[ -s "%s/answer" ] || exit 1\ncat "%s/answer"\n' "$SC" "$SC" "$SC" > "$SC/systemctl"
+chmod +x "$SC/systemctl"
+S3="$TMUX_TMPDIR/s3"
+R3() { PATH="$SC:$PATH" ROOST_SOCKET="$S3" "$ROOST" "$@"; }
+SD3="$ROOST_SHAPE_DIR/$(roost_shape_key -S "$S3")"
+tmux -S "$S3" -f /dev/null new-session -d -s three -x 120 -y 40 'ENV= exec /bin/sh'
+# A pane that reports a claude conversation but runs a shell: what an agent's
+# pane is once the agent died (the probe's `command roost-pane-shell`). Its
+# save is the demotion, a `stale_reason`.
+p3="$(tmux -S "$S3" new-window -d -P -F '#{pane_id}' -t '=three:' 'ENV= exec /bin/sh')"
+tmux -S "$S3" set -p -t "$p3" @roost-harness claude \; set -p -t "$p3" @roost-session 3fa3c0de-0000-4abc-8def-000000000235
+echo running > "$SC/answer"
+R3 save --auto --trigger after-new-window
+g3="$(gen_of "$SD3")"
+assert_eq "$g3" "1" "the third server's first save"
+cp -p "$SD3/shape" "$SHAPE_TMP/sd3-before"
+tmux -S "$S3" rename-window -t "$p3" died-in-a-logout
+echo stopping > "$SC/answer"; : > "$SC/calls"
+out="$(R3 save --auto --trigger pane-died 2>&1)"; rc=$?
+assert_eq "$rc|$out|$(gen_of "$SD3")|$(nhist "$SD3")" "0||$g3|0" "stopping: a death save publishes nothing, silent, exit 0"
+cmp -s "$SD3/shape" "$SHAPE_TMP/sd3-before"; assert_true $? "...shape is the save before the teardown"
+[ ! -e "$SD3/save.err" ]; assert_true $? "...and no save.err: a teardown is not a failed save"
+[ ! -e "$SD3/want" ] && [ ! -e "$SD3/lock" ]; assert_true $? "...and no want/ or lock/ is left"
+assert_eq "$(cat "$SC/calls")" "--user is-system-running" "...asked the user manager once"
+out="$(R3 save --trigger save 2>&1)"; rc=$?
+assert_eq "$rc|$(gen_of "$SD3")" "1|$g3" "stopping: roost save by hand writes nothing either, exit 1"
+assert_contains "$out" "the user manager is stopping" "...and says why"
+# The control: the same change, the manager running. This is the single
+# death of today, and it must still demote.
+echo running > "$SC/answer"
+R3 save --auto --trigger pane-died
+assert_eq "$(gen_of "$SD3")" "$((g3 + 1))" "running: the death save publishes"
+# `exited` here, since the pane runs sh (an agent that exited to its shell);
+# the probe's pane ran roost-pane-shell and read `other`. Either is a demotion.
+assert_eq "$(awk -v p="$p3" '$0=="id "p{f=1} f&&/^stale_reason /{print $2; exit}' "$SD3/shape")" "exited" \
+  "...and demotes the dead agent's key, as before"
+# No answer (systemctl present, no manager: a container, no session bus):
+# saves as today.
+tmux -S "$S3" rename-window -t "$p3" no-manager
+: > "$SC/answer"
+R3 save --auto --trigger pane-died
+assert_eq "$(gen_of "$SD3")" "$((g3 + 2))" "systemctl with no answer: the save publishes"
+# No systemctl on PATH at all (macOS): not asked, saves as today. Only
+# where a PATH without the stub really has none: on Linux /usr/bin holds the
+# real one, and the case above (no answer) is what a runner there reaches.
+NOSC="$(dirname "$(command -v tmux)"):/usr/bin:/bin"
+if ! PATH="$NOSC" command -v systemctl >/dev/null 2>&1; then
+  tmux -S "$S3" rename-window -t "$p3" no-systemctl
+  : > "$SC/calls"
+  PATH="$NOSC" ROOST_SOCKET="$S3" "$ROOST" save --auto --trigger pane-died
+  assert_eq "$(gen_of "$SD3")|$(cat "$SC/calls")" "$((g3 + 3))|" "no systemctl: the save publishes, the stub never asked"
+else
+  echo "  (skip: this machine has a systemctl in /usr/bin; the no-answer case covers it)"
+fi
+tmux -S "$S3" kill-server 2>/dev/null
+
 # --- roost's own verbs save, and the hooks save the rest (Task 4.7) ----------
 echo "== every structural change makes a new shape; trigger says what (§8.1 test 8) =="
 TL set -g @roost-home "$PWD"

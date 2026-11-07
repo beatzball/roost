@@ -198,6 +198,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **On Linux, agents come back after a logout, not only after a reboot
+  (#235).** With `roost persist on` and no `loginctl enable-linger` (the
+  default on most machines), logging out ends the whole fleet. At the next
+  login every session, window and split came back, but every agent came
+  back as a plain shell: the teardown's own save had marked each
+  conversation as gone, and `roost revive` refused them too. roost now
+  writes no save while your systemd user manager is stopping, so the login
+  restore brings the agents back at your first attach, as after a reboot.
+  An agent that dies on its own is still marked as before. macOS is not
+  changed.
+
 - **The restore offer and `roost restore --dry-run` no longer promise a
   resume that cannot happen (#232).** A Claude, codex, copilot or pi pane
   whose conversation its harness no longer holds was counted in "N of M
