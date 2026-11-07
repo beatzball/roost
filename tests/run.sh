@@ -80,6 +80,13 @@ shard_weight() {
     # the first-attach cases' paced launches and their deliberate waits (a
     # worker held past 10 s, a 12 s wait for the login restore).
     test-shape-attach.sh) echo 111 ;;
+    # Added for persistent sessions Part 7 (#191, the restore offer), not off
+    # a CI log: 98 s once on the dev Mac (tmux 3.6) at Task 7.7, 187 cases;
+    # most of it is real terminals waiting on the offer, the 5 s silences of
+    # the "bound ends at the first key" cases, and the paced launches after
+    # an attach. It ties test-shape-closed.sh, which sorts first by name, so
+    # the four slowest are unchanged (tests/test-run-shards.sh).
+    test-shape-offer.sh) echo 98 ;;
     *) echo 5 ;;
   esac
 }
