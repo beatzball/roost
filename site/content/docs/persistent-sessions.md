@@ -255,10 +255,16 @@ session roost
   window 1 roost
     pane 1 promo        /home/me/w/roost               claude   resume
     pane 2 -            /home/me/w/roost               -        shell
+    pane 3 review       /home/me/w/roost               claude   shell, not resumed: store miss
   window 2 build
     pane 1 api          /home/me/w/gone                codex    shell in ~, not resumed: directory gone
 session litro (exists - skipped, 9 panes not restored)
 ```
+
+A pane reads `resume` only when its harness still holds the conversation:
+the preview asks the store the same way the resume itself does, so a
+conversation the harness has since deleted reads `store miss` here, and is
+not counted in the restore offer's "would resume".
 
 `roost restore --list` shows every save with its stamp, what caused it and
 its counts, and marks the one a plain `roost restore` uses. It ends with

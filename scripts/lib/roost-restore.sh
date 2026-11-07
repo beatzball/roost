@@ -1716,8 +1716,11 @@ roost_restore__block() {
 # resumed says `resume` — decided by the same rule placement uses
 # (roost_restore__will_resume: --no-resume and --recent included) — and a
 # keyed pane whose directory is gone makes the dry run's exit 13, as the
-# real run's (ROOST_RESTORE_NOTRES). The store is not read here: a store
-# miss is the loop's, after placement.
+# real run's (ROOST_RESTORE_NOTRES). A pane that would be resumed is then
+# asked of the harness's store (§5.1a, roost_restore__held): §4.8's "would
+# resume" includes that check, and without it the offer said `4 of 4 agents
+# would resume` and `p` listed a pane as `resume` that the worker then left a
+# shell with `store miss` (#232). Read-only, as the whole dry run is.
 roost_restore__action() {
   local h r sh gone=0 d
   d="$(roost_shape_get "$1" cwd)"
@@ -1735,7 +1738,9 @@ roost_restore__action() {
       # A harness with no session id: §4.3's `no key`. Before Part 6 this
       # fell through to will_resume's refusal and read "older than --recent".
       printf '%s|shell, not resumed: no key\n' "$h"
-    elif roost_restore__will_resume "$1"; then printf '%s|resume\n' "$h"
+    elif roost_restore__will_resume "$1"; then
+      if roost_restore__held "$1" "$h"; then printf '%s|resume\n' "$h"
+      else printf '%s|shell, not resumed: store miss%s\n' "$h" "$ROOST_RESTORE_HELD_NOTE"; fi
     elif [ "${ROOST_RESTORE_NORESUME:-0}" = 1 ]; then printf '%s|shell, not resumed: --no-resume\n' "$h"
     else printf '%s|shell, not resumed: older than --recent %s days\n' "$h" "${ROOST_RESTORE_RECENT:-}"; fi
   elif r="$(roost_shape_get "$1" stale_reason)"; then
@@ -1751,6 +1756,25 @@ roost_restore__action() {
     else printf '%s|shell, not resumed: no key\n' "$h"; fi
   elif [ "$gone" = 1 ]; then printf -- '-|shell in ~: directory gone\n'
   else printf -- '-|shell\n'; fi
+}
+
+# roost_restore__held BLOCK HARNESS -> exit 0 when the harness's store still
+# holds the pane's conversation: the worker's own check (§5.1a,
+# roost_pending's launch step, roost_resume_store_check) with the block's
+# `session_id` and `transcript`, so the preview and the launch agree. Else
+# exit 1, with ROOST_RESTORE_HELD_NOTE set to what the tree adds after `store
+# miss`: empty, or for opencode — whose store is never checked, so the worker
+# never launches it — why. Needs scripts/lib/roost-resume.sh, which every
+# caller of the dry run sources (the restore arm, the offer).
+roost_restore__held() {
+  local sid tr rc=0
+  ROOST_RESTORE_HELD_NOTE=""
+  sid="$(roost_shape_get "$1" session_id)" || return 1
+  tr="$(roost_shape_get "$1" transcript 2>/dev/null || true)"
+  roost_resume_store_check "$2" "$sid" "$tr" || rc=$?
+  [ "$rc" = 0 ] && return 0
+  [ "$rc" = 3 ] && ROOST_RESTORE_HELD_NOTE=" (opencode resume is not checked; run it by hand)"
+  return 1
 }
 
 # roost_restore__renumbers -> exit 0 when the tmux conf renumbers windows,

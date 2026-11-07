@@ -57,6 +57,8 @@ printf '%s\n' "set -g default-command 'exec /bin/sh'" > "$XDG_CONFIG_HOME/roost/
 U1=3fa3c0de-7171-4abc-8def-000000000001
 U2=3fa3c0de-7272-4abc-8def-000000000002
 U3=3fa3c0de-7373-4abc-8def-000000000003
+# Never added to the stub store: a conversation Claude no longer holds (#232).
+U4=3fa3c0de-7474-4abc-8def-000000000004
 D1="$SHAPE_TMP/w/one"; D2="$SHAPE_TMP/w/two"; DG="$SHAPE_TMP/w/gone"; DN="$SHAPE_TMP/w/none"
 mkdir -p "$D1" "$D2" "$DN"
 stub_store_add "$U1" "$D1"; stub_store_add "$U2" "$D2"; stub_store_add "$U3" "$DG"
@@ -79,6 +81,8 @@ wait_for() { local end=$((SECONDS + ${2:-10})); while [ "$SECONDS" -lt "$end" ];
 #   k3 (12k3's own): the same panes as g, every directory present
 #   ops (12g, which session): `work` %1 and `ops` %2 (active 1), both keyed
 #   one: a single unkeyed shell
+#   miss (#232's own): `main` %1 claude U1 in D1 (in the store), `work` %2
+#     claude U4 in D2 — a directory that exists, an id the store does not hold
 #   PLANT_HOST overrides the host line.
 #   The save starts with `#` notes, as every save roost writes does (#234);
 #   PLANT_OLD=1 leaves them out: a save an older roost wrote.
@@ -107,6 +111,9 @@ plant() {
         sess ops 1; win ops:1; pane ops:1.0 %2 "$D2" "$U2" ;;
       one)
         sess main; win main:1; pane main:1.0 %1 "$DN" ;;
+      miss)
+        sess main; win main:1; pane main:1.0 %1 "$D1" "$U1"
+        sess work; win work:1; pane work:1.0 %2 "$D2" "$U4" ;;
     esac
   } > "$out"
   chmod 600 "$out"
@@ -422,6 +429,27 @@ assert_contains "$(CLT capture-pane -p -J -t "$OP" | grep -v '^$' | tail -2)" "l
 CLT send-keys -t "$OP" n
 wait_for "[ -e '$SD/declined' ]" 10
 assert_eq "$(ino "$SD/declined")" "$(ino "$SD/shape")" "then n writes declined, a link to the pin"
+done_outer
+
+echo "== #232: the preview runs the store check; a store miss is not 'would resume' =="
+# §4.8: "would resume" includes the store check of §5.1a. The real run
+# already leaves U4's pane a shell with `store miss`; the summary, `p` and
+# --dry-run said `resume` and counted it.
+fresh_dir miss; S0="$(sg "$SD/shape")"
+assert_eq "$(ls "$CLAUDE_CONFIG_DIR"/projects/*/"$U4".jsonl 2>/dev/null | wc -l | tr -d ' ')" "0" "(fixture) U4 is in no folder of the stub store"
+out="$(ROOST_TEST_NOW=$NOW_T R restore --dry-run --from "$S0" 2>/dev/null)"
+assert_contains "$(printf '%s\n' "$out" | grep '^    pane ' | grep "$D1")" "claude   resume" "--dry-run: the pane whose id the store holds reads resume"
+l4="$(printf '%s\n' "$out" | grep '^    pane ' | grep "$D2")"
+assert_contains "$l4" "not resumed: store miss" "--dry-run: the pane whose id the store lacks reads store miss ($l4)"
+assert_not_contains "$l4" "claude   resume" "...and not resume"
+opane "ROOST_TEST_NOW=$NOW_T"
+asked "$ON"
+sl="$(plog "$ON" | grep -F "$SUMMARY" | head -1)"
+assert_contains "$sl" "1 of 2 agents would resume" "the summary counts the store miss as not resuming ($sl)"
+CLT send-keys -t "$OP" p
+wait_for "[ \"\$(plog $ON | grep -cF '$SUMMARY')\" -ge 2 ]" 10
+assert_contains "$(plog "$ON" | grep '^    pane ' | grep "$D2")" "not resumed: store miss" "p: the tree names the store miss"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
 done_outer
 
 echo "== §8.1 test 12 (h): n records the decline =="

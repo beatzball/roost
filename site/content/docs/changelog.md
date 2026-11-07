@@ -207,6 +207,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The restore offer and `roost restore --dry-run` no longer promise a
+  resume that cannot happen (#232).** A Claude, codex, copilot or pi pane
+  whose conversation its harness no longer holds was counted in "N of M
+  agents would resume" and listed as `resume`, and then came back as a
+  shell with `store miss`. The preview now asks the harness's store the way
+  the resume does: such a pane reads `shell, not resumed: store miss` in the
+  tree and in `p`, and is not counted.
+
 - **`opencode mini` is refused in a roost pane, because it never shows a
   badge.** opencode 2's minimal interface does not load the plugin roost's
   badges come from, so a mini pane stayed silent: no badge, nothing for
