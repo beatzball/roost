@@ -594,9 +594,19 @@ conversation makes the list shorter; it never adds a wrong one.
 
 ## The file
 
-One `key value` per line, blocks separated by a blank line. A short example:
+It starts with a few notes for you, each line beginning with `#`: what the
+fleet was (one line per session — its windows, panes and agents, by the names
+you know), when and why it was saved, and the command that prints the whole
+tree. roost skips every `#` line, so you can add your own notes to a copy.
+After the notes comes the file itself: one `key value` per line, blocks
+separated by a blank line. A short example:
 
 ```
+# A saved roost fleet: server roost, saved 2026-10-24T20:51:02Z, because of: after-split-window
+# 1 session, 1 window, 3 panes, 1 agent
+#   roost: 1 window ("roost"), 3 panes; agent: claude "promo"
+# run `roost restore --dry-run --from <this file>` to see the full tree
+# (a line that starts with # is a note for people; roost skips it)
 roost-shape 1
 server roost
 saved 2026-10-24T20:51:02Z
@@ -629,7 +639,8 @@ roost restore --from mycopy
 ```
 
 Restore reads the whole file first. A malformed line refuses the whole file,
-naming the line, and nothing is changed.
+naming the line, and nothing is changed. Keep `roost-shape 1` right under the
+notes: a blank line between them is refused too.
 
 ## What is saved, and what is not
 

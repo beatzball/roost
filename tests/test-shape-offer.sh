@@ -80,6 +80,8 @@ wait_for() { local end=$((SECONDS + ${2:-10})); while [ "$SECONDS" -lt "$end" ];
 #   ops (12g, which session): `work` %1 and `ops` %2 (active 1), both keyed
 #   one: a single unkeyed shell
 #   PLANT_HOST overrides the host line.
+#   The save starts with `#` notes, as every save roost writes does (#234);
+#   PLANT_OLD=1 leaves them out: a save an older roost wrote.
 plant() {
   local fx="${1:-shared}" gen="${2:-5}" saved="${3:-2026-11-01T10:00:00Z}" out="${4:-$SD/shape}" n=0
   win() { # SESSION:IDX
@@ -89,7 +91,9 @@ plant() {
     [ -n "${4:-}" ] && printf '%s\n' "harness claude" "session_id $4"
     printf '\n'; }
   sess() { printf '%s\n' "session $1" "id \$$n"; [ -n "${2:-}" ] && printf 'active 1\n'; printf '\n'; n=$((n+1)); }
-  { printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" "boot $OLDBOOT" \
+  { [ -n "${PLANT_OLD:-}" ] || printf '%s\n' "# A saved roost fleet: server roost, saved $saved, because of: save" \
+      '# planted by tests/test-shape-offer.sh' '# run `roost restore --dry-run --from <this file>` to see the full tree'
+    printf '%s\n' 'roost-shape 1' 'server roost' "socket $SHAPE_SOCK" "boot $OLDBOOT" \
       "saved $saved" "gen $gen" 'trigger save' 'roost 0.10.0' 'tmux 3.6' "host ${PLANT_HOST:-$(uname -n)}" ''
     case "$fx" in
       shared)
@@ -266,6 +270,17 @@ assert_contains "$out" "from $S0" "a second terminal's --dry-run --from STAMP-GE
 CLT send-keys -t "$OP" C-c
 wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
 assert_eq "$(rc_of "$ON")|$([ -e "$SD/offer" ] && echo held || echo free)" "130|free" "Ctrl-C: exit 130, offer/ released"
+assert_eq "$(head -c 1 "$SD/shape")" "#" "(the control) the save asked about above starts with its notes (#234)"
+# #234: the same save without its notes — one an older roost wrote — is
+# asked about in the same words.
+done_outer
+PLANT_OLD=1 fresh_dir
+assert_eq "$(grep -c '^#' "$SD/shape")" "0" "(the control) an old save: no notes"
+opane "ROOST_TEST_NOW=$(( $(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' 2026-11-01T10:00:00Z +%s 2>/dev/null || date -u -d 2026-11-01T10:00:00Z +%s) + 7200 ))"
+wait_for "in_log $ON '$SUMMARY'" 10; assert_true $? "an old save without notes: the summary is shown"
+assert_eq "$(plog "$ON" | grep -F "$SUMMARY" | head -1)" "$sl" "...the same summary line as the save with notes"
+CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+fresh_dir
 opane "" new x
 wait_for "in_log $ON '$SUMMARY'" 10; assert_true $? "roost new x with the server down asks too"
 CLT send-keys -t "$OP" C-c; wait_for "[ -n \"\$(rc_of $ON)\" ]" 10

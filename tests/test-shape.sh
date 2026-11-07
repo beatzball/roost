@@ -148,7 +148,8 @@ assert_eq "$rc:$out" "0:$SD/shape" "roost save prints the shape's path, exit 0"
 assert_eq "$(cat "$SHAPE_TMP/save.err")" "2 sessions, 5 windows, 9 panes, 2 with a conversation, 3 stale" \
   "...and its summary on stderr"
 F="$SD/shape"
-assert_eq "$(head -1 "$F")" "roost-shape 1" "the file starts roost-shape 1"
+assert_eq "$(head -1 "$F" | cut -c1-24)" "# A saved roost fleet: s" "the file starts with its notes for people (#234)"
+assert_eq "$(grep -v '^#' "$F" | head -1)" "roost-shape 1" "...and roost-shape 1 is the first line after them"
 hdr="$(awk 'NF == 0 { exit } { print }' "$F")"
 for k in server socket boot saved gen trigger roost tmux host; do
   has "$hdr" "$k"; assert_true $? "the header has $k"
@@ -218,7 +219,7 @@ R save >/dev/null 2>&1
 assert_eq "$(cat "$SD/gen"):$(ls "$SD/history" | wc -l | tr -d ' ')" "2:1" "no change again: still gen 2, one history file"
 assert_eq "$(val "$(blk "$F" "$(TL display -p -t "$k1" '#{window_id}')")" name)" "renamed" "a renamed window is saved with its name"
 R save --to "$SHAPE_TMP/copy" >/dev/null 2>&1; rc=$?
-assert_eq "$rc:$(head -1 "$SHAPE_TMP/copy" 2>/dev/null)" "0:roost-shape 1" "save --to FILE writes there"
+assert_eq "$rc:$(grep -v '^#' "$SHAPE_TMP/copy" 2>/dev/null | head -1)" "0:roost-shape 1" "save --to FILE writes there"
 assert_eq "$(cat "$SD/gen"):$(ls "$SD/history" | wc -l | tr -d ' ')" "2:1" "...and leaves shape alone"
 R save --trigger spawn --to "$SHAPE_TMP/copy2" >/dev/null 2>&1
 assert_eq "$(sed -n 's/^trigger //p' "$SHAPE_TMP/copy2")" "spawn" "--trigger names the cause in the header"
@@ -686,6 +687,55 @@ b="$(grep -l '^zoomed 1$' "$PD"/*.window)"
 assert_eq "$(roost_shape_get "$b" layout | cut -d, -f2)" "200x50" "the zoomed window's layout"
 b="$(grep -l '^launch ' "$PD"/*.pane)"
 assert_eq "$(roost_shape_get "$b" launch)" "FOO_TOKEN=… sh" "the launch line"
+
+echo "== the notes at the top of a save (#234): every reader skips them =="
+# tests/fixtures/shape-v1-notes.txt is shape-v1.txt with the notes block
+# roost_shape__notes writes for it on top, and nothing else changed. Kept
+# beside it, never edited, for the same reason: every later roost must read
+# both — the save with notes, and the old save without them.
+FN="tests/fixtures/shape-v1-notes.txt"
+assert_eq "$(grep -v '^#' "$FN" | cmp -s - "$FX" && echo same)" "same" "(fixture) shape-v1-notes is shape-v1 with # lines on top"
+assert_eq "$(head -1 "$FN" | cut -c1-1)$(grep -c '^#' "$FN")" "#6" "(fixture) ...six of them, from line 1"
+assert_eq "$(ck "$FN")" "0|" "roost_shape_check: a save with notes passes"
+PN="$SHAPE_TMP/parsed-notes"; rm -rf "$PD" "$PN"
+roost_shape_parse "$FX" "$PD"; roost_shape_parse "$FN" "$PN"
+diff -r "$PD" "$PN" >/dev/null; assert_true $? "roost_shape_parse: the same block files, byte for byte, with notes and without"
+assert_eq "$(grep -l '^#' "$PN"/* 2>/dev/null)" "" "...and no note line reaches a block file"
+for k in server socket boot saved gen trigger roost tmux host; do
+  assert_eq "$(roost_shape_hdr "$FN" "$k")" "$(roost_shape_hdr "$FX" "$k")" "roost_shape_hdr $k: the same with notes and without"
+done
+assert_eq "$(roost_shape_hdr "$FN" boot)" "1792526903-7170" "...and it is the value (not empty on both)"
+# restore's readers of a save, run as restore runs them (its library on top
+# of this one), on both files.
+rr() { ( . scripts/lib/roost-restore.sh
+         printf '%s|%s|' "$(roost_restore__stampgen "$1")" "$(roost_restore__bootgen "$1")"
+         roost_restore__death "$1" && printf 'death|' || printf 'live|'
+         roost_shape__nocomment "$1" | awk -v RS= '/^session / { n = $0; sub(/^session /, "", n); sub(/\n.*/, "", n); printf "%s,", n }' ); }
+assert_eq "$(rr "$FN")" "$(rr "$FX")" "stampgen, bootgen, the death test and the session paragraphs: the same with notes and without"
+assert_eq "$(rr "$FX")" "20261028T120000Z-0|1792526903-7170 0|live|work,side," "...and they read the values (the control)"
+for k in session window pane harness; do
+  assert_eq "$(grep -c "^$k " "$FN")" "$(grep -c "^$k " "$FX")" "grep -c '^$k ': the notes add no match"
+done
+# The notes are written as they would be for this body, and say only what the
+# file says: no directory and no host.
+nb() { ROOST_SHAPE_BODY="$(sed '1,/^$/d' "$FX")" roost_shape__notes roost 2026-10-28T12:00:00Z save; }
+assert_eq "$(nb)" "$(grep '^#' "$FN")" "roost_shape__notes writes the fixture's notes for the fixture's body"
+assert_eq "$(nb | grep -c '/')$(nb | grep -c 'fixture.local')" "00" "...with no path and no host in them"
+assert_contains "$(nb)" "#   work: 2 windows (1, \"build\"), 3 panes; agent: claude" "...one line per session: windows, panes, agents"
+assert_contains "$(nb)" "# run \`roost restore --dry-run --from <this file>\` to see the full tree" "...and the line that shows the whole tree"
+echo "== what a note may and may not do (#234) =="
+{ printf '# a note\n'; good; printf '# a note inside a block\nname x\n'; } > "$C/mid"
+assert_eq "$(ck "$C/mid")" "0|" "a note inside a block is skipped: the block goes on"
+rm -rf "$PN"; roost_shape_parse "$C/mid" "$PN"
+assert_eq "$(roost_shape_get "$(ls "$PN"/*.pane)" name)|$(grep -c '^#' "$PN"/*.pane)" "x|0" "...the key after it is read, the note is not"
+printf '# only\n# notes\n' > "$C/onlynotes"
+assert_eq "$(ck "$C/onlynotes")" "1|line 2: no readable first line (want roost-shape 1)" "a file of notes only is refused"
+{ printf '# a note\n\n'; good; } > "$C/gap"
+assert_eq "$(ck "$C/gap")" "1|line 2: no readable first line (want roost-shape 1)" "a blank line between the notes and roost-shape 1 is refused (the header readers stop at it)"
+{ printf '# a note\n# two\n'; good | sed '/^boot /d'; } > "$C/nb2"
+assert_eq "$(ck "$C/nb2")" "1|line 3: the header has no boot" "a header fault names the header's own line, under the notes"
+{ printf '# a note\n'; good 'cwd /var'; } > "$C/rep2"
+assert_contains "$(ck "$C/rep2")" "line 24: repeated key cwd" "a body fault's line number counts the note lines"
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

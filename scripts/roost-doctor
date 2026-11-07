@@ -1122,8 +1122,8 @@ fi
 . "$(dirname "$0")/lib/roost-shape.sh"
 if [ -n "${ROOST_CONFIG_SOCK:-}" ]; then _pf=-S _ps="$ROOST_CONFIG_SOCK"; else _pf=-L _ps=roost; fi
 _pboot="$(roost_cfg_tmux display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
-# _phdr FILE KEY -> a header value.
-_phdr() { sed -n "s/^$2 //p;/^\$/q" "$1" 2>/dev/null | head -1; }
+# _phdr FILE KEY -> a header value (roost_shape_hdr, the one header reader).
+_phdr() { roost_shape_hdr "$1" "$2"; }
 # _page PATH -> seconds since PATH (not followed: an owner record is a link)
 # was made; GNU stat first, and each answer must be a number (GNU stat also
 # takes -f, as the file-system form).

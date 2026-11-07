@@ -292,7 +292,7 @@ detach_client
 echo "== a first block that cannot start the server stops the run (review round 1, Fable B1) =="
 stop_server; rm -rf "$SD/restoring"
 mkshape "s2:$SHAPE_TMP/d1"
-{ head -11 "$SD/shape"; printf '%s\n' 'session empty' 'id $9' ''; sed '1,11d' "$SD/shape"; } > "$SHAPE_TMP/nowin.shape"
+{ sed '/^$/q' "$SD/shape"; printf '%s\n' 'session empty' 'id $9' ''; sed '1,/^$/d' "$SD/shape"; } > "$SHAPE_TMP/nowin.shape"
 cp "$SHAPE_TMP/nowin.shape" "$SD/shape"
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "16" "a session block with no windows, server stopped: refused whole, exit 16"
@@ -1134,11 +1134,14 @@ R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "2" "no shape for this server: exit 2"
 TL -f /dev/null new-session -d -s live 'sleep 600'
 before="$(TL list-sessions -F '#{session_name}'; TL list-panes -a -F '#{pane_id}')"
-{ head -11 "$SHAPE_TMP/kept.shape"; printf '%s\n' 'session broken' 'id $0' '' 'pane broken:1.0' 'id %0' 'cwd /tmp'; } > "$SD/shape"
+# The notes and the header, through their blank line (#234: a save starts
+# with `#` notes, so the header is no longer a fixed eleven lines).
+{ sed '/^$/q' "$SHAPE_TMP/kept.shape"; printf '%s\n' 'session broken' 'id $0' '' 'pane broken:1.0' 'id %0' 'cwd /tmp'; } > "$SD/shape"
+badline=$(( $(sed '/^$/q' "$SHAPE_TMP/kept.shape" | wc -l) + 4 ))
 R restore >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "16" "a malformed shape: exit 16"
 assert_eq "$(TL list-sessions -F '#{session_name}'; TL list-panes -a -F '#{pane_id}')" "$before" "...and a listing before and after is identical (create nothing)"
-assert_contains "$(cat "$SHAPE_TMP/err")" "line 15" "...naming the line"
+assert_contains "$(cat "$SHAPE_TMP/err")" "line $badline:" "...naming the line ($badline, the notes counted)"
 mv "$SHAPE_TMP/kept.shape" "$SD/shape"
 stop_server
 

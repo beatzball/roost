@@ -424,15 +424,16 @@ roost_offer__restore() {
   session_exists "$s" && return 0
   # The pin's sessions in order, each "1 NAME" when it carries `active 1`
   # (an attached session), "0 NAME" otherwise. A window's own `active 1` is
-  # in a window block and is not read.
+  # in a window block and is not read. The `#` notes are dropped first
+  # (#234), as --list does: a note at the top of a block hides it from awk.
   while IFS= read -r line; do
     a="${line%% *}" n="${line#* }"
     session_exists "$n" || continue
     [ -n "$first" ] || first="$n"
     if [ "$a" = 1 ]; then pick="$n"; break; fi
   done <<EOF2
-$(awk -v RS= '/^session / { n = $0; sub(/^session /, "", n); sub(/\n.*/, "", n)
-    print (($0 ~ /\nactive 1(\n|$)/) ? 1 : 0) " " n }' "$ROOST_OFFER_SD/offer/save" 2>/dev/null)
+$(roost_shape__nocomment "$ROOST_OFFER_SD/offer/save" | awk -v RS= '/^session / { n = $0; sub(/^session /, "", n); sub(/\n.*/, "", n)
+    print (($0 ~ /\nactive 1(\n|$)/) ? 1 : 0) " " n }' 2>/dev/null)
 EOF2
   if [ -n "$pick" ]; then
     ROOST_OFFER_ATTACH="$pick"

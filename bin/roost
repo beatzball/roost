@@ -206,7 +206,7 @@ server_lost_socket() {
   root="$(roost_shape_saving)" || return 1
   f="$root/$(roost_shape_key "$_SOCKET_FLAG" "$SOCKET")/shape"
   [ -f "$f" ] || return 1
-  b="$(sed -n 's/^boot //p;/^$/q' "$f" 2>/dev/null | head -1)"
+  b="$(roost_shape_hdr "$f" boot)"
   case "$b" in ''|*[!0-9-]*|-*|*-|*-*-*) return 1 ;; *-*) ;; *) return 1 ;; esac
   st="${b%-*}" pid="${b#*-}"
   kill -0 "$pid" 2>/dev/null || return 1

@@ -964,6 +964,24 @@ A backslash in a session or window name is doubled by tmux at creation, and a
 writer drops such a name (one stderr line) on a build where it cannot, so a
 name never grows from one save and restore to the next.
 
+**Notes for people (2026-11-07, #234, option A — the human's decision).**
+§8.2 item 7 failed: a person opened a save cold and could not say what the
+fleet was. So every save now **starts** with a few `#` lines: which server,
+when and why it was saved, the counts, one line per session (its windows,
+panes and agents, by name), and `run \`roost restore --dry-run --from <this
+file>\` to see the full tree`. Then `roost-shape 1` on the very next line, and
+the format above unchanged — the number does not move, because no key or
+block changes meaning, and no released roost ever read a save (the format
+shipped with these notes). Every reader skips a line that starts with `#`,
+wherever it is; line numbers in a fault still count it. The notes hold no
+blank line and none follows them, because every header reader stops at the
+first blank line and the saver's "the same" test (§3.5 step 2) drops
+everything up to it: the notes carry the stamp and the triggers, so a test
+that compared them would publish a new gen at every save. A blank line
+between the notes and `roost-shape 1` is therefore a refusal. The notes are
+built from the body being written, so they hold nothing the file does not:
+no directory, no host, no id.
+
 ### 3.3 Why a file of its own and not the pane records
 
 The record is per pane, keyed by a boot that is gone, and it says nothing

@@ -165,6 +165,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A saved fleet now starts with a few lines you can read (#234).** Open
+  `~/.local/state/roost/shapes/roost/shape` and the top says which server it
+  is, when and why it was saved, and what the fleet was: one line per
+  session, with its windows, panes and agents by name. One of them gives
+  the command that prints the whole tree: `roost restore --dry-run --from`
+  the file. Each line starts with `#`, and roost skips every `#` line, so
+  you can add your own notes to a copy. A save without them still restores.
+
 - **A bare `roost stop`, `roost kill` or `roost down` asks before it ends
   the whole server (#207).** With no session name it used to stop every
   session and every agent at once, with no count and no question. On a

@@ -413,8 +413,8 @@ roost_persist_status() {
   f="$sd/shape"
   if [ -f "$f" ]; then
     printf '  newest save: %s gen %s %s, %s sessions / %s panes\n' \
-      "$(sed -n 's/^saved //p;/^$/q' "$f")" "$(sed -n 's/^gen //p;/^$/q' "$f")" \
-      "$(sed -n 's/^trigger //p;/^$/q' "$f")" "$(grep -c '^session ' "$f")" "$(grep -c '^pane ' "$f")"
+      "$(roost_shape_hdr "$f" saved)" "$(roost_shape_hdr "$f" gen)" \
+      "$(roost_shape_hdr "$f" trigger)" "$(grep -c '^session ' "$f")" "$(grep -c '^pane ' "$f")"
   else
     printf '  newest save: none yet\n'
   fi
@@ -486,10 +486,10 @@ roost_persist__sweep() {
   [ -d "$sd/closed" ] || return 0
   for f in "$sd/shape" "$sd"/history/* "$sd/declined"; do
     [ -f "$f" ] || continue
-    keep="$keep$(sed -n 's/^boot //p;/^$/q' "$f" | head -1) "
+    keep="$keep$(roost_shape_hdr "$f" boot) "
   done
   if [ -f "$sd/offer/save" ] && roost_shape_owner_live "$sd/offer"; then
-    keep="$keep$(sed -n 's/^boot //p;/^$/q' "$sd/offer/save" | head -1) "
+    keep="$keep$(roost_shape_hdr "$sd/offer/save" boot) "
   fi
   for d in "$sd"/closed/*/; do
     [ -d "$d" ] || continue

@@ -1418,8 +1418,9 @@ roost_restore__ago() {
   else printf 'saved %s days ago' $((d / 86400)); fi
 }
 
-# roost_restore__hdr FILE KEY -> a header value.
-roost_restore__hdr() { sed -n "s/^$2 //p;/^\$/q" "$1" 2>/dev/null | head -1; }
+# roost_restore__hdr FILE KEY -> a header value (roost_shape_hdr, the one
+# header reader).
+roost_restore__hdr() { roost_shape_hdr "$1" "$2"; }
 
 # roost_restore__stampgen FILE -> STAMP-GEN, the name a save has in history/
 # and in --list: the `saved` stamp without its `-` and `:`, then `gen`.
@@ -1893,12 +1894,14 @@ roost_restore_list() {
       "$(roost_restore__hdr "$f" trigger)" "$(grep -c '^session ' "$f")" "$(grep -c '^window ' "$f")" \
       "$(grep -c '^pane ' "$f")" "$where"
     # Its sessions, by name; a later member of a group once, as joining its
-    # group (ruling R7: --list names a member the way --dry-run does).
-    printf '    sessions: %s\n' "$(awk -v RS= '/^session / {
+    # group (ruling R7: --list names a member the way --dry-run does). The
+    # `#` notes are dropped first (#234): one sitting at the top of a session
+    # block would hide that block from the paragraph match.
+    printf '    sessions: %s\n' "$(roost_shape__nocomment "$f" | awk -v RS= '/^session / {
         n = $0; sub(/^session /, "", n); sub(/\n.*/, "", n)
         g = ""; if (match($0, /\ngroup [^\n]*/)) g = substr($0, RSTART + 7, RLENGTH - 7)
         printf "%s%s%s", (c++ ? ", " : ""), n, (g != "" ? " (joins " g "'"'"'s group)" : "")
-      }' "$f")"
+      }')"
   done
   roost_restore__list_pending "$sdir"
   return 0
