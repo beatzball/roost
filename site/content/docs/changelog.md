@@ -216,7 +216,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
   writes no save while your systemd user manager is stopping, so the login
   restore brings the agents back at your first attach, as after a reboot.
   An agent that dies on its own is still marked as before. macOS is not
-  changed.
+  changed. Two smaller fixes to the login job's `login.log` on Linux: no
+  more `printf: write error: Broken pipe` lines, and its last line counts
+  only the agents that run left waiting (a run that placed nothing used to
+  say "1 agents wait" for an earlier run's).
 
 - **The restore offer and `roost restore --dry-run` no longer promise a
   resume that cannot happen (#232).** A Claude, codex, copilot or pi pane
