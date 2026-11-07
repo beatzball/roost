@@ -116,14 +116,19 @@ shape_test_setup() {
   # whose foreground process is named `sleep` would be `other` and every
   # agreement case would test the wrong branch while staying green. Check it
   # once, here, before any case runs, and stop the file if it does not hold.
-  local h p got i
+  # Bounded by the clock (bash's SECONDS), at 20 s: the wrapper has to start
+  # a shell and exec the compiled stub, and a bound of 30 turns of 0.1 s ran
+  # out on a loaded machine (Part 7's loaded rounds: every shape file died
+  # here with the stub still reading `sh`). A turn also runs a tmux call, so
+  # counting turns undercounts the time under load as well.
+  local h p got end
   for h in claude codex; do
     p="$(TL new-window -d -P -F '#{pane_id}' -t shp: "$STUB_WRAP/$h")"
-    got=""; i=0
-    while [ "$i" -lt 30 ]; do
+    got=""; end=$((SECONDS + 20))
+    while [ "$SECONDS" -lt "$end" ]; do
       got="$(TL display -p -t "$p" '#{pane_current_command}')"
       [ "$got" = "$h" ] && break
-      sleep 0.1; i=$((i+1))
+      sleep 0.1
     done
     if [ "$got" != "$h" ]; then
       printf '  FAIL: the %s stub reads #{pane_current_command} [%s], not [%s] — every agreement case would test the wrong branch\n' \

@@ -67,7 +67,7 @@ ino() { ls -i "$1" 2>/dev/null | awk '{print $1}'; }
 sessions() { TL list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
 live_boot() { TL display -p '#{start_time}-#{pid}' 2>/dev/null; }
 npend() { ls "$1" 2>/dev/null | grep -c '^%[0-9]*$'; }
-stop_server() { TL kill-server 2>/dev/null; local i=0; while TL ls >/dev/null 2>&1 && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i+1)); done; sleep 0.2; }
+stop_server() { TL kill-server 2>/dev/null; local end=$((SECONDS + 10)); while TL ls >/dev/null 2>&1 && [ "$SECONDS" -lt "$end" ]; do sleep 0.1; done; sleep 0.2; }
 # Bounded by the clock, never by loop turns (a loaded runner turns slowly).
 wait_for() { local end=$((SECONDS + ${2:-10})); while [ "$SECONDS" -lt "$end" ]; do eval "$1" && return 0; sleep 0.1; done; eval "$1"; }
 
@@ -211,7 +211,7 @@ NP=0
 opane() {
   local extra="$1" go cmd; shift
   NP=$((NP + 1)); ON="$NP"; go="$SHAPE_TMP/go.$ON"
-  cmd="trap true INT; i=0; while [ ! -e $go ] && [ \$i -lt 100 ]; do sleep 0.1; i=\$((i+1)); done; env $OFFER_UNSET ROOST_SOCKET=roost $extra $ROOST $*; echo \$? > $SHAPE_TMP/rc.$ON; exec sleep 600"
+  cmd="trap true INT; e=\$((\$(date +%s) + 30)); while [ ! -e $go ] && [ \$(date +%s) -lt \$e ]; do sleep 0.1; done; env $OFFER_UNSET ROOST_SOCKET=roost $extra $ROOST $*; echo \$? > $SHAPE_TMP/rc.$ON; exec sleep 600"
   if ! CLT has-session 2>/dev/null; then
     CLT -f /dev/null new-session -d -s c0 -x 220 -y 50 "$cmd"
     OP="$(CLT display -p -t c0: '#{pane_id}')"
