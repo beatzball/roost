@@ -507,6 +507,38 @@ yearcase Australia/Sydney "2027 Jan 01 05:00" "Thu Dec 31 23:50" "2026 Dec 31 23
 yearcase America/Chicago "2027 Jan 02 09:00" "Thu Dec 31 23:50" "2026 Dec 31 23:50" \
   "a boot in January, a shutdown in December: the year steps back one"
 
+echo "== a long wtmp: the newest shutdown is read with no Broken pipe (#239) =="
+# The login job runs as a systemd service, which ignores SIGPIPE
+# (IgnoreSIGPIPE=yes). `last ... | grep '^shutdown' | head -1` then had grep
+# write on after head left, and print `grep: write error: Broken pipe` into
+# login.log (#235 F3 was the same shape in roost_restore__panes). A stub
+# `last` with thousands of shutdown lines (far past a pipe's buffer), read
+# under `trap '' PIPE` as the service runs it, in both forms: Linux's
+# `last -x --time-format iso shutdown`, and macOS's `last reboot` (the
+# Linux form printing nothing, as macOS's last refuses its options).
+SL="$SHAPE_TMP/stub-last-long"; mkdir -p "$SL"
+NB="$(date -j -f '%Y %b %d %H:%M:%S' '2026 Nov 07 10:00:00' +%s 2>/dev/null || date -d 'Nov 7 2026 10:00:00' +%s)"
+printf '#!/bin/sh\necho "{ sec = %s, usec = 0 }"\n' "$NB" > "$SL/sysctl"
+cat > "$SL/last" <<'STUB'
+#!/bin/sh
+if [ "$1" = -x ]; then
+  [ -e "${0%/*}/mac" ] && exit 1
+  awk 'BEGIN { print "shutdown system down  6.8.0-142-generic 2026-11-07T04:47:14+00:00 - 2026-11-07T04:47:40+00:00  (00:00)"
+               for (i = 0; i < 20000; i++) print "shutdown system down  6.8.0-142-generic 2025-01-01T00:00:00+00:00 - 2025-01-01T00:01:00+00:00  (00:01)" }'
+else
+  awk 'BEGIN { print "shutdown time Sat Nov  7 04:47"
+               for (i = 0; i < 20000; i++) print "shutdown time Wed Jan  1 00:00" }'
+fi
+STUB
+chmod +x "$SL/last" "$SL/sysctl"
+want="$(date -j -u -f '%Y-%m-%dT%H:%M:%S' '2026-11-07T04:47:14' +%s 2>/dev/null || date -u -d '2026-11-07T04:47:14' +%s)"
+got="$( (trap '' PIPE; PATH="$SL:$PATH" roost_restore__shutdown_at) 2>"$SHAPE_TMP/sl.err")"
+assert_eq "$got|$(cat "$SHAPE_TMP/sl.err")" "$want|" "Linux form: the newest shutdown, and nothing on stderr"
+: > "$SL/mac"
+want="$(TZ=UTC date -j -f '%Y %b %d %H:%M:%S' '2026 Nov 07 04:47:00' +%s 2>/dev/null || TZ=UTC date -d 'Nov 7 2026 04:47:00' +%s)"
+got="$( (trap '' PIPE; TZ=UTC PATH="$SL:$PATH" roost_restore__shutdown_at) 2>"$SHAPE_TMP/sl.err")"
+assert_eq "$got|$(cat "$SHAPE_TMP/sl.err")" "$want|" "macOS form: the newest shutdown, and nothing on stderr"
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

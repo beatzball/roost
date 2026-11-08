@@ -318,11 +318,51 @@ assert_eq "$(cat "$SC/calls")" "--user is-system-running" "...asked the user man
 out="$(R3 save --trigger save 2>&1)"; rc=$?
 assert_eq "$rc|$(gen_of "$SD3")" "1|$g3" "stopping: roost save by hand writes nothing either, exit 1"
 assert_contains "$out" "the user manager is stopping" "...and says why"
+# A teardown round touches nothing else either (#239): the check comes
+# before the hook's arrows and before the listing. The dying agent's pane
+# has a pending resume (pending/<boot>/%N) and a launch claim; a pane-died
+# round of a running manager renames the file to %N.failed and drops the
+# claim (the control below), a teardown round leaves both as they were.
+b3="$(tmux -S "$S3" display -p '#{start_time}-#{pid}')"
+pend3="$SD3/pending/$b3"; mkdir -p "$pend3"
+printf 'harness claude\nsession_id 3fa3c0de-0000-4abc-8def-000000000235\n' > "$pend3/$p3"; chmod 600 "$pend3/$p3"
+cl3="$XDG_STATE_HOME/roost/launch-claims/$(roost_shape_key -S "$S3")/claims/$b3/c235"
+live_pid; mkdir -p "$cl3"; printf '%s\n' "$p3" > "$cl3/pane"; ln -s "$LIVE $LIVE_ST" "$cl3/owner"
+echo stopping > "$SC/answer"
+R3 save --auto --socket "$S3" --boot "$b3" --trigger pane-died --pane "$p3"
+assert_eq "$(gen_of "$SD3")|$(ls "$pend3")|$([ -d "$cl3" ] && echo held)" "$g3|$p3|held" \
+  "stopping: the death round renames no pending file and drops no claim"
+# A teardown round whose listing fails (the server SIGKILLed while the round
+# waits, as a logout does about 5 s after the agents die) writes no save.err
+# either: the next login would show a stale save error. The round is held
+# after its drain (the seam the "listing that fails mid-round" case above
+# uses), the server killed, then released; with the manager running the same
+# plant writes save.err, as before (the control).
+S3b="$TMUX_TMPDIR/s3b"
+SD3b="$ROOST_SHAPE_DIR/$(roost_shape_key -S "$S3b")"
+R3b() { PATH="$SC:$PATH" ROOST_SOCKET="$S3b" "$ROOST" "$@"; }
+for ans in stopping running; do
+  tmux -S "$S3b" -f /dev/null new-session -d -s threeb 'ENV= exec /bin/sh'
+  echo running > "$SC/answer"; R3b save --auto --trigger after-new-session
+  rm -f "$SD3b/save.err"
+  tmux -S "$S3b" rename-window -t '=threeb:' "gone-$ans"
+  H="$SHAPE_TMP/hold-3b-$ans"
+  ROOST_TEST_SAVE_HOLD_AFTER_DRAIN="$H" R3b save --auto --trigger after-rename-window >/dev/null 2>&1 & hp=$!
+  wait_at "$H" || echo "  (the $ans saver never reached its drain)"
+  tmux -S "$S3b" kill-server 2>/dev/null
+  echo "$ans" > "$SC/answer"; : > "$H"; wait "$hp"
+  e=none; [ -e "$SD3b/save.err" ] && e=written
+  if [ "$ans" = stopping ]; then err_stopping="$e"; else err_running="$e"; fi
+done
+assert_eq "$err_stopping" "none" "stopping, the server killed mid-round: no save.err"
+assert_eq "$err_running" "written" "(control) running, the same plant: save.err is written, as before"
 # The control: the same change, the manager running. This is the single
 # death of today, and it must still demote.
 echo running > "$SC/answer"
-R3 save --auto --trigger pane-died
+R3 save --auto --trigger pane-died --socket "$S3" --boot "$b3" --pane "$p3"
 assert_eq "$(gen_of "$SD3")" "$((g3 + 1))" "running: the death save publishes"
+assert_eq "$(ls "$pend3")|$([ -d "$cl3" ] && echo held || echo dropped)" "$p3.failed|dropped" \
+  "...renames the pending file to %N.failed and drops the claim (the plant works)"
 # `exited` here, since the pane runs sh (an agent that exited to its shell);
 # the probe's pane ran roost-pane-shell and read `other`. Either is a demotion.
 assert_eq "$(awk -v p="$p3" '$0=="id "p{f=1} f&&/^stale_reason /{print $2; exit}' "$SD3/shape")" "exited" \
@@ -344,6 +384,27 @@ if ! PATH="$NOSC" command -v systemctl >/dev/null 2>&1; then
   assert_eq "$(gen_of "$SD3")|$(cat "$SC/calls")" "$((g3 + 3))|" "no systemctl: the save publishes, the stub never asked"
 else
   echo "  (skip: this machine has a systemctl in /usr/bin; the no-answer case covers it)"
+fi
+# A user manager that holds its socket but does not answer (#239): the read
+# would wait for the D-Bus timeout, about 25 s, holding lock/ while it did,
+# and a by-hand `roost save` waits up to 30 s for that lock. Bounded with
+# `timeout 2` where `timeout` exists (every Linux, which is the only place a
+# systemctl is); a read cut off is "not stopping", so the round saves as
+# today. macOS has no `timeout` (nor a systemctl), so there it is not run.
+if command -v timeout >/dev/null 2>&1; then
+  mkdir -p "$SC/hang"
+  printf '#!/bin/sh\necho "$*" >> "%s/calls"\nexec sleep 20\n' "$SC" > "$SC/hang/systemctl"
+  chmod +x "$SC/hang/systemctl"
+  tmux -S "$S3" rename-window -t "$p3" manager-hangs
+  gh="$(gen_of "$SD3")"; : > "$SC/calls"; t0=$SECONDS
+  PATH="$SC/hang:$PATH" ROOST_SOCKET="$S3" "$ROOST" save --auto --trigger pane-died
+  t1=$((SECONDS - t0))
+  assert_eq "$(gen_of "$SD3")|$(cat "$SC/calls")" "$((gh + 1))|--user is-system-running" \
+    "a manager that does not answer: the save publishes (asked once)"
+  [ "$t1" -lt 12 ]; assert_true $? "...within a bound, not the read's own wait (took ${t1} s; the stub sleeps 20)"
+  [ ! -e "$SD3/lock" ]; assert_true $? "...and lock/ is released"
+else
+  echo "  (skip: no timeout on PATH; the read is not bounded here, and there is no systemctl either)"
 fi
 tmux -S "$S3" kill-server 2>/dev/null
 

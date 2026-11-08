@@ -1047,8 +1047,10 @@ roost_restore__make_session() {
     if ! out="$(t -f "$CONF" new-session -d -P -F '#{session_id} #{window_id} #{pane_id}' \
       -s "$(roost_restore__made "$name")" ${nflag[@]+"${nflag[@]}"} -c "$cwd" -x "$w" -y "$h" \
       "$ROOST_HOME/scripts/roost-placeholder" "$f" --placing 2>&1)"; then
+      # The error's first line, by expansion: `| head -1` here could print
+      # `Broken pipe` under the login job's service (#239, as #235 F3).
       printf "roost restore: could not start the tmux server with session '%s' (%s); nothing restored\n" \
-        "$name" "$(printf '%s' "$out" | head -1)" >&2
+        "$name" "${out%%$'\n'*}" >&2
       return 1
     fi
   else
@@ -1525,10 +1527,18 @@ roost_restore__shutdown_at() {
     case "$ROOST_SHUTDOWN_AT" in ''|*[!0-9]*) return 0 ;; esac
     printf '%s\n' "$ROOST_SHUTDOWN_AT"; return 0
   fi
-  iso="$(last -x --time-format iso shutdown 2>/dev/null | grep '^shutdown' | head -1 \
-    | grep -o '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][+-][0-9][0-9]:[0-9][0-9]' | head -1)"
-  if [ -n "$iso" ]; then roost_restore__iso_epoch "$iso"; return 0; fi
-  line="$(last reboot 2>/dev/null | grep '^shutdown time' | head -1)"
+  # `grep -m1`, never `| head -1` (#239, the shape of #235 F3): head exits
+  # after one line, and under the login job's service, which ignores SIGPIPE,
+  # grep went on writing and printed `grep: write error: Broken pipe` into
+  # login.log once wtmp held more shutdowns than a pipe buffers. grep -m1
+  # stops by itself; `last`, the writer left behind, has its stderr thrown
+  # away. -m is in GNU, BSD (macOS) and busybox grep. The second grep reads
+  # that one line, and -o prints each time on it (a line holds two, down and
+  # up): the first is cut out below by expansion, not by another pipe.
+  iso="$(last -x --time-format iso shutdown 2>/dev/null | grep -m1 '^shutdown' \
+    | grep -m1 -o '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][+-][0-9][0-9]:[0-9][0-9]')"
+  if [ -n "$iso" ]; then iso="${iso%%$'\n'*}"; roost_restore__iso_epoch "$iso"; return 0; fi
+  line="$(last reboot 2>/dev/null | grep -m1 '^shutdown time')"
   [ -n "$line" ] || return 0
   # shutdown time Tue Oct 20 15:05
   set -- $line

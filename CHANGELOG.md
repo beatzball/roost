@@ -212,6 +212,19 @@ and this project uses [Semantic Versioning](https://semver.org/).
   only the agents that run left waiting (a run that placed nothing used to
   say "1 agents wait" for an earlier run's).
 
+- **A save no longer waits 25 s on a systemd user manager that does not
+  answer (#239).** Each save on Linux asks the user manager whether it is
+  stopping. A manager that held its socket but did not answer made that
+  question wait about 25 s, and a `roost save` typed meanwhile waited up to
+  30 s and then gave up. The question now gives up after 2 s and the save
+  goes ahead as before. A logout also no longer leaves a save error behind
+  for `roost doctor` to report at the next login.
+
+- **No `grep: write error: Broken pipe` line in the login job's `login.log`
+  (#239).** On a machine whose login records hold many shutdowns, the
+  login restore could print that line while it read the last shutdown. The
+  restore itself was not affected.
+
 - **The restore offer and `roost restore --dry-run` no longer promise a
   resume that cannot happen (#232).** A Claude, codex, copilot or pi pane
   whose conversation its harness no longer holds was counted in "N of M

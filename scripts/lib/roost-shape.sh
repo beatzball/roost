@@ -1166,13 +1166,46 @@ roost_shape__prune() {
 # state before it signals any scope); a normal death of one agent reads
 # `running`, and still demotes.
 #
+# That is the start of the window; its end (#239) is why no round of this
+# server reads "no manager" while the server still lives. `user@.service` is
+# `KillMode=mixed`, and in every logout measured on the VM (three, journal
+# lines in the probe doc and its follow-up) the manager did not finish
+# stopping by itself: PID 1 logged `State 'stop-sigterm' timed out` 5 s
+# after `Stopping user@<uid>.service` (TimeoutStopUSec=5s there) and sent
+# SIGKILL to the manager and to the tmux server in the same step, under a
+# millisecond apart, then `Stopped user@<uid>.service` about 10 to 20 ms
+# later. So from the first agent's death to the server's own, the manager is
+# there and answers `stopping`. Not measured: a manager that exits on its
+# own inside its stop timeout, leaving the server to that timeout's SIGKILL;
+# a round started in that gap would read no answer and save.
+#
 # Asked only where `systemctl` is on PATH, so macOS is untouched. Any answer
 # but `stopping` — `running`, `degraded`, nothing at all when there is no
-# manager or no XDG_RUNTIME_DIR — saves as before. About 4.5 ms, and only
-# for a round that would publish.
+# manager or no XDG_RUNTIME_DIR — saves as before. About 4.5 ms in the
+# probe, 2.2 ms (2.4 ms under `timeout 2`) in a later run on the same VM.
+# Asked on every round since #239, not only on a round that would publish:
+# a scripted session there (new session, windows, renames, splits, layouts,
+# resizes, kills, two bursts) ran 28 rounds, of which 16 published, so 28
+# reads where there were 16 — the 12 more cost about 30 ms in all, against
+# about 57 ms for one whole round.
+#
+# Bounded (#239): a user manager that holds its socket but does not answer
+# makes the read wait for the D-Bus timeout, about 25 s, and this round
+# holds lock/ all that time (a by-hand `roost save` gives up on the lock
+# after 30 s). `timeout 2` where `timeout` exists, which is every Linux, the
+# only place a systemctl is: a read cut off prints nothing, which is "not
+# stopping", so the round saves as today. Every read the probe made in a
+# stopping manager answered (`stopping`), so the bound cuts off only a
+# manager that is stuck. Without `timeout`, the plain read.
 roost_shape__stopping() {
+  local a
   command -v systemctl >/dev/null 2>&1 || return 1
-  [ "$(systemctl --user is-system-running 2>/dev/null)" = stopping ]
+  if command -v timeout >/dev/null 2>&1; then
+    a="$(timeout 2 systemctl --user is-system-running 2>/dev/null)"
+  else
+    a="$(systemctl --user is-system-running 2>/dev/null)"
+  fi
+  [ "$a" = stopping ]
 }
 
 # roost_shape__round DIR KEY TRIGGERS -> one round of §3.5 step 2, after the
@@ -1201,6 +1234,25 @@ roost_shape__round() {
       ROOST_SHAPE_LAST=lost; return 1
     fi
   fi
+  # A logout's or a shutdown's teardown (#235): the save before it, keys
+  # intact, stays the newest. Asked for EVERY round and not only a death's:
+  # a round a hook started just before the logout (an `identify`) lists the
+  # same dead panes when it runs late. Not a failure, so no save.err.
+  #
+  # Asked HERE, before the arrows and the listing (#239), so a teardown
+  # round touches nothing at all: it renames no pending/<boot>/%N to
+  # %N.failed, drops no launch claim, and, when the listing fails because
+  # the server was SIGKILLed while the round waited, writes no save.err that
+  # the next login would show as a stale error. None of that was read (the
+  # next login's restore sweeps an earlier boot's pending/ and claims/), but
+  # a round that is about to publish nothing has no reason to change them.
+  # The cost: the read now runs on every round, not only a publishing one;
+  # roost_shape__stopping says how many more that measured.
+  if roost_shape__stopping; then
+    printf 'roost save: the user manager is stopping (a logout or a shutdown); nothing written\n' >&2
+    ROOST_SHAPE_LAST=teardown
+    return 1
+  fi
   ROOST_SHAPE_PDIR=""
   if [ -n "$boot" ]; then
     roost_shape__arrows "$dir" "$boot" "${ROOST_SHAPE_WANTS:-}"
@@ -1228,16 +1280,6 @@ roost_shape__round() {
   if [ -f "$dir/shape" ] && [ "$(sed '1,/^$/d' "$dir/shape")" = "$ROOST_SHAPE_BODY" ]; then
     ROOST_SHAPE_LAST=same
     return 0
-  fi
-  # A logout's or a shutdown's teardown (#235): the save before it, keys
-  # intact, stays the newest. Asked here, after the listing, for EVERY round
-  # and not only a death's: a round a hook started just before the logout
-  # (an `identify`) lists the same dead panes when it runs late. Not a
-  # failure, so no save.err.
-  if roost_shape__stopping; then
-    printf 'roost save: the user manager is stopping (a logout or a shutdown); nothing written\n' >&2
-    ROOST_SHAPE_LAST=teardown
-    return 1
   fi
   if [ -f "$dir/gen" ]; then had_gen=1; read -r gen < "$dir/gen" 2>/dev/null || true; fi
   case "$gen" in ''|*[!0-9]*) gen=0 ;; esac
