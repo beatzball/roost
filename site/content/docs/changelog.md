@@ -16,6 +16,36 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0]
+
+Your fleet now comes back after a reboot or a crash (#191). roost saves the
+shape of every session, window and pane on every change, with each agent's
+conversation key, so a crash loses at most the last change. `roost restore`
+puts the fleet back and resumes the agents one at a time, each in its own
+directory. `roost save` writes a save when you want one, and `roost revive %N`
+brings back one agent's conversation. Run `roost persist on` once, and a login
+job brings the fleet back by itself when you log in, on macOS and on Linux.
+With it off, the first `roost` after a crash asks whether to restore. A save
+now starts with a few lines you can read, and a pane with no recorded
+conversation shows the `claude --resume` or `codex resume` lines to pick from.
+Also new: `roost install` links the roost skill for every harness it wires,
+the tab bar can sit at the bottom, a pane held only by its background work
+reads 🔄, and a codex dialog pings only if it is still open after a few
+seconds. Among the fixes: only a pane's own agent can set its badge, and a
+Claude that exits while its background work runs no longer leaves the pane ⏳
+for ever.
+
+Four things to know. **Run `roost install`** after upgrading, and restart a
+roost server started before it: it adds Claude's `SessionEnd` hook entry and
+links the roost skill, and `roost doctor` says when either is missing.
+**Saving on every change needs `prefix r` or a new server** to load its hooks;
+so does the login restore's first-attach hook. **A bare `roost stop`, `roost
+kill` or `roost down` now asks first**, and off a terminal it refuses: a
+script that stops the whole server needs `--yes`. And **`opencode mini` is
+refused in a roost pane**, because it shows no badge; `ROOST_ALLOW_MINI=1`
+runs it anyway. On Linux, `loginctl enable-linger` keeps the fleet across a
+logout; without it, the agents come back at your next login.
+
 ### Added
 
 - **After a crash, `roost` asks whether to bring your fleet back (#191).**
@@ -124,9 +154,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
   pane is a shell in its saved directory. A session that already exists is
   skipped and named. `--dry-run` prints the plan and starts nothing,
   `--list` shows every save, `--from` picks an earlier save or a copy, and
-  `--only` restores one session, window or pane. Nothing saves on its own
-  yet: run `roost save` when you want one. See the Persistent Sessions docs
-  page.
+  `--only` restores one session, window or pane. See the Persistent Sessions
+  docs page.
 
 - **`roost revive %N` brings one agent's conversation back after a crash or
   an `/exit` (#57).** It runs the harness's own resume — `claude --resume`,
