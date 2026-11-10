@@ -323,6 +323,43 @@ holds for the pane's directory as `claude --resume <id>` / `codex resume
   tie; a transcript touched by something else (a backup restore, a `touch`)
   moves up the list.
 
+### The restore offer's hold: what it leaves (#233)
+
+Live risk, small. Where the offer prints a line to read (after `n`, Enter,
+`l`, or an `r` whose report names something not restored), it prints `press
+any key to go on` and reads one key, at most 60 s, before the attach.
+
+- **One byte is read, not one key.** A key that sends an escape sequence (an
+  arrow, a function key) ends the hold on its first byte, and the rest of
+  the sequence reaches the attached session as typed input. bash 3.2 has no
+  fractional `read -t` to drain it cheaply. Not seen in use; not handled.
+- **No answer does not hold**, on purpose: nobody pressed a key in the whole
+  bound. A person who was there but slow still loses that line to the
+  attach; it is in the terminal's scrollback after a detach.
+- **Keys pressed before the prompt are dropped** (fix round 1): the hold
+  first throws away every key until a second passes with none (at most
+  5 s), so a reflex Enter after `n` cannot end it. A key a person meant
+  in that second is dropped too, and the prompt then waits for another.
+
+### The renumber-windows note may say something that does not happen (#233)
+
+Live risk, small: a note, not an action. `restore --dry-run` (and the
+offer's preview) prints `note: renumber-windows is on in your roost.conf
+(FILE), so windows will not keep their saved indices` when the person's own
+roost.conf turns it on. Measured on tmux 3.6 with renumber-windows on (roost's
+own conf, which sets it for every server): saves with windows 1, 5, 9 and
+with 3, 5, 9 were both placed at those indices. Placement closes no window,
+and tmux renumbers only when one closes, so the note's "will not keep" is
+likely untrue at restore time; it holds only for windows closed later. Not
+changed in #233, which only stopped the note firing on roost's own setting.
+
+### The `--dry-run` tree counts characters, not columns (#233)
+
+Live risk, cosmetic. The NAME and CWD columns are padded by `${#...}`,
+characters under a UTF-8 locale; a CJK character or an emoji is one
+character but two terminal columns, so a line holding one still sits one
+column right of the rest per such character.
+
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-

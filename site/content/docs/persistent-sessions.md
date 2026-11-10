@@ -388,6 +388,18 @@ started (`main`): a restore skips a session that exists, so renaming the
 fresh one first frees the name. Renaming kills nothing, and you stay attached
 to it.
 
+After `n` and Enter, roost then prints `press any key to go on` and waits
+for a key before it attaches, so you can read those lines: the attach takes
+the whole screen. It waits at most 60 s. It also waits after `l` (so you see
+what `roost persist on` installed, or why it failed), and after `r` when the
+restore report names something the restored fleet does not show: a session
+skipped because it exists, an agent not resumed, or agents that were busy at
+the save. A clean `r` attaches at once. After no answer in 60 s it does not
+wait: nobody pressed a key, so nobody is known to be there. Keys you typed
+before the prompt appears (an Enter after `n`, say) do not count, so the
+prompt always waits for a key pressed after it. Ctrl-C there leaves roost
+with the server running; run `roost` to attach.
+
 **The decline** is a file, `declined`, in the shape directory: a hard link to
 the save you turned down. `roost restore --from STAMP-GEN` finds it even after
 the history ring has dropped that save, `roost restore --list` marks it

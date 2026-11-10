@@ -1804,16 +1804,66 @@ roost_restore__held() {
   return 1
 }
 
-# roost_restore__renumbers -> exit 0 when the tmux conf renumbers windows,
-# which moves them off their saved indices (§4.3 Windows). Read from the
-# running server when there is one, else from the user's roost conf.
+# roost_restore__renumbers -> exit 0 when the person's own roost.conf turns
+# renumber-windows on, which moves windows off their saved indices (§4.3
+# Windows); ROOST_RESTORE_RN_CONF is then that file, for the note to name.
+#
+# Not roost's own conf (#233): tmux/roost.conf turns it on for every server
+# roost starts, so a note on it fired on every dry run and every restore
+# offer's preview, and its "in your tmux conf" named a setting the person
+# never made. Measured on tmux 3.6 with that conf and nothing else: a save
+# with windows 1, 5 and 9 (and 3, 5 and 9) was placed at those indices. The
+# person's conf is read the way bin/roost sources it (the same path), and
+# its LAST renumber-windows line wins, as it does in tmux. With a server
+# running, the live value must also still be on: a person who turned it off
+# since has nothing to be told.
 roost_restore__renumbers() {
+  local uc="${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf" v
+  ROOST_RESTORE_RN_CONF=""
+  # The value as tmux reads it (fix round 1; measured on tmux 3.6): on, yes
+  # and 1 are on, off, no and 0 off, in any case, bare or in single or
+  # double quotes.
+  # A line with no value (a toggle) or one sourced from another file is not
+  # read: no note, the safe side.
+  v="$(sed -n "s/^[[:space:]]*set[a-z-]*[[:space:]].*renumber-windows[[:space:]][[:space:]]*[\"']*\([a-zA-Z0-9]*\).*/\1/p" "$uc" 2>/dev/null | tail -1 | tr 'A-Z' 'a-z')"
+  case "$v" in on|yes|1) ;; *) return 1 ;; esac
   if server_running; then
-    [ "$(t -u show-options -gqv renumber-windows 2>/dev/null || true)" = on ]
-    return
+    [ "$(t -u show-options -gqv renumber-windows 2>/dev/null || true)" = on ] || return 1
   fi
-  grep -qs '^[[:space:]]*set[a-z-]*[[:space:]].*renumber-windows[[:space:]]*on' \
-    "${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf" "$CONF"
+  ROOST_RESTORE_RN_CONF="$uc"
+  return 0
+}
+
+# roost_restore__dry_widths -> ROOST_RESTORE_WN and ROOST_RESTORE_WC, the
+# widths of the tree's NAME and CWD columns (#233): the longest name and
+# directory among the panes the tree will print, and never less than 12 and
+# 30, the old fixed widths, so a fleet of short ones looks as before. Fixed
+# widths broke the column after them: a directory longer than 30 pushed its
+# own harness column right, so a short one (/tmp beside the usual long
+# paths) stood out of line. The same walk as the tree's, skipping what the
+# tree skips (a group's later member, a session that exists). Lengths are
+# ${#...}, in characters, never printf's byte count: a directory holding
+# a two-byte character is one column wider on a terminal, not two.
+roost_restore__dry_widths() {
+  local f name wf pf v
+  ROOST_RESTORE_WN=12 ROOST_RESTORE_WC=30
+  for f in "$ROOST_RESTORE_PD"/*.session; do
+    [ -e "$f" ] || continue
+    name="$(roost_restore__addr "$f")"
+    roost_shape_get "$f" group >/dev/null 2>&1 && continue
+    roost_restore__exists "$name" && continue
+    while IFS= read -r wf; do
+      [ -n "$wf" ] || continue
+      while IFS= read -r pf; do
+        [ -n "$pf" ] || continue
+        v="$(roost_shape_get "$pf" name)" || v="-"
+        [ "${#v}" -le "$ROOST_RESTORE_WN" ] || ROOST_RESTORE_WN="${#v}"
+        v="$(roost_shape_get "$pf" cwd)" || v=""
+        [ "${#v}" -le "$ROOST_RESTORE_WC" ] || ROOST_RESTORE_WC="${#v}"
+      done <<< "$(roost_restore__panes "$(roost_restore__addr "$wf")")"
+    done <<< "$(roost_restore__windows "$name")"
+  done
+  return 0
 }
 
 # roost_restore_dry_run -> prints the plan as one tree (§4.3 --dry-run,
@@ -1826,7 +1876,7 @@ roost_restore__renumbers() {
 # panes with a key, and panes it would resume: the restore offer's summary
 # (§4.8) is these counts, so it can never disagree with the tree under it.
 roost_restore_dry_run() {
-  local f a rc=0 name g wf pf idx wn n pn h act running=0
+  local f a rc=0 name g wf pf idx wn n pn pc h act running=0
   ROOST_RESTORE_NOTRES=0
   ROOST_RESTORE_DRY_S=0 ROOST_RESTORE_DRY_W=0 ROOST_RESTORE_DRY_P=0 ROOST_RESTORE_DRY_K=0 ROOST_RESTORE_DRY_R=0
   server_running && running=1
@@ -1839,6 +1889,7 @@ roost_restore_dry_run() {
   fi
   printf 'from %s (%s; %s)\n' "$(roost_restore__stampgen "$ROOST_RESTORE_FILE")" "$ROOST_RESTORE_WHY" \
     "$(roost_restore__ago "$(roost_restore__hdr "$ROOST_RESTORE_FILE" saved)")"
+  roost_restore__dry_widths
   for f in "$ROOST_RESTORE_PD"/*.session; do
     [ -e "$f" ] || continue
     name="$(roost_restore__addr "$f")"
@@ -1868,8 +1919,12 @@ roost_restore_dry_run() {
         # Not in a $(...): the action sets ROOST_RESTORE_NOTRES in this shell.
         roost_restore__action "$pf" > "$ROOST_RESTORE_PD/.act"
         act="$(cat "$ROOST_RESTORE_PD/.act")"; h="${act%%|*}" act="${act#*|}"
-        printf '    pane %s %-12s %-30s %-8s %s\n' "$(roost_restore__addr "$pf" | sed 's/.*\.//')" \
-          "$pn" "$(roost_shape_get "$pf" cwd)" "$h" "$act"
+        # NAME and CWD padded by hand to the tree's widths
+        # (roost_restore__dry_widths), in characters: `%-*s` would pad by
+        # bytes. Never a negative pad: the widths are the maxima.
+        pc="$(roost_shape_get "$pf" cwd)" || pc=""
+        printf '    pane %s %s%*s %s%*s %-8s %s\n' "$(roost_restore__addr "$pf" | sed 's/.*\.//')" \
+          "$pn" $((ROOST_RESTORE_WN - ${#pn})) '' "$pc" $((ROOST_RESTORE_WC - ${#pc})) '' "$h" "$act"
         ROOST_RESTORE_DRY_P=$((ROOST_RESTORE_DRY_P + 1))
         roost_shape_get "$pf" session_id >/dev/null 2>&1 && ROOST_RESTORE_DRY_K=$((ROOST_RESTORE_DRY_K + 1))
         [ "$act" = resume ] && ROOST_RESTORE_DRY_R=$((ROOST_RESTORE_DRY_R + 1))
@@ -1884,7 +1939,7 @@ roost_restore_dry_run() {
     done <<< "$(roost_restore__windows "$name")"
   done
   if roost_restore__renumbers; then
-    printf 'note: renumber-windows is on in your tmux conf, so windows will not keep their saved indices\n'
+    printf 'note: renumber-windows is on in your roost.conf (%s), so windows will not keep their saved indices\n' "$ROOST_RESTORE_RN_CONF"
   fi
   # The real run's 13 for a keyed pane whose directory is gone; 12 wins.
   [ "${ROOST_RESTORE_NOTRES:-0}" = 1 ] && [ "$rc" = 0 ] && rc=13

@@ -2578,6 +2578,25 @@ every pane with a key. "2 h ago" is `saved` against now in epoch seconds
   nothing is declined, `roost` exits 130. Leaving is not a decision, so
   the next `roost` asks again.
 - **Any other key**: the keys line again.
+- **The hold** (#233, amended after the human-eye check of §8.2 item 8).
+  F N6's "on screen when the person detaches" was not enough: the attach
+  takes the screen at once, and a tester could not read `n`'s line ("it
+  was too fast for me to see"). So where the offer prints a line to read,
+  it then prints `press any key to go on` and reads one key, bounded by
+  the offer's own 60 s, before the attach: after `n` and Enter; after `l`
+  (what `persist on` installed, or why not); and after `r` when its report
+  names what the restored fleet does not show (exit 12 or 13 or a
+  failure, a line above the summary other than a layout note — "the saved
+  layout did not apply" or "lost panes closed on purpose", both ending
+  "tmux's default layout instead" — or busy panes). Not after a clean
+  `r`, and not after no answer: nobody is known to be there. The hold
+  comes after `offer/` is released, so a second terminal never waits on a
+  person reading. Keys already typed when it starts (`n` and a reflex
+  Enter) are dropped until a second passes with none, and only then is
+  the prompt printed (fix round 1). Ctrl-C there puts the terminal back,
+  says the server is up, and exits 130. Not taken: showing the line
+  again inside the new session (a `display-message` or a banner), which
+  reaches the person only after the screen has changed under them.
 
 **`declined`.** A hard link to the pin, in the shape directory, 0600 like
 every file there: `ln -f offer/save declined.new && mv -f declined.new

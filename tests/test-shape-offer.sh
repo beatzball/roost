@@ -83,6 +83,8 @@ wait_for() { local end=$((SECONDS + ${2:-10})); while [ "$SECONDS" -lt "$end" ];
 #   one: a single unkeyed shell
 #   miss (#232's own): `main` %1 claude U1 in D1 (in the store), `work` %2
 #     claude U4 in D2 — a directory that exists, an id the store does not hold
+#   lost (#233's own): `main:1` holds %1 claude U1 in D1 and %2 a plain
+#     shell, `work:1` %3 claude U2 in D2 — close %2 and main:1 loses a pane
 #   PLANT_HOST overrides the host line.
 #   The save starts with `#` notes, as every save roost writes does (#234);
 #   PLANT_OLD=1 leaves them out: a save an older roost wrote.
@@ -114,6 +116,9 @@ plant() {
       miss)
         sess main; win main:1; pane main:1.0 %1 "$D1" "$U1"
         sess work; win work:1; pane work:1.0 %2 "$D2" "$U4" ;;
+      lost)
+        sess main; win main:1; pane main:1.0 %1 "$D1" "$U1"; pane main:1.1 %2 "$DN"
+        sess work; win work:1; pane work:1.0 %3 "$D2" "$U2" ;;
     esac
   } > "$out"
   chmod 600 "$out"
@@ -390,6 +395,13 @@ KEEP="$SHAPE_TMP/planted.keep"
 replant() { done_outer; rm -f "$SD/shape"; ln "$KEEP" "$SD/shape"; }
 NOW_T="$(( $(date -j -u -f '%Y-%m-%dT%H:%M:%SZ' 2026-11-01T10:00:00Z +%s 2>/dev/null || date -u -d 2026-11-01T10:00:00Z +%s) + 7200 ))"
 asked() { wait_for "in_log $1 '$SUMMARY'" 10; }
+# #233's hold: where the offer printed a line to read, it waits for a key
+# before the attach (the cases are under "#233" at the end of this file).
+# held N waits for the hold line; go_on PANE N sends that key.
+HOLD="press any key to go on"
+held() { wait_for "in_log $1 '$HOLD'" "${2:-10}"; }
+go_on() { held "$2" 15 && CLT send-keys -t "$1" x; }
+screen() { CLT capture-pane -p -J -t "$1"; }
 
 echo "== §8.1 test 12 (b): no answer =="
 fresh_dir; rm -f "$KEEP"; ln "$SD/shape" "$KEEP"; S0="$(sg "$SD/shape")"
@@ -507,8 +519,9 @@ fresh_dir
 opane ""; A="$OP" AN="$ON"
 opane ""; B="$OP" BN="$ON"
 wait_for "{ in_log $AN '$SUMMARY' || in_log $BN '$SUMMARY'; } && { in_log $AN 'waiting for the restore offer' || in_log $BN 'waiting for the restore offer'; }" 10
-if in_log "$AN" "$SUMMARY"; then F="$A" W="$B" WN="$BN"; else F="$B" W="$A" WN="$AN"; fi
+if in_log "$AN" "$SUMMARY"; then F="$A" FN="$AN" W="$B" WN="$BN"; else F="$B" FN="$BN" W="$A" WN="$AN"; fi
 CLT send-keys -t "$F" n
+go_on "$F" "$FN"
 wait_for "[ \"\$(TL list-clients 2>/dev/null | grep -c .)\" -ge 2 ]" 10
 assert_eq "$(TL list-clients 2>/dev/null | grep -c .)" "2" "n in the first: the second attaches to the running server"
 assert_true "$(in_log "$WN" "$SUMMARY" && echo 1 || echo 0)" "...and never shows a summary line"
@@ -544,6 +557,7 @@ assert_eq "$([ -e "$SD/restoring" ] && echo held || echo free)" "held" "r: while
 assert_eq "$([ -e "$PLIST" ] || [ -e "$SD/persist" ] && echo yes || echo no)" "no" "...and neither the unit nor the persist marker exists"
 assert_eq "$(launches)" "0" "...and nothing is launched"
 : > "$H"
+go_on "$OP" "$ON"
 wait_for "[ \"\$(clients)\" -ge 1 ]" 15
 assert_eq "$([ -e "$PLIST" ] && [ -e "$SD/persist" ] && echo yes || echo no)" "yes" "released: the unit and the persist marker exist"
 assert_eq "$([ -e "$SD/restoring" ] && echo held || echo free)" "free" "...restoring/ is gone"
@@ -563,6 +577,7 @@ fresh_dir g
 opane "STUB_UNAME=Darwin PATH=$FAILSTUBS:$PATH"
 asked "$ON"
 CLT send-keys -t "$OP" l; sleep 0.3; CLT send-keys -t "$OP" r
+go_on "$OP" "$ON"
 wait_for "[ \"\$(clients)\" -ge 1 ]" 15
 assert_true "$(in_log "$ON" "roost: persist on failed; the fleet is restored this time only" && echo 0 || echo 1)" "persist on failed is on the screen"
 assert_eq "$(clients)" "1" "...and the client is attached anyway"
@@ -572,7 +587,13 @@ echo "== (g) the shared fixture: r writes one pending file only =="
 fresh_dir; : > "$STUB_LOG"
 opane ""
 asked "$ON"; CLT send-keys -t "$OP" r
+# The gone directory's agent is not resumed (exit 13): a line to read, so
+# #233's hold comes first.
+held "$ON" 15; assert_true $? "r with an agent not resumed: the hold line"
+assert_contains "$(screen "$OP")" "not resumed: directory gone" "...under the line that names it"
+CLT send-keys -t "$OP" x
 wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$(clients)" "1" "...then a key attaches"
 B="$(live_boot)"
 wait_for "[ \"\$(launches)\" -ge 1 ]" 10; sleep 2.5
 assert_eq "$(ls "$SD/pending/$B" 2>/dev/null | grep -c .)" "1" "one pending file (the gone directory's pane gets none)"
@@ -645,6 +666,7 @@ R spawn x sh >/dev/null 2>&1
 wait_for "[ \"\$(sed -n 's/^boot //p;/^\$/q' '$SD/shape')\" = \"\$(live_boot)\" ]" 10
 assert_true $? "(fixture) the script's fresh save names the live boot"
 CLT send-keys -t "$OP" r
+go_on "$OP" "$ON"
 wait_for "[ \"\$(clients)\" -ge 1 ]" 15
 assert_true "$(in_log "$ON" "roost restore: session 'main' exists" && echo 0 || echo 1)" "r: the report skips the saved main as existing"
 assert_eq "$(sessions)" "main work " "...restores work from the pin"
@@ -682,6 +704,7 @@ CLT send-keys -t "$OP" n
 wait_for "[ -e '$SD/declined' ]" 10
 assert_eq "$(ino "$SD/declined")" "$P0" "n: declined has the pin's inode"
 assert_eq "$([ -d "$SD/closed/$OLDBOOT" ] && echo kept || echo swept)" "kept" "...closed/<boot>/ still exists"
+go_on "$OP" "$ON"
 wait_for "[ \"\$(clients)\" -ge 1 ]" 10
 TL kill-session -t =work 2>/dev/null
 R restore --from "$S0" >/dev/null 2>&1
@@ -708,6 +731,146 @@ assert_eq "$(grep -c -- "$U2" "$STUB_LOG" || true)|$(grep -c -- "$U1" "$STUB_LOG
 l1="$(grep -- '--resume ' "$STUB_LOG" | awk 'NR==1{print $1}')"; l2="$(grep -- '--resume ' "$STUB_LOG" | awk 'NR==2{print $1}')"
 assert_true "$([ $((l2 - l1)) -ge 1 ] && [ $((l2 - l1)) -le 4 ] && echo 0 || echo 1)" "...2 s apart ($((l2 - l1)) s)"
 done_outer
+
+# ============================================================================
+# #233 — a line the person must read is held on screen until a key
+# ============================================================================
+# The attach takes the whole screen at once, so a line printed just before it
+# was gone before a person could read it ("it was too fast for me to see").
+# Where the offer prints such a line, it now says "press any key to go on"
+# and waits — bounded by the offer's own no-answer bound — before it
+# attaches. The screen is read with capture-pane: pipe-pane's log keeps the
+# line after the attach too, so only the screen shows whether it could be
+# READ.
+echo "== #233: n holds its lines on screen until a key, then attaches =="
+fresh_dir; S0="$(sg "$SD/shape")"
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" n
+held "$ON"; assert_true $? "n: the hold line is printed"
+sleep 1
+sc="$(screen "$OP")"
+assert_contains "$sc" "not restored; roost restore --from $S0 brings it back" "...and n's line is on the screen under it"
+assert_contains "$sc" 'the saved "main" is skipped while a "main" runs' "...with the rename hint"
+assert_eq "$(clients)" "0" "...nothing is attached while it waits"
+assert_eq "$(sessions)|$([ -e "$SD/offer" ] && echo held || echo free)" "main |free" "...the fresh main exists and offer/ is already released"
+CLT send-keys -t "$OP" x
+wait_for "[ \"\$(clients)\" -ge 1 ]" 10
+assert_eq "$(clients)" "1" "a key: it attaches"
+done_outer
+
+echo "== #233: Enter holds too =="
+fresh_dir; S0="$(sg "$SD/shape")"
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" Enter
+held "$ON"; assert_true $? "Enter: the hold line is printed"
+assert_contains "$(screen "$OP")" "not restored, not declined; roost restore --from $S0 brings it back" "...under Enter's line"
+assert_eq "$(clients)" "0" "...nothing attached yet"
+CLT send-keys -t "$OP" Enter
+wait_for "[ \"\$(clients)\" -ge 1 ]" 10
+assert_eq "$(clients)" "1" "Enter again: it attaches"
+done_outer
+
+# Typeahead (fix round 1): the answer and a reflex second key in ONE burst,
+# so the second is already queued when the hold starts. It must not end the
+# hold: the line would flash past exactly as before.
+for burst in "n Enter" "Enter Enter"; do
+  echo "== #233 fix round 1: typeahead '$burst' does not end the hold =="
+  fresh_dir
+  opane ""
+  asked "$ON"; CLT send-keys -t "$OP" $burst
+  held "$ON"; assert_true $? "$burst: the hold line is printed"
+  sleep 2
+  assert_eq "$(clients)" "0" "$burst: 2 s later it still holds (the queued key was dropped)"
+  assert_contains "$(screen "$OP")" "brings it back" "$burst: ...the line still on the screen"
+  CLT send-keys -t "$OP" x
+  wait_for "[ \"\$(clients)\" -ge 1 ]" 10
+  assert_eq "$(clients)" "1" "$burst: a key after the prompt attaches"
+  done_outer
+done
+
+echo "== #233 fix round 1: Ctrl-C in the hold leaves, says the server is up, restores the terminal =="
+fresh_dir
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" n
+held "$ON"; assert_true $? "(fixture) held"
+CLT send-keys -t "$OP" C-c
+wait_for "[ -n \"\$(rc_of $ON)\" ]" 10
+assert_eq "$(rc_of "$ON")" "130" "Ctrl-C in the hold: exit 130"
+assert_true "$(in_log "$ON" "roost: the server is up; run roost to attach to it" && echo 0 || echo 1)" "...with the server-is-up line"
+assert_eq "$(sessions)|$(clients)" "main |0" "...the fresh main runs, nothing attached"
+tty_of="$(CLT display -p -t "$OP" '#{pane_tty}')"
+assert_contains " $(stty -a < "$tty_of" 2>/dev/null | tr '\n' ' ') " " echo " "...and the terminal echoes again (read -s undone)"
+done_outer
+
+echo "== #233: the hold is bounded by the offer's own bound =="
+fresh_dir
+opane "ROOST_TEST_OFFER_TIMEOUT=2"
+asked "$ON"; CLT send-keys -t "$OP" n
+held "$ON"; assert_true $? "(fixture) held"
+t0="$SECONDS"
+assert_eq "$(clients)" "0" "(the control) held: nothing attached at first"
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$(clients)" "1" "no key: it attaches by itself ($((SECONDS - t0)) s)"
+done_outer
+
+echo "== #233: no answer prints its line and does not hold: nobody is there =="
+fresh_dir
+opane "ROOST_TEST_OFFER_TIMEOUT=2"
+asked "$ON"
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$(clients)" "1" "no answer: it attaches"
+assert_true "$(in_log "$ON" "no answer in 2 s" && echo 0 || echo 1)" "...after the no-answer line"
+assert_true "$(in_log "$ON" "$HOLD" && echo 1 || echo 0)" "...with no hold"
+done_outer
+
+echo "== #233: a clean r does not hold; the fleet itself is what to read =="
+fresh_dir g
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$(clients)" "1" "r with nothing skipped or left: it attaches"
+assert_true "$(in_log "$ON" "$HOLD" && echo 1 || echo 0)" "...with no hold"
+done_outer
+
+echo "== #233 fix round 1: r is not held by a window that lost a pane closed on purpose =="
+# "lost panes closed on purpose; tmux's default layout instead" is a layout
+# note like "the saved layout did not apply": the window is on the screen.
+fresh_dir lost
+mkdir -p "$SD/closed/$OLDBOOT"; printf '%%2\n' > "$SD/closed/$OLDBOOT/close.2"
+opane ""
+asked "$ON"; CLT send-keys -t "$OP" r
+wait_for "[ \"\$(clients)\" -ge 1 ]" 15
+assert_eq "$(clients)" "1" "r with a window that lost a closed pane: it attaches"
+assert_true "$(in_log "$ON" "lost panes closed on purpose; tmux's default layout instead" && echo 0 || echo 1)" "(the control) the report printed the lost-panes line"
+assert_true "$(in_log "$ON" "$HOLD" && echo 1 || echo 0)" "...with no hold"
+done_outer
+
+echo "== #233: r holds when its report names something not restored =="
+fresh_dir; S0="$(sg "$SD/shape")"
+opane ""
+asked "$ON"
+R spawn x sh >/dev/null 2>&1
+wait_for "[ \"\$(sed -n 's/^boot //p;/^\$/q' '$SD/shape')\" = \"\$(live_boot)\" ]" 10
+CLT send-keys -t "$OP" r
+held "$ON"; assert_true $? "r with the saved main skipped: the hold line"
+assert_contains "$(screen "$OP")" "roost restore: session 'main' exists" "...under the report that names it"
+assert_eq "$(clients)" "0" "...nothing attached yet"
+CLT send-keys -t "$OP" x
+wait_for "[ \"\$(clients)\" -ge 1 ]" 10
+assert_eq "$(clients)" "1" "a key: it attaches"
+done_outer
+
+echo "== #233: l holds: persist on says what it installed =="
+fresh_dir g
+opane "$WRITE_ONLY"
+asked "$ON"; CLT send-keys -t "$OP" l; sleep 0.3; CLT send-keys -t "$OP" r
+held "$ON" 15; assert_true $? "l then r: the hold line"
+assert_contains "$(screen "$OP")" "persist: on for 'roost'" "...under persist on's line"
+assert_eq "$(clients)" "0" "...nothing attached yet"
+CLT send-keys -t "$OP" x
+wait_for "[ \"\$(clients)\" -ge 1 ]" 10
+assert_eq "$(clients)" "1" "a key: it attaches"
+done_outer; persist_off
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
