@@ -341,6 +341,18 @@ any key to go on` and reads one key, at most 60 s, before the attach.
   5 s), so a reflex Enter after `n` cannot end it. A key a person meant
   in that second is dropped too, and the prompt then waits for another.
 
+### The renumber-windows note may say something that does not happen (#233)
+
+Live risk, small: a note, not an action. `restore --dry-run` (and the
+offer's preview) prints `note: renumber-windows is on in your roost.conf
+(FILE), so windows will not keep their saved indices` when the person's own
+roost.conf turns it on. Measured on tmux 3.6 with renumber-windows on (roost's
+own conf, which sets it for every server): saves with windows 1, 5, 9 and
+with 3, 5, 9 were both placed at those indices. Placement closes no window,
+and tmux renumbers only when one closes, so the note's "will not keep" is
+likely untrue at restore time; it holds only for windows closed later. Not
+changed in #233, which only stopped the note firing on roost's own setting.
+
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-

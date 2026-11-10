@@ -1804,16 +1804,34 @@ roost_restore__held() {
   return 1
 }
 
-# roost_restore__renumbers -> exit 0 when the tmux conf renumbers windows,
-# which moves them off their saved indices (§4.3 Windows). Read from the
-# running server when there is one, else from the user's roost conf.
+# roost_restore__renumbers -> exit 0 when the person's own roost.conf turns
+# renumber-windows on, which moves windows off their saved indices (§4.3
+# Windows); ROOST_RESTORE_RN_CONF is then that file, for the note to name.
+#
+# Not roost's own conf (#233): tmux/roost.conf turns it on for every server
+# roost starts, so a note on it fired on every dry run and every restore
+# offer's preview, and its "in your tmux conf" named a setting the person
+# never made. Measured on tmux 3.6 with that conf and nothing else: a save
+# with windows 1, 5 and 9 (and 3, 5 and 9) was placed at those indices. The
+# person's conf is read the way bin/roost sources it (the same path), and
+# its LAST renumber-windows line wins, as it does in tmux. With a server
+# running, the live value must also still be on: a person who turned it off
+# since has nothing to be told.
 roost_restore__renumbers() {
+  local uc="${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf" v
+  ROOST_RESTORE_RN_CONF=""
+  # The value as tmux reads it (fix round 1; measured on tmux 3.6): on, yes
+  # and 1 are on, off, no and 0 off, in any case, bare or in single or
+  # double quotes.
+  # A line with no value (a toggle) or one sourced from another file is not
+  # read: no note, the safe side.
+  v="$(sed -n "s/^[[:space:]]*set[a-z-]*[[:space:]].*renumber-windows[[:space:]][[:space:]]*[\"']*\([a-zA-Z0-9]*\).*/\1/p" "$uc" 2>/dev/null | tail -1 | tr 'A-Z' 'a-z')"
+  case "$v" in on|yes|1) ;; *) return 1 ;; esac
   if server_running; then
-    [ "$(t -u show-options -gqv renumber-windows 2>/dev/null || true)" = on ]
-    return
+    [ "$(t -u show-options -gqv renumber-windows 2>/dev/null || true)" = on ] || return 1
   fi
-  grep -qs '^[[:space:]]*set[a-z-]*[[:space:]].*renumber-windows[[:space:]]*on' \
-    "${XDG_CONFIG_HOME:-$HOME/.config}/roost/roost.conf" "$CONF"
+  ROOST_RESTORE_RN_CONF="$uc"
+  return 0
 }
 
 # roost_restore_dry_run -> prints the plan as one tree (§4.3 --dry-run,
@@ -1884,7 +1902,7 @@ roost_restore_dry_run() {
     done <<< "$(roost_restore__windows "$name")"
   done
   if roost_restore__renumbers; then
-    printf 'note: renumber-windows is on in your tmux conf, so windows will not keep their saved indices\n'
+    printf 'note: renumber-windows is on in your roost.conf (%s), so windows will not keep their saved indices\n' "$ROOST_RESTORE_RN_CONF"
   fi
   # The real run's 13 for a keyed pane whose directory is gone; 12 wins.
   [ "${ROOST_RESTORE_NOTRES:-0}" = 1 ] && [ "$rc" = 0 ] && rc=13

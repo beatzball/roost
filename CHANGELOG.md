@@ -18,6 +18,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
   installed) and after an `r` whose report names something not restored. A
   clean `r`, and no answer in 60 s, attach at once as before.
 
+- **`roost restore --dry-run` no longer says renumber-windows is on "in
+  your tmux conf" when you never set it (#233).** roost's own config turns
+  it on for every roost server, so every dry run and every restore offer
+  preview printed the note, and blamed your config. The note now appears
+  only when your own `roost.conf` turns it on, and names that file.
+
 ## [0.11.0]
 
 Your fleet now comes back after a reboot or a crash (#191). roost saves the

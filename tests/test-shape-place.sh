@@ -1145,16 +1145,49 @@ assert_contains "$(cat "$SHAPE_TMP/err")" "line $badline:" "...naming the line (
 mv "$SHAPE_TMP/kept.shape" "$SD/shape"
 stop_server
 
-echo "== renumber-windows on: the --dry-run tree says so =="
+echo "== renumber-windows: the --dry-run tree notes it only when the person's own conf sets it (#233) =="
+# roost's own conf (tmux/roost.conf) turns renumber-windows on for every
+# server roost starts, so a note that fires on it fires on every dry run and
+# every restore offer's preview, and its "in your tmux conf" names a setting
+# the person never made. Noted only when the person's own roost.conf turns
+# it on, and naming that file. The server here is started by roost (a
+# spawn), so it loads tmux/roost.conf, and its user conf is RX's.
 RN="$SHAPE_TMP/rn/roost"; mkdir -p "$SHAPE_TMP/rn"
-R2() { ROOST_SOCKET="$RN" "$ROOST" "$@"; }
-tmux -S "$RN" -f /dev/null new-session -d -s numbered -x 200 -y 50 'sleep 600'
-tmux -S "$RN" set -g renumber-windows on
-tmux -S "$RN" new-window -d -t '=numbered:5' 'sleep 600'
+RX="$SHAPE_TMP/rnconf"; mkdir -p "$RX/roost"; UC="$RX/roost/roost.conf"
+R2() { XDG_CONFIG_HOME="$RX" ROOST_SOCKET="$RN" "$ROOST" "$@"; }
+R2 spawn numbered sh >/dev/null 2>&1
+assert_eq "$(tmux -S "$RN" show -gv renumber-windows 2>/dev/null)" "on" "(the control) a server roost starts has renumber-windows on, from roost's own conf"
 R2 save >/dev/null 2>&1
 out="$(R2 restore --dry-run 2>/dev/null)"
-assert_contains "$out" "renumber-windows" "the tree carries a note that the conf renumbers windows"
-tmux -S "$RN" kill-server
+assert_contains "$out" "from " "(the control) the dry run printed its tree"
+assert_not_contains "$out" "renumber-windows" "running, roost's own conf only: no note"
+tmux -S "$RN" kill-server 2>/dev/null; sleep 0.3
+out="$(R2 restore --dry-run 2>/dev/null)"
+assert_contains "$out" "from " "(the control) stopped: the dry run printed its tree"
+assert_not_contains "$out" "renumber-windows" "stopped, roost's own conf only: no note"
+printf '%s\n' 'set -g renumber-windows on' > "$UC"
+out="$(R2 restore --dry-run 2>/dev/null)"
+assert_contains "$out" "note: renumber-windows is on in your roost.conf ($UC)" "stopped, the person's conf sets it: the note names that file"
+R2 spawn again sh >/dev/null 2>&1
+out="$(R2 restore --dry-run 2>/dev/null)"
+assert_contains "$out" "note: renumber-windows is on in your roost.conf ($UC)" "running, the person's conf sets it: the note names that file"
+tmux -S "$RN" set -g renumber-windows off
+out="$(R2 restore --dry-run 2>/dev/null)"
+assert_not_contains "$out" "renumber-windows" "...and turned off on the running server since: no note"
+tmux -S "$RN" kill-server 2>/dev/null; sleep 0.3
+printf '%s\n' 'set -g renumber-windows on' 'set -g renumber-windows off' > "$UC"
+out="$(R2 restore --dry-run 2>/dev/null)"
+assert_not_contains "$out" "renumber-windows" "stopped, the person's conf turns it on then off: no note (the last line wins)"
+# Every spelling tmux reads as on or off (fix round 1; measured on tmux
+# 3.6): the note follows the value, not the word.
+for v in on '"on"' "'on'" yes 1 ON; do
+  printf 'set -g renumber-windows %s\n' "$v" > "$UC"
+  assert_contains "$(R2 restore --dry-run 2>/dev/null)" "note: renumber-windows is on" "stopped, the person's conf says $v: the note"
+done
+for v in off '"off"' no 0; do
+  printf '%s\n' 'set -g renumber-windows on' "set -g renumber-windows $v" > "$UC"
+  assert_not_contains "$(R2 restore --dry-run 2>/dev/null)" "renumber-windows" "stopped, on then $v: no note"
+done
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
