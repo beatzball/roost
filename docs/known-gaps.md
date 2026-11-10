@@ -353,6 +353,13 @@ and tmux renumbers only when one closes, so the note's "will not keep" is
 likely untrue at restore time; it holds only for windows closed later. Not
 changed in #233, which only stopped the note firing on roost's own setting.
 
+### The `--dry-run` tree counts characters, not columns (#233)
+
+Live risk, cosmetic. The NAME and CWD columns are padded by `${#...}`,
+characters under a UTF-8 locale; a CJK character or an emoji is one
+character but two terminal columns, so a line holding one still sits one
+column right of the rest per such character.
+
 ### When a Claude turn is over: steps 1 to 5 built, with the holes they leave (#95, #97, #105, #110)
 
 **Steps 1 to 3 of the design are built** (`docs/airig/specs/2026-09-29-turn-

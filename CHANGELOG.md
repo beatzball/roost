@@ -24,6 +24,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
   preview printed the note, and blamed your config. The note now appears
   only when your own `roost.conf` turns it on, and names that file.
 
+- **The `roost restore --dry-run` tree lines up its columns again (#233).**
+  The name and directory columns had fixed widths, so a directory longer
+  than 30 characters pushed the harness and action columns to the right,
+  and a short one (`/tmp` among long paths) stood out of line. The columns
+  now take the width of the longest name and directory in the tree. The
+  restore offer's `p` preview shows the same tree.
+
 ## [0.11.0]
 
 Your fleet now comes back after a reboot or a crash (#191). roost saves the

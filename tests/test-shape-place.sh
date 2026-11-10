@@ -1189,6 +1189,61 @@ for v in off '"off"' no 0; do
   assert_not_contains "$(R2 restore --dry-run 2>/dev/null)" "renumber-windows" "stopped, on then $v: no note"
 done
 
+echo "== the --dry-run tree keeps its columns whatever the directory's length (#233) =="
+# Each pane line is `pane IDX NAME CWD HARNESS ACTION`. NAME and CWD were
+# padded to 12 and 30 characters, so a directory longer than 30 pushed its
+# harness column right, and one shorter than the others (/tmp beside the
+# usual long paths) left its own harness column out of line with theirs. The
+# columns are now as wide as the longest NAME and CWD in the tree. Measured
+# in characters: one directory holds a two-byte character (built with
+# printf), and must line up with the rest on a terminal, which counts it as
+# one. It is not the longest directory, so it is padded: bash 3.2's printf
+# pads by bytes, and would leave its line one column short.
+#
+# That proves anything only under a UTF-8 locale (fix round 1, both
+# reviewers): under C, `${#v}` counts bytes in the code AND in `col` below,
+# so byte padding would line up too. So this block pins the first UTF-8
+# locale this machine has, checked by the count itself, and says so when
+# there is none rather than passing for nothing.
+U8=""
+for loc in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+  [ "$(LC_ALL=$loc bash -c 'v=$(printf "caf\303\251"); printf %s ${#v}' 2>/dev/null)" = 4 ] && { U8="$loc"; break; }
+done
+U8_WAS="${LC_ALL-unset}"
+if [ -n "$U8" ]; then
+  export LC_ALL="$U8"
+  v="$(printf 'caf\303\251')"
+  assert_eq "${#v}" "4" "(the control) under $U8, café is 4 characters"
+else
+  echo "  SKIP: no UTF-8 locale here; the two-byte directory below proves nothing about byte padding"
+fi
+CD="$SHAPE_TMP/cols"; CE="$CD/$(printf 'caf\303\251')"; CL="$CD/a-much-longer-directory-name-than-the-others"
+mkdir -p "$CD/one" "$CE" "$CL"
+CF="$SHAPE_TMP/cols.shape"
+{ printf '%s\n' 'roost-shape 1' 'server roost' "socket $RN" 'boot 1700000000-11' \
+    'saved 2026-11-01T10:00:00Z' 'gen 5' 'trigger save' 'roost 0.10.0' 'tmux 3.6' "host $(uname -n)" ''
+  printf '%s\n' 'session cols' 'id $0' '' 'window cols:1' 'id @0' 'layout b25d,200x50,0,0,0' 'active 1' ''
+  printf '%s\n' 'pane cols:1.0' 'id %1' 'cwd /tmp' ''
+  printf '%s\n' 'pane cols:1.1' 'id %2' "cwd $CD/one" 'name a-name-longer-than-twelve' 'harness claude' "session_id 3fa3c0de-7171-4abc-8def-0000000000c1" ''
+  printf '%s\n' 'pane cols:1.2' 'id %3' "cwd $CE" ''
+  printf '%s\n' 'pane cols:1.3' 'id %4' "cwd $CL" ''
+} > "$CF"; chmod 600 "$CF"
+out="$(R2 restore --dry-run --from "$CF" 2>/dev/null)"
+pl="$(printf '%s\n' "$out" | grep '^    pane ')"
+assert_eq "$(printf '%s\n' "$pl" | grep -c .)" "4" "(the control) the tree has the four pane lines"
+# col LINE FIELD -> where the column after FIELD starts, in characters.
+col() { local rest="${1#*"$2"}" r2; r2="${rest#"${rest%%[! ]*}"}"; printf '%s' "$(( ${#1} - ${#r2} ))"; }
+cwds=""; names=""
+while IFS= read -r l; do
+  case "$l" in *"$CE"*) c="$CE" ;; *"$CL"*) c="$CL" ;; *"$CD/one"*) c="$CD/one" ;; *) c="/tmp" ;; esac
+  cwds="$cwds $(col "$l" "$c")"
+  case "$l" in *a-name-longer-than-twelve*) n=a-name-longer-than-twelve ;; *) n=" -" ;; esac
+  names="$names $(col "$l" "$n")"
+done <<< "$pl"
+assert_eq "$(printf '%s\n' $cwds | sort -u | grep -c .)" "1" "the harness column starts at one place on every pane line ($cwds)"
+assert_eq "$(printf '%s\n' $names | sort -u | grep -c .)" "1" "...and so does the directory column, past a long name ($names)"
+if [ "$U8_WAS" = unset ]; then unset LC_ALL; else export LC_ALL="$U8_WAS"; fi
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
