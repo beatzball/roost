@@ -291,7 +291,7 @@ roost_offer__keys() {
 # decision, so the next `roost` asks again.
 roost_offer_ask() {
   ROOST_OFFER_CHOICE="" ROOST_OFFER_HELD=0 ROOST_OFFER_L=off ROOST_OFFER_SD="" ROOST_OFFER_STAMP=""
-  ROOST_OFFER_ATTACH="$2" ROOST_OFFER_NOTE=""
+  ROOST_OFFER_ATTACH="$2" ROOST_OFFER_NOTE="" ROOST_OFFER_READ=0
   roost_offer__person || return 0
   roost_offer__libs
   trap 'roost_offer_release' EXIT
@@ -417,9 +417,29 @@ roost_offer__decline() {
 # named theirs. A bare `roost` attaches to `main` when it exists, else to
 # the pin's `active 1` session — a person who just restored a fleet should
 # not land in a new, empty one — with one line saying so.
+#
+# Whether its report is a line to read before the attach (#233,
+# ROOST_OFFER_READ): only when it says something the fleet on screen does
+# not — a skipped session or a pane not resumed (exit 12 or 13, or any
+# failure), a line above the summary (a stale key, a launch hint), or panes
+# that were mid-turn at the save ("re-prompt by hand"). A clean placement's
+# one summary line is not held: the restored fleet is what to read. Nor is a
+# window's layout note — "the saved layout did not apply" or "lost panes
+# closed on purpose", both ending "; tmux's default layout instead" (fix
+# round 1) — the window it is about is on the screen, in the layout it got.
+# So the report is teed into offer/report as it streams (never held back: a
+# placement that waits on a saver's lock says so as it waits), and its exit
+# code is kept, through a file, out of the pipe.
 roost_offer__restore() {
-  local kind="$1" s="$2" line a n pick="" first=""
-  ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" restore --from "$ROOST_OFFER_STAMP" --offer || true
+  local kind="$1" s="$2" line a n pick="" first="" rf="$ROOST_OFFER_SD/offer/report" rc="" r
+  ( umask 077; : > "$rf"; : > "$rf.rc" ) 2>/dev/null || true
+  { { r=0; ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" restore --from "$ROOST_OFFER_STAMP" --offer 2>&1 1>&3 3>&- || r=$?
+      printf '%s\n' "$r" > "$rf.rc"; } | tee "$rf" >&2; } 3>&1 || true
+  rc="$(cat "$rf.rc" 2>/dev/null || true)"
+  if [ "$rc" != 0 ] || grep -q 're-prompt by hand' "$rf" 2>/dev/null || \
+     [ "$(grep -v "; tmux's default layout instead\$" "$rf" 2>/dev/null | grep -c . || true)" != 1 ]; then
+    ROOST_OFFER_READ=1
+  fi
   [ "$kind" = up ] || return 0
   session_exists "$s" && return 0
   # The pin's sessions in order, each "1 NAME" when it carries `active 1`
@@ -455,8 +475,14 @@ EOF2
 # own save waits for that saver and is published before the unit is loaded
 # (§4.4, revision 8, F B1; roost_persist_on). Never fatal: a failure prints
 # its own message and one line, and the attach goes on.
+#
+# Either way it prints a line to read before the attach (#233): what was
+# installed and where — on Linux with the `loginctl enable-linger` hint a
+# person has to act on — or why nothing was. The person asked for a change
+# to their machine; they see whether it took.
 roost_offer_persist() {
   [ "${ROOST_OFFER_L:-off}" = on ] || return 0
+  ROOST_OFFER_READ=1
   if ! ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" persist on; then
     if [ "$ROOST_OFFER_CHOICE" = r ]; then
       printf 'roost: persist on failed; the fleet is restored this time only\n'
@@ -482,6 +508,13 @@ roost_offer__q() {
 # the fresh server saves at once, so from then on a bare restore picks the
 # fresh fleet, and the old one is reached only by name.
 #
+# `n` and Enter's lines are lines to read (#233, ROOST_OFFER_READ): a person
+# just pressed a key and is there. No answer's is not: nobody pressed
+# anything in the whole bound, so nobody is known to be there, and holding
+# would keep an unattended terminal from its session for a second bound. Its
+# line is still in the terminal after a detach. `r` decides for itself
+# (roost_offer__restore).
+#
 # THE HINT (revision 7, C note). When the pin holds a session of the name
 # the fresh server uses (SESSION: `main` for a bare `roost`), that restore
 # would skip it as existing, and if every saved pane is in it, restore
@@ -491,8 +524,10 @@ roost_offer__q() {
 roost_offer_lines() {
   local s="$1" st="$ROOST_OFFER_STAMP"
   case "$ROOST_OFFER_CHOICE" in
-    n) printf 'not restored; roost restore --from %s brings it back (doctor names it too)\n' "$st" ;;
-    enter) printf 'not restored, not declined; roost restore --from %s brings it back\n' "$st" ;;
+    n) printf 'not restored; roost restore --from %s brings it back (doctor names it too)\n' "$st"
+       ROOST_OFFER_READ=1 ;;
+    enter) printf 'not restored, not declined; roost restore --from %s brings it back\n' "$st"
+       ROOST_OFFER_READ=1 ;;
     timeout) printf 'roost: no answer in %s s; started fresh, nothing declined (roost restore --from %s brings it back)\n' \
                "$ROOST_OFFER_TMO" "$st" ;;
     r) [ -z "$ROOST_OFFER_NOTE" ] || printf '%s\n' "$ROOST_OFFER_NOTE"
@@ -503,4 +538,55 @@ roost_offer_lines() {
     printf 'the saved "%s" is skipped while a "%s" runs: tmux %s %s rename-session -t %s %s, then roost restore --from %s\n' \
       "$s" "$s" "$_SOCKET_FLAG" "$(roost_offer__q "$SOCKET")" "$(roost_offer__q "$s")" "$(roost_offer__q "$s-fresh")" "$st"
   fi
+}
+
+# roost_offer_hold — #233: when the offer printed a line to read
+# (ROOST_OFFER_READ), "press any key to go on", then one key, then return to
+# the caller's attach. The attach takes the whole screen at once; a line
+# printed just before it was gone before anyone could read it ("it was too
+# fast for me to see and then it started a roost session with nothing in
+# it"). The other way — showing the line again inside the new session — was
+# not taken: it reaches the person only after the screen has changed under
+# them.
+#
+# Called by bin/roost's offer_end AFTER offer/ is released and the traps are
+# cleared, so a second terminal waiting on offer/ is never held behind a
+# person reading, and Ctrl-C here simply leaves, saying so in one line: the
+# server is running and the next `roost` attaches to it. Only a person ever
+# gets here (the offer asked, so check 2 passed), and the wait is bounded by
+# the offer's own no-answer bound (ROOST_OFFER_TMO, 60 s, or
+# ROOST_TEST_OFFER_TIMEOUT), so a terminal left alone still attaches. End of
+# input goes on at once. The key itself is read silently and dropped: it is
+# never typed into the session.
+#
+# TYPEAHEAD (fix round 1, both reviewers): `n` and then a reflex Enter — how
+# most y/n prompts are answered — leaves the Enter in the terminal's queue,
+# and a plain read takes it in 0 s, so the line flashed past exactly as
+# before. The same for keys pressed while `r`'s placement runs. bash 3.2
+# cannot drain the queue with `read -t 0` (measured by a reviewer: nothing
+# drained), so the hold first drops every key until one second passes with
+# none: one key at a time, silently, `read -t 1` (whole seconds are all
+# bash 3.2 takes). Capped at 5 s by the clock, so a stuck key's repeat
+# cannot keep it from the prompt. Only THEN is the prompt printed, so the
+# key a person presses after seeing it is never one of those dropped.
+# Measured on /bin/bash 3.2.57 and bash 5.2.21: `n Enter` sent as one
+# keystroke burst, the Enter is dropped and the hold waits for the next key.
+#
+# THE TERMINAL ON CTRL-C. `read -s -n1` turns echo and line mode off and
+# undoes that when it returns, and when SIGINT kills bash with no trap; but
+# NOT when a trap exits mid-read (measured: the pane was left `-icanon
+# -echo`, a shell that shows nothing typed). So the state is saved first
+# (`stty -g`) and the INT trap puts it back before it prints and exits.
+roost_offer_hold() {
+  local k cap st
+  [ "${ROOST_OFFER_READ:-0}" = 1 ] || return 0
+  st="$(stty -g 2>/dev/null || true)"
+  trap '[ -z "$st" ] || stty "$st" 2>/dev/null; printf "\nroost: the server is up; run roost to attach to it\n"; exit 130' INT
+  cap=$((SECONDS + 5))
+  while [ "$SECONDS" -lt "$cap" ] && IFS= read -rsn1 -t 1 k; do :; done
+  printf '%s' "press any key to go on"
+  IFS= read -rsn1 -t "${ROOST_OFFER_TMO:-60}" k || true
+  printf '\n'
+  trap - INT
+  return 0
 }

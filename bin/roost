@@ -399,12 +399,18 @@ offer_first() {
 # offer_end — the offer's last steps before the attach, in §4.8's order:
 # release offer/ last, just before the `exec`, so whoever waits on it finds
 # the server running. A no-op when no offer was asked.
+#
+# Then, when a line printed above has to be read, the hold (#233,
+# roost_offer_hold): after the release and with the traps cleared, so a
+# second terminal never waits on a person reading, and Ctrl-C there leaves
+# with the server already up.
 offer_end() {
   [ -n "${ROOST_OFFER_CHOICE:-}" ] || return 0
   roost_offer_persist
   roost_offer_lines "$OFFER_SESSION"
   roost_offer_release
   trap - EXIT INT TERM HUP
+  roost_offer_hold
 }
 
 # @N (window-id) / %N (pane-id) / anything with a colon → verbatim; a bare word → default session.

@@ -7,6 +7,17 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The restore offer's way-back line stays on screen until you press a key
+  (#233).** After `n` or Enter, roost printed `not restored; roost restore
+  --from STAMP-GEN brings it back` and attached at once, so the new session
+  covered the line before anyone could read it. Now roost prints `press any
+  key to go on` under it and waits for a key, at most 60 s, before it
+  attaches. It waits the same way after `l` (to show what `roost persist on`
+  installed) and after an `r` whose report names something not restored. A
+  clean `r`, and no answer in 60 s, attach at once as before.
+
 ## [0.11.0]
 
 Your fleet now comes back after a reboot or a crash (#191). roost saves the
