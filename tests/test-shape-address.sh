@@ -10,11 +10,16 @@
 # usually EXISTS as some other pane, and a verb that redirected a miss would
 # deliver to the wrong agent on a hit. A historical id is written was:%N and
 # resolves through THIS boot's map only.
+# When a different live pane carries that bare id as @roost-was, refuse it
+# before acting: a coordinator could mean either pane (#247 part 2).
 set -u
 cd "$(dirname "$0")/.."
 . tests/lib.sh
 . tests/lib-shape.sh
-shape_test_setup; trap 'shape_test_teardown; [ -n "${ASOCK:-}" ] && tmux -S "$ASOCK" kill-server 2>/dev/null' EXIT
+# Setup can exit after starting its server; arm teardown before it can fail.
+# End A before shape teardown removes the directory containing its socket.
+trap '[ -n "${ASOCK:-}" ] && tmux -S "$ASOCK" kill-server 2>/dev/null; shape_test_teardown' EXIT
+shape_test_setup
 
 export XDG_CONFIG_HOME="$SHAPE_TMP/config"
 REC="$SHAPE_TMP/records"; mkdir -p "$REC"; export ROOST_RECORD_DIR="$REC"
@@ -79,11 +84,11 @@ assert_eq "$rc|$out" "0|THE-OLD-REPLY" "read was:%930: the reply the pane gave b
 out="$(R read --turn 3 "was:%930" 2>/dev/null)"
 assert_eq "$out" "THE-OLD-REPLY" "...and --turn N reads the old record's turn"
 
-echo "== a bare %N is the live pane: the courtesy note, never a redirect =="
+echo "== a bare %N shared with a restored pane is refused, never redirected =="
 R send "%0" "echo BARE-ZERO" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc" "0" "send %0 (a live pane that is also an old id): exit 0"
-assert_contains "$(cat "$SHAPE_TMP/err")" "note: %0 was also an old id; the pane that was %0 is now $X (was:%0)" "...with the courtesy note"
-wait_screen "$(TL list-panes -t '=shp:' -F '#{pane_id}' | head -1)" "BARE-ZERO"; assert_true $? "...delivered to the live %0, as asked"
+assert_eq "$rc" "2" "send %0 (a live pane that is also an old id): exit 2"
+assert_contains "$(cat "$SHAPE_TMP/err")" "%0 is ambiguous" "...names the collision"
+TL capture-pane -p -t '%0' | grep -q BARE-ZERO; assert_eq "$?" "1" "...nothing delivered to the live %0"
 TL capture-pane -p -t "$X" | grep -q BARE-ZERO; assert_eq "$?" "1" "...and not to the pane that was %0"
 R send "%777" "x" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "2" "a bare %N that names nothing: exit 2"
@@ -155,6 +160,20 @@ print(w.get(sys.argv[1]), w.get(sys.argv[2]))' "$Y2" "$(TL list-panes -t '=shp:'
   assert_eq "$got" "%932 None" "status --json: was is the old id, null on a pane that was never restored"
 fi
 assert_contains "$(R status 2>/dev/null | grep -- "$Y2")" "(was %932)" "status: the restored pane's line ends (was %932)"
+
+echo '== a supported restore from a hand-edited save can carry padded metadata =='
+numeric="$(TL new-window -d -P -F '#{pane_id}' -t '=shp:' 'ENV= exec /bin/sh')"
+padded="%00${numeric#%}"
+shape "$B1" "padded:$padded"
+R restore --no-resume >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" 0 'restore accepts a padded pane id in its save'
+P="$(first_pane padded 1)"
+assert_eq "$(TL show -pqv -t "$P" @roost-was)" "$padded" 'restore really writes padded @roost-was'
+R screen "$numeric" >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" 2 'a padded restore stamp collides with the canonical live id'
+assert_contains "$(cat "$SHAPE_TMP/err")" "$P (padded:" '...the restored candidate is named'
+R screen "was:$padded" >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" 0 'explicit was: still looks up the save id verbatim'
 
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"

@@ -9,6 +9,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A pane id shared with a restored pane is refused before acting (#247).**
+  If a literal `%N` names a live pane and is also `@roost-was` on another
+  live pane, pane commands now exit `2` and name both current addresses
+  instead of printing a courtesy note and choosing the current id. Use a
+  name or `session:window.pane` to choose. The check works with saving off
+  or the restore map missing; explicit `was:%N` keeps its meaning.
+
 - **The restore offer's way-back line stays on screen until you press a key
   (#233).** After `n` or Enter, roost printed `not restored; roost restore
   --from STAMP-GEN brings it back` and attached at once, so the new session

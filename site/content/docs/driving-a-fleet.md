@@ -449,9 +449,12 @@ the harness opens on resume stays on screen for a person. The
 
 **After a restore, old ids are `was:%N`.** Pane ids start again at `%0` on
 every server start, so a bare `%930` from before a reboot is never redirected
-— it means the pane `%930` now, if there is one. Write `was:%930` to reach
+— it addresses the pane `%930` now, if there is one. A bare id shared with
+another live pane's pre-restore id is refused with exit `2` before acting;
+[Persistent Sessions](/docs/persistent-sessions)
+explains how to choose between the panes. Write `was:%930` to reach
 the pane that was `%930`: `send`, `read`, `wait-done`, `screen`, `answer`,
-`close`, `revive` and `forget` resolve it through the current server's restore
+`close`, `revive`, `forget` and `split -t` resolve it through the current server's restore
 map and say which pane it meant. A pane still waiting for its agent to be
 resumed refuses `send` and `answer` with exit `3` unless `--force`: the text
 would land as a key and keep the agent from being resumed.
