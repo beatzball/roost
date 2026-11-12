@@ -158,6 +158,20 @@ print(w.get(sys.argv[1]), w.get(sys.argv[2]))' "$Y2" "$(TL list-panes -t '=shp:'
 fi
 assert_contains "$(R status 2>/dev/null | grep -- "$Y2")" "(was %932)" "status: the restored pane's line ends (was %932)"
 
+echo '== a supported restore from a hand-edited save can carry padded metadata =='
+numeric="$(TL new-window -d -P -F '#{pane_id}' -t '=shp:' 'ENV= exec /bin/sh')"
+padded="%00${numeric#%}"
+shape "$B1" "padded:$padded"
+R restore --no-resume >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" 0 'restore accepts a padded pane id in its save'
+P="$(first_pane padded 1)"
+assert_eq "$(TL show -pqv -t "$P" @roost-was)" "$padded" 'restore really writes padded @roost-was'
+R screen "$numeric" >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" 2 'a padded restore stamp collides with the canonical live id'
+assert_contains "$(cat "$SHAPE_TMP/err")" "$P (padded:" '...the restored candidate is named'
+R screen "was:$padded" >"$SHAPE_TMP/out" 2>"$SHAPE_TMP/err"; rc=$?
+assert_eq "$rc" 0 'explicit was: still looks up the save id verbatim'
+
 canary_check
 printf '\n%d passed, %d failed\n' "$ROOST_TESTS_PASS" "$ROOST_TESTS_FAIL"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

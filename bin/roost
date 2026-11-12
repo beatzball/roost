@@ -444,24 +444,40 @@ target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAU
 # dead panes kept by remain-on-exit, and stale map entries cannot collide.
 resolve_was() {
   local verb="$1" raw="$2" old want="" root key boot map o b n hits=0 bl="" new=""
-  local rows id dead was description live="" restored=""
+  local rows id dead was description canonical stamp live="" restored=""
   RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT=""
   case "$raw" in
-    was:%[0-9]*|%[0-9]*) ;;
+    was:%[0-9]*|%*) ;;
     *) return 0 ;;
   esac
   case "$raw" in
     %*)
-      case "${raw#%}" in ''|*[!0-9]*) return 0 ;; esac
+      # tmux accepts numeric aliases such as %00, %+0 and "% 0". Ask it
+      # which pane the target actually names instead of checking its spelling:
+      # raw comparisons let those aliases bypass a canonical %0 collision.
+      # Keep RW_TARGET verbatim for the verb and its JSON/diagnostic contract;
+      # this canonical id is only for the guard, never an implicit was: lookup.
+      # tmux also owns range validation, with no shell octal or overflow math.
+      canonical="$(t display-message -p -t "$raw" '#{pane_id}' 2>/dev/null || true)"
+      case "$canonical" in %[0-9]*) ;; *) return 0 ;; esac
+      case "${canonical#%}" in *[!0-9]*) return 0 ;; esac
       rows="$(t list-panes -a -F '#{pane_id}|#{pane_dead}|#{@roost-was}|#{session_name}:#{window_index}.#{pane_index} #{?#{==:#{@roost-name},},#{window_name},#{@roost-name}}' 2>/dev/null || true)"
       while IFS='|' read -r id dead was description; do
         [ "$dead" = 0 ] || continue
-        if [ "$id" = "$raw" ]; then
+        if [ "$id" = "$canonical" ]; then
           live="$id ($description)"
-        elif [ "$was" = "$raw" ]; then
+        else
+          # Restore accepts a hand-edited save whose old id is padded, and
+          # writes that spelling to @roost-was. Normalize its decimal digits
+          # as text too, including an all-zero id. Explicit was: map keys
+          # remain verbatim below; no saved metadata or map is rewritten.
+          case "$was" in %*) stamp="${was#%}" ;; *) continue ;; esac
+          case "$stamp" in ''|*[!0-9]*) continue ;; esac
+          stamp="${stamp#"${stamp%%[!0]*}"}"
+          [ "%${stamp:-0}" = "$canonical" ] || continue
           # Formats inherit window/global user options. Only a pane's own
           # restore stamp counts, just as state read-back uses pane scope.
-          [ "$(t show-options -pqv -t "$id" @roost-was 2>/dev/null || true)" = "$raw" ] || continue
+          [ "$(t show-options -pqv -t "$id" @roost-was 2>/dev/null || true)" = "$was" ] || continue
           restored="${restored:+$restored, }$id ($description)"
         fi
       done <<< "$rows"

@@ -31,7 +31,7 @@ refused() {
   before="$(TL list-panes -a -F '#{pane_id} #{window_layout} #{@agent_state} #{@roost-name}')"
   out="$(R "$@" 2>&1)"; rc=$?
   assert_eq "$rc" 2 "$*: collision exits 2"
-  assert_contains "$out" "$live is ambiguous" "...reports ambiguity"
+  assert_contains "$out" "${ambig_raw:-$live} is ambiguous" "...reports ambiguity"
   assert_contains "$out" "$live ($live_addr current worker)" "...identifies current pane and name"
   assert_contains "$out" "$other ($other_addr restored worker)" "...identifies restored pane and name"
   assert_contains "$out" 'Use a name, or a session:window.pane target' "...offers an unambiguous address"
@@ -41,6 +41,71 @@ refused() {
   assert_eq "$after" "$before" "...no pane, layout, badge or name mutation"
   assert_eq "$(cat "$record/replies/000001" 2>/dev/null)" KEPT-REPLY "...kept reply untouched"
 }
+
+echo '== tmux numeric aliases must not bypass the same shared check =='
+alias_cases() {
+  local live="$1" other="$2" live_addr other_addr record alias marker seq=0
+  local ambig_raw before_ids id v out rc got
+  TL set -p -t "$live" @roost-name 'current worker'
+  TL set -p -t "$other" @roost-name 'restored worker'
+  TL set -p -t "$other" @roost-was "$live"
+  TL set -p -t "$live" @roost-reply KEPT-REPLY
+  live_addr="$(TL display -p -t "$live" '#{session_name}:#{window_index}.#{pane_index}')"
+  other_addr="$(TL display -p -t "$other" '#{session_name}:#{window_index}.#{pane_index}')"
+  record="$ROOST_RECORD_DIR/$boot/${live#%}"
+  mkdir -p "$record/replies"
+  printf '1\n' > "$record/schema"
+  printf 'KEPT-REPLY\n' > "$record/replies/000001"
+  # A rejected split must leave the fixture intact. On the red run it really
+  # creates a pane; remove only those extra panes so later aliases still have
+  # room to exercise a successful tmux split rather than a size-limit error.
+  alias_refused() {
+    local before_ids id
+    before_ids=" $(TL list-panes -a -F '#{pane_id}' | tr '\n' ' ') "
+    refused "$@"
+    for id in $(TL list-panes -a -F '#{pane_id}'); do
+      case "$before_ids" in *" $id "*) ;; *) TL kill-pane -t "$id" ;; esac
+    done
+  }
+  for alias in "%00${live#%}" "%+${live#%}" "% ${live#%}"; do
+    assert_eq "$(TL display -p -t "$alias" '#{pane_id}')" "$live" "(control) tmux accepts '$alias' as $live"
+    ambig_raw="$alias"; seq=$((seq+1)); marker="ALIAS-DELIVERY-${live#%}-$seq"
+    alias_refused send --force "$alias" "echo $marker"
+    TL capture -p -t "$live" | grep -qF "$marker"; assert_eq "$?" 1 "'$alias': nothing delivered to current pane"
+    TL capture -p -t "$other" | grep -qF "$marker"; assert_eq "$?" 1 "'$alias': nothing delivered to restored pane"
+    alias_refused read "$alias"
+    alias_refused split -h -t "$alias" 'sleep 600'
+    alias_refused spawn relative-alias -a -t "$alias" 'sleep 600'
+    alias_refused split -t "$live_addr" -- -t "$alias" 'sleep 600'
+    AMBIG_CALLER="$live" alias_refused view -- -t "$alias" 'sleep 600'
+  done
+  # Canonicalization belongs only to the guard: accepted unambiguous aliases
+  # still work, and JSON still reports the target exactly as the user typed it.
+  TL set -pu -t "$other" @roost-was
+  for alias in "%00${live#%}" "%+${live#%}" "% ${live#%}"; do
+    out="$(R read --json "$alias" 2>"$SHAPE_TMP/err")"; rc=$?
+    assert_eq "$rc" 0 "unambiguous '$alias': read --json succeeds"
+    got="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["target"] == sys.argv[1] and d["pane"] == sys.argv[2] and d["text"] == "KEPT-REPLY")' "$alias" "$live")"
+    assert_eq "$got" True "unambiguous '$alias': typed JSON target, canonical pane and reply preserved"
+    v="$(R split -h -t "$alias" 'sleep 600' 2>"$SHAPE_TMP/err")"; rc=$?
+    assert_eq "$rc" 0 "unambiguous '$alias': split succeeds"
+    assert_eq "$(TL display -p -t "$v" '#{window_id}')" "$(TL display -p -t "$live" '#{window_id}')" "unambiguous '$alias': split reaches the correct window"
+    [ -z "$v" ] || TL kill-pane -t "$v"
+  done
+}
+zero_other="$(TL new-window -d -P -F '#{pane_id}' -t '=fresh:' -n zero-restored 'ENV= exec /bin/sh')"
+alias_cases '%0' "$zero_other"
+TL kill-pane -t "$zero_other"
+# Use an id containing decimal 8 or 9: shell octal arithmetic would reject a
+# padded spelling such as %008, even though tmux itself accepts it.
+while :; do
+  decimal="$(TL new-window -d -P -F '#{pane_id}' -t '=fresh:' -n decimal 'ENV= exec /bin/sh')"
+  require_pane "$decimal" 'numeric alias fixture'
+  case "$decimal" in *8|*9) break ;; *) TL kill-pane -t "$decimal" ;; esac
+done
+decimal_other="$(TL new-window -d -P -F '#{pane_id}' -t '=fresh:' -n decimal-restored 'ENV= exec /bin/sh')"
+alias_cases "$decimal" "$decimal_other"
+TL kill-pane -t "$decimal_other"; TL kill-pane -t "$decimal"
 
 echo '== every explicit pane route refuses before acting, without an alias map =='
 refused send --force "$live" 'echo AMBIGUOUS-DELIVERY'
