@@ -19,7 +19,7 @@
 #   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] [--json] [--when-idle] [--from LABEL] TGT TEXT
-#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N always means a pane of the running server). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. --json prints one JSON document instead, for a program
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N only addresses the running server, and exits 2 before acting if a different live pane carries @roost-was %N; use a name or session:window.pane to choose). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
@@ -417,14 +417,16 @@ offer_end() {
 target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
 
 # resolve_was VERB RAW -> RW_TARGET, the target the verb goes on with; exit 1
-# (the verb exits 2) when a `was:` form cannot be resolved, the reason on
+# (the verb exits 2) when a bare id is ambiguous or a `was:` form cannot be resolved, the reason on
 # stderr. #191 Part 3, spec §5.4.
 #
-# A BARE %N ALWAYS MEANS A PANE OF THE RUNNING SERVER, and nothing else: pane
+# A BARE %N ONLY ADDRESSES A PANE OF THE RUNNING SERVER: pane
 # ids restart at %0 after a reboot (§2.7), so an old %1 usually EXISTS as some
 # other pane, and a verb that redirected a miss would deliver to the wrong
 # agent on a hit — checking the map first would only reverse which caller is
-# wrong. A historical id is written `was:%930`, and only that form is
+# wrong. When a different live pane carries that id as @roost-was, refuse
+# rather than choose which caller is wrong (#247 part 2). A historical id is
+# written `was:%930`, and only that form is
 # resolved: through THIS boot's alias map (aliases/<boot> in the server's
 # shape directory, `%OLD OLDBOOT %NEW` per line, appended by every restore
 # into this boot), never another boot's. One stderr line says where it went.
@@ -433,15 +435,41 @@ target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAU
 # resolve. RW_OLD / RW_OLDBOOT keep the old id and boot, for `read`, whose
 # was: form reads the OLD boot's record.
 #
-# The one courtesy for a stale coordinator: a bare %N that names a live pane
-# AND is an old id in this boot's map gets one note line, then goes where it
-# was asked. Cost when no restore ever wrote a map: one stat(2), no tmux call.
+# A stale coordinator used to get a courtesy note for a bare %N that named
+# a live pane AND an old id in this boot's map, then delivery to the live id.
+# That still guessed which agent the coordinator meant. Now the actual pane
+# options decide, even with saving off or the map missing: a live %N also
+# carried by a DIFFERENT live pane is ambiguous. One snapshot checks both
+# candidates and names their current addresses and labels. Same-pane claims,
+# dead panes kept by remain-on-exit, and stale map entries cannot collide.
 resolve_was() {
-  local verb="$1" raw="$2" old want="" root key boot map o b n hits=0 bl="" new="" live
+  local verb="$1" raw="$2" old want="" root key boot map o b n hits=0 bl="" new=""
+  local rows id dead was description live="" restored=""
   RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT=""
   case "$raw" in
     was:%[0-9]*|%[0-9]*) ;;
     *) return 0 ;;
+  esac
+  case "$raw" in
+    %*)
+      case "${raw#%}" in ''|*[!0-9]*) return 0 ;; esac
+      rows="$(t list-panes -a -F '#{pane_id}|#{pane_dead}|#{@roost-was}|#{session_name}:#{window_index}.#{pane_index} #{?#{==:#{@roost-name},},#{window_name},#{@roost-name}}' 2>/dev/null || true)"
+      while IFS='|' read -r id dead was description; do
+        [ "$dead" = 0 ] || continue
+        if [ "$id" = "$raw" ]; then
+          live="$id ($description)"
+        elif [ "$was" = "$raw" ]; then
+          # Formats inherit window/global user options. Only a pane's own
+          # restore stamp counts, just as state read-back uses pane scope.
+          [ "$(t show-options -pqv -t "$id" @roost-was 2>/dev/null || true)" = "$raw" ] || continue
+          restored="${restored:+$restored, }$id ($description)"
+        fi
+      done <<< "$rows"
+      if [ -n "$live" ] && [ -n "$restored" ]; then
+        echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Use a name, or a session:window.pane target." >&2
+        return 1
+      fi
+      return 0 ;;
   esac
   . "$ROOST_HOME/scripts/lib/roost-shape.sh"
   map=""
@@ -452,21 +480,9 @@ resolve_was() {
       [ -n "$boot" ] && map="$root/$key/aliases/$boot"
     fi
   fi
-  case "$raw" in
-    %*)
-      [ -n "$map" ] && [ -f "$map" ] || return 0
-      live="$(t display-message -p -t "$raw" '#{pane_id}' 2>/dev/null || true)"
-      [ "$live" = "$raw" ] || return 0
-      # The note names the NEWEST pane for that old id (the map is appended
-      # in restore order), and is printed once (review round 1, B1).
-      new=""
-      while read -r o b n; do
-        [ "$o" = "$raw" ] && [ "$n" != "$raw" ] || continue
-        new="$n"
-      done < "$map"
-      [ -n "$new" ] && echo "note: $raw was also an old id; the pane that was $raw is now $new (was:$raw)" >&2
-      return 0 ;;
-  esac
+  # For was:, the NEWEST pane for an old id/boot still wins: the map is
+  # appended in restore order, and the resolution line is printed once
+  # (review round 1, B1). Bare targets never consult or follow this map.
   old="${raw#was:}"
   case "$old" in *@*) want="${old#*@}"; old="${old%%@*}" ;; esac
   case "${old#%}" in ''|*[!0-9]*) echo "roost $verb: '$raw' is not a pane id (was:%N or was:%N@BOOT)" >&2; return 1 ;; esac
@@ -496,6 +512,26 @@ resolve_was() {
   fi
   RW_OLD="$old" RW_TARGET="$new"
   echo "roost $verb: $raw is $new" >&2
+  return 0
+}
+
+# Leading CMD flags in spawn/split can reach tmux as new-window/split-window
+# options, including -a/-b relative placement and a later -t overriding ours.
+# View forwards its command to one of those verbs, so it must check BEFORE
+# replacing an existing view too. Parse only that leading option prefix:
+# `sh -c ... -t %N` is command data, not a target. getopts handles both -t %N
+# and clustered -bt%N; value options must consume their data without scanning
+# it as flags. Unknown options keep their existing tmux error. This only
+# guards literal ids; explicit was: is resolved by the native target routes.
+resolve_tmux_targets() {
+  local verb="$1" options="$2" OPTIND=1 opt OPTARG
+  shift 2
+  while getopts ":$options" opt; do
+    case "$opt" in
+      t) case "$OPTARG" in %*) resolve_was "$verb" "$OPTARG" || return 1 ;; esac ;;
+      '?'|':') break ;;
+    esac
+  done
   return 0
 }
 
@@ -1357,6 +1393,7 @@ case "${1:-up}" in
   spawn)
     need_arg "${2:-}" "usage: roost spawn NAME [CMD...]"; name="$2"; shift 2
     reject_bad_name "$name" spawn
+    resolve_tmux_targets spawn 'abdkPSc:e:F:n:t:' "$@" || exit 2
     # Helper lands in the caller's own session when inside roost, else the default.
     if [ -n "${TMUX_PANE:-}" ]; then
       sess="$(t display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
@@ -1396,13 +1433,13 @@ case "${1:-up}" in
     ;;
   split)
     shift
-    dir=""; from="${TMUX_PANE:-}"; name=""
+    dir=""; from="${TMUX_PANE:-}"; name=""; from_explicit=0
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -h) dir="-h"; shift ;;
         -v) dir="-v"; shift ;;
         -t) [ "$#" -ge 2 ] || { echo "roost split: -t needs a target" >&2; exit 2; }
-            from="$2"; shift 2 ;;
+            from="$2"; from_explicit=1; shift 2 ;;
         -n) [ "$#" -ge 2 ] || { echo "roost split: -n needs a name" >&2; exit 2; }
             name="$2"; reject_bad_name "$name" split; shift 2 ;;
         --) shift; break ;;
@@ -1411,6 +1448,12 @@ case "${1:-up}" in
       esac
     done
     [ -n "$from" ] || { echo "roost split: not inside a roost session" >&2; exit 1; }
+    # An explicit target can be a stale coordinator's id. The implicit
+    # TMUX_PANE identifies the caller itself, so it needs no historical guess.
+    if [ "$from_explicit" = 1 ]; then
+      resolve_was split "$from" || exit 2; from="$RW_TARGET"
+    fi
+    resolve_tmux_targets split 'bdfhIvPZc:e:F:l:p:t:' "$@" || exit 2
     # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
     # A command on a wired server goes through roost-pane-shell, for the reason
     # given at the same line in `spawn`.
@@ -1472,6 +1515,7 @@ case "${1:-up}" in
     # server's worth of unnamed panes. Fail loudly instead.
     [ -n "$name" ] || { echo "roost view: -n needs a non-empty name" >&2; exit 2; }
     [ "$#" -gt 0 ] || { echo "usage: roost view [-n NAME] CMD..." >&2; exit 1; }
+    resolve_tmux_targets view 'abdkPSc:e:F:n:t:bdfhIvZl:p:' "$@" || exit 2
 
     # Same guard as `roost split`, for the same reason: outside a roost session
     # there is no pane to measure, nothing to split beside, and no human
@@ -1530,7 +1574,11 @@ case "${1:-up}" in
     # the top of this file describes — and this keeps the promise that no call
     # site spells a socket flag of its own.
     if [ "$width" -ge "$min" ]; then
-      new="$(ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" split -h -t "$me" -n "$name" "$@")" \
+      # This is the caller we already identified, not a literal user target.
+      # Pass its current address so split's bare-id guard cannot confuse a
+      # known caller with another pane's pre-restore id.
+      view_from="$(t display-message -p -t "$me" '#{session_id}:#{window_id}.#{pane_index}')"
+      new="$(ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" split -h -t "$view_from" -n "$name" "$@")" \
         || { echo "roost view: split failed" >&2; exit 1; }
       where=pane
     else
@@ -5048,6 +5096,12 @@ EOF
     # the same root unless ROOST_EVENTS moved it. The other forms leave it: a
     # line names a pane but holds nothing the pane said, and cutting one pane's
     # lines out would move every cursor after them.
+    # Resolve a specific target even when records are off: ambiguity has the
+    # same exit 2 as every other pane verb, before any record action.
+    case "${2:-}" in
+      ''|-*) ;;
+      *) resolve_was forget "$2" || exit 2; set -- "$1" "$RW_TARGET" ;;
+    esac
     . "$ROOST_HOME/scripts/lib/roost-record.sh"
     . "$ROOST_HOME/scripts/lib/roost-events.sh"
     roost_record_root
@@ -5109,8 +5163,6 @@ EOF
         exit 1
         ;;
       *)
-        resolve_was forget "$2" || exit 2
-        set -- "$1" "$RW_TARGET"
         tgt="$(target "$2")"
         if ! record_for "$2" "$tgt" || ! roost_record_is_record "$RF_DIR"; then
           echo "roost forget: no record for '$2'." >&2
@@ -5166,6 +5218,9 @@ EOF
         *) ev_usage ;;
       esac
     done
+    # --pane reads only this boot's event records, but a literal colliding id
+    # still leaves the reader guessing which agent's events were requested.
+    [ -z "$ev_pane" ] || resolve_was events "$ev_pane" || exit 2
     roost_events_dir
     if [ -z "$ROOST_EVENTS_DIR" ]; then
       echo "roost events: the event log is off — ROOST_EVENTS is set to \"\" (or is not an absolute path), or kept replies are off (ROOST_RECORD_DIR=\"\") and ROOST_EVENTS names no directory." >&2

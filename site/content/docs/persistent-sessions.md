@@ -475,7 +475,7 @@ checked.
 Pane ids start again at `%0` every time the roost server starts, so after a
 reboot the pane that was `%930` has a new id, and **an old id like `%1`
 usually exists again as some other pane.** So roost never redirects a bare
-`%N`: it always means a pane of the server running now.
+`%N`: it only addresses a pane of the server running now.
 
 To reach a pane by the id it had before the restore, write `was:`:
 
@@ -485,14 +485,20 @@ roost read was:%930                # the replies %930 gave BEFORE the reboot
 ```
 
 `send`, `read`, `wait-done`, `screen`, `answer`, `close`, `revive` and
-`forget` all take it, and say on stderr which pane it meant. It is looked up
+`forget`, plus `split -t`, all take it, and say on stderr which pane it meant. It is looked up
 in the map restore wrote for the server running now, and nowhere else. If two
 restores into this server both had a `%930`, `was:%930` is refused and names
 both long forms, `was:%930@BOOT`, which work.
 
-A bare `%1` that is a live pane **and** was an old id gets one extra line,
-`note: %1 was also an old id; the pane that was %1 is now %0 (was:%1)`, and
-still goes to the live `%1`.
+A bare `%1` that names a live pane **and** is recorded as `@roost-was %1`
+on a different live pane is ambiguous. Every command that takes that pane
+target, including `split -t` and `events --pane`, exits `2` before delivering,
+changing a pane, or reading or deleting its records. The error names both
+panes with their current `session:window.pane` addresses and names. Choose a
+name or one of those addresses; use `was:%1` when you mean the historical id.
+This check reads the pane options even when saving is off or the restore map
+is missing. A pane's own `@roost-was`, a dead pane, or a restored pane that
+has gone does not make the target ambiguous.
 
 `roost status` ends a restored pane's line with `(was %930)`, and
 `roost status --json` has `was` for every pane (`null` when it was not

@@ -10,6 +10,8 @@
 # usually EXISTS as some other pane, and a verb that redirected a miss would
 # deliver to the wrong agent on a hit. A historical id is written was:%N and
 # resolves through THIS boot's map only.
+# When a different live pane carries that bare id as @roost-was, refuse it
+# before acting: a coordinator could mean either pane (#247 part 2).
 set -u
 cd "$(dirname "$0")/.."
 . tests/lib.sh
@@ -79,11 +81,11 @@ assert_eq "$rc|$out" "0|THE-OLD-REPLY" "read was:%930: the reply the pane gave b
 out="$(R read --turn 3 "was:%930" 2>/dev/null)"
 assert_eq "$out" "THE-OLD-REPLY" "...and --turn N reads the old record's turn"
 
-echo "== a bare %N is the live pane: the courtesy note, never a redirect =="
+echo "== a bare %N shared with a restored pane is refused, never redirected =="
 R send "%0" "echo BARE-ZERO" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
-assert_eq "$rc" "0" "send %0 (a live pane that is also an old id): exit 0"
-assert_contains "$(cat "$SHAPE_TMP/err")" "note: %0 was also an old id; the pane that was %0 is now $X (was:%0)" "...with the courtesy note"
-wait_screen "$(TL list-panes -t '=shp:' -F '#{pane_id}' | head -1)" "BARE-ZERO"; assert_true $? "...delivered to the live %0, as asked"
+assert_eq "$rc" "2" "send %0 (a live pane that is also an old id): exit 2"
+assert_contains "$(cat "$SHAPE_TMP/err")" "%0 is ambiguous" "...names the collision"
+TL capture-pane -p -t '%0' | grep -q BARE-ZERO; assert_eq "$?" "1" "...nothing delivered to the live %0"
 TL capture-pane -p -t "$X" | grep -q BARE-ZERO; assert_eq "$?" "1" "...and not to the pane that was %0"
 R send "%777" "x" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc" "2" "a bare %N that names nothing: exit 2"
