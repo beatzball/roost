@@ -16,7 +16,10 @@ set -u
 cd "$(dirname "$0")/.."
 . tests/lib.sh
 . tests/lib-shape.sh
-shape_test_setup; trap 'shape_test_teardown; [ -n "${ASOCK:-}" ] && tmux -S "$ASOCK" kill-server 2>/dev/null' EXIT
+# Setup can exit after starting its server; arm teardown before it can fail.
+# End A before shape teardown removes the directory containing its socket.
+trap '[ -n "${ASOCK:-}" ] && tmux -S "$ASOCK" kill-server 2>/dev/null; shape_test_teardown' EXIT
+shape_test_setup
 
 export XDG_CONFIG_HOME="$SHAPE_TMP/config"
 REC="$SHAPE_TMP/records"; mkdir -p "$REC"; export ROOST_RECORD_DIR="$REC"
