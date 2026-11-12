@@ -109,6 +109,48 @@ decimal_other="$(TL new-window -d -P -F '#{pane_id}' -t '=fresh:' -n decimal-res
 alias_cases "$decimal" "$decimal_other"
 TL kill-pane -t "$decimal_other"; TL kill-pane -t "$decimal"
 
+echo '== qualified percent-prefixed addresses choose the current pane explicitly =='
+qualified_cases() {
+  local live other live_addr other_addr record raw out rc got i ambig_raw
+  live="$(TL new-session -d -P -F '#{pane_id}' -s '%scope' -n '%window' 'printf "QUALIFIED-SCREEN\n"; ENV= exec /bin/sh')"
+  require_pane "$live" 'qualified session fixture'
+  other="$(TL new-window -d -P -F '#{pane_id}' -t '=%scope:' -n restored 'ENV= exec /bin/sh')"
+  require_pane "$other" 'qualified session restored candidate'
+  TL set -p -t "$live" @roost-name 'current worker'
+  TL set -p -t "$other" @roost-name 'restored worker'
+  TL set -p -t "$other" @roost-was "$live"
+  TL set -p -t "$live" @roost-reply QUALIFIED-REPLY
+  TL set -p -t "$other" @roost-reply OTHER-REPLY
+  live_addr="$(TL display -p -t "$live" '#{session_name}:#{window_index}.#{pane_index}')"
+  other_addr="$(TL display -p -t "$other" '#{session_name}:#{window_index}.#{pane_index}')"
+  record="$ROOST_RECORD_DIR/$boot/${live#%}"
+  mkdir -p "$record/replies"; printf 'KEPT-REPLY\n' > "$record/replies/000001"
+  # A colon selects a session/window; a dot can select a named window's pane
+  # without a session prefix. Both remain explicit current addresses even
+  # when that session or window name begins with the pane-id sigil.
+  for i in {1..30}; do
+    TL capture -p -t "$live" | grep -qF QUALIFIED-SCREEN && break
+    sleep 0.1
+  done
+  for raw in "$live_addr" '%scope:0' '%scope:.0' '%window.0'; do
+    assert_eq "$(TL display -p -t "$raw" '#{pane_id}')" "$live" "(control) qualified '$raw' selects the current pane"
+    out="$(R read "$raw" 2>"$SHAPE_TMP/err")"; rc=$?
+    assert_eq "$rc|$out" '0|QUALIFIED-REPLY' "qualified '$raw': read reaches the chosen pane"
+    out="$(R screen "$raw" 2>"$SHAPE_TMP/err")"; rc=$?
+    assert_eq "$rc" 0 "qualified '$raw': screen succeeds despite the bare-id collision"
+    assert_contains "$out" QUALIFIED-SCREEN "qualified '$raw': screen belongs to the chosen pane"
+    out="$(R read --json "$raw" 2>"$SHAPE_TMP/err")"; rc=$?
+    assert_eq "$rc" 0 "qualified '$raw': read --json succeeds"
+    got="$(printf '%s' "$out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["target"] == sys.argv[1] and d["pane"] == sys.argv[2] and d["text"] == "QUALIFIED-REPLY")' "$raw" "$live")"
+    assert_eq "$got" True "qualified '$raw': JSON preserves typed target and selected pane"
+  done
+  for raw in "$live" "%00${live#%}" "%+${live#%}" "% ${live#%}"; do
+    ambig_raw="$raw"; refused read "$raw"
+  done
+  TL kill-session -t '=%scope'
+}
+qualified_cases
+
 echo '== every explicit pane route refuses before acting, without an alias map =='
 refused send --force "$live" 'echo AMBIGUOUS-DELIVERY'
 TL capture -p -t "$live" | grep -q AMBIGUOUS-DELIVERY

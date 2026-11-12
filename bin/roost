@@ -447,6 +447,9 @@ resolve_was() {
   local rows id dead was description canonical stamp live="" restored=""
   RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT=""
   case "$raw" in
+    # A percent-prefixed session/window can still be qualified with : or .;
+    # those selectors choose the current pane explicitly, so skip this guard.
+    %*:*|%*.*) return 0 ;;
     was:%[0-9]*|%*) ;;
     *) return 0 ;;
   esac
