@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Claude-shaped editor with an external draft control and a byte receipt."""
+"""Editor with an external draft control and a byte receipt."""
 import json
 import os
 import select
@@ -7,8 +7,12 @@ import subprocess
 import sys
 import termios
 import tty
+from pathlib import Path
 
 path = sys.argv[1]
+codex = os.environ.get("ROOST_TEST_INPUT_HARNESS") == "codex"
+if codex:
+    ghost = json.loads(Path(__file__).with_name("codex-ghost.json").read_text())
 fd = sys.stdin.fileno()
 old = termios.tcgetattr(fd)
 tty.setraw(fd)
@@ -21,8 +25,14 @@ def draw():
     # Large pastes may collapse. The receipt, rather than this screen, proves
     # that the existing transport delivered every byte exactly once.
     visible = "[Pasted text #1]" if len(line) > 1000 else line
-    sys.stdout.write("\x1b[2J\x1b[H" + border + "\r\n❯ " + visible +
-                     "\r\n" + border + "\x1b[2;" + str(len(visible) + 3) + "H")
+    if codex:
+        row = "› " + visible if visible else ghost
+        screen = row + "\x1b[0m\r\n\r\n? for shortcuts"
+        cursor = "1;"
+    else:
+        screen = border + "\r\n❯ " + visible + "\r\n" + border
+        cursor = "2;"
+    sys.stdout.write("\x1b[2J\x1b[H" + screen + "\x1b[" + cursor + str(len(visible) + 3) + "H")
     sys.stdout.flush()
 
 

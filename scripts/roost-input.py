@@ -85,7 +85,15 @@ def classify(harness, rows, x, y, borders):
         # clipped editors and a cursor below the marker are not guessed at.
         # In particular, a historic '›' in the transcript is not the editor.
         if rows[y].startswith("› "):
-            if rows[y][2:].strip():
+            text = rows[y][2:].strip()
+            # Measured on 0.167.2 in an isolated home: the default ghost
+            # placeholder is DIM, while typed text is not. The raw styling
+            # varies (including the background), so match the visible hint.
+            # At Home those words can also be someone's draft. Pass through
+            # without claiming the box is empty or holding on uncertain text.
+            if x <= 2 and text == "Ask Codex to do anything":
+                return "unknown"
+            if text:
                 return "occupied"
             # A blank line separates the composer from its shortcut footer.
             # Any continuation text, even BELOW a cursor moved to Home,
@@ -146,13 +154,6 @@ def snapshot(tmux, pane):
         # (measured in an isolated home). It separates the marker from text
         # just like an ordinary space; it is not itself a human draft.
         rows = ["❯ " + s[2:] if s.startswith("❯\u00a0") else s for s in rows]
-        if harness == "codex" and int(sy) < len(raw_rows):
-            # Measured on 0.167.2 in an isolated home: the default ghost
-            # placeholder is DIM, while typed text is not. Matching words
-            # alone would mistake a person typing that sentence for empty.
-            ghost = "\x1b[1m›\x1b[0m \x1b[2mAsk Codex to do anything\x1b[0m"
-            if raw_rows[int(sy)].rstrip() == ghost and int(sx) == 2:
-                rows[int(sy)] = "› "
         # capture-pane strips trailing spaces, including the one after ❯/›.
         rows = [s + " " if s in ("❯", "›") else s for s in rows]
         borders = renderer_borders(harness, raw_rows, int(swidth))

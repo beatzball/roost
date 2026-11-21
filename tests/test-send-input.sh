@@ -7,8 +7,9 @@ work="$(mktemp -d /tmp/amx.XXXX)"
 export HOME="$work/home" XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/data" XDG_STATE_HOME="$work/state"
 export CODEX_HOME="$work/codex" COPILOT_HOME="$work/copilot" PI_CODING_AGENT_DIR="$work/pi"
 export CLAUDE_SETTINGS="$work/claude/settings.json" CLAUDE_CONFIG_DIR="$work/claude"
-unset ZDOTDIR NO_COLOR
-mkdir -p "$HOME"
+unset ZDOTDIR NO_COLOR TMUX TMUX_PANE ROOST_SOCKET ROOST_SELF_SOCK
+export TMUX_TMPDIR="$work/tmux"
+mkdir -p "$HOME" "$TMUX_TMPDIR"
 sender=""
 trap '[ -z "$sender" ] || kill "$sender" 2>/dev/null; roost_test_teardown; rm -rf "$work"' EXIT
 roost_test_server
@@ -16,12 +17,14 @@ export ROOST_SOCKET="$ROOST_TEST_SOCK"
 T set-option -g @roost-send-enter-delay 0.1
 T set-option -g @roost-send-idle-timeout 5
 newbox() {
-  printf 'human draft' > "$work/$1.draft"
-  p="$(T new-window -d -P -F '#{pane_id}' "exec python3 '$HERE/tests/fixtures/input-box.py' '$work/$1'")"
+  local draft="${3-human draft}" ready="${3-human draft}"
+  [ -n "$ready" ] || ready='Ask Codex to do anything'
+  printf '%s' "$draft" > "$work/$1.draft"
+  p="$(T new-window -d -P -F '#{pane_id}' "ROOST_TEST_INPUT_HARNESS='$2' exec python3 '$HERE/tests/fixtures/input-box.py' '$work/$1'")"
   require_pane "$p" input-box
   T set-option -p -t "$p" @roost-harness "$2"
   for ((n=0; n<100; n++)); do
-    T capture-pane -p -t "$p" | grep -q 'human draft' && return
+    T capture-pane -p -t "$p" | grep -Fq "$ready" && return
     sleep 0.05
   done
   exit 1
@@ -39,6 +42,15 @@ values = [json.loads(s) for s in p.read_text().splitlines()] if p.exists() else 
 print("whole once" if values == [sys.argv[2]] else repr(values))
 PY
 }
+newbox codex-ghost codex ''
+T set-option -g @roost-send-idle-timeout 3
+send_bg "$p" 'one prompt for Codex'
+finish
+for ((n=0; n<40; n++)); do [ -s "$work/codex-ghost" ] && break; sleep 0.05; done
+assert_eq "$(cat "$work/rc")" 0 'Codex empty ghost send succeeds'
+assert_eq "$(receipt codex-ghost 'one prompt for Codex')" 'whole once' 'Codex empty ghost receives the prompt whole once'
+assert_eq "$(grep 'input box' "$work/err")" '' 'Codex empty ghost sends without waiting or timing out'
+T set-option -g @roost-send-idle-timeout 5
 for kind in short long; do
   msg="one complete prompt"
   [ "$kind" != long ] || msg="$(python3 -c 'print("a long prompt " * 100 + "\nmore text" * 12)')"
