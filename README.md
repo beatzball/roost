@@ -493,7 +493,7 @@ bash tests/test-panes.sh   # a single file
 ```
 
 Tests spin up a throwaway tmux server; they do not touch your real one. CI runs
-the same two commands on `ubuntu-latest` and `macos-latest`
+the same two commands on `ubuntu-24.04` and `macos-latest`
 (`.github/workflows/ci.yml`), the suite split four ways per runner.
 
 ```sh
