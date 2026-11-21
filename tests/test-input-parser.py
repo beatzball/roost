@@ -21,10 +21,6 @@ cases = [
     ("pi", [rule, "", rule], 0, 1, "empty"),
     ("pi", [rule, "human", "", rule], 0, 2, "occupied"),
     ("pi", ["─ ↑ 3 lines ─", "", rule], 0, 1, "unknown"),
-    ("codex", ["› ", "", "? for shortcuts"], 2, 0, "empty"),
-    ("codex", ["› human", ""], 2, 0, "occupied"),
-    ("codex", ["› Ask Codex to do anything", ""], 26, 0, "occupied"),
-    ("codex", ["› ", "", "human", "", "? for shortcuts"], 2, 0, "unknown"),
     ("shell", ["$ human"], 2, 0, "unknown"),
     ("mystery", [rule, "❯ human", rule], 2, 1, "unknown"),
 ]
@@ -47,18 +43,42 @@ for h, rows, x, y, want in cases:
 # Exercise capture decoding and normalization as well as classification.
 ghost = json.loads((Path(__file__).parent / "fixtures/codex-ghost.json").read_text())
 hint = "Ask Codex to do anything"
-pass_through = ("empty", "unknown")
-for label, row, x, footer, want in [
-    ("captured RGB background", ghost, 2, True, pass_through),
-    ("indexed background and combined styles", "\x1b[1;7m›\x1b[m \x1b[2;48;5;236m" + hint, 2, True, pass_through),
-    ("foreground style across the hint", "› \x1b[90mAsk Codex\x1b[39m to do anything", 2, True, pass_through),
-    ("ambiguous hint with cursor at Home", "› " + hint, 2, True, ("unknown",)),
-    ("ambiguous hint with missing footer", ghost, 2, False, ("unknown",)),
-    ("typed hint words with cursor after text", "› " + hint, 2 + len(hint), True, ("occupied",)),
-    ("colored human draft at Home", "› \x1b[48;2;65;69;76mhuman draft\x1b[m", 2, True, ("occupied",)),
+pass_through = ("unknown", "empty")
+occupied = ("occupied",)
+for label, row, x, y, width, tail, want in [
+    ("full-width dim hint", "› \x1b[2m" + hint, 2, 0, 90, "\n\n? for shortcuts", pass_through),
+    ("24-column dim hint", "› \x1b[2m" + hint[:22], 2, 0, 24, "\n" + hint[22:], pass_through),
+    ("10-column dim hint", "› \x1b[2m" + hint[:8], 2, 0, 10, "\n" + hint[8:18], pass_through),
+    ("captured RGB background", ghost, 2, 0, 80, "\n\n? for shortcuts", pass_through),
+    ("dim hint missing its footer", ghost, 2, 0, 80, "", pass_through),
+    ("different dim wording with cursor after text", "› \x1b[2mContinue?", 11, 0, 80, "", pass_through),
+    ("dim survives foreground and indexed background changes",
+     "› \x1b[2;38;2;10;22;30mLook\x1b[48;5;0m here", 2, 0, 80, "", pass_through),
+    ("dim survives indexed foreground and RGB background changes",
+     "› \x1b[2;38;5;22mLook\x1b[48;2;0;22;2m here", 2, 0, 80, "", pass_through),
+    ("non-dim hint words at Home", "› " + hint, 2, 0, 80, "", occupied),
+    ("non-dim hint words after foreground changes",
+     "› \x1b[90mAsk Codex\x1b[39m to do anything", 2, 0, 80, "", occupied),
+    ("non-dim hint words after RGB foreground and background",
+     "› \x1b[38;2;10;20;2;48;2;65;69;76m" + hint, 2, 0, 80, "", occupied),
+    ("non-dim hint words after indexed foreground and background",
+     "› \x1b[38;5;2;48;5;2m" + hint, 2, 0, 80, "", occupied),
+    ("SGR0 resets dim before typed text", "› \x1b[2mghost\x1b[0m draft", 2, 0, 80, "", occupied),
+    ("SGR22 resets dim before typed text", "› \x1b[2mghost\x1b[22m draft", 2, 0, 80, "", occupied),
+    ("empty SGR resets dim before typed text", "› \x1b[2mghost\x1b[m draft", 2, 0, 80, "", occupied),
+    ("typed text before dim text", "› draft\x1b[2m ghost", 2, 0, 80, "", occupied),
+    ("only non-dim spaces after marker", "\x1b[1m› \x1b[2mghost\x1b[22m  ", 2, 0, 80, "", pass_through),
+    ("dim continues from a full-width row", "\x1b[2m0123456789\n› hint", 2, 1, 10, "", pass_through),
+    ("dim carried from a full-width row resets after the marker",
+     "\x1b[2m0123456789\n› \x1b[0mdraft", 2, 1, 10, "", occupied),
+    ("marker-only row", "›", 1, 0, 2, "", pass_through),
+    ("cursor below marker row", "› human", 0, 1, 80, "\ncontinuation", pass_through),
+    ("cursor outside capture", "› human", 0, 5, 80, "", pass_through),
+    ("text without a prompt marker", "some human text", 2, 0, 80, "", pass_through),
+    ("incomplete extended colour", "› \x1b[48;2;7mpossible draft", 2, 0, 80, "", pass_through),
+    ("invalid UTF-8 on the cursor row", "› \udcff", 2, 0, 80, "", pass_through),
 ]:
-    screen = row + ("\n\n? for shortcuts\n" if footer else "\n")
-    output = (f"%0|0|0|{x}|0|codex|codex||1|80|idle\n" + screen).encode()
+    output = (f"%0|0|0|{x}|{y}|codex|codex||1|{width}|idle\n{row}{tail}\n").encode(errors="surrogateescape")
     with patch.object(reader.subprocess, "run", return_value=CompletedProcess([], 0, output)):
         got = reader.snapshot(["tmux", "-S", "unused"], "%0")
     print("  %s: codex snapshot %s (got %s)" % ("PASS" if got in want else "FAIL", label, got))

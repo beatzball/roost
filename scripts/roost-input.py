@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+SGR = re.compile(r"\x1b\[([0-9;]*)m")
 
 
 def renderer_borders(harness, raw_rows, width):
@@ -54,6 +55,51 @@ def renderer_borders(harness, raw_rows, width):
     return borders
 
 
+def codex_dim(sgr, dim):
+    params = iter(int(value or 0) for value in sgr.split(";"))
+    for attr in params:
+        if attr in (38, 48, 58):
+            # RGB channels and palette indices can have the same numbers as
+            # SGR attributes. Consume the color payload before reading more.
+            mode = next(params, None)
+            if mode not in (2, 5):
+                raise ValueError("unsupported SGR color mode")
+            for _ in range(3 if mode == 2 else 1):
+                if not 0 <= next(params, -1) <= 255:
+                    raise ValueError("invalid SGR color payload")
+        elif attr == 2:
+            dim = True
+        elif attr in (0, 22):
+            dim = False
+    return dim
+
+
+def codex_input(raw_rows, y):
+    if not 0 <= y < len(raw_rows):
+        return "unknown"
+    # Inspect text only on the cursor's marker row. A marker in the transcript
+    # or a cursor below the marker cannot establish that the composer is occupied.
+    # tmux can carry SGR across a full-width row, so reconstruct the style from
+    # the start of the capture even though earlier text is not draft evidence.
+    dim = False
+    for raw in raw_rows[:y + 1]:
+        parts = SGR.split(raw.decode("utf-8"))
+        chunks = parts[::2]
+        if any("\x1b" in chunk for chunk in chunks):
+            return "unknown"
+        non_dim = []
+        for chunk, sgr in zip(chunks, parts[1::2] + [None]):
+            non_dim.append(" " * len(chunk) if dim else chunk)
+            if sgr is not None:
+                dim = codex_dim(sgr, dim)
+    # Codex 0.167.2 draws its ghost text in DIM. Use the cell styling even
+    # when the hint is clipped or changed, and when a draft's cursor is at Home.
+    # Dim runs keep their character positions so the marker is always excluded.
+    if "".join(chunks).startswith("› ") and "".join(non_dim)[2:].strip():
+        return "occupied"
+    return "unknown"
+
+
 def classify(harness, rows, x, y, borders):
     if not 0 <= y < len(rows):
         return "unknown"
@@ -80,39 +126,6 @@ def classify(harness, rows, x, y, borders):
         # does not prove an empty editor even if capture trimmed the spaces.
         want_x = 2 if harness == "claude" else 0
         return "empty" if y == top + 1 and x == want_x else "unknown"
-    if harness == "codex":
-        # Only the plain empty composer is proved. Placeholder text, menus,
-        # clipped editors and a cursor below the marker are not guessed at.
-        # In particular, a historic '›' in the transcript is not the editor.
-        if rows[y].startswith("› "):
-            text = rows[y][2:].strip()
-            # Measured on 0.167.2 in an isolated home: the default ghost
-            # placeholder is DIM, while typed text is not. The raw styling
-            # varies (including the background), so match the visible hint.
-            # At Home those words can also be someone's draft. Pass through
-            # without claiming the box is empty or holding on uncertain text.
-            if x <= 2 and text == "Ask Codex to do anything":
-                return "unknown"
-            if text:
-                return "occupied"
-            # A blank line separates the composer from its shortcut footer.
-            # Any continuation text, even BELOW a cursor moved to Home,
-            # makes this a draft; no visible separator means unreadable.
-            tail = rows[y + 1:]
-            if not tail or tail[0].strip():
-                return "unknown"
-            # A blank continuation line is NOT necessarily the separator.
-            # Account for every nonblank row down to the known footer, or
-            # text below a blank line could be mistaken for empty input.
-            footer = [s for s in tail[1:] if s.strip()]
-            if not 1 <= len(footer) <= 2 or not re.fullmatch(
-                    r"(?:← for agents · )?\? for shortcuts(?:\s.*)?", footer[-1].strip()):
-                return "unknown"
-            if len(footer) == 2 and not re.fullmatch(
-                    r"  [A-Za-z0-9_.-]+ (?:low|medium|high|xhigh|max|default) · .+", footer[0]):
-                return "unknown"
-            return "empty" if x == 2 else "unknown"
-        return "unknown"
     return "unknown"
 
 
@@ -125,8 +138,8 @@ def snapshot(tmux, pane):
         # Only LF separates terminal rows. str.splitlines() also splits a
         # person's literal Unicode line-separator characters, shifting the
         # cursor index onto a different row and potentially hiding a draft.
-        lines = r.stdout.decode("utf-8", "replace").split("\n")
-        fields = lines[0].split("|")
+        lines = r.stdout.split(b"\n")
+        fields = lines[0].decode("utf-8", "replace").split("|")
         ident, dead, in_mode, sx, sy, command, harness, name, pid, swidth, state = fields
         if r.returncode or ident != pane or dead != "0":
             return "unknown"
@@ -148,16 +161,19 @@ def snapshot(tmux, pane):
                 harness = "claude"
             elif name in ("claude", "codex", "opencode", "copilot", "pi"):
                 harness = name
-        raw_rows = lines[1:]
+        x, y, width = int(sx), int(sy), int(swidth)
+        if harness == "codex":
+            return codex_input(lines[1:], y)
+        raw_rows = [line.decode("utf-8", "replace") for line in lines[1:]]
         rows = [ANSI.sub("", s).rstrip() for s in raw_rows]
         # Claude Code 2.1.322 draws a non-breaking space after its marker
         # (measured in an isolated home). It separates the marker from text
         # just like an ordinary space; it is not itself a human draft.
         rows = ["❯ " + s[2:] if s.startswith("❯\u00a0") else s for s in rows]
-        # capture-pane strips trailing spaces, including the one after ❯/›.
-        rows = [s + " " if s in ("❯", "›") else s for s in rows]
-        borders = renderer_borders(harness, raw_rows, int(swidth))
-        result = classify(harness, rows, int(sx), int(sy), borders)
+        # capture-pane strips trailing spaces, including the one after ❯.
+        rows = [s + " " if s == "❯" else s for s in rows]
+        borders = renderer_borders(harness, raw_rows, width)
+        result = classify(harness, rows, x, y, borders)
         return result
     except (ValueError, IndexError, OSError, subprocess.SubprocessError):
         return "unknown"

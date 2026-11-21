@@ -14,13 +14,20 @@ sender=""
 trap '[ -z "$sender" ] || kill "$sender" 2>/dev/null; roost_test_teardown; rm -rf "$work"' EXIT
 roost_test_server
 export ROOST_SOCKET="$ROOST_TEST_SOCK"
+base_session="$(T display-message -p '#{session_id}')"
 T set-option -g @roost-send-enter-delay 0.1
 T set-option -g @roost-send-idle-timeout 5
 newbox() {
-  local draft="${3-human draft}" ready="${3-human draft}"
-  [ -n "$ready" ] || ready='Ask Codex to do anything'
+  local draft="${3-human draft}" ready="${3-human draft}" width="${4-}"
+  local hint='Ask Codex to do anything' launch
   printf '%s' "$draft" > "$work/$1.draft"
-  p="$(T new-window -d -P -F '#{pane_id}' "ROOST_TEST_INPUT_HARNESS='$2' exec python3 '$HERE/tests/fixtures/input-box.py' '$work/$1'")"
+  launch="ROOST_TEST_INPUT_HARNESS='$2' exec python3 '$HERE/tests/fixtures/input-box.py' '$work/$1'"
+  if [ -n "$width" ]; then
+    p="$(T new-session -d -P -F '#{pane_id}' -x "$width" -y 20 "$launch")"
+    ready="${hint:0:width-2}"
+  else
+    p="$(T new-window -d -P -F '#{pane_id}' -t "$base_session:" "$launch")"
+  fi
   require_pane "$p" input-box
   T set-option -p -t "$p" @roost-harness "$2"
   for ((n=0; n<100; n++)); do
@@ -42,14 +49,42 @@ values = [json.loads(s) for s in p.read_text().splitlines()] if p.exists() else 
 print("whole once" if values == [sys.argv[2]] else repr(values))
 PY
 }
-newbox codex-ghost codex ''
+key_receipt() {
+  python3 - "$work/$1.keys" "$2" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+want = b"\x1b[200~" + sys.argv[2].encode() + b"\x1b[201~\r"
+print(p.read_bytes() == want if p.exists() else "no keys")
+PY
+}
 T set-option -g @roost-send-idle-timeout 3
+for width in 90 24 10; do
+  box="codex-ghost-$width"
+  newbox "$box" codex '' "$width"
+  assert_eq "$(T display-message -p -t "$p" '#{pane_width}:#{cursor_x}:#{cursor_y}')" "$width:2:0" "$box width and cursor match the replay"
+  row="$(T capture-pane -p -e -t "$p" -S 0 -E 0)"
+  hint='Ask Codex to do anything'
+  assert_contains "$row" $'\x1b[2m'"${hint:0:width-2}" "$box raw cursor row contains the expected dim hint"
+  send_bg "$p" 'codex!'
+  finish
+  for ((n=0; n<40; n++)); do [ -s "$work/$box" ] && break; sleep 0.05; done
+  assert_eq "$(cat "$work/rc")" 0 "$box send succeeds"
+  assert_eq "$(key_receipt "$box" 'codex!')" True "$box receives one paste and one Enter"
+  assert_eq "$(receipt "$box" 'codex!')" 'whole once' "$box submits the prompt whole once"
+  assert_eq "$(grep 'input box' "$work/err")" '' "$box sends without an occupied notice or timeout"
+done
+T set-option -g @roost-send-idle-timeout 10
+newbox codex-draft codex 'human draft'
 send_bg "$p" 'one prompt for Codex'
+for ((n=0; n<40; n++)); do grep -q 'waiting.*input' "$work/err" && break; sleep 0.05; done
+assert_eq "$(grep -c 'waiting.*input' "$work/err")" 1 'Codex draft holds with one occupied notice'
+assert_file_absent "$work/codex-draft.keys" 'Codex draft receives zero sender keys while held'
+assert_file_absent "$work/codex-draft" 'Codex draft has zero submissions while held'
+printf '' > "$work/codex-draft.draft"
 finish
-for ((n=0; n<40; n++)); do [ -s "$work/codex-ghost" ] && break; sleep 0.05; done
-assert_eq "$(cat "$work/rc")" 0 'Codex empty ghost send succeeds'
-assert_eq "$(receipt codex-ghost 'one prompt for Codex')" 'whole once' 'Codex empty ghost receives the prompt whole once'
-assert_eq "$(grep 'input box' "$work/err")" '' 'Codex empty ghost sends without waiting or timing out'
+assert_eq "$(cat "$work/rc")" 0 'Codex draft send succeeds after clear'
+assert_eq "$(key_receipt codex-draft 'one prompt for Codex')" True 'Codex draft receives one paste and one Enter after clear'
+assert_eq "$(receipt codex-draft 'one prompt for Codex')" 'whole once' 'Codex draft submits the prompt whole once after clear'
 T set-option -g @roost-send-idle-timeout 5
 for kind in short long; do
   msg="one complete prompt"
