@@ -3,6 +3,7 @@
 import json
 import os
 import select
+import subprocess
 import sys
 import termios
 import tty
@@ -55,6 +56,12 @@ try:
                 elif ch in (b"\r", b"\n"):
                     with open(path, "a") as receipt:
                         receipt.write(json.dumps(line) + "\n")
+                    if len(sys.argv) > 2:
+                        # Optional real hooks let the receipts and turn records
+                        # independently prove which prompt this fixture ran.
+                        subprocess.run([sys.argv[2], "working"], stdin=subprocess.DEVNULL, check=True)
+                        subprocess.run([sys.argv[2], "done", "--stop-hook"], input=json.dumps(
+                            {"last_assistant_message": "REPLY-TO[" + line + "]"}).encode(), check=True)
                     line = ""
                 else:
                     line += ch.decode()
