@@ -2855,6 +2855,24 @@ not promise.
   nothing is "cannot tell" and keeps the lock. Severity: low — bounded, and
   loud either way.
 
+### Initial-input check: unreadable editors and races (#251)
+
+`send` (including bare Enter) waits only when the measured Claude Code,
+codex or pi reader recognizes occupied input. Shells including zsh and fish,
+opencode v1/v2, copilot, unknown renderers, unrecognized themes, clipped
+editors, copy mode, and missing Python 3 or reader files pass through. This
+is a best-effort initial check, not proof that typing is safe everywhere.
+
+The final read precedes buffer load and paste with no intentional sleep;
+screen capture and cursor metadata are themselves separate tmux commands.
+A person can type between that check and the first key. After the paste,
+main's existing head checks, Ctrl-U retries, Enter retries and cleanup still
+apply: they can combine with or erase intervening human input. Collapsed
+pastes are accepted as before, without inspecting hidden contents or tracking
+ownership. `close` retains its existing exit-command behavior; `answer` has
+only selection actions, and spawn/split/resume launch argv without typing an
+initial prompt. Closing these gaps requires a broader input protocol.
+
 ### `send --when-idle`: what it does not cover (#56)
 
 `roost send --when-idle` polls the target's `@agent_state` about once a

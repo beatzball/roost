@@ -19,7 +19,7 @@
 #   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force] [--json] [--when-idle] [--from LABEL] TGT TEXT
-#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N only addresses the running server, and exits 2 before acting if a different live pane carries @roost-was %N; use a name or session:window.pane to choose). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. --json prints one JSON document instead, for a program
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N only addresses the running server, and exits 2 before acting if a different live pane carries @roost-was %N; use a name or session:window.pane to choose). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. Before its first key (including bare Enter), readable occupied Claude/codex/pi input holds the send until clear; @roost-send-idle-timeout bounds it too (exit 6, nothing typed). Unknown/unreadable editors or a missing Python 3 reader pass through. --force skips the input check. After the first key delivery is unchanged. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
@@ -2288,6 +2288,41 @@ JSON
     if [ "$state" = "working" ]; then
       roost_interrupted_pane "$tgt" || true
     fi
+    # One initial-input gate (#251), also shared by the bare Enter below.
+    # Unknown renderers pass through. Once a key lands, the existing paste,
+    # retry, Enter and cleanup rules remain responsible for delivery.
+    send_input_gate() {
+      [ "$force" = 0 ] && command -v python3 >/dev/null 2>&1 \
+        && [ -r "$ROOST_HOME/scripts/roost-input.py" ] || return 0
+      local input_deadline="" input_timeout input_state
+      while :; do
+        # A hold can outlive a badge or restore transition. Keep send's
+        # existing refusal and --when-idle policies before the final read.
+        if [ -n "$input_deadline" ]; then
+          roost_pending_refuse send "$raw" "$tgt" "$force" || exit 3
+          input_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+          if [ "$input_state" = blocked ] && ! roost_unblock_pane "$tgt"; then
+            echo "roost send: target '$raw' is blocked — nothing was typed" >&2; exit 3
+          fi
+          if [ "$when_idle" = 1 ] && ! send_idle_wait; then send_idle_timeout; fi
+        fi
+        if ! roost_panelock_check; then
+          echo "roost send: the send lock for '$raw' was taken from this send — nothing was typed" >&2; exit 1
+        fi
+        input_state="$(python3 "$ROOST_HOME/scripts/roost-input.py" "$_SOCKET_FLAG" "$SOCKET" "$tgt" 2>/dev/null || true)"
+        [ "$input_state" = occupied ] || return 0
+        if [ -z "$input_deadline" ]; then
+          input_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
+          input_deadline=$(( $(date +%s) + input_timeout ))
+          echo "roost send: waiting for '$raw': input box contains text" >&2
+        fi
+        if [ "$(date +%s)" -ge "$input_deadline" ]; then
+          echo "roost send: input box for '$raw' still contains text after ${input_timeout}s (@roost-send-idle-timeout) — nothing was typed" >&2
+          exit 6
+        fi
+        sleep 1
+      done
+    }
     # Two-step submit: literal text, a beat, then Enter. A single
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
     delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null)"
@@ -2311,6 +2346,7 @@ JSON
         echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
         exit 1
       fi
+      send_input_gate
       t send-keys -t "$tgt" Enter 2>/dev/null || true
       # No turn is claimed here, and none is waited for (#92). A bare Enter is
       # not a prompt: it is the "unstick this pane" gesture the paragraph above
@@ -2717,6 +2753,7 @@ JSON
       echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
       exit 1
     fi
+    send_input_gate
     # Set BEFORE the paste, not after: a paste that tmux accepted and then
     # failed to report is still text in the box, and the cleanup must clear
     # it. A paste that never happened is cleared by a C-u that does nothing.

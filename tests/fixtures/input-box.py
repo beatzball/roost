@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Claude-shaped editor with an external draft control and a byte receipt."""
+import json
+import os
+import select
+import sys
+import termios
+import tty
+
+path = sys.argv[1]
+fd = sys.stdin.fileno()
+old = termios.tcgetattr(fd)
+tty.setraw(fd)
+line, carry, previous = "human draft", b"", None
+
+
+def draw():
+    width = os.get_terminal_size(fd).columns
+    border = "\x1b[38;5;244m" + "─" * width + "\x1b[0m"
+    # Large pastes may collapse. The receipt, rather than this screen, proves
+    # that the existing transport delivered every byte exactly once.
+    visible = "[Pasted text #1]" if len(line) > 1000 else line
+    sys.stdout.write("\x1b[2J\x1b[H" + border + "\r\n❯ " + visible +
+                     "\r\n" + border + "\x1b[2;" + str(len(visible) + 3) + "H")
+    sys.stdout.flush()
+
+
+try:
+    sys.stdout.write("\x1b[?2004h")
+    while True:
+        control = open(path + ".draft").read()
+        if control != previous:
+            line, previous = control, control
+            draw()
+        if not select.select([fd], [], [], 0.05)[0]:
+            continue
+        raw = os.read(fd, 65536)
+        with open(path + ".keys", "ab") as receipt:
+            receipt.write(raw)
+        carry += raw
+        # Bracketed paste is one block; its embedded newlines are text.
+        while carry:
+            if carry.startswith(b"\x1b[200~"):
+                end = carry.find(b"\x1b[201~")
+                if end < 0:
+                    break
+                line += carry[6:end].decode().replace("\r", "\n")
+                carry = carry[end + 6:]
+            elif carry[0] == 27 and len(carry) < 6:
+                break
+            else:
+                ch, carry = carry[:1], carry[1:]
+                if ch == b"\x15":
+                    line = ""
+                elif ch in (b"\r", b"\n"):
+                    with open(path, "a") as receipt:
+                        receipt.write(json.dumps(line) + "\n")
+                    line = ""
+                else:
+                    line += ch.decode()
+            draw()
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, old)

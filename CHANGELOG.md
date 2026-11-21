@@ -9,6 +9,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`roost send` waits for readable occupied input before typing (#251).**
+  Claude Code, codex and pi drafts hold the first key until the editor clears,
+  bounded by `@roost-send-idle-timeout` (300 s by default). Timeout exits 6
+  without typing. `--force` skips this check; unreadable editors pass through.
+
 - **A pane id shared with a restored pane is refused before acting (#247).**
   If a literal `%N` names a live pane and is also `@roost-was` on another
   live pane, pane commands now exit `2` and name both current addresses

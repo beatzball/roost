@@ -252,13 +252,29 @@ tmux -L roost set-option -g @roost-send-idle-timeout 600
 
 The sender blocks while it waits. Nothing is queued on disk, and nothing sends for you after `send` returns.
 
+### Waiting for an occupied input box
+
+Before its first key, `send` checks the visible Claude Code, codex or pi
+editor. A readable box containing text holds the send: stderr says once that
+it is waiting and why. It polls about once a second until the box clears.
+The bound is `@roost-send-idle-timeout`, 300 seconds by default, at most 3600;
+`0` checks once without waiting. Timeout exits `6` and types nothing.
+`--force` skips this check. Bare Enter uses the same check.
+
+Unreadable editors pass through immediately, including shells, opencode,
+copilot, unknown renderers, and systems without the Python 3 reader.
+Themes or clipped editors the reader cannot recognize also pass through.
+This checks only before the first key: someone can start typing between the
+check and the paste, and typing after the paste is not protected. Large and
+collapsed pastes still use the usual delivery and submit behavior.
+
 ### Exit codes for `roost send`
 
 `roost send` verifies its own submit rather than trusting a fire-and-forget `send-keys`, and its exit code says what went wrong:
 
 | exit | meaning | what to do |
 |------|---------|------------|
-| `6` | `--when-idle` only: the target still read ⏳ **working** at the bound (`@roost-send-idle-timeout`). **Nothing** was typed | retry later, or raise the bound |
+| `6` | the input box still contained text, or `--when-idle` still read ⏳ **working**, at the bound (`@roost-send-idle-timeout`). **Nothing** was typed | retry later, or raise the bound |
 | `4` | **submitted, but no turn began** inside the bound — or the pane went away first. The text **was** delivered | do **not** send it again: the prompt may be running. `roost screen` it, and `roost doctor` if the badge never moves |
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |
 | `2` | the target is unusable — it does not exist, or its pane is dead | re-resolve the target |
@@ -668,7 +684,7 @@ A main reply is `"stale": false, "final": false`: it is this turn's answer, not 
 | `sent_by` | string or `null` | who sent the prompt, as kept beside the turn: the `--from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`: with no turn there is nothing to keep it beside |
 | `waited` | integer | **only with `--when-idle`**: how many seconds the send was held while the target read `working`. `0` when it was not busy. Absent without the flag, so a plain `send --json` prints exactly what it printed before |
 
-A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began, and exit `6`, where `--when-idle` gave up. Read the exit status first.
+A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began, and exit `6`, where the input or `--when-idle` wait gave up. Read the exit status first.
 
 A `turn` of `null` with `started` of `true` is the ordinary shape when replies are not being recorded: roost proved the agent acted, but has no numbering to name the turn with.
 
