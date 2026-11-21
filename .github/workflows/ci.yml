@@ -48,7 +48,7 @@ jobs:
       # push pays for all four again instead of the one that failed.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]  # pinned: tests fail on 26.04 (#256)
         shard: ['1/4', '2/4', '3/4', '4/4']
     runs-on: ${{ matrix.os }}
     steps:
@@ -95,7 +95,7 @@ jobs:
   # it. See that script's header for why this is not release-please.
   version-changelog:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -120,7 +120,7 @@ jobs:
   tag:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -164,7 +164,7 @@ jobs:
   # verify-prod probes production. Catches "the site builds" vs "the container
   # actually serves it" -- two different claims.
   smoke-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # site/content/docs/changelog.md and site/public/llms.txt are generated
@@ -221,7 +221,7 @@ jobs:
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [test, smoke-image]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       changed: ${{ steps.gate.outputs.changed }}
     steps:
@@ -260,7 +260,7 @@ jobs:
   verify-prod:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.deploy.outputs.changed == 'true'
     needs: [deploy]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Probe production
