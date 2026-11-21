@@ -16,6 +16,15 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Hyperlinks in a roost pane are clickable (#252).** tmux strips OSC 8
+  hyperlinks unless the attached terminal has the `hyperlinks` feature, and
+  no default turns it on, so a link in a pane showed as plain text.
+  `tmux/roost.conf` now turns it on for every terminal. A terminal without
+  OSC 8 ignores the sequence and still shows the text. It takes effect for a
+  client when it attaches, so detach and attach again after you upgrade.
+
 ### Fixed
 
 - **`roost send` waits for readable occupied input before typing (#251).**
