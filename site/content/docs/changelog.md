@@ -16,6 +16,34 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0]
+
+`roost send` no longer types over what a person is typing (#251). Before its
+first key, it reads the target's input box in Claude Code, codex and pi. If
+the box holds text, it waits for the box to clear, checking about once a
+second, for about `@roost-send-idle-timeout` (300 s by default). Then it
+exits **6** and types nothing. A dim suggestion in Claude's box (on
+a new pane or after a turn) does not count as typing (#258). `--force` skips
+the wait. An input box roost cannot read (a shell, opencode, copilot, a theme
+it does not know) gets the send at once, as before. The check runs once,
+before the first key: typing that starts after it is not protected. Also
+new: a link in a roost pane is clickable, because tmux now passes OSC 8
+hyperlinks through to your terminal (#252). Among the fixes (#233): the
+restore offer's way-back line stays on screen until you press a key or 60 s
+pass, and the `roost restore --dry-run` tree lines up its columns again and
+no longer blames your tmux conf for renumber-windows when you never set it.
+
+Three things to know. **A send can now block for about 300 s, and exit `6`
+without `--when-idle`.** A script that sends to a pane where a person may be
+typing should handle exit 6, or pass `--force`. **An ambiguous `%N` after a
+restore now exits `2` (#247).** When a `%N` names one live pane and is the
+old id of another, pane commands refuse it and name both current addresses,
+where before they printed a note and picked the current id. Use
+`session:window.pane` instead, or `was:%N` for the old id. **Clickable links
+need the new config.** A client that attaches to a new roost server gets
+links at once. On a server started before the upgrade, press `prefix r`; a
+client that was attached then must detach and attach again.
+
 ### Added
 
 - **Hyperlinks in a roost pane are clickable (#252).** tmux strips OSC 8
@@ -23,7 +51,9 @@ and this project uses [Semantic Versioning](https://semver.org/).
   no default turns it on, so a link in a pane showed as plain text.
   `tmux/roost.conf` now turns it on for every terminal. A terminal without
   OSC 8 ignores the sequence and still shows the text. It takes effect for a
-  client when it attaches, so detach and attach again after you upgrade.
+  client when it attaches. A client that attaches to a new roost server gets
+  links at once. On a server started before the upgrade, press `prefix r`; a
+  client that was attached then must detach and attach again.
 
 ### Fixed
 
@@ -34,24 +64,26 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 - **`roost send` waits for readable occupied input before typing (#251).**
   Claude Code, codex and pi drafts hold the first key until the editor clears,
-  bounded by `@roost-send-idle-timeout` (300 s by default). Timeout exits 6
+  for about `@roost-send-idle-timeout` (300 s by default). Timeout exits 6
   without typing. `--force` skips this check; unreadable editors pass through.
 
 - **A pane id shared with a restored pane is refused before acting (#247).**
   If a literal `%N` names a live pane and is also `@roost-was` on another
   live pane, pane commands now exit `2` and name both current addresses
-  instead of printing a courtesy note and choosing the current id. Use a
-  name or `session:window.pane` to choose. The check works with saving off
-  or the restore map missing; explicit `was:%N` keeps its meaning.
+  instead of printing a courtesy note and choosing the current id. Use
+  `session:window.pane` to choose, or `was:%N` for the old id. The check
+  works with saving off or the restore map missing; explicit `was:%N` keeps
+  its meaning.
 
 - **The restore offer's way-back line stays on screen until you press a key
-  (#233).** After `n` or Enter, roost printed `not restored; roost restore
-  --from STAMP-GEN brings it back` and attached at once, so the new session
-  covered the line before anyone could read it. Now roost prints `press any
-  key to go on` under it and waits for a key, at most 60 s, before it
-  attaches. It waits the same way after `l` (to show what `roost persist on`
-  installed) and after an `r` whose report names something not restored. A
-  clean `r`, and no answer in 60 s, attach at once as before.
+  or 60 s pass (#233).** After `n` or Enter, roost printed `not restored;
+  roost restore --from STAMP-GEN brings it back` and attached at once, so
+  the new session covered the line before anyone could read it. Now roost
+  prints `press any key to go on` under it and waits for a key, at most
+  60 s, before it attaches. It waits the same way after `l` (to show what
+  `roost persist on` installed) and after an `r` whose report names
+  something not restored. A clean `r`, and no answer in 60 s, attach at
+  once as before.
 
 - **`roost restore --dry-run` no longer says renumber-windows is on "in
   your tmux conf" when you never set it (#233).** roost's own config turns
