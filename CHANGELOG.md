@@ -18,7 +18,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **`roost send` can type into a fresh Claude Code pane with a dim suggestion (#258).**
+- **`roost send` can type into a Claude Code pane that shows a dim suggestion
+  (on a new pane or after a turn) (#258).**
   The suggestion no longer triggers the wait for the input box to clear.
   A typed draft still holds the send.
 
