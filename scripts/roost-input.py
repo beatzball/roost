@@ -55,7 +55,7 @@ def renderer_borders(harness, raw_rows, width):
     return borders
 
 
-def codex_dim(sgr, dim):
+def sgr_dim(sgr, dim):
     params = iter(int(value or 0) for value in sgr.split(";"))
     for attr in params:
         if attr in (38, 48, 58):
@@ -74,6 +74,20 @@ def codex_dim(sgr, dim):
     return dim
 
 
+def input_row(raw, dim):
+    parts = SGR.split(raw)
+    chunks = parts[::2]
+    if any("\x1b" in chunk for chunk in chunks):
+        raise ValueError("unsupported input escape sequence")
+    non_dim = []
+    for chunk, sgr in zip(chunks, parts[1::2] + [None]):
+        # Dim runs keep their character positions so the marker is always excluded.
+        non_dim.append(" " * len(chunk) if dim else chunk)
+        if sgr is not None:
+            dim = sgr_dim(sgr, dim)
+    return "".join(chunks), "".join(non_dim), dim
+
+
 def codex_input(raw_rows, y):
     if not 0 <= y < len(raw_rows):
         return "unknown"
@@ -83,24 +97,15 @@ def codex_input(raw_rows, y):
     # the start of the capture even though earlier text is not draft evidence.
     dim = False
     for raw in raw_rows[:y + 1]:
-        parts = SGR.split(raw.decode("utf-8"))
-        chunks = parts[::2]
-        if any("\x1b" in chunk for chunk in chunks):
-            return "unknown"
-        non_dim = []
-        for chunk, sgr in zip(chunks, parts[1::2] + [None]):
-            non_dim.append(" " * len(chunk) if dim else chunk)
-            if sgr is not None:
-                dim = codex_dim(sgr, dim)
+        visible, non_dim, dim = input_row(raw.decode("utf-8"), dim)
     # Codex 0.167.2 draws its ghost text in DIM. Use the cell styling even
     # when the hint is clipped or changed, and when a draft's cursor is at Home.
-    # Dim runs keep their character positions so the marker is always excluded.
-    if "".join(chunks).startswith("› ") and "".join(non_dim)[2:].strip():
+    if visible.startswith("› ") and non_dim[2:].strip():
         return "occupied"
     return "unknown"
 
 
-def classify(harness, rows, x, y, borders):
+def classify(harness, rows, x, y, borders, draft_rows=None):
     if not 0 <= y < len(rows):
         return "unknown"
     if harness in ("claude", "pi"):
@@ -119,6 +124,8 @@ def classify(harness, rows, x, y, borders):
         if harness == "claude":
             if not body or not body[0].startswith("❯ "):
                 return "unknown"
+            if draft_rows is not None:
+                body = draft_rows[top + 1:bottom]
             body[0] = body[0][2:]
         if any(s.strip() for s in body):
             return "occupied"
@@ -173,7 +180,20 @@ def snapshot(tmux, pane):
         # capture-pane strips trailing spaces, including the one after ❯.
         rows = [s + " " if s == "❯" else s for s in rows]
         borders = renderer_borders(harness, raw_rows, width)
-        result = classify(harness, rows, x, y, borders)
+        draft_rows = None
+        if harness == "claude":
+            # Claude Code 2.1.330 shows `❯ ESC[2mTry "create a util logging.py
+            # that…"ESC[0m` in the measured empty editor row (#258).
+            draft_rows = []
+            dim = False
+            for raw, visible in zip(raw_rows, rows):
+                try:
+                    _, non_dim, dim = input_row(raw, dim)
+                except ValueError:
+                    # With uncertain styling, keep visible text as draft evidence.
+                    non_dim, dim = visible, False
+                draft_rows.append(non_dim)
+        result = classify(harness, rows, x, y, borders, draft_rows)
         return result
     except (ValueError, IndexError, OSError, subprocess.SubprocessError):
         return "unknown"

@@ -39,6 +39,22 @@ for h, rows, x, y, want in cases:
     print("  %s: %s parser case %s (got %s)" % ("PASS" if got == want else "FAIL", h, want, got))
     failed += got != want
 
+# Claude Code 2.1.330 row reported in #258, with its escape codes intact.
+claude_hint = 'Try "create a util logging.py that…"'
+claude_border = "\x1b[38;5;244m" + rule + "\x1b[0m"
+for label, body, x, want in [
+    ("dim hint", "❯ \x1b[2m" + claude_hint + "\x1b[0m", 2, "empty"),
+    ("hint words typed as a draft", "❯ " + claude_hint, 2, "occupied"),
+    ("dim hint with cursor past the marker", "❯ \x1b[2m" + claude_hint + "\x1b[0m", 3, "unknown"),
+    ("draft after dim reset", "❯\u00a0\x1b[2mghost\x1b[22m draft", 2, "occupied"),
+    ("dim carries onto a continuation row", "❯ \x1b[2m" + "x" * 68 + "\nmore\x1b[0m", 2, "empty"),
+]:
+    output = f"%0|0|0|{x}|1|claude|claude||1|70|idle\n{claude_border}\n{body}\n{claude_border}\n".encode()
+    with patch.object(reader.subprocess, "run", return_value=CompletedProcess([], 0, output)):
+        got = reader.snapshot(["tmux", "-S", "unused"], "%0")
+    print("  %s: claude snapshot %s (got %s)" % ("PASS" if got == want else "FAIL", label, got))
+    failed += got != want
+
 # The captured 0.167.2 row includes a background before and after the hint.
 # Exercise capture decoding and normalization as well as classification.
 ghost = json.loads((Path(__file__).parent / "fixtures/codex-ghost.json").read_text())
