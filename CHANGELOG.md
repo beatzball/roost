@@ -18,6 +18,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`roost send` can type into a Claude Code pane that shows a dim suggestion
+  (on a new pane or after a turn) (#258).**
+  The suggestion no longer triggers the wait for the input box to clear.
+  A typed draft still holds the send.
+
 - **`roost send` waits for readable occupied input before typing (#251).**
   Claude Code, codex and pi drafts hold the first key until the editor clears,
   bounded by `@roost-send-idle-timeout` (300 s by default). Timeout exits 6

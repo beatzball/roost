@@ -17,6 +17,7 @@ export ROOST_SOCKET="$ROOST_TEST_SOCK"
 base_session="$(T display-message -p '#{session_id}')"
 T set-option -g @roost-send-enter-delay 0.1
 T set-option -g @roost-send-idle-timeout 5
+claude_hint='Try "create a util logging.py that…"'
 newbox() {
   local draft="${3-human draft}" ready="${3-human draft}" width="${4-}"
   local hint='Ask Codex to do anything' launch
@@ -27,6 +28,9 @@ newbox() {
     ready="${hint:0:width-2}"
   else
     p="$(T new-window -d -P -F '#{pane_id}' -t "$base_session:" "$launch")"
+    if [ "$2" = claude ] && [ -z "$draft" ]; then
+      ready="$claude_hint"
+    fi
   fi
   require_pane "$p" input-box
   T set-option -p -t "$p" @roost-harness "$2"
@@ -85,11 +89,25 @@ finish
 assert_eq "$(cat "$work/rc")" 0 'Codex draft send succeeds after clear'
 assert_eq "$(key_receipt codex-draft 'one prompt for Codex')" True 'Codex draft receives one paste and one Enter after clear'
 assert_eq "$(receipt codex-draft 'one prompt for Codex')" 'whole once' 'Codex draft submits the prompt whole once after clear'
+T set-option -g @roost-send-idle-timeout 3
+newbox claude-hint claude ''
+assert_eq "$(T display-message -p -t "$p" '#{cursor_x}:#{cursor_y}')" '2:1' 'Claude hint cursor is at the start of the editor'
+row="$(T capture-pane -p -e -t "$p" -S 1 -E 1)"
+assert_contains "$row" $'\x1b[2m'"$claude_hint" 'Claude raw cursor row contains the expected dim hint'
+send_bg "$p" 'one prompt for Claude'
+finish
+for ((n=0; n<40; n++)); do [ -s "$work/claude-hint" ] && break; sleep 0.05; done
+assert_eq "$(cat "$work/rc")" 0 'Claude hint send succeeds'
+assert_eq "$(key_receipt claude-hint 'one prompt for Claude')" True 'Claude hint receives one paste and one Enter'
+assert_eq "$(receipt claude-hint 'one prompt for Claude')" 'whole once' 'Claude hint submits the prompt whole once'
+assert_eq "$(grep 'input box' "$work/err")" '' 'Claude hint sends without an occupied notice or timeout'
 T set-option -g @roost-send-idle-timeout 5
 for kind in short long; do
   msg="one complete prompt"
+  draft="$claude_hint"
+  [ "$kind" != long ] || draft='human draft'
   [ "$kind" != long ] || msg="$(python3 -c 'print("a long prompt " * 100 + "\nmore text" * 12)')"
-  newbox "$kind" claude
+  newbox "$kind" claude "$draft"
   send_bg "$p" "$msg"
   for ((n=0; n<40; n++)); do grep -q 'waiting.*input' "$work/err" && break; sleep 0.05; done
   assert_file_absent "$work/$kind.keys" "$kind occupied editor receives zero sender keys"
