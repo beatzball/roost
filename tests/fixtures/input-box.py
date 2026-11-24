@@ -40,7 +40,8 @@ def draw():
 
 
 try:
-    sys.stdout.write("\x1b[?2004h")
+    if os.environ.get("ROOST_TEST_INPUT_BRACKETS") != "0":
+        sys.stdout.write("\x1b[?2004h")
     while True:
         control = open(path + ".draft").read()
         if control != previous:

@@ -2,8 +2,9 @@
 # harness a pane is running, and the command that harness exits on.
 #
 # Sourced, not executed, `roost_close_*` prefix. Sourced INSIDE the `close`
-# branch of bin/roost, never at the top, the way roost-jsonout.sh is: no other
-# command pays for it, and `roost state` on an adapter's hot path least of all.
+# branch of bin/roost and by the process identity probe, never at the top,
+# the way roost-jsonout.sh is: commands that do not need the harness table
+# never pay for it, and `roost state` on an adapter's hot path least of all.
 #
 # Both functions SET a variable rather than printing, so the caller needs no
 # `$(...)` fork to read the answer, and both are builtins only.

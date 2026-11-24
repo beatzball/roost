@@ -268,12 +268,54 @@ This checks only before the first key: someone can start typing between the
 check and the paste, and typing after the paste is not protected. Large and
 collapsed pastes still use the usual delivery and submit behavior.
 
+### Send to the agent you confirmed
+
+Capture a token when you select a pane. After confirmation, send with that
+token and the same live pane ID.
+
+```sh
+token=$(roost send --agent-token %12) || exit $?
+# Confirm the selected agent before proceeding.
+roost send --agent-only "$token" %12 "Review the worktree notes"
+```
+
+Treat the token as opaque and keep it with the selection. Roost binds it to
+the server, pane, harness session, and foreground process that reported the
+session. It checks the binding before paste, Enter, retries, and any draft
+cleanup. A shell, a blocked pane, or a replacement agent fails the check,
+even if a replacement resumes the same session. Use the current `%N` pane
+ID. Historical `was:` aliases, ambiguous pane IDs, and window targets are
+refused. A historical claim from another live pane makes the ID ineligible
+even when you selected the current pane directly. The check runs again with
+each terminal action and also refuses matching inherited claims.
+
+The agent needs to be the pane's own process, leading its foreground process
+group, and report its identity through updated roost wiring. Launch the agent
+directly or have the launcher `exec` it. An agent running as a job under a
+surviving shell or wrapper is ineligible because the shell can switch to a
+same-name job while keeping the same pane ID. Pi and other harnesses that
+appear as generic `node` or `bun` processes are also ineligible.
+
+Roost compares the pane process and tmux's live foreground command in the
+same condition that gates each terminal action. An unreported dialog can
+escape the blocked-state check. If the process exits after tmux starts
+delivering bytes, roost cannot recall them or prove what the application
+consumed. A detected identity loss after an action returns exit `8`.
+
+`--agent-only` works with `--when-idle`, `--from`, and `--json`. Occupied
+input still holds the send. `--force` is incompatible with the guard. Send a
+single line of text without terminal control bytes. A newline or other ASCII
+control byte exits `2` before typing because an unbracketed paste can treat a
+newline as Enter. To refer to multiline notes, send their path in one line.
+
 ### Exit codes for `roost send`
 
 `roost send` verifies its own submit rather than trusting a fire-and-forget `send-keys`, and its exit code says what went wrong:
 
 | exit | meaning | what to do |
 |------|---------|------------|
+| `8` | guarded delivery stopped after input may have reached the pane | inspect the pane before retrying. The paste may still sit in the editor or the agent may already have received it |
+| `7` | the agent token could not be captured or the guard refused before issuing any terminal input | re-check the selection and capture a fresh token |
 | `6` | the input box still contained text, or `--when-idle` still read ⏳ **working**, at the bound (`@roost-send-idle-timeout`). **Nothing** was typed | retry later, or raise the bound |
 | `4` | **submitted, but no turn began** inside the bound — or the pane went away first. The text **was** delivered | do **not** send it again: the prompt may be running. `roost screen` it, and `roost doctor` if the badge never moves |
 | `3` | the target is 🛑 **blocked** — a permission dialog is open | wait and retry the **same** target, or pass `--force` |

@@ -18,7 +18,8 @@
 #   roost view [-n NAME] CMD...  show CMD to the human: a pane beside you if there is room, a window if not. No focus steal; a second call with the same NAME replaces the first
 #   roost whoami [--json]    print this agent's own pane id (%N)
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
-#   roost send [--force] [--json] [--when-idle] [--from LABEL] TGT TEXT
+#   roost send [--force | --agent-only TOKEN] [--json] [--when-idle] [--from LABEL] TGT TEXT
+#   roost send --agent-token %N  print a token for the live agent in %N. Pass it to --agent-only with the same %N to guard the paste and submit. Exit 7 means the guard refused before input was delivered, and 8 means delivery may already have started.
 #                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N only addresses the running server, and exits 2 before acting if a different live pane carries @roost-was %N; use a name or session:window.pane to choose). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. Before its first key (including bare Enter), readable occupied Claude/codex/pi input holds the send until clear; @roost-send-idle-timeout bounds it too (exit 6, nothing typed). Unknown/unreadable editors or a missing Python 3 reader pass through. --force skips the input check. After the first key delivery is unchanged. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
@@ -443,7 +444,7 @@ target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAU
 # candidates and names their current addresses and labels. Same-pane claims,
 # dead panes kept by remain-on-exit, and stale map entries cannot collide.
 resolve_was() {
-  local verb="$1" raw="$2" old want="" root key boot map o b n hits=0 bl="" new=""
+  local verb="$1" raw="$2" strict="${3:-0}" old want="" root key boot map o b n hits=0 bl="" new=""
   local rows id dead was description canonical stamp live="" restored=""
   RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT=""
   case "$raw" in
@@ -462,9 +463,12 @@ resolve_was() {
       # this canonical id is only for the guard, never an implicit was: lookup.
       # tmux also owns range validation, with no shell octal or overflow math.
       canonical="$(t display-message -p -t "$raw" '#{pane_id}' 2>/dev/null || true)"
-      case "$canonical" in %[0-9]*) ;; *) return 0 ;; esac
-      case "${canonical#%}" in *[!0-9]*) return 0 ;; esac
-      rows="$(t list-panes -a -F '#{pane_id}|#{pane_dead}|#{@roost-was}|#{session_name}:#{window_index}.#{pane_index} #{?#{==:#{@roost-name},},#{window_name},#{@roost-name}}' 2>/dev/null || true)"
+      case "$canonical" in %[0-9]*) ;; *) return "$strict" ;; esac
+      case "${canonical#%}" in *[!0-9]*) return "$strict" ;; esac
+      # Guarded send needs a successful snapshot before accepting a live id.
+      if ! rows="$(t list-panes -a -F '#{pane_id}|#{pane_dead}|#{@roost-was}|#{session_name}:#{window_index}.#{pane_index} #{?#{==:#{@roost-name},},#{window_name},#{@roost-name}}' 2>/dev/null)"; then
+        return "$strict"
+      fi
       while IFS='|' read -r id dead was description; do
         [ "$dead" = 0 ] || continue
         if [ "$id" = "$canonical" ]; then
@@ -485,7 +489,11 @@ resolve_was() {
         fi
       done <<< "$rows"
       if [ -n "$live" ] && [ -n "$restored" ]; then
-        echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Use a name, or a session:window.pane target." >&2
+        if [ "$strict" = 1 ]; then
+          echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Guarded send requires an unambiguous live pane ID." >&2
+        else
+          echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Use a name, or a session:window.pane target." >&2
+        fi
         return 1
       fi
       return 0 ;;
@@ -1816,6 +1824,43 @@ JSON
     exec ssh -t "$host" "\"\$SHELL\" -lc $(roost_sq "$remote")"
     ;;
   send)
+    send_guard_setup() {
+      . "$ROOST_HOME/scripts/lib/roost-adapters.sh"
+      . "$ROOST_HOME/scripts/lib/roost-resume.sh"
+      . "$ROOST_HOME/scripts/lib/roost-pending.sh"
+      . "$ROOST_HOME/scripts/lib/roost-send-guard.sh"
+    }
+    send_guard_pane() {
+      case "$1" in
+        %[0-9]*) case "${1#%}" in *[!0123456789]*) return 1 ;; esac ;;
+        *) return 1 ;;
+      esac
+      return 0
+    }
+    send_guard_unknown() {
+      echo "roost send: guarded delivery to '$raw' stopped after input may have reached it. Look at the pane before retrying" >&2
+      exit 8
+    }
+    send_guard_stop() {
+      send_guard_refused=1
+      if [ "$send_pasted" = 0 ] && [ "$send_entered" = 0 ] && [ "${1:-7}" = 7 ]; then
+        echo "roost send: agent guard could not confirm an eligible target '$raw' — no input was delivered" >&2
+        exit 7
+      fi
+      send_guard_unknown
+    }
+    send_pasted=0 send_entered=0 send_guard_refused=0 send_inflight=0
+    if [ "${2:-}" = --agent-token ]; then
+      [ "$#" = 3 ] || { echo 'usage: roost send --agent-token %N' >&2; exit 2; }
+      send_guard_setup
+      raw="$3"
+      send_guard_pane "$raw" || send_guard_stop
+      guard_token="$(t display-message -p -t "$raw" "$ROOST_SEND_GUARD_FORMAT" 2>/dev/null)" || send_guard_stop
+      roost_send_guard_action "$guard_token" "$raw" || send_guard_stop
+      printf '%s\n' "$guard_token"
+      exit 0
+    fi
+
     # --force is accepted only in front of the target. Anywhere later it would
     # be indistinguishable from a message that happens to begin with the word,
     # and a send whose first word is swallowed is worse than no flag at all.
@@ -1862,7 +1907,9 @@ JSON
     json=0
     when_idle=0
     from="" from_given=0
-    while [ "${2:-}" = "--force" ] || [ "${2:-}" = "--json" ] || [ "${2:-}" = "--when-idle" ] || [ "${2:-}" = "--from" ]; do
+    guard_token="" guard_given=0
+    usage_send='usage: roost send [--force | --agent-only TOKEN] [--json] [--when-idle] [--from LABEL] TGT TEXT...'
+    while [ "${2:-}" = "--force" ] || [ "${2:-}" = "--json" ] || [ "${2:-}" = "--when-idle" ] || [ "${2:-}" = "--from" ] || [ "${2:-}" = "--agent-only" ]; do
       if [ "$2" = "--force" ]; then
         if [ "$force" -eq 1 ]; then break; fi
         force=1
@@ -1872,12 +1919,21 @@ JSON
       elif [ "$2" = "--when-idle" ]; then
         if [ "$when_idle" -eq 1 ]; then break; fi
         when_idle=1
+      elif [ "$2" = "--agent-only" ]; then
+        if [ "$guard_given" = 1 ] || [ -z "${3:-}" ]; then
+          echo "$usage_send" >&2; exit 2
+        fi
+        guard_given=1
+        guard_token="$3"
+        shift 3
+        set -- send "$@"
+        continue
       else
         if [ "$from_given" -eq 1 ]; then break; fi
         from_given=1
         if [ "$#" -lt 3 ]; then
           echo "roost send: --from needs a label — who is sending, one word of at most 64 bytes" >&2
-          echo "usage: roost send [--force] [--json] [--when-idle] [--from LABEL] [SESSION:]WINDOW TEXT..." >&2
+          echo "$usage_send" >&2
           exit 2
         fi
         from="$3"
@@ -1909,9 +1965,52 @@ JSON
       shift 2
       set -- send "$@"
     done
-    need_arg "${2:-}" "usage: roost send [--force] [--json] [--when-idle] [--from LABEL] [SESSION:]WINDOW TEXT..."; raw="$2"; shift 2
-    resolve_was send "$raw" || exit 2; raw="$RW_TARGET"
-    tgt="$(target "$raw")"
+    need_arg "${2:-}" "$usage_send"; raw="$2"; shift 2
+    send_guard_require() {
+      [ "$guard_given" = 1 ] || return 0
+      local action="${1:-}" rc=0
+      # A signal while a terminal action is in flight can leave its outcome
+      # unknown. In that case the EXIT trap must leave the terminal alone.
+      if [ -n "$action" ]; then send_inflight=1; fi
+      roost_send_guard_action "$guard_token" "$tgt" "$action" || rc=$?
+      if [ "$rc" != 0 ]; then
+        if [ -n "$action" ]; then send_guard_stop "$rc"; fi
+        send_guard_stop
+      fi
+      case "${2:-}" in
+        paste) send_pasted=1 ;;
+        Enter) send_entered=1 ;;
+      esac
+      send_inflight=0
+    }
+    send_key() {
+      if [ "$guard_given" = 1 ]; then
+        send_guard_require "send-keys -t $tgt $1" "$1"
+      else
+        t send-keys -t "$tgt" "$1" 2>/dev/null || true
+      fi
+    }
+    if [ "$guard_given" = 1 ]; then
+      if [ "$force" = 1 ]; then echo "$usage_send" >&2; exit 2; fi
+      # A tmux paste without active brackets turns LF into CR, so a multiline
+      # message can submit during paste. Older supported tmux servers cannot
+      # expose bracket mode in the paste condition. Keep guarded text to one
+      # line and exclude other control keys before touching the editor.
+      send_text_ok() {
+        local LC_ALL=C
+        case "$1" in *[[:cntrl:]]*) return 1 ;; esac
+      }
+      if ! send_text_ok "$*"; then
+        echo 'roost send: guarded messages require one line of text without control characters — no input was delivered' >&2; exit 2
+      fi
+      send_guard_setup
+      send_guard_pane "$raw" || send_guard_stop
+      tgt="$raw"
+      send_guard_require
+    else
+      resolve_was send "$raw" || exit 2; raw="$RW_TARGET"
+      tgt="$(target "$raw")"
+    fi
 
     # ONE SEND PER TARGET AT A TIME (#175). Two `roost send`s running at once
     # used to interfere, and the failure was in the wrong direction: REPRODUCED
@@ -1991,10 +2090,14 @@ JSON
     # still this send's (a box that is another sender's by now is theirs to
     # clear), the draft is cleared with C-u. At an empty line C-u is a no-op
     # everywhere it is understood.
-    send_pasted=0 send_entered=0
     send_cleanup() {
-      if [ "$send_pasted" = 1 ] && [ "$send_entered" = 0 ] && roost_panelock_check; then
-        t send-keys -t "$tgt" C-u 2>/dev/null || true
+      if [ "$send_pasted" = 1 ] && [ "$send_entered" = 0 ] && [ "$send_guard_refused" = 0 ] \
+        && [ "$send_inflight" = 0 ] && roost_panelock_check; then
+        if [ "$guard_given" = 1 ]; then
+          roost_send_guard_action "$guard_token" "$tgt" "send-keys -t $tgt C-u" 2>/dev/null || true
+        else
+          send_key C-u
+        fi
       fi
       [ -n "${ROOST_SEND_BUF:-}" ] && t delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true
       roost_panelock_drop
@@ -2089,6 +2192,7 @@ JSON
     send_idle_wait() {
       local info rest now held_from=""
       while :; do
+        send_guard_require
         info="$(t display-message -p -t "$lock_pane" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
         rest="${info#* }"
         if [ -z "${info%% *}" ] || [ "${rest%% *}" = 1 ] || [ "${rest#* }" != working ]; then
@@ -2122,6 +2226,9 @@ JSON
       fi
       lock_rc=0
       roost_panelock_take "$lock_sock" "$lock_pane" "$lock_timeout" || lock_rc=$?
+      # Install cleanup before the guard can refuse a lock we just acquired.
+      if [ "$guard_given" = 1 ] && [ "$lock_rc" = 0 ]; then send_traps; fi
+      send_guard_require
       # The re-check under the lock. Only on 0: every other code exits or
       # falls through to the "no such target" check below, as without the
       # flag. A dead pane passes, so the dead-pane exit 2 below is what the
@@ -2215,6 +2322,7 @@ JSON
     dead="${rest%% *}"
     state="${rest#* }"
     if [ -z "$wid" ]; then
+      if [ "$guard_given" = 1 ]; then send_guard_stop; fi
       echo "roost send: no such target '$raw'" >&2; exit 2
     fi
     # A pane roost may still replace (#191 Part 3, spec §4.7's `roost send`
@@ -2228,13 +2336,14 @@ JSON
     # pane is the one send-keys will type into: a window target's active pane.
     . "$ROOST_HOME/scripts/lib/roost-resume.sh"
     . "$ROOST_HOME/scripts/lib/roost-pending.sh"
-    if ! roost_pending_refuse send "$raw" "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
+    if [ "$guard_given" = 0 ] && ! roost_pending_refuse send "$raw" "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
       exit 3
     fi
     # Same exit code as "no such target": a dead pane is unusable for exactly
     # the reason a nonexistent one is — the caller needs to pick a DIFFERENT
     # target, not retry this one (retrying is what exit 1 below means).
     if [ "$dead" = "1" ]; then
+      if [ "$guard_given" = 1 ]; then send_guard_stop; fi
       echo "roost send: target '$raw' is a dead pane (its command has exited); nothing would be delivered" >&2
       exit 2
     fi
@@ -2275,7 +2384,7 @@ JSON
     case "$state" in
       working|blocked) roost_died_pane "$tgt" && state="" ;;
     esac
-    if [ "$state" = "blocked" ] && [ "$force" -eq 0 ] && ! roost_unblock_pane "$tgt"; then
+    if [ "$guard_given" = 0 ] && [ "$state" = "blocked" ] && [ "$force" -eq 0 ] && ! roost_unblock_pane "$tgt"; then
       echo "roost send: target '$raw' is blocked — a permission dialog is open, and this text would be pasted into it" >&2
       echo "roost send: wait for it to be answered, or pass --force to send anyway" >&2
       exit 3
@@ -2301,10 +2410,14 @@ JSON
         # A hold can outlive a badge or restore transition. Keep send's
         # existing refusal and --when-idle policies before the final read.
         if [ -n "$input_deadline" ]; then
-          roost_pending_refuse send "$raw" "$tgt" "$force" || exit 3
-          input_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
-          if [ "$input_state" = blocked ] && ! roost_unblock_pane "$tgt"; then
-            echo "roost send: target '$raw' is blocked — nothing was typed" >&2; exit 3
+          if [ "$guard_given" = 1 ]; then
+            send_guard_require
+          else
+            roost_pending_refuse send "$raw" "$tgt" "$force" || exit 3
+            input_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+            if [ "$input_state" = blocked ] && ! roost_unblock_pane "$tgt"; then
+              echo "roost send: target '$raw' is blocked — nothing was typed" >&2; exit 3
+            fi
           fi
           if [ "$when_idle" = 1 ] && ! send_idle_wait; then send_idle_timeout; fi
         fi
@@ -2358,7 +2471,7 @@ JSON
         exit 1
       fi
       send_input_gate
-      t send-keys -t "$tgt" Enter 2>/dev/null || true
+      send_key Enter
       # No turn is claimed here, and none is waited for (#92). A bare Enter is
       # not a prompt: it is the "unstick this pane" gesture the paragraph above
       # describes, and a pane that submits nothing has no turn to start. --json
@@ -2609,9 +2722,14 @@ JSON
     # alive, idle and blameless.
     type_message() {
       local rc
+      local -a paste=(paste-buffer -p -d -b "$ROOST_SEND_BUF" -t "$tgt")
       senderr="$(printf '%s' "$msg" | t load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
       [ "$rc" -eq 0 ] || return "$rc"
-      senderr="$(t paste-buffer -p -d -b "$ROOST_SEND_BUF" -t "$tgt" 2>&1 >/dev/null)"; rc=$?
+      if [ "$guard_given" = 1 ]; then
+        send_guard_require "${paste[*]}" paste
+        return 0
+      fi
+      senderr="$(t "${paste[@]}" 2>&1 >/dev/null)"; rc=$?
       return "$rc"
     }
 
@@ -2779,7 +2897,9 @@ JSON
     # Set BEFORE the paste, not after: a paste that tmux accepted and then
     # failed to report is still text in the box, and the cleanup must clear
     # it. A paste that never happened is cleared by a C-u that does nothing.
-    send_pasted=1
+    # The guarded path tracks an in-flight paste separately. When the guard
+    # explicitly refuses before typing, cleanup must also leave the pane alone.
+    if [ "$guard_given" = 0 ]; then send_pasted=1; fi
     if ! type_message; then
       case "$senderr" in
         *"too long"*|*"failed to send command"*)
@@ -2827,15 +2947,17 @@ JSON
         # taken from under this send, that box may hold another sender's
         # text now. One loud exit 1 (nothing submitted) beats two writers.
         if ! roost_panelock_check; then
+          if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
           echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; the box may still hold this send's draft; retry the same target" >&2
           exit 1
         fi
-        t send-keys -t "$tgt" C-u 2>/dev/null || true
+        send_key C-u
         # And again between the C-u and the re-paste: without it the gap
         # between a check and a key is three tmux calls here, not one, and a
         # lock lost after the C-u would paste this text into a box another
         # sender has just pasted into (flock review).
         if ! roost_panelock_check; then
+          if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
           echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; retry the same target" >&2
           exit 1
         fi
@@ -2849,6 +2971,7 @@ JSON
         # submitted here — no Enter yet — so 1, the retry-the-same-target
         # code, is exactly right, the same as the first paste failing above.
         if ! type_message; then
+          if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
           echo "roost send: failed to re-paste text into '$raw' (pane may have died) — nothing was submitted: $senderr" >&2
           exit 1
         fi
@@ -2894,6 +3017,7 @@ JSON
           # the same target" code. NOTHING has been submitted: the Enter below
           # is never reached, so a caller that retries cannot double-run
           # anything.
+          if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
           echo "roost send: could not confirm the message reached '$raw' within ${ready_timeout}s — nothing was submitted" >&2
           echo "roost send: the pane may still be starting up, or may not echo what it is given; \`roost screen $raw\` to look" >&2
           exit 1
@@ -2915,12 +3039,13 @@ JSON
     # same reason: an Enter on a box another sender is typing into submits
     # THEIR half-typed text. Nothing has been submitted when this fires.
     if ! roost_panelock_check; then
+      if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
       echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; the box may still hold this send's draft; retry the same target" >&2
       exit 1
     fi
     # From here the text is in: cleanup must not clear it.
-    send_entered=1
-    t send-keys -t "$tgt" Enter 2>/dev/null || true
+    if [ "$guard_given" = 0 ]; then send_entered=1; fi
+    send_key Enter
 
     n="$retries"
     while [ "$n" -gt 0 ]; do
@@ -2931,6 +3056,7 @@ JSON
       # already in, and "nothing was submitted" would be a lie — just no more
       # Enters: the turn watch below says what became of the one that went.
       if ! roost_panelock_check; then
+        if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
         echo "roost send: the send lock for '$raw' was taken from this send after its Enter — no more Enters will be sent" >&2
         break
       fi
@@ -2938,11 +3064,12 @@ JSON
       # a pane that dies mid-loop must not abort the script with tmux's raw
       # error — it should fall through to the same conservative handling as
       # any other "can no longer tell" case below.
-      t send-keys -t "$tgt" Enter 2>/dev/null || true
+      send_key Enter
       n=$((n - 1))
     done
 
     if [ "$retries" -gt 0 ] && pending "$*"; then
+      if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
       echo "roost send: text pasted into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
       exit 1
     fi

@@ -17,6 +17,7 @@
 #   @roost-cwd              the agent's working directory, absolute
 #   @roost-harness          claude | codex | opencode | copilot | pi | <other>
 #   @roost-transcript-path  the transcript, absolute; unset when unknown
+#   @roost-agent-process   the reporting foreground process, when verified
 #
 # and, when pane records are on, `session_id`, `cwd` and `harness` in the pane's
 # record directory — the names scripts/lib/roost-record.sh reserves — so a pane
@@ -33,10 +34,11 @@
 #
 # THE RULES, and each is here for a reason:
 #
-#   ONE READ, THEN BAIL. The four options are read back in one tmux call and
+#   ONE READ, THEN BAIL. The options are read back in one tmux call and
 #   compared with what would be written; equal means nothing is written at all.
 #   A SessionStart or a prompt in a session that is already recorded costs one
-#   tmux round trip.
+#   tmux round trip. The process probe also runs on a repeated report: a
+#   resumed conversation can carry the same id into a new process.
 #
 #   ONE WRITE. All four options go in one tmux command, so no reader ever sees
 #   a new session id beside the old session's transcript.
@@ -202,7 +204,7 @@ roost_identity__record() {
 #   2  a value was refused; ROOST_IDENTITY_BAD names it, and nothing was written
 roost_identity_stamp() {
   local sock="$1" pane="$2" sid="$3" cwd="$4" harness="$5" tr="$6"
-  local tab=$'\t' want got boot
+  local tab=$'\t' want got boot pane_pid process old_process
   local -a wr
   ROOST_IDENTITY_WROTE=0 ROOST_IDENTITY_BOOT=""
   roost_identity_valid "$sid" "$cwd" "$harness" "$tr" || return 2
@@ -220,8 +222,12 @@ roost_identity_stamp() {
   # what `roost status --json` reads: the comparison is against what a reader
   # would be shown.
   got="$(tmux -u -S "$sock" display-message -p -t "$pane" \
-    "#{@roost-session}$tab#{@roost-cwd}$tab#{@roost-harness}$tab#{@roost-transcript-path}$tab#{start_time}-#{pid}" \
+    "#{@roost-session}$tab#{@roost-cwd}$tab#{@roost-harness}$tab#{@roost-transcript-path}$tab#{start_time}-#{pid}$tab#{pane_pid}$tab#{@roost-agent-process}" \
     2>/dev/null)" || return 1
+  old_process="${got##*$tab}"
+  got="${got%$tab*}"
+  pane_pid="${got##*$tab}"
+  got="${got%$tab*}"
   boot="${got##*$tab}"
   got="${got%$tab*}"
   # Kept for the caller: a pending resume on this pane is filed under this
@@ -229,7 +235,13 @@ roost_identity_stamp() {
   # second read.
   ROOST_IDENTITY_BOOT="$boot"
   want="$sid$tab$cwd$tab$harness$tab$tr"
-  [ "$got" = "$want" ] && return 0
+  . "$ROOST_IDENTITY_LIB_DIR/roost-agent-process.sh"
+  process="$(roost_agent_process_stamp "$pane_pid" "$harness" "$$" || true)"
+  # A report without process evidence can still maintain the existing status
+  # and resume metadata. When it changes identity, discard the former binding.
+  if [ "$got" = "$want" ] && { [ -z "$process" ] || [ "$process" = "$old_process" ]; }; then
+    return 0
+  fi
   # The record first, for the reason the reply is recorded before its pane
   # option: a reader that sees the new option should find the record that goes
   # with it.
@@ -245,6 +257,11 @@ roost_identity_stamp() {
     # Unknown now means unknown: a transcript left from the previous session
     # would name a conversation this pane is no longer having.
     wr+=(';' set-option -pu -t "$pane" @roost-transcript-path)
+  fi
+  if [ -n "$process" ]; then
+    wr+=(';' set-option -p -t "$pane" @roost-agent-process "$process")
+  else
+    wr+=(';' set-option -pu -t "$pane" @roost-agent-process)
   fi
   tmux -S "$sock" "${wr[@]}" 2>/dev/null || return 1
   ROOST_IDENTITY_WROTE=1
