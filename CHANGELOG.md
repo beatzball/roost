@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.0]
+
 ### Added
 
 - **Guard a send to a confirmed agent.** Capture a live pane's identity with
