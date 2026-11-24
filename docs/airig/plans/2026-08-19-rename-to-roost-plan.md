@@ -1,7 +1,7 @@
 # Rename `amux` → `roost` — Plan
 
 Design:     `docs/airig/specs/2026-08-16-rename-to-roost-design.md`
-Repository: `/Users/<home>/w/beatzball/amux/.claude/worktrees/rename-to-roost`
+Repository: `/absolute/path/to/amux/.claude/worktrees/rename-to-roost`
 Branch:     `worktree-rename-to-roost`
 Base:       `7bd1ed4`
 Oracle:     automated (with a deferred human-eye batch)
@@ -42,7 +42,7 @@ Unattended: no
 - **Tests must use isolated sockets.** Every test drives `tmux -S <tmpsock>`.
   **Never** touch the live `-L amux` server. Do not run `tmux kill-server`
   without `-S`/`-L` naming a test socket.
-- **Do not touch the primary checkout** at `/Users/<home>/w/beatzball/amux`.
+- **Do not touch the primary checkout** at `/absolute/path/to/amux`.
   Live agents are running against it; their Claude hooks call
   `scripts/amux-agent-state` there by absolute path on every tool call.
 - **Do not `git stash`.** The stash stack is shared across worktrees.

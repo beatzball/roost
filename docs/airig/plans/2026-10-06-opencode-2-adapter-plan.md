@@ -1,14 +1,14 @@
 # An adapter for opencode 2 — Plan
 
 Design:     `docs/airig/specs/2026-10-02-opencode-2-adapter-design.md` (approved 2026-10-06, v4)
-Repository: `$HOME/w/beatzball/roost/.claude/worktrees/opencode2-adapter`
+Repository: `/absolute/path/to/roost/.claude/worktrees/opencode2-adapter`
 Branch:     `worktree-opencode2-adapter`
 Base:       `8cbafa1` (`main`, PR #153 merged)
 Oracle:     automated (one deferred human-run batch at the end: the live smoke test)
 Unattended: no
 
 > **Repository path:** the worktree, never the primary checkout. Resolve it as
-> `$(git -C "$HOME/w/beatzball/roost" worktree list | grep opencode2-adapter | awk '{print $1}')`
+> `$(git -C /absolute/path/to/roost worktree list | grep opencode2-adapter | awk '{print $1}')`
 > and `cd` there. Before every commit: `git rev-parse --abbrev-ref HEAD` must
 > print `worktree-opencode2-adapter`. Commit with a pathspec
 > (`git commit -m ... -- <files>`), never a bare `git commit`: the index is

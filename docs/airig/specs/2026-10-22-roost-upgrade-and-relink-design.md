@@ -18,11 +18,11 @@ a plain `main` with no local work, because the checkout may be somebody's dev
 tree, and that rule does not move. `roost update` becomes an alias of
 `upgrade`. `roost install` stays what it is: wire, never fetch.
 
-The second half is about one message. A user with roost at `~/w/roost` ran
+The second half is about one message. A user with roost at `~/src/roost` ran
 `roost doctor` and read:
 
 ```
-! opencode 2 plugin at ~/.config/opencode/plugins/roost is not this install — relink it to ~/w/roost/adapters/opencode/v2
+! opencode 2 plugin at ~/.config/opencode/plugins/roost is not this install — relink it to ~/src/roost/adapters/opencode/v2
 ```
 
 No command, and `roost install` refuses the same link as `foreign`. The link

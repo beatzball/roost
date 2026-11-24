@@ -21,6 +21,8 @@ and permanently, including in the history after you delete it.
 - Real names, usernames, or email addresses
 - Absolute home paths — `/Users/<name>/...`, `/home/<name>/...`. Use
   repo-relative paths, `$HOME`, or a placeholder like `/absolute/path/to/roost`
+- The author's own folder layout, such as the folder the repositories live
+  in. Use a neutral example such as `~/src/roost`
 - Provenance trailers of any kind: session links, agent attribution,
   `Co-Authored-By` for a tool, "generated with" footers. The concrete case that
   keeps recurring is a `Claude-Session:` line appended by a harness default —
