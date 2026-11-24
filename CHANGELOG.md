@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **roost is now licensed under Apache 2.0 (was MIT).** Apache 2.0 adds a
+  patent grant from each contributor, and it says that code sent in comes
+  under the same license. Releases up to 0.12.0 stay under MIT.
+
 ## [0.12.0]
 
 `roost send` no longer types over what a person is typing (#251). Before its

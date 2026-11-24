@@ -1456,7 +1456,7 @@ export class SplashPage extends LitroPage {
       <footer>
         <div class="wrap foot-links">
           ${nav.map((item) => html`<a href=${item.href}>${item.label}</a>`)}
-          <span class="credit">MIT licence. Built with <a href="https://litro.dev" rel="noopener">Litro</a>.</span>
+          <span class="credit">Apache 2.0 licence. Built with <a href="https://litro.dev" rel="noopener">Litro</a>.</span>
         </div>
         <span class="wordmark mono" aria-hidden="true">roost</span>
       </footer>
