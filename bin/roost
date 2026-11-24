@@ -489,7 +489,11 @@ resolve_was() {
         fi
       done <<< "$rows"
       if [ -n "$live" ] && [ -n "$restored" ]; then
-        echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Use a name, or a session:window.pane target." >&2
+        if [ "$strict" = 1 ]; then
+          echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Guarded send requires an unambiguous live pane ID." >&2
+        else
+          echo "roost $verb: $raw is ambiguous: it is pane $live and was the id of $restored before a restore. Use a name, or a session:window.pane target." >&2
+        fi
         return 1
       fi
       return 0 ;;
@@ -1988,14 +1992,16 @@ JSON
     }
     if [ "$guard_given" = 1 ]; then
       if [ "$force" = 1 ]; then echo "$usage_send" >&2; exit 2; fi
-      # An escape, carriage return or other control key inside the payload
-      # could act as a terminal command before the guarded Enter.
+      # A tmux paste without active brackets turns LF into CR, so a multiline
+      # message can submit during paste. Older supported tmux servers cannot
+      # expose bracket mode in the paste condition. Keep guarded text to one
+      # line and exclude other control keys before touching the editor.
       send_text_ok() {
-        local LC_ALL=C text="${1//$'\n'/}"
-        case "${text//$'\t'/}" in *[[:cntrl:]]*) return 1 ;; esac
+        local LC_ALL=C
+        case "$1" in *[[:cntrl:]]*) return 1 ;; esac
       }
       if ! send_text_ok "$*"; then
-        echo 'roost send: guarded messages accept plain text, tabs and newlines' >&2; exit 2
+        echo 'roost send: guarded messages require one line of text without control characters — no input was delivered' >&2; exit 2
       fi
       send_guard_setup
       send_guard_pane "$raw" || send_guard_stop

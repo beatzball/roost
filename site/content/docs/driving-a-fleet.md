@@ -285,20 +285,28 @@ session. It checks the binding before paste, Enter, retries, and any draft
 cleanup. A shell, a blocked pane, or a replacement agent fails the check,
 even if a replacement resumes the same session. Use the current `%N` pane
 ID. Historical `was:` aliases, ambiguous pane IDs, and window targets are
-refused.
+refused. A historical claim from another live pane makes the ID ineligible
+even when you selected the current pane directly. The check runs again with
+each terminal action and also refuses matching inherited claims.
 
-The agent needs to report its identity through updated roost wiring while
-its harness process is in the foreground. Roost checks the OS foreground
-group and the reported blocked state. It also compares tmux's current
-command in the same condition that gates each terminal action. Pi and other
-harnesses that appear as generic `node` or `bun` processes are ineligible.
-An unreported dialog can escape these checks. If the process exits after
-tmux starts delivering bytes, the guard cannot recall them or prove what
-the application consumed.
+The agent needs to be the pane's own process, leading its foreground process
+group, and report its identity through updated roost wiring. Launch the agent
+directly or have the launcher `exec` it. An agent running as a job under a
+surviving shell or wrapper is ineligible because the shell can switch to a
+same-name job while keeping the same pane ID. Pi and other harnesses that
+appear as generic `node` or `bun` processes are also ineligible.
+
+Roost compares the pane process and tmux's live foreground command in the
+same condition that gates each terminal action. An unreported dialog can
+escape the blocked-state check. If the process exits after tmux starts
+delivering bytes, roost cannot recall them or prove what the application
+consumed. A detected identity loss after an action returns exit `8`.
 
 `--agent-only` works with `--when-idle`, `--from`, and `--json`. Occupied
-input still holds the send. `--force` is incompatible with the guard. Message
-text can include tabs and newlines. Other terminal control bytes are refused.
+input still holds the send. `--force` is incompatible with the guard. Send a
+single line of text without terminal control bytes. A newline or other ASCII
+control byte exits `2` before typing because an unbracketed paste can treat a
+newline as Enter. To refer to multiline notes, send their path in one line.
 
 ### Exit codes for `roost send`
 

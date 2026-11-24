@@ -11,10 +11,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 - **Guard a send to a confirmed agent.** Capture a live pane's identity with
   `roost send --agent-token %N`, then use `roost send --agent-only TOKEN %N TEXT`.
-  The guard checks the same harness session and foreground process at paste
-  and submit, even after waiting for a lock or an occupied editor. Exit `7`
-  means the guard refused before delivering input. Exit `8` means input
-  may have reached the target and needs checking before a retry.
+  Guarded sends take one line of text and require the agent to be the pane's
+  own process. The guard checks the harness session and foreground process
+  at paste and submit, even after waiting for a lock or an occupied editor.
+  Exit `7` means the guard refused before delivering input. Exit `8` means
+  input may have reached the target and needs checking before a retry.
 
 ### Changed
 

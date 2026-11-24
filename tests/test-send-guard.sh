@@ -4,6 +4,7 @@ set -u
 . "$(dirname "$0")/lib.sh"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOST="$HERE/bin/roost"
+. "$HERE/scripts/lib/roost-send-guard.sh"
 work="$(mktemp -d /tmp/amx.XXXX)"
 export HOME="$work/home" XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/data" XDG_STATE_HOME="$work/state"
 export CODEX_HOME="$work/codex-home" COPILOT_HOME="$work/copilot" PI_CODING_AGENT_DIR="$work/pi"
@@ -49,12 +50,15 @@ if [ "$3" != none ]; then
   /bin/bash -c '. "$1/scripts/lib/roost-identity.sh"; roost_identity_stamp "$ROOST_TEST_SOCK" "$TMUX_PANE" shared-session "$2" "$3" ""' \
     reporter "$1" "$2" "$3"
 fi
-ROOST_TEST_INPUT_HARNESS=codex python3 "$1/tests/fixtures/input-box.py" "$2"
+ROOST_TEST_INPUT_HARNESS=codex ROOST_TEST_INPUT_BRACKETS="${4:-1}" python3 "$1/tests/fixtures/input-box.py" "$2"
 exit $?
 SH
 cat > "$work/job-shell" <<'SH'
 set -m
-"$1" /bin/bash "${@:2}"
+"$1" /bin/bash "$2" "$3" "$4" "$5"
+if [ "$6" = handoff ]; then
+  "$1" /bin/bash "$2" "$3" "$4-replacement" none
+fi
 printf '\nshell returned\n'
 IFS= read -r unused
 SH
@@ -71,9 +75,10 @@ screen_has() { T capture-pane -p -t "$1" 2>/dev/null | grep -Fq "$2"; }
 launch() {
   local name="$1" draft="$2" harness="${3:-codex}" exe="${4:-codex}" into="${5:-}"
   local cmd="exec '$work/$exe' /bin/bash '$work/editor' '$HERE' '$work/$name' '$harness'"
-  if [ "${6:-}" = shell ]; then
-    cmd="exec /bin/bash '$work/job-shell' '$work/$exe' '$work/editor' '$HERE' '$work/$name' '$harness'"
-  fi
+  case "${6:-}" in
+    handoff) cmd="exec /bin/bash '$work/job-shell' '$work/$exe' '$work/editor' '$HERE' '$work/$name' '$harness' handoff" ;;
+    no-brackets) cmd="$cmd 0" ;;
+  esac
   printf '%s' "$draft" > "$work/$name.draft"
   if [ -n "$into" ]; then
     T respawn-pane -k -t "$into" "$cmd" || exit 1
@@ -99,11 +104,25 @@ paste_hex() { printf '\033[200~%s\033[201~' "$1" | od -An -tx1 -v | tr -d ' \n';
 
 launch success ''
 confirmed="$(token "$p")" || exit 1
-msg=$'inert notes\nsecond line'
-send_rc --json --agent-only "$confirmed" "$p" "$msg"
+send_rc --json --agent-only "$confirmed" "$p" 'inert notes reference'
 assert_eq "$rc" 0 'a confirmed live agent receives a guarded send'
 assert_contains "$(cat "$work/out")" "\"pane\":\"$p\"" 'guarded send keeps existing JSON output'
-assert_eq "$(cat "$work/success")" '"inert notes\nsecond line"' 'multiline notes are submitted whole exactly once'
+assert_eq "$(cat "$work/success")" '"inert notes reference"' 'a one-line message is submitted whole exactly once'
+
+for mode in brackets no-brackets; do
+  launch "lf-$mode" '' codex codex '' "$mode"
+  confirmed="$(token "$p")" || exit 1
+  send_rc --agent-only "$confirmed" "$p" $'first inert line\nsecond inert line'
+  assert_eq "$rc" 2 "$mode: LF is refused before delivery"
+  assert_file_absent "$work/lf-$mode.keys" "$mode: refused multiline sends issue zero terminal bytes"
+  assert_file_absent "$work/lf-$mode" "$mode: no line was submitted"
+  if [ "$mode" = no-brackets ]; then
+    send_rc --agent-only "$confirmed" "$p" 'one inert line'
+    assert_eq "$rc" 0 'an unbracketed editor can receive a guarded one-line message'
+    expected="$(printf '%s\r' 'one inert line' | od -An -tx1 -v | tr -d ' \n')"
+    assert_eq "$(key_hex "$work/lf-$mode.keys")" "$expected" 'the unbracketed fixture gets literal text and exactly one Enter'
+  fi
+done
 
 launch no-identity '' none
 send_rc --agent-token "$p"
@@ -124,6 +143,8 @@ assert_file_absent "$work/blocked.keys" 'a blocked target receives no Enter, pas
 T set-option -pu -t "$p" @agent_state
 send_rc --agent-only "$confirmed" "$p" $'invalid\rtext'
 assert_eq "$rc" 2 'literal terminal controls in guarded text are refused'
+send_rc --agent-only "$confirmed" "$p" $'invalid\ttext'
+assert_eq "$rc" 2 'a guarded send cannot type Tab into an unbracketed editor'
 send_rc --agent-only "$confirmed" --force "$p" 'inert'
 assert_eq "$rc" 2 'force and guarded send are mutually exclusive'
 assert_file_absent "$work/blocked.keys" 'invalid guarded sends issue no keys'
@@ -149,19 +170,29 @@ send_rc --agent-only "$confirmed" "$p" 'inert'
 assert_eq "$rc" 7 'a shell replacing the confirmed agent refuses delivery'
 assert_eq "$(T capture-pane -p -t "$p" | grep -c inert)" 0 'no text reached the replacement shell'
 
-launch foreground-exit '' codex codex '' shell
-confirmed="$(token "$p")" || exit 1
+printf '%s' 'replacement draft' > "$work/shell-handoff-replacement.draft"
+launch shell-handoff '' codex codex '' handoff
+shell_candidate="$(T display-message -p -t "$p" "$ROOST_SEND_GUARD_FORMAT")"
 parent_pid="$(T display-message -p -t "$p" '#{pane_pid}')"
 stamp="$(T show-options -pqv -t "$p" @roost-agent-process)"
 IFS=- read -r bound_pane_pid foreground_pid agent_pid birth <<< "$stamp"
 [ "$bound_pane_pid" = "$parent_pid" ] && [ "$foreground_pid" != "$parent_pid" ] || exit 1
+assert_eq "$(T display-message -p -t "$p" '#{pane_current_command}')" codex 'a shell-launched agent advertises the same command name'
+send_rc --agent-token "$p"
+assert_eq "$rc" 7 'the job-control shell cannot produce a guarded token'
+send_rc --agent-only "$shell_candidate" "$p" 'inert'
+assert_eq "$rc" 7 'a former token for a shell-launched job refuses paste'
+send_rc --agent-only "$shell_candidate" "$p" ''
+assert_eq "$rc" 7 'a former token for a shell-launched job refuses bare Enter'
+assert_file_absent "$work/shell-handoff.keys" 'the first shell job receives zero terminal bytes'
 kill -TERM -- "-$foreground_pid"
-wait_for screen_has "$p" 'shell returned' || exit 1
-assert_eq "$(T display-message -p -t "$p" '#{pane_pid}')" "$parent_pid" 'the pane shell survives its foreground agent'
-assert_eq "$(T show-options -pqv -t "$p" @roost-agent-process)" "$stamp" 'the process stamp remains after the foreground agent exits'
-send_rc --agent-only "$confirmed" "$p" 'inert'
-assert_eq "$rc" 7 'the same pane shell cannot inherit the departed agent confirmation'
-assert_eq "$(T capture-pane -p -t "$p" | grep -c inert)" 0 'no text reached the surviving shell'
+wait_for screen_has "$p" 'replacement draft' || exit 1
+assert_eq "$(T display-message -p -t "$p" '#{pane_pid}/#{pane_current_command}')" "$parent_pid/codex" 'the same-name shell handoff preserves pane PID and command'
+assert_eq "$(T show-options -pqv -t "$p" @roost-agent-process)" "$stamp" 'the original stamp survives the handoff'
+send_rc --agent-only "$shell_candidate" "$p" ''
+assert_eq "$rc" 7 'the same-name replacement cannot inherit the former token'
+assert_file_absent "$work/shell-handoff-replacement.keys" 'the same-name shell replacement receives zero bytes'
+assert_file_absent "$work/shell-handoff-replacement" 'the replacement draft stays unsubmitted'
 
 launch dead ''
 confirmed="$(token "$p")" || exit 1
@@ -214,6 +245,10 @@ cat > "$work/shim/tmux" <<'SH'
 if [ "$1" = -S ] && [ "$2" = "$ROOST_TEST_SOCK" ] && [ "${3:-}" = if-shell ]; then
   case "${7:-}" in
     *"${AFTER_ACTION:-paste-buffer}"*)
+      if [ -n "${AFTER_DISPATCH:-}" ]; then
+        "$REAL_TMUX" "$@" || exit $?
+        exec /bin/bash -c "$AFTER_DISPATCH"
+      fi
       if [ -n "${AFTER_PROBE:-}" ]; then
         change="$AFTER_PROBE"
       else
@@ -230,15 +265,10 @@ assert_eq "$(T show-options -pqv -t "$p" @agent_state)" blocked 'the badge chang
 assert_eq "$rc" 7 'the server format check refuses a last-moment block before paste'
 assert_file_absent "$work/paste-boundary.keys" 'a refused paste issues no terminal keys, including cleanup'
 
-launch foreground-boundary '' codex codex '' shell
-confirmed="$(token "$p")" || exit 1
-stamp="$(T show-options -pqv -t "$p" @roost-agent-process)"
-IFS=- read -r bound_pane_pid foreground_pid agent_pid birth <<< "$stamp"
-[ "$foreground_pid" != "$bound_pane_pid" ] || exit 1
-cat > "$work/after-probe" <<'SH'
-kill -TERM -- "-$1" || exit 1
+cat > "$work/replace-pane" <<'SH'
+"$1" -S "$2" respawn-pane -k -t "$3" "$4" || exit 1
 for ((n=0; n<100; n++)); do
-  if "$2" -S "$3" capture-pane -p -t "$4" | grep -q 'shell returned'; then
+  if "$1" -S "$2" capture-pane -p -t "$3" | grep -q 'replacement draft'; then
     : > "$5"
     exit 0
   fi
@@ -246,27 +276,57 @@ for ((n=0; n<100; n++)); do
 done
 exit 1
 SH
-printf -v after_probe '/bin/bash %q %q %q %q %q %q' "$work/after-probe" "$foreground_pid" \
-  "$REAL_TMUX" "$ROOST_TEST_SOCK" "$p" "$work/probe-passed"
-AFTER_PROBE="$after_probe" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$p" 'inert'
-[ -f "$work/probe-passed" ]; assert_true $? 'the successful probe observed an agent that exited before the paste condition'
-assert_eq "$(T show-options -pqv -t "$p" @roost-agent-process)" "$stamp" 'the process stamp is unchanged at the foreground boundary'
-assert_eq "$rc" 7 'the server format refuses the new foreground command before paste'
-assert_eq "$(T capture-pane -p -t "$p" | grep -c inert)" 0 'the surviving shell receives no paste despite the successful process probe'
+replacement_command() {
+  printf '%s' 'replacement draft' > "$work/$1-replacement.draft"
+  local cmd="exec '$work/codex' /bin/bash '$work/editor' '$HERE' '$work/$1-replacement' none"
+  printf -v replace '/bin/bash %q %q %q %q %q %q' "$work/replace-pane" "$REAL_TMUX" \
+    "$ROOST_TEST_SOCK" "$p" "$cmd" "$work/$1-replaced"
+}
+for phase in paste enter dispatched; do
+  launch "$phase-old" ''
+  confirmed="$(token "$p")" || exit 1
+  stamp="$(T show-options -pqv -t "$p" @roost-agent-process)"
+  old_pid="$(T display-message -p -t "$p" '#{pane_pid}')"
+  replacement_command "$phase"
+  case "$phase" in
+    paste) AFTER_PROBE="$replace" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$p" 'inert'; expected_rc=7 ;;
+    enter) AFTER_ACTION=' Enter ;' AFTER_PROBE="$replace" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$p" 'inert'; expected_rc=8 ;;
+    dispatched) AFTER_ACTION=' Enter ;' AFTER_DISPATCH="$replace" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$p" 'inert'; expected_rc=8 ;;
+  esac
+  [ -f "$work/$phase-replaced" ]; assert_true $? "$phase: the probe or action completed before the same-name replacement"
+  assert_eq "$(T show-options -pqv -t "$p" @roost-agent-process)" "$stamp" "$phase: the same-name replacement retains the old stamp"
+  assert_eq "$(T display-message -p -t "$p" '#{pane_current_command}')" codex "$phase: tmux still reports the same command name"
+  [ "$(T display-message -p -t "$p" '#{pane_pid}')" != "$old_pid" ]; assert_true $? "$phase: dedicated replacement changes the pane PID"
+  assert_eq "$rc" "$expected_rc" "$phase: refusal or uncertainty reflects the delivery boundary"
+  assert_file_absent "$work/$phase-replacement.keys" "$phase: replacement gets zero input including cleanup"
+  assert_file_absent "$work/$phase-replacement" "$phase: replacement draft stays unsubmitted"
+  case "$phase" in
+    paste) [ ! -s "$work/$phase-old.keys" ]; assert_true $? 'a pre-paste replacement leaves the old editor untouched' ;;
+    enter) assert_eq "$(key_hex "$work/$phase-old.keys")" "$(paste_hex inert)" 'the original editor received only the paste' ;;
+  esac
+done
 
-launch enter-boundary '' codex codex '' shell
-confirmed="$(token "$p")" || exit 1
-stamp="$(T show-options -pqv -t "$p" @roost-agent-process)"
-IFS=- read -r bound_pane_pid foreground_pid agent_pid birth <<< "$stamp"
-[ "$foreground_pid" != "$bound_pane_pid" ] || exit 1
-printf -v after_probe '/bin/bash %q %q %q %q %q %q' "$work/after-probe" "$foreground_pid" \
-  "$REAL_TMUX" "$ROOST_TEST_SOCK" "$p" "$work/probe-passed-enter"
-AFTER_ACTION=' Enter ;' AFTER_PROBE="$after_probe" PATH="$work/shim:$PATH" \
-  send_rc --agent-only "$confirmed" "$p" 'inert paste only'
-[ -f "$work/probe-passed-enter" ]; assert_true $? 'the successful probe observed an agent that exited before the Enter condition'
-assert_eq "$rc" 8 'the server format refuses the new foreground command before Enter'
-assert_eq "$(key_hex "$work/enter-boundary.keys")" "$(paste_hex 'inert paste only')" 'the old agent got only the paste'
-screen_has "$p" 'shell returned'; assert_true $? 'the replacement shell is still waiting for input'
+# A late claim in a different session must be seen by the final server scan.
+# Use a padded historical ID to exercise the ordinary resolver's normalization.
+alias_pane="$(T new-session -d -P -F '#{pane_id}' 'exec /bin/sh')"
+for phase in paste enter; do
+  launch "alias-$phase" ''
+  confirmed="$(token "$p")" || exit 1
+  claim="%000${p#%}"
+  printf -v after_probe '%q -S %q set-option -p -t %q @roost-was %q' "$REAL_TMUX" "$ROOST_TEST_SOCK" "$alias_pane" "$claim"
+  if [ "$phase" = paste ]; then action=paste-buffer; expected_rc=7; else action=' Enter ;'; expected_rc=8; fi
+  AFTER_ACTION="$action" AFTER_PROBE="$after_probe" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$p" 'inert'
+  assert_eq "$(T show-options -pqv -t "$alias_pane" @roost-was)" "$claim" "$phase: alias appeared after the process probe"
+  assert_eq "$rc" "$expected_rc" "$phase: the final condition refuses a new historical alias"
+  assert_file_absent "$work/alias-$phase" "$phase: nothing was submitted"
+  if [ "$phase" = paste ]; then
+    assert_file_absent "$work/alias-$phase.keys" 'the late alias prevents all terminal input'
+  else
+    assert_eq "$(key_hex "$work/alias-$phase.keys")" "$(paste_hex inert)" 'the late alias prevents Enter and cleanup after paste'
+  fi
+  T set-option -pu -t "$alias_pane" @roost-was
+done
+T kill-pane -t "$alias_pane"
 
 launch submit ''
 confirmed="$(token "$p")" || exit 1
@@ -282,7 +342,7 @@ assert_eq "$(T list-buffers -F '#{buffer_name}' 2>/dev/null)" '' 'refusals leave
 
 launch ordinary '' none
 T set-option -g @roost-send-enter-delay 0.1
-send_rc "$p" 'ordinary send'
+send_rc "$p" $'ordinary send\nstill multiline'
 assert_eq "$rc" 0 'ordinary send remains compatible with an unreported editor'
-assert_eq "$(cat "$work/ordinary")" '"ordinary send"' 'ordinary send still submits exactly once'
+assert_eq "$(cat "$work/ordinary")" '"ordinary send\nstill multiline"' 'ordinary send still submits multiline text exactly once'
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
