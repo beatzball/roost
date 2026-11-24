@@ -29,7 +29,7 @@ against a live Claude Code pane returns:
 ```
 ❯
 ────────────────────────────────────────────────
-  ~/w/beatzball/roost   main   Opus 5 (1M context)   ctx 80%
+  ~/src/roost   main   Opus 5 (1M context)   ctx 80%
   current  ● ○ ○ ○ ○ ○ ○ ○ ○ ○   11%   1h 44m
   weekly   ● ● ● ○ ○ ○ ○ ○ ○ ○   31%   13h 14m
 ```
