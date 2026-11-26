@@ -20,14 +20,14 @@ id_of() { T show-options -pqv -t "$1" @roost-id; }
 in_pane() { local p="$1"; shift; env TMUX="$sock,$(T display -p '#{pid}'),0" TMUX_PANE="$p" "$@"; }
 valid() { roost_pane_id_parse "$1" && [ "$1" = "$ROOST_PANE_ID" ]; }
 
-# All 217 single-symbol substitutions and all distinct adjacent swaps for each
-# of 64 random codewords, including changes to and swaps with the check digit.
+# All single-symbol substitutions and distinct adjacent swaps for each of 64
+# random codewords, including the fixed prefix and the check digit.
 check_typos() {
   local n i j digit compact mutant second
   for ((n=0; n<64; n++)); do
     roost_pane_id__new && valid "$ROOST_PANE_ID" || return 1
     compact="${ROOST_PANE_ID//-/}"
-    for ((i=1; i<8; i++)); do
+    for ((i=0; i<8; i++)); do
       for ((j=0; j<32; j++)); do
         digit="${ROOST_PANE_ID_ALPHABET:j:1}"
         [ "$digit" = "${compact:i:1}" ] && continue
@@ -83,8 +83,8 @@ out="$(R send "$bad" 'printf SHOULD-NOT-ARRIVE' 2>&1)"; rc=$?
 assert_eq "$rc" 2 "send refuses a bad check even when a tmux window has that name"
 assert_contains "$out" 'not a valid pane id' "the bad check has a specific diagnostic"
 assert_eq "$(T capture-pane -pt "$worker")$(T capture-pane -pt "$decoy")" "$before" "the bad ID typed no keys on either pane"
-T new-window -d -n postgres 'exec cat'
-R screen postgres >/dev/null; assert_true $? "ordinary p-prefixed window names still resolve"
+named="$(T new-window -d -P -F '#{pane_id}' -n postgres 'exec cat')"
+assert_contains "$(R screen --json postgres)" "\"pane\":\"$named\"" "ordinary p-prefixed window names still resolve"
 if roost_pane_id_restore T "$decoy" "$id"; then collision_rejected=1; else collision_rejected=0; fi
 assert_eq "$collision_rejected" 0 "a saved ID already present on the live server cannot be assigned to another pane"
 valid "$(id_of "$decoy")"; decoy_stamped=$?
