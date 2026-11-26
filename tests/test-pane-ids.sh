@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOST="$HERE/bin/roost"
 
 work="$(mktemp -d /tmp/amx.XXXX)"; sock="$work/roost"
-trap 'tmux -S "$sock" kill-server 2>/dev/null; rm -rf "$work"' EXIT
+trap 'tmux -S "$work/roost" kill-server 2>/dev/null; tmux -S "$work/restored/roost" kill-server 2>/dev/null; rm -rf "$work"' EXIT
 export HOME="$work/home" XDG_CONFIG_HOME="$work/config" XDG_DATA_HOME="$work/data" XDG_STATE_HOME="$work/state"
 export COPILOT_HOME="$work/copilot" CODEX_HOME="$work/codex" PI_CODING_AGENT_DIR="$work/pi"
 export CLAUDE_SETTINGS="$work/claude/settings.json" CLAUDE_CONFIG_DIR="$work/claude"
@@ -134,14 +134,10 @@ R save --to "$work/shape" >/dev/null || exit 1
 assert_contains "$(cat "$work/shape")" "roost_id $me" "save keeps the original ID"
 sed "/^roost_id $id\$/d" "$work/shape" > "$work/old-shape"
 T kill-server >/dev/null 2>&1 || true
-# The shutdown client can return before tmux 3.4 unlinks its socket. Wait
-# before starting a server at the same path or the next client can reach the
-# server that is still exiting.
-for ((i=0; i<100; i++)); do
-  [ -S "$sock" ] || break
-  sleep 0.05
-done
-[ ! -S "$sock" ] || exit 1
+# A fresh socket keeps the test independent of when an exiting tmux 3.4
+# server removes the old socket. The archive and ID ledger stay the same.
+mkdir "$work/restored"
+sock="$work/restored/roost"; export ROOST_SOCKET="$sock"
 # Start another boot with %0 used elsewhere so a lookup by an old numeric
 # sender ID cannot pass this test by accident.
 T -f /dev/null new-session -d -x 200 -y 50 -s unrelated 'ENV= exec /bin/sh' || exit 1
