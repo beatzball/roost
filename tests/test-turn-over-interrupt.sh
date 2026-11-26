@@ -196,8 +196,8 @@ assert_eq "$rc" "5" "wait-done on a WINDOW target recovers its interrupted pane 
 
 p="$(newpane)"; require_pane "$p" status
 stamp "$p" "$work/interrupt-stream.jsonl" "$STREAM_SINCE"
-"$ROOST" status >/dev/null 2>&1
-"$ROOST" status --json >/dev/null 2>&1
+XDG_STATE_HOME="$work/state" "$ROOST" status >/dev/null 2>&1
+XDG_STATE_HOME="$work/state" "$ROOST" status --json >/dev/null 2>&1
 assert_eq "$(opt "$p" @agent_state)" "working" "status never recovers: a read command stays a read command (Q6)"
 pane_has "$p" @roost-ended; assert_eq "$?" "1" "...and records nothing"
 

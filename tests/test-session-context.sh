@@ -78,6 +78,8 @@ ev="$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdi
 assert_eq "$ev" "SessionStart" "hookEventName is exactly SessionStart"
 
 text="$(printf '%s' "$out" | ctx 2>/dev/null)"
+roost_id="$(tmux -S "$s" show -pqv -t "$spane" @roost-id)"
+assert_contains "$text" "This pane is $roost_id ($spane)" "the injected context starts with the stable address"
 assert_contains "$text" "$spane" "the injected context names this pane's own id"
 assert_contains "$text" "roost split" "the injected context steers at roost split"
 assert_contains "$text" "roost send" "the injected context steers at roost send"
@@ -105,7 +107,7 @@ base="$out"
 tmux -S "$s" set-option -p -t "$spane" @roost-was %930
 out2="$(in_roost "$SC" </dev/null 2>/dev/null)"
 text2="$(printf '%s' "$out2" | ctx 2>/dev/null)"
-assert_contains "$text2" "This pane is $spane (it was %930 before a restore)" "with @roost-was %930: the context adds the id it had before the restore"
+assert_contains "$text2" "This pane is $roost_id ($spane) (it was %930 before a restore)" "with @roost-was %930: the context adds the id it had before the restore"
 assert_eq "$(printf '%s' "$out2" | sed 's/ (it was %930 before a restore)//')" "$base" "...and nothing else changes"
 tmux -S "$s" set-option -pu -t "$spane" @roost-was
 out3="$(in_roost "$SC" </dev/null 2>/dev/null)"
@@ -131,7 +133,7 @@ assert_eq "$rc" "0" "an ordinary non-roost tmux gets exit 0"
 # Belt and braces: whoami really does answer for that pane, so the assertion
 # above is pinning the guard and not an accident of the server being missing.
 who="$(in_plain "$HERE/bin/roost" whoami 2>/dev/null)"
-assert_prefix "$who" "%" "roost whoami still resolves an id outside roost (which is why the guard cannot use it alone)"
+assert_prefix "$who" "p-" "roost whoami still resolves an id outside roost (which is why the guard cannot use it alone)"
 
 # No tmux at all — a plain terminal, the ordinary case for anyone who wired the
 # hook globally and is not using roost right now.

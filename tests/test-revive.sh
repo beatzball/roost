@@ -310,8 +310,10 @@ reset
 P="$(stubpane claude)"; wait_cmd "$P" claude
 setid "$P" claude "$U4" /some/old/worktree; TL set-option -p -t "$P" @agent_state idle
 pid0="$(ppid_of "$P")"
-out="$(R revive "$P" 2>"$SHAPE_TMP/err")"; rc=$?
-assert_eq "$rc|$out" "0|$P" "an idle agent pane: exit 0, and the SAME %N printed"
+idle_id=p-000-100-8
+TL set -p -t "$P" @roost-id "$idle_id"
+out="$(R revive "$idle_id" 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc|$out" "0|$P" "revive by stable ID on an idle agent pane: exit 0, and the SAME %N printed"
 wait_log "claude --resume $U4"; assert_true $? "...the stub was launched with --resume <id>"
 assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$D1R" "...in the transcript's own cwd (not @roost-cwd)"
 [ "$(ppid_of "$P")" != "$pid0" ]; assert_true $? "...the pane was respawned (its process changed)"
@@ -631,12 +633,17 @@ U8=3fa3c0de-8888-4abc-8def-000000000008
 reset
 TRF="$SHAPE_TMP/kept/$U8.jsonl"; mkdir -p "${TRF%/*}"
 printf '{"type":"user","cwd":"%s"}\n' "$WT" > "$TRF"
-G="$(gone_pane)"; plant_record "$G" claude "$U8" /old/identity/cwd "$TRF"
+G="$(shpane)"; plant_record "$G" claude "$U8" /old/identity/cwd "$TRF"
+R status >/dev/null
+gone_id="$(popt "$G" @roost-id)"
+TL kill-pane -t "$G"
 mv "$CLAUDE_CONFIG_DIR/projects" "$SHAPE_TMP/projects.away"
 out="$(R revive "$G" 2>"$SHAPE_TMP/err")"; rc=$?
 mv "$SHAPE_TMP/projects.away" "$CLAUDE_CONFIG_DIR/projects"
 case "$out" in %[0-9]*) [ "$out" != "$G" ]; okn=$? ;; *) okn=1 ;; esac
 assert_eq "$rc|$okn" "0|0" "a gone %N with a record: exit 0, a NEW %N printed"
+case "$gone_id" in p-*) assert_eq "$(popt "$out" @roost-id)" "$gone_id" "the new pane reclaims the gone pane's free ID" ;;
+  *) assert_true 1 "the gone pane had a stable ID before it closed" ;; esac
 assert_eq "$(popt "$out" @roost-was)" "$G" "...@roost-was names the old pane"
 assert_eq "$(TL display -p -t "$out" '#{session_name}')" "shp" "...in the caller's session (no record session, no main: the first session)"
 wait_log "claude --resume $U8"; assert_true $? "...the stub launched"
@@ -831,6 +838,27 @@ n0="$(nwin)"; pid0="$(ppid_of "$P")"
 R revive --new-window "$P" >/dev/null 2>"$SHAPE_TMP/err"; rc=$?
 assert_eq "$rc|$(nwin)|$(ppid_of "$P")" "13|$n0|$pid0" "--new-window of a live pane with its own key: exit 13, no new window, the pane untouched"
 assert_contains "$(cat "$SHAPE_TMP/err")" "is open in $P" "...naming the pane itself"
+TL kill-pane -t "$P"
+
+# A pane left behind by a failed resume keeps its window. Its address
+# follows the conversation, and the old pane gets its own new ID.
+reset
+P="$(shpane "$D1R")"; plant_record "$P" claude "$U4" "$D1R"
+R status >/dev/null
+old_id="$(popt "$P" @roost-id)"
+TL set -p -t "$P" remain-on-exit on
+TL respawn-pane -k -t "$P" 'exit 1'
+for ((i=0; i<50; i++)); do
+  [ "$(TL display -p -t "$P" '#{pane_dead}')" = 1 ] && break
+  sleep 0.1
+done
+out="$(R revive --new-window "$old_id" 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc|$(TL display -p -t "$P" '#{pane_dead}')|$(popt "$out" @roost-id)" "0|1|$old_id" "revive --new-window moves the original ID and leaves its old pane in place"
+shell_id="$(popt "$P" @roost-id)"
+case "$shell_id" in p-*) [ "$shell_id" != "$old_id" ]; assert_true $? "the old pane has a fresh ID" ;;
+  *) assert_true 1 "the old pane has a fresh ID" ;; esac
+assert_contains "$(R screen --json "$old_id")" "\"pane\":\"$out\"" "the original ID resolves to the revived conversation"
+TL kill-pane -t "$out" 2>/dev/null
 TL kill-pane -t "$P"
 
 # A dead pane left by a resume that exited non-zero can be revived again in

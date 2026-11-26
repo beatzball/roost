@@ -18,6 +18,8 @@
 # project directory and every session id, and a session id alone is enough to
 # `--resume` a conversation on a shared machine (§3.1).
 
+. "${BASH_SOURCE[0]%/*}/roost-pane-id.sh"
+
 # roost_shape_saving -> prints the shape root, or nothing; exit 0 when saving
 # is on, 1 when it is off.
 #
@@ -261,7 +263,8 @@ roost_shape__agree_pane_set() {
 # every run from a roost pane.)
 roost_shape__t() { tmux -u "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$@"; }
 
-# roost_shape__read_rules -> sets ROOST_SHAPE_DOLLAR and ROOST_SHAPE_OCTAL.
+# roost_shape__read_rules [PANE CONDITION] -> sets ROOST_SHAPE_DOLLAR and
+# ROOST_SHAPE_OCTAL.
 #
 # What this server does to a value when it PRINTS it, learned once per run,
 # before the listings (rulings R6 and R8.2, probe 1.3,
@@ -276,15 +279,26 @@ roost_shape__t() { tmux -u "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$@"; }
 # So: set one pane option to a known value holding both, read it back, unset
 # it, all in one tmux command. No -t: the current pane of whichever session
 # tmux picks, which is fine, because any pane answers the question and the
-# option is gone before the command returns. Measured on 3.2a, 3.4 and 3.6:
+# option is gone before the command returns. On a pinned path use the same
+# conditional queue for the probe, so it cannot write on a replacement
+# server. Measured on 3.2a, 3.4 and 3.6:
 # the target-less form works on a detached server and leaves no pane with the
 # option.
 roost_shape__read_rules() {
-  local out esc
+  local out esc target="" command
   esc="$(printf '\033')"
   ROOST_SHAPE_DOLLAR=0 ROOST_SHAPE_OCTAL=0
-  out="$(roost_shape__t set-option -p @roost-shape-probe "a\$b${esc}c" ';' \
-    show-options -pv @roost-shape-probe ';' set-option -pu @roost-shape-probe 2>/dev/null)" || return 1
+  if [ -n "${2:-}" ]; then
+    if [ -n "$1" ]; then target=" -t $1"; fi
+    command="set-option -p$target @roost-shape-probe 'a\$b${esc}c' ; show-options -pv$target @roost-shape-probe ; set-option -pu$target @roost-shape-probe"
+    local -a scope=()
+    if [ -n "$1" ]; then scope=(-t "$1"); fi
+    out="$(roost_shape__t if-shell -F ${scope[@]+"${scope[@]}"} "$2" "$command" '' 2>/dev/null)" || return 1
+    [ -n "$out" ] || return 1
+  else
+    out="$(roost_shape__t set-option -p @roost-shape-probe "a\$b${esc}c" ';' \
+      show-options -pv @roost-shape-probe ';' set-option -pu @roost-shape-probe 2>/dev/null)" || return 1
+  fi
   case "$out" in *'\$'*) ROOST_SHAPE_DOLLAR=1 ;; esac
   case "$out" in *'\033'*) ROOST_SHAPE_OCTAL=1 ;; esac
   return 0
@@ -375,7 +389,7 @@ roost_shape__stamp() {
 # part after the cut is skipped.
 ROOST_SHAPE_FS='#{session_id} #{session_attached} #{session_grouped} #{window_index} x#{q:session_group} x#{q:session_name} .#{session_id}'
 ROOST_SHAPE_FW='#{window_id} #{session_id} #{window_index} #{window_active} #{window_zoomed_flag} #{automatic-rename} #{window_layout} x#{q:window_name} .#{window_id}'
-ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} #{pane_pid} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} .#{pane_id}'
+ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} #{pane_pid} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} x#{q:@roost-id} .#{pane_id}'
 
 # roost_shape__suspect LINE -> exit 0 when a listing line must be read again
 # field by field. On a server that prints control bytes as `\NNN` (R8.2), the
@@ -460,12 +474,12 @@ roost_shape__parse_windows() {
 }
 
 roost_shape__parse_panes() {
-  local line pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp end
+  local line pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp xid end
   P_ID=() P_SID=() P_WID=() P_IDX=() P_ACT=() P_PPID=() P_CMD=() P_STATE=() P_HARNESS=()
-  P_SESSION=() P_TRANSCRIPT=() P_LAUNCH=() P_RCWD=() P_NAME=() P_PATH=()
+  P_SESSION=() P_TRANSCRIPT=() P_LAUNCH=() P_RCWD=() P_NAME=() P_PATH=() P_ROOST_ID=()
   while IFS= read -r line; do
     case "$line" in %[0-9]*) ;; *) continue ;; esac
-    IFS=' ' read pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp end <<< "$line"
+    IFS=' ' read pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp xid end <<< "$line"
     if [ "$end" != ".$pid" ] || roost_shape__suspect "$line"; then
       # The free text only; session, window, index and active are this line's
       # own context (see the window case above, and Codex B3).
@@ -478,11 +492,13 @@ roost_shape__parse_panes() {
       roost_shape__d "$pid" '#{@roost-cwd}'; xr="x$ROOST_SHAPE_D"
       roost_shape__d "$pid" '#{@roost-name}'; xn="x$ROOST_SHAPE_D"
       roost_shape__d "$pid" '#{pane_current_path}'; xp="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-id}'; xid="x$ROOST_SHAPE_D"
     fi
     P_ID+=("$pid"); P_SID+=("$sid"); P_WID+=("$wid"); P_IDX+=("$idx"); P_ACT+=("$act"); P_PPID+=("$ppid")
     P_CMD+=("${xc#x}"); P_STATE+=("${xs#x}"); P_HARNESS+=("${xh#x}"); P_SESSION+=("${xi#x}")
     P_TRANSCRIPT+=("${xt#x}"); P_LAUNCH+=("${xl#x}"); P_RCWD+=("${xr#x}"); P_NAME+=("${xn#x}")
     P_PATH+=("${xp#x}")
+    P_ROOST_ID+=("${xid#x}")
   done <<< "$1"
 }
 
@@ -766,6 +782,13 @@ roost_shape__pane() {
   ROOST_SHAPE_PANE_KIND=""
   roost_shape__clean "${S_NAME[$2]}" || true; sname="$ROOST_SHAPE_V"
   printf 'pane %s:%s.%s\nid %s\n' "$sname" "$3" "${P_IDX[$k]}" "$pid"
+  if roost_pane_id_parse "${P_ROOST_ID[$k]}"; then
+    # A format can inherit a window option. Only the real pane's own ID is
+    # saved, so a global option cannot write the same ID into every block.
+    if [ "$(roost_shape__t show-options -pqv -t "$pid" @roost-id 2>/dev/null)" = "$ROOST_PANE_ID" ]; then
+      printf 'roost_id %s\n' "$ROOST_PANE_ID"
+    fi
+  fi
   if [ -n "${P_NAME[$k]}" ]; then
     if roost_shape__clean "${P_NAME[$k]}" octal; then printf 'name %s\n' "$ROOST_SHAPE_V"
     else printf 'roost save: pane %s: its name holds a control character; name not saved\n' "$pid" >&2; fi
@@ -836,7 +859,11 @@ roost_shape__build() {
   local info r=0 bodyf
   info="$(roost_shape__t display-message -p '#{start_time}-#{pid} #{version} #{socket_path}' 2>/dev/null)" || r=$?
   [ -n "$info" ] || { [ "$r" = 0 ] && r=1; return "$r"; }
-  roost_shape__read_rules || return 1
+  if [ -n "${ROOST_SHAPE_EXPECT:-}" ]; then
+    roost_shape__read_rules '' "#{==:#{start_time}-#{pid},$ROOST_SHAPE_EXPECT}" || return 1
+  else
+    roost_shape__read_rules || return 1
+  fi
   roost_shape__list || return 1
   ROOST_SHAPE_BOOT="${info%% *}"; info="${info#* }"; ROOST_SHAPE_VER="${info%% *}"; ROOST_SHAPE_SPATH="${info#* }"
   roost_shape__clean "$ROOST_SHAPE_SPATH" octal && ROOST_SHAPE_SPATH="$ROOST_SHAPE_V" || ROOST_SHAPE_SPATH="-"
@@ -1262,6 +1289,12 @@ roost_shape__round() {
   # `shape` is worth more than a partial one.
   roost_shape__build || r=$?
   if [ "$r" != 0 ]; then
+    if [ -n "${ROOST_SHAPE_EXPECT:-}" ]; then
+      boot="$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      if [ "$boot" != "$ROOST_SHAPE_EXPECT" ] && { [ -n "$boot" ] || [ "${ROOST_SHAPE_HOOKONLY:-0}" = 1 ]; }; then
+        ROOST_SHAPE_LAST=lost; return 1
+      fi
+    fi
     printf 'roost save: could not list the tmux server on %s %s; nothing written\n' "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" >&2
     roost_shape__err "$dir" list "$r"
     return 1
@@ -1272,6 +1305,12 @@ roost_shape__round() {
     ROOST_SHAPE_LAST=lost; return 1
   fi
   roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_LIST
+  # The pane and window lists are separate calls. Drop a body if its
+  # pinned server went away while those calls were gathering the shape.
+  if [ -n "${ROOST_SHAPE_EXPECT:-}" ] && \
+     [ "$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)" != "$ROOST_SHAPE_EXPECT" ]; then
+    ROOST_SHAPE_LAST=lost; return 1
+  fi
   # The body (everything after the header's blank line) equal to `shape`'s
   # means nothing is written: the header alone never makes a save worth
   # keeping (§3.2). The `#` notes sit above the header with no blank line
@@ -1507,7 +1546,7 @@ roost_shape_auto() {
   return 0
 }
 
-# roost_shape_save_now FLAG SOCKET TRIGGER — §3.4's direct call, for roost's
+# roost_shape_save_now FLAG SOCKET TRIGGER [BOOT] — §3.4's direct call, for roost's
 # own verbs: `spawn`, `split`, `view` after the name is stamped, `close`
 # after the pane is gone, `revive` and the resume engine after a respawn
 # (respawn-pane -k fires no hook, §2.7), restore after `restoring/` is
@@ -1524,7 +1563,7 @@ roost_shape_auto() {
 # record, not that save, keeps the pane closed).
 roost_shape_save_now() {
   roost_shape__seam ROOST_TEST_SAVE_HOLD
-  ( roost_shape_auto "$1" "$2" "$3" ) >/dev/null 2>&1 || true
+  ( roost_shape_auto "$1" "$2" "$3" "" "${4:-}" ) >/dev/null 2>&1 || true
 }
 
 # roost_shape_check FILE -> exit 0 when the whole file may be restored; else
@@ -1617,6 +1656,11 @@ roost_shape_check() {
       [ -n "$kind" ] && { roost_shape__endblock || return 1; }
       continue
     fi
+    # A damaged optional pane ID is treated as missing by restore. Required
+    # shape keys still go through the full validation below.
+    case "$kind:$line" in pane:roost_id|pane:roost_id\ *)
+      roost_pane_id_parse "${line#roost_id }" || continue ;;
+    esac
     case "$line" in *" "*) ;; *) ROOST_SHAPE_FAULT="line $n: no value after the key $line"; return 1 ;; esac
     key="${line%% *}" val="${line#* }"
     case "$val" in *[[:cntrl:]]*) ROOST_SHAPE_FAULT="line $n: a value holds a tab or a control character"; return 1 ;; esac
@@ -1719,6 +1763,9 @@ roost_shape_parse() {
       if [ "$kind" = unknown ]; then cur=/dev/null
       else cur="$dir/$(printf '%04d' "$n").$kind"; n=$((n + 1)); : > "$cur"; fi
     fi
+    case "$kind:$line" in pane:roost_id|pane:roost_id\ *)
+      roost_pane_id_parse "${line#roost_id }" || continue ;;
+    esac
     [ "$cur" = /dev/null ] || printf '%s\n' "$line" >> "$cur"
   done < "$file"
 }

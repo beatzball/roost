@@ -7,6 +7,29 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0]
+
+Every pane now has a stable ID, such as `p-k7q-2x9-z`. The ID stays the
+same when roost restores your fleet, so a saved address still reaches the
+same agent. roost checks the ID before it types, answers or closes, and it
+refuses with exit 2 when the ID no longer names that pane. `roost whoami`
+and `roost status` show the ID.
+
+### Added
+
+- **Stable pane IDs survive restore.** Copy an ID such as `p-k7q-2x9-z`
+  from `roost status` or `roost whoami` and use it anywhere you address a
+  live pane. An invalid address starting with `p-` stops delivery. Kept
+  replies carry the sender's stable address.
+
+### Changed
+
+- `roost whoami` prints your stable pane ID. Each `roost status` pane line
+  starts with its stable ID, followed by its current tmux pane number.
+- Bare names starting with `p-` are read as pane IDs. Targets with a colon
+  still use tmux syntax, including `main:p-worker` and `p-proj:web.1`.
+  Select a saved session by name with `restore --only =p-proj`.
+
 ## [0.13.1]
 
 roost now runs on Ubuntu 26.04. Two `roost send` calls to the same pane

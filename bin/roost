@@ -9,6 +9,13 @@
 # All roost sessions share one server, so the status counts and `prefix a`
 # switcher roll up across every session.
 #
+# Pane targets accept a stable roost ID such as p-k7q-2x9-z, or a tmux
+# target such as %12 or main:2.0. roost status lists both. Stable IDs
+# survive restore. Keep the initial p- and use either case. Other hyphens
+# are optional. A malformed bare p- address exits 2. A colon qualifies a tmux
+# target, for example main:p-worker or p-proj:web.1. For a saved session use restore --only
+# =p-proj or --only =p-proj:0 for a window.
+#
 #   roost                    start/attach the default session ("main")
 #                            after a crash with `persist` off, `roost`, `roost session` and `roost new` first offer the saved fleet (r restore, p preview, n start fresh and do not ask again, Enter start fresh, l restore at login from now on); roost --no-offer, ROOST_NO_OFFER=1 or a known agent marker skips it, a script with no terminal is never asked, and any other caller is started fresh after 60 s with nothing declined
 #   roost session NAME       start/attach a named session (roost session a, ...)
@@ -16,22 +23,22 @@
 #   roost spawn NAME [CMD]   open an agent window WITHOUT attaching; prints its target
 #   roost split [-h|-v] [-t P] [-n NAME] [CMD]  open a helper pane in the current window; prints its %N
 #   roost view [-n NAME] CMD...  show CMD to the human: a pane beside you if there is room, a window if not. No focus steal; a second call with the same NAME replaces the first
-#   roost whoami [--json]    print this agent's own pane id (%N)
+#   roost whoami [--json]    print this pane's stable roost ID
 #   roost ssh HOST [ARGS]    run roost on a remote host (agents there, driven here)
 #   roost send [--force | --agent-only TOKEN] [--json] [--when-idle] [--from LABEL] TGT TEXT
-#   roost send --agent-token %N  print a token for the live agent in %N. Pass it to --agent-only with the same %N to guard the paste and submit. Exit 7 means the guard refused before input was delivered, and 8 means delivery may already have started.
-#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N only addresses the running server, and exits 2 before acting if a different live pane carries @roost-was %N; use a name or session:window.pane to choose). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a bare %N is kept as pane:%N); without it, `pane:%N` for a send from a pane on this server, else `human`. The text pasted is unchanged either way. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. Before its first key (including bare Enter), readable occupied Claude/codex/pi input holds the send until clear; @roost-send-idle-timeout bounds it too (exit 6, nothing typed). Unknown/unreadable editors or a missing Python 3 reader pass through. --force skips the input check. After the first key delivery is unchanged. --json prints one JSON document instead, for a program
+#   roost send --agent-token ID  print a token for the live agent in ID. Pass it to --agent-only with the same ID to guard the paste and submit. Exit 7 means the guard refused before input was delivered, and 8 means delivery may already have started.
+#                            paste TEXT + Enter into an agent, verifying the submit (exit 1 if it never leaves the input line; TGT = stable pane ID, %N pane, @N window, or [SESSION:]WINDOW; after a restore, was:%N is the pane that had id %N before it — a bare %N only addresses the running server, and exits 2 before acting if a different live pane carries @roost-was %N; use a name or session:window.pane to choose). Refuses a 🛑 blocked target unless --force, and a pane still waiting for its agent to be resumed (exit 3). On a ✅/💤 agent it then waits, briefly, for a NEW turn to begin and prints "%N TURN" on stdout — the pane it delivered to and the turn that prompt started, ready for `wait-done --turn` and `read --turn` (exit 4 if no turn begins — the text WAS submitted, so do not resend). Both fields or neither: a pane with no badge is not an agent, and with no reply record there are no turn numbers. --from LABEL records who sent the prompt beside that turn (one word, at most 64 bytes, not beginning with a dash; exit 2 if not; a pane address is kept as pane:ID); without it, the sender's stable ID is recorded for a send from this server, else `human`. The pasted text is unchanged. A stable target is checked again before every key action. A lost ID before any input exits 2. After a paste or key action the exit describes the delivery so far. --when-idle holds the send while TGT reads ⏳ working, then sends it as usual (a 🛑 blocked TGT is still refused); the bound is @roost-send-idle-timeout, 300 s by default, at most 3600, and past it nothing is typed and the exit is 6. Before its first key (including bare Enter), readable occupied Claude/codex/pi input holds the send until clear; @roost-send-idle-timeout bounds it too (exit 6, nothing typed). Unknown/unreadable editors or a missing Python 3 reader pass through. --force skips the input check. After the first key delivery is unchanged. --json prints one JSON document instead, for a program
 #   roost read [--turn N] [-r|--render|--json] TGT [N]
 #                            print an agent's recorded reply; with none, falls back to its screen (last N non-blank lines, default 40) and says so on stderr. --render pipes the REPLY through preen to render its markdown; a screen fallback is never rendered (it is not markdown). --json prints one JSON document instead, for a program. Each turn is also kept whole on disk, so a reply past the 12 KB pane cap reads back in full, and a closed %N pane still reads its last reply. --turn N reads turn N (from 1), or with -N counts back from the newest (-1 is the newest); the newest 100 turns per pane are kept (ROOST_RECORD_KEEP)
 #   roost forget TGT | --gone | --all
 #                            delete kept replies: one pane's, every pane's that is closed or on a server that has stopped, or all of them. They live in ${XDG_STATE_HOME:-~/.local/state}/roost/panes (ROOST_RECORD_DIR overrides; set it to "" to keep none), and a closed pane's are deleted on their own 30 days after its last reply (ROOST_RECORD_DAYS). --all also clears the event log
-#   roost events [--since CURSOR] [--follow] [--pane %N]
+#   roost events [--since CURSOR] [--follow] [--pane ID]
 #                            print this server's state changes, one JSON line each with a cursor; --since resumes after one, --follow keeps printing until the server stops. Exit 3: the cursor was rotated away — re-read `status --json` and start again. ROOST_EVENTS="" turns the log off; see the Driving a Fleet docs page
 #   roost screen [--json] TGT [N]  print what is ON that pane's screen — its last N non-blank lines (default 40), chrome included
 #   roost reply TEXT... | roost reply -
 #                            record this pane's reply, for another agent's `roost read`. TEXT... is read from the command line; `-` (or `--stdin`, or no argument at all) reads the reply from STDIN instead. Use stdin for a reply of more than a few KB, and for any reply built from a file: Linux refuses a single argument of 131072 bytes or more, so the command-line form loses a long reply outright
 #   roost wait-done [--turn N] TGT [T]
-#                            block until TGT (a %N pane, or every agent pane in a window) is done/idle. --turn N waits until TGT has recorded turn N — the number `roost send` printed — so the wait cannot be satisfied by the PREVIOUS turn's ✅; it needs a %N
+#                            block until TGT (one pane by ID, or every agent pane in a window) is done/idle. --turn N waits until TGT has recorded turn N — the number `roost send` printed — so the wait cannot be satisfied by the PREVIOUS turn's ✅. Give a stable ID or %N
 #   roost answer [--json] [--force] [--expect FP] TGT --approve|--deny|--option N
 #                            a PERSON'S verb: answer the dialog TGT is blocked on, with one key, once. FP is the dialog's fingerprint from `status --json`; it is required to approve or pick an option, so the key cannot land on a newer dialog. Refuses a caller in an agent's pane unless --force (a guard against an accident, not a lock); a dialog roost has no measured keys for; a pane that shows no dialog. Exit 0 answered and seen to land, 6 nothing to answer, 7 a different dialog, 8 no measured keys, 9 called from an agent's pane, 10 the key was sent and not seen to land: do NOT answer again. roost never answers on its own
 #   roost close [--force] [--json] TGT [T]
@@ -50,13 +57,14 @@
 #   roost init               setup wizard: writes ~/.config/roost/roost.conf
 #   roost settings           change theme/glyphs/separator/notifications/tab bar, live
 #   roost status [--json]    list running sessions + agents (--json: one JSON document; see the Driving a Fleet docs page)
-#   roost save [--to FILE]   write this server's shape — sessions, windows, panes, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). roost also saves by itself on every change to the fleet, keeping the last ROOST_SHAPE_KEEP saves in history/ (default 100). `rm -rf` that shapes directory forgets every shape and nothing else
+#   roost save [--to FILE]   write this server's shape — sessions, windows, panes, stable IDs, names, directories, layouts and agent keys — as a plain text file: ${XDG_STATE_HOME:-~/.local/state}/roost/shapes/<server>/shape, earlier saves under history/ (ROOST_SHAPE_DIR overrides; set it to "" to save nothing). roost also saves by itself on every change to the fleet, keeping the last ROOST_SHAPE_KEEP saves in history/ (default 100). `rm -rf` that shapes directory forgets every shape and nothing else
 #   roost restore [--from FILE|STAMP-GEN] [--list] [--dry-run] [--no-resume] [--resume [--retry]] [--recent DAYS] [--pace SECONDS] [--only SEL ...] [--json]
-#                            put a saved shape back as shells in their saved directories, at their saved indices and layouts, then resume each agent in its own directory, --pace seconds apart (default 2). Until its turn an agent's pane waits in a placeholder; a key there keeps it as a shell (roost revive %N brings the agent back). --no-resume places only; --recent DAYS leaves out an agent whose transcript is older; --resume resumes the panes already placed and waiting, and --retry with it tries again the ones whose resume failed for a reason you have since fixed (never a pane you took). The report ends with one summary line; --json prints it as one document. A session that exists is skipped and named (exit 12); an agent not resumed is named (exit 13); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
+#                            put a saved shape back as shells in their saved directories, at their saved indices and layouts, then resume each agent in its own directory, --pace seconds apart (default 2). Until its turn an agent's pane waits in a placeholder; a key there keeps it as a shell (roost revive %N brings the agent back). --no-resume places only; --recent DAYS leaves out an agent whose transcript is older; --resume resumes the panes already placed and waiting, and --retry with it tries again the ones whose resume failed for a reason you have since fixed (never a pane you took). The report ends with one summary line; --json prints it as one document. A session that exists is skipped and named (exit 12); an agent not resumed is named (exit 13); --dry-run prints the plan and starts nothing; --list shows every save; --only takes a session, SESSION:WINDOW, stable pane ID, or an old %N. Run it from a plain terminal, not from inside roost (see the Persistent Sessions docs page)
 #   roost persist on|off|status [--name NAME]
 #                            bring this server's fleet back at login: `on` saves it and installs one login unit for this server (a LaunchAgent on macOS, a systemd user unit on Linux) that places the fleet at login; the agents come back when you first attach. `off` removes that unit and stops nothing; saves, history and pending resumes stay. `status` says what is installed and whether it names this checkout. Exit 17 on a machine with neither launchd nor systemd
 #   roost revive [--new-window] [--force] [--json] TGT
 #                            bring a pane's agent conversation back, in place, with the same %N — or, for a %N that is gone, in a new window from the pane's kept record (--new-window opens one beside a pane that is still there): the harness's own resume (claude --resume ID, codex resume ID, copilot --resume=ID, pi --session FILE) in the conversation's own directory. Checked before anything is killed: exit 13 when there is no recorded conversation, its key is stale or the harness no longer holds it, or another pane has it open; 14 the harness is not on PATH; 15 its directory is gone. Refuses a ⏳ working or 🛑 blocked agent, and a shell running a job, unless --force. Exit 0 means launched, not resumed: a dialog the harness opens is left on screen. opencode's command is printed, not run
+#                            The stable ID follows a conversation revived in a new window. A gone pane can reclaim its saved ID if it is free.
 #   roost kill [--yes] [SESSION]
 #                            end one session, or with no SESSION stop the whole server: every session and every agent on it. The bare form asks first on a terminal (only y stops it) and, off a terminal, refuses unless --yes (or -y). `roost stop` and `roost down` are the same command
 #   roost help               show this text
@@ -125,6 +133,7 @@ ROOST_JSON_SCHEMA=1
 # who types `roost spawn` from inside their everyday tmux still means the roost
 # server, so roost_self_socket recognises only a socket path ending /roost.
 . "$ROOST_HOME/scripts/lib/roost-socket.sh"
+. "$ROOST_HOME/scripts/lib/roost-pane-id.sh"
 roost_self_socket
 # roost_hooks_claude / roost_hooks_codex print the JSON object `roost hooks`
 # shows below its own explanatory comments. Shared with the installer, which
@@ -307,14 +316,14 @@ login_restore_first() {
 # Create the session if missing. The first session boots the server with our
 # config (server/global options + bindings apply to every later session too).
 ensure_session() {
-  local s="$1"
+  local s="$1" first
   # With `persist` on (#192, spec §4.6): wait for a login restore that is
   # still placing, or run the one the login service did not
   # (login_restore_first). Persist off: nothing here, as before.
   login_restore_first
   session_exists "$s" && return 0
   if server_running; then
-    t new-session -d -s "$s" -c "$PWD"
+    first="$(t new-session -d -P -F '#{pane_id}' -s "$s" -c "$PWD")"
   else
     # R2: the server may still be running with its socket file gone. Starting
     # one now would take the name and strand the live fleet (server_lost_socket).
@@ -322,7 +331,7 @@ ensure_session() {
       lost_socket_line >&2
       exit 1
     fi
-    t -f "$CONF" new-session -d -s "$s" -c "$PWD"
+    first="$(t -f "$CONF" new-session -d -P -F '#{pane_id}' -s "$s" -c "$PWD")"
     server_init
     # The first pane was created by the `new-session` above, BEFORE apply set
     # default-command, ROOST_TMUX and ROOST_WIRING_DIR — and it is the pane
@@ -342,6 +351,10 @@ ensure_session() {
         t respawn-pane -k -t "=$s:" -c "$PWD" "$_defcmd" 2>/dev/null || true
       fi
     fi
+  fi
+  if roost_pane_id_ensure t "$first"; then
+    . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" new-session
   fi
 }
 
@@ -374,7 +387,7 @@ server_init() {
 # roost starts in a pane has to be run through roost-pane-shell. Kept separate
 # from the `set --` that uses it because `set --` inside a function would
 # change only the function's own arguments.
-pane_cmd_wired() { [ "$(t show-options -gqv @roost-wiring-active 2>/dev/null || true)" = on ]; }
+pane_cmd_wired() { [ "$(roost_target_tmux show-options -gqv @roost-wiring-active 2>/dev/null || true)" = on ]; }
 
 attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$1"; }
 
@@ -418,7 +431,7 @@ offer_end() {
 target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAULT_SESSION" "$1" ;; esac; }
 
 # resolve_was VERB RAW -> RW_TARGET, the target the verb goes on with; exit 1
-# (the verb exits 2) when a bare id is ambiguous or a `was:` form cannot be resolved, the reason on
+# (the verb exits 2) when a stable id, bare id or `was:` form cannot be resolved, the reason on
 # stderr. #191 Part 3, spec §5.4.
 #
 # A BARE %N ONLY ADDRESSES A PANE OF THE RUNNING SERVER: pane
@@ -446,7 +459,24 @@ target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAU
 resolve_was() {
   local verb="$1" raw="$2" strict="${3:-0}" old want="" root key boot map o b n hits=0 bl="" new=""
   local rows id dead was description canonical stamp live="" restored=""
-  RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT=""
+  RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT="" RW_STABLE_INPUT="" RW_STABLE_ID="" RW_STABLE_BOOT=""
+  RW_STABLE_MISSING=0
+  if roost_pane_id_target "$raw"; then
+    if ! roost_pane_id_parse "$raw"; then
+      echo "roost $verb: '$raw' is not a valid pane id" >&2
+      return 1
+    fi
+    local id_rc=0
+    roost_pane_id_find t "$ROOST_PANE_ID" || id_rc=$?
+    case "$id_rc" in
+      0) RW_TARGET="$ROOST_PANE_ID_PANE"; RW_STABLE_INPUT="$raw"; RW_STABLE_ID="$ROOST_PANE_ID"
+         RW_STABLE_BOOT="$ROOST_PANE_ID_BOOT"; return 0 ;;
+      2) echo "roost $verb: pane id '$raw' is ambiguous" >&2 ;;
+      *) RW_STABLE_MISSING=1
+         echo "roost $verb: no pane with id '$raw' on this server" >&2 ;;
+    esac
+    return 1
+  fi
   case "$raw" in
     # A percent-prefixed session/window can still be qualified with : or .;
     # those selectors choose the current pane explicitly, so skip this guard.
@@ -542,6 +572,36 @@ resolve_was() {
   return 0
 }
 
+# A stable target pins a pane on one server boot. Tmux can recycle %N on
+# restart and revive can move the stable ID. Keep both in the final queue
+# condition so a change after a lock or between terminal actions refuses.
+roost_target_matches() {
+  [ -z "${RW_STABLE_ID:-}" ] || \
+    [ "$(t if-shell -F -t "$RW_TARGET" "$(roost_target_condition 1)" 'display-message -p matched' '' 2>/dev/null)" = matched ]
+}
+
+roost_target_lost_notice() {
+  printf "roost %s: pane id '%s' no longer names the resolved pane\n" "$1" "$RW_STABLE_INPUT" >&2
+}
+
+roost_target_lost() {
+  roost_target_lost_notice "$1"
+  exit 2
+}
+
+roost_target_require() { roost_target_matches || roost_target_lost "$1"; }
+
+# The command contains a resolved %N and either roost's own keys or buffer
+# name, or the already quoted arguments to revive. An acknowledged action
+# returns 0, a confirmed refusal returns 2, and a missing acknowledgement
+# returns 1 because the command may already have run.
+roost_target_action() {
+  local result
+  result="$("${2:-t}" if-shell -F -t "$RW_TARGET" "$(roost_target_condition 1)" \
+    "$1 ; display-message -p acted" 'display-message -p refused' 2>/dev/null)" || return 1
+  case "$result" in acted) return 0 ;; refused) return 2 ;; *) return 1 ;; esac
+}
+
 # Leading CMD flags in spawn/split can reach tmux as new-window/split-window
 # options, including -a/-b relative placement and a later -t overriding ours.
 # View forwards its command to one of those verbs, so it must check BEFORE
@@ -550,12 +610,21 @@ resolve_was() {
 # and clustered -bt%N; value options must consume their data without scanning
 # it as flags. Unknown options keep their existing tmux error. This only
 # guards literal ids; explicit was: is resolved by the native target routes.
+# Stable IDs in this option prefix are translated before tmux sees them.
 resolve_tmux_targets() {
-  local verb="$1" options="$2" OPTIND=1 opt OPTARG
+  local verb="$1" options="$2" OPTIND=1 opt OPTARG i word
   shift 2
+  ROOST_TMUX_ARGS=("$@")
   while getopts ":$options" opt; do
     case "$opt" in
-      t) case "$OPTARG" in %*) resolve_was "$verb" "$OPTARG" || return 1 ;; esac ;;
+      t)
+        if roost_pane_id_target "$OPTARG"; then
+          resolve_was "$verb" "$OPTARG" || return 1
+          i=$((OPTIND - 2)); word="${ROOST_TMUX_ARGS[i]}"
+          ROOST_TMUX_ARGS[i]="${word%"$OPTARG"}$RW_TARGET"
+        else
+          case "$OPTARG" in %*) (resolve_was "$verb" "$OPTARG") || return 1 ;; esac
+        fi ;;
       '?'|':') break ;;
     esac
   done
@@ -592,16 +661,23 @@ record_for() {
     roost_record_schema "$RF_DIR" || RF_STATE=$?
     return 0
   fi
-  info="$(t display-message -p -t "$2" '#{start_time}-#{pid} #{pane_id}' 2>/dev/null || true)"
-  # tmux 3.6 does NOT fail display-message for a pane id that is gone: it
-  # prints the server's own formats and an EMPTY #{pane_id} (measured while
-  # building this). So "found" is a non-empty pane id, not a zero exit.
-  boot="${info%% *}"; pane="${info#* }"
-  case "$pane" in %[0-9]*) RF_LIVE=1 ;; *) pane="" ;; esac
-  if [ "$RF_LIVE" = 0 ]; then
-    case "$1" in %[0-9]*) ;; *) return 1 ;; esac
-    boot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
-    pane="$1"
+  if [ -n "${RW_STABLE_ID:-}" ] && [ "$2" = "$RW_TARGET" ]; then
+    # Reuse the resolved record key even if the live pane is lost while
+    # checking it. Its number may already name a pane on a different boot.
+    boot="$RW_STABLE_BOOT" pane="$RW_TARGET"
+    if roost_target_matches; then RF_LIVE=1; fi
+  else
+    info="$(t display-message -p -t "$2" '#{start_time}-#{pid} #{pane_id}' 2>/dev/null || true)"
+    # tmux 3.6 does NOT fail display-message for a pane id that is gone: it
+    # prints the server's own formats and an EMPTY #{pane_id} (measured while
+    # building this). So "found" is a non-empty pane id, not a zero exit.
+    boot="${info%% *}"; pane="${info#* }"
+    case "$pane" in %[0-9]*) RF_LIVE=1 ;; *) pane="" ;; esac
+    if [ "$RF_LIVE" = 0 ]; then
+      case "$1" in %[0-9]*) ;; *) return 1 ;; esac
+      boot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      pane="$1"
+    fi
   fi
   roost_record_pane_dir "$boot" "$pane" || return 1
   RF_PANE="$pane"
@@ -694,6 +770,16 @@ screen_dump() {
   t capture-pane -p -t "$1" | grep -v '^[[:space:]]*$' | tail -n "$2"
 }
 
+screen_dump_checked() {
+  local verb="$1" captured rc=0
+  shift
+  if [ -z "$RW_STABLE_ID" ]; then screen_dump "$@"; return; fi
+  captured="$(screen_dump "$@")" || rc=$?
+  roost_target_require "$verb"
+  [ -z "$captured" ] || printf '%s\n' "$captured"
+  return "$rc"
+}
+
 # need_arg VALUE USAGE -> print USAGE and exit 1 when VALUE is empty.
 #
 # `${2:?usage: ...}` was the old spelling, and bash renders that as
@@ -705,6 +791,57 @@ roost_sq() {
   # Single-quote one string for a POSIX shell (and fish): every ' becomes '\''.
   local q="'"
   printf "'%s'" "${1//$q/$q\\$q$q}"
+}
+
+# Pass native tmux arguments through one conditional command queue. Put
+# the marker before the command so a caller's -F output stays opaque.
+roost_tmux_bound() {
+  local tmux_call="$1" pane="$2" condition="$3" command="$4" arg result
+  shift 4
+  for arg in "$@"; do command="$command $(roost_sq "$arg")"; done
+  result="$("$tmux_call" if-shell -F -t "$pane" "$condition" \
+    "display-message -p bound ; $command" 'display-message -p refused' && printf .)" || return 1
+  result="${result%.}"
+  case "$result" in
+    bound$'\n'*) printf '%s' "${result#*$'\n'}" ;;
+    refused$'\n') return 2 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Keep a command and its identity check together after a stable lookup.
+roost_target_tmux() {
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    roost_tmux_bound t "$RW_TARGET" "$(roost_target_condition 1)" "$@"
+  else
+    t "$@"
+  fi
+}
+
+roost_placement_check_view() {
+  if [ -n "${ROOST_VIEW_TARGET:-}" ] && \
+    [ "${RW_STABLE_BOOT:-}/${RW_TARGET:-}/${RW_STABLE_ID:-}" != "$ROOST_VIEW_TARGET" ]; then
+    echo "roost $1: the view's stable target no longer names the resolved pane" >&2
+    return 2
+  fi
+}
+
+roost_placement_create() {
+  local verb="$1" rc=0
+  shift
+  if [ -z "${RW_STABLE_ID:-}" ]; then t "$@"; return; fi
+  roost_target_tmux "$@" || rc=$?
+  if [ "$rc" = 2 ]; then roost_target_lost "$verb"; fi
+  return "$rc"
+}
+
+roost_placement_option() {
+  local pane="$1"
+  if [ -z "${RW_STABLE_BOOT:-}" ]; then
+    t set-option -p -t "$@"
+  else
+    roost_tmux_bound t "$pane" "$(roost_target_boot_condition "$RW_STABLE_BOOT" "$pane")" set-option -p -t "$@"
+  fi
 }
 
 need_arg() {
@@ -831,7 +968,11 @@ case "${1:-up}" in
     ensure_session "$sess"
     # `=$sess:` — trailing colon so a numeric session name isn't parsed as a window
     # index (matches spawn; a bare `=0` fails "index 0 in use").
-    t new-window -t "=$sess:" -n "$name" -c "$PWD"
+    new="$(t new-window -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD")"
+    if roost_pane_id_ensure t "$new"; then
+      . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+      roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" new-window
+    fi
     offer_end
     exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$sess"
     ;;
@@ -1075,7 +1216,7 @@ case "${1:-up}" in
       case "$1" in
         --from) [ "$#" -ge 2 ] || { echo "roost restore: --from needs a file or a STAMP-GEN" >&2; exit 2; }
                 restore_from="$2"; shift 2 ;;
-        --only) [ "$#" -ge 2 ] || { echo "roost restore: --only needs a session, SESSION:WINDOW or %N" >&2; exit 2; }
+        --only) [ "$#" -ge 2 ] || { echo "roost restore: --only needs a session, SESSION:WINDOW or a pane ID" >&2; exit 2; }
                 ROOST_RESTORE_ONLY+=("$2"); shift 2 ;;
         --dry-run) restore_mode=dry; shift ;;
         --list) restore_mode=list; shift ;;
@@ -1322,6 +1463,7 @@ case "${1:-up}" in
     ROOST_RESUME_TFLAG="$_SOCKET_FLAG" ROOST_RESUME_TSOCK="$SOCKET"
     rv_rc=0
     resolve_was revive "$1" || exit 2
+    roost_target_require revive
     roost_revive "$RW_TARGET" "$(target "$RW_TARGET")" "$rv_force" "$rv_json" "$rv_new" || rv_rc=$?
     exit "$rv_rc"
     ;;
@@ -1410,24 +1552,30 @@ case "${1:-up}" in
     # --json (#41) only as the second word, the one place `whoami` ever looked.
     # Any other extra word is still ignored, as it always was. The failures
     # above stay exactly as they are: exit 1, stderr, and nothing on stdout.
+    roost_pane_id_ensure t "$me" || ROOST_PANE_ID=""
+    if [ "$ROOST_PANE_ID_NEW" = 1 ]; then
+      . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+      roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" whoami
+    fi
     if [ "${2:-}" = "--json" ]; then
       . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-      roost_jsonout_emit whoami pane s "$me" || roost_jsonout_fail whoami
+      roost_jsonout_emit whoami roost_id z "$ROOST_PANE_ID" pane s "$me" || roost_jsonout_fail whoami
       exit 0
     fi
-    printf '%s\n' "$me"
+    printf '%s\n' "${ROOST_PANE_ID:-$me}"
     ;;
   spawn)
     need_arg "${2:-}" "usage: roost spawn NAME [CMD...]"; name="$2"; shift 2
     reject_bad_name "$name" spawn
     resolve_tmux_targets spawn 'abdkPSc:e:F:n:t:' "$@" || exit 2
+    roost_placement_check_view spawn || exit 2
     # Helper lands in the caller's own session when inside roost, else the default.
     if [ -n "${TMUX_PANE:-}" ]; then
-      sess="$(t display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
+      sess="$(roost_target_tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
     else
       sess="$DEFAULT_SESSION"
     fi
-    ensure_session "$sess"
+    if [ -z "${RW_STABLE_ID:-}" ]; then ensure_session "$sess"; fi
     # Background (-d) + non-attaching: create the window WITHOUT switching the
     # caller's focus to it (plain new-window selects it, so a client viewing the
     # session would jump there), and print its pane id target.
@@ -1444,18 +1592,20 @@ case "${1:-up}" in
     # as, for a person and for restore's report, never run by restore.
     # Redacted at save, not here.
     launch="$*"
+    set -- ${ROOST_TMUX_ARGS[@]+"${ROOST_TMUX_ARGS[@]}"}
     if [ "$#" -gt 0 ] && pane_cmd_wired; then set -- "$ROOST_HOME/scripts/roost-pane-shell" "$@"; fi
-    new="$(t new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@")"
+    new="$(roost_placement_create spawn new-window -d -P -F '#{pane_id}' -t "=$sess:" -n "$name" -c "$PWD" "$@")"
+    roost_pane_id_ensure t "$new" "" "${RW_STABLE_BOOT:-}" || true
     # Naming is best-effort; the pane id is the contract. A short-lived CMD's
     # pane can already be gone by the time we set-option — don't let that abort
     # the command and swallow the id we already have.
-    t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true
-    [ -n "$launch" ] && { t set-option -p -t "$new" @roost-launch "$launch" 2>/dev/null || true; }
+    roost_placement_option "$new" @roost-name "$name" 2>/dev/null || true
+    [ -n "$launch" ] && { roost_placement_option "$new" @roost-launch "$launch" 2>/dev/null || true; }
     # Saved after the name is stamped (#51, §3.4): a name changed, and no
     # tmux hook fires for an option. after-new-window saved the window
     # already, without the name.
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
-    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" spawn
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" spawn "${RW_STABLE_BOOT:-}"
     printf '%s\n' "$new"
     ;;
   split)
@@ -1481,23 +1631,26 @@ case "${1:-up}" in
       resolve_was split "$from" || exit 2; from="$RW_TARGET"
     fi
     resolve_tmux_targets split 'bdfhIvPZc:e:F:l:p:t:' "$@" || exit 2
+    roost_placement_check_view split || exit 2
     # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
     # A command on a wired server goes through roost-pane-shell, for the reason
     # given at the same line in `spawn`.
     # The `launch` hint, as in `spawn`: the command as handed, before the wrap.
     launch="$*"
+    set -- ${ROOST_TMUX_ARGS[@]+"${ROOST_TMUX_ARGS[@]}"}
     if [ "$#" -gt 0 ] && pane_cmd_wired; then set -- "$ROOST_HOME/scripts/roost-pane-shell" "$@"; fi
-    new="$(t split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@")"
+    new="$(roost_placement_create split split-window $dir -d -P -F '#{pane_id}' -t "$from" -c "$PWD" "$@")"
+    roost_pane_id_ensure t "$new" "" "${RW_STABLE_BOOT:-}" || true
     # A label that survives what the process calls itself: #{pane_current_command}
     # reports a version string for some agents and changes every release.
     # Naming is best-effort; the pane id is the contract. A short-lived CMD's
     # pane can already be gone by the time we set-option — don't let that abort
     # the command and swallow the id we already have.
-    [ -n "$name" ] && { t set-option -p -t "$new" @roost-name "$name" 2>/dev/null || true; }
-    [ -n "$launch" ] && { t set-option -p -t "$new" @roost-launch "$launch" 2>/dev/null || true; }
+    [ -n "$name" ] && { roost_placement_option "$new" @roost-name "$name" 2>/dev/null || true; }
+    [ -n "$launch" ] && { roost_placement_option "$new" @roost-launch "$launch" 2>/dev/null || true; }
     # Saved after the name is stamped, as in `spawn` (#51, §3.4).
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
-    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" split
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" split "${RW_STABLE_BOOT:-}"
     printf '%s\n' "$new"
     ;;
   view)
@@ -1555,7 +1708,9 @@ case "${1:-up}" in
     # this command would then use both as a width source and as the one pane
     # the kill below spares. Resolve it on the roost socket first, the same
     # question `roost whoami` asks.
-    me="$(t display-message -p -t "$me" '#{pane_id}' 2>/dev/null || true)"
+    roost_target_require view
+    me="$(roost_target_tmux display-message -p -t "$me" '#{pane_id}' 2>/dev/null || true)"
+    [ -n "$me" ] || roost_target_require view
     [ -n "$me" ] || { echo "roost view: not inside a roost session" >&2; exit 1; }
 
     # Replace, don't stack. Only panes roost itself named, and never this pane.
@@ -1569,8 +1724,12 @@ case "${1:-up}" in
     while read -r p pname; do
       [ "$pname" = "$name" ] || continue
       [ "$p" = "$me" ] && continue
-      t kill-pane -t "$p" 2>/dev/null || true
-    done < <(t list-panes -a -F '#{pane_id} #{@roost-name}' 2>/dev/null || true)
+      if [ -n "${RW_STABLE_BOOT:-}" ]; then
+        roost_target_action "kill-pane -t $p" || roost_target_require view
+      else
+        t kill-pane -t "$p" 2>/dev/null || true
+      fi
+    done < <(roost_target_tmux list-panes -a -F '#{pane_id} #{@roost-name}' 2>/dev/null || true)
 
     # Measured AFTER that kill, never before. A leftover view is still holding
     # half the columns at this point, so reading the width first makes every
@@ -1578,7 +1737,7 @@ case "${1:-up}" in
     # the view then walks off into a window when it should have shared. This
     # was a real bug in the script this command replaces; the ORDER here is
     # the fix, so do not hoist the measurement above the loop.
-    width="$(t display-message -p -t "$me" '#{pane_width}' 2>/dev/null || true)"
+    width="$(roost_target_tmux display-message -p -t "$me" '#{pane_width}' 2>/dev/null || true)"
     case "$width" in ''|*[!0-9]*) width=0 ;; esac
 
     # 180 columns, so both halves of the split still clear 80 — the width most
@@ -1599,26 +1758,29 @@ case "${1:-up}" in
     # this process did. A child inheriting nothing would fall through to the
     # production `-L roost` server — the exact failure the socket comment at
     # the top of this file describes — and this keeps the promise that no call
-    # site spells a socket flag of its own.
+    # site spells a socket flag of its own. Carry the resolved pane through
+    # re-entry too, so a stable ID that moved cannot redirect the placement.
+    view_target=""
+    if [ -n "${RW_STABLE_ID:-}" ]; then view_target="$RW_STABLE_BOOT/$RW_TARGET/$RW_STABLE_ID"; fi
     if [ "$width" -ge "$min" ]; then
       # This is the caller we already identified, not a literal user target.
       # Pass its current address so split's bare-id guard cannot confuse a
       # known caller with another pane's pre-restore id.
-      view_from="$(t display-message -p -t "$me" '#{session_id}:#{window_id}.#{pane_index}')"
-      new="$(ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" split -h -t "$view_from" -n "$name" "$@")" \
+      view_from="$(roost_target_tmux display-message -p -t "$me" '#{session_id}:#{window_id}.#{pane_index}')"
+      new="$(ROOST_SOCKET="$SOCKET" ROOST_VIEW_TARGET="$view_target" "$ROOST_HOME/bin/roost" split -h -t "$view_from" -n "$name" "$@")" \
         || { echo "roost view: split failed" >&2; exit 1; }
       where=pane
     else
-      new="$(ROOST_SOCKET="$SOCKET" "$ROOST_HOME/bin/roost" spawn "$name" "$@")" \
+      new="$(ROOST_SOCKET="$SOCKET" ROOST_VIEW_TARGET="$view_target" "$ROOST_HOME/bin/roost" spawn "$name" "$@")" \
         || { echo "roost view: spawn failed" >&2; exit 1; }
       where=window
     fi
     # Best effort, the way the name write is: the hint §4.3's report quotes.
-    t set-option -p -t "$new" @roost-launch "$view_launch" 2>/dev/null || true
+    roost_placement_option "$new" @roost-launch "$view_launch" 2>/dev/null || true
     # The split or spawn above saved with its own hint; this one changed it
     # (#51, §3.4).
     . "$ROOST_HOME/scripts/lib/roost-shape.sh"
-    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" view
+    roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" view "${RW_STABLE_BOOT:-}"
 
     # The prefix is a user setting — tmux/roost.conf binds C-s, and the user
     # config sourced after it may rebind. Read the live one rather than
@@ -1824,6 +1986,7 @@ JSON
     exec ssh -t "$host" "\"\$SHELL\" -lc $(roost_sq "$remote")"
     ;;
   send)
+    RW_STABLE_INPUT="" RW_STABLE_ID="" RW_STABLE_BOOT=""
     send_guard_setup() {
       . "$ROOST_HOME/scripts/lib/roost-adapters.sh"
       . "$ROOST_HOME/scripts/lib/roost-resume.sh"
@@ -1851,12 +2014,13 @@ JSON
     }
     send_pasted=0 send_entered=0 send_guard_refused=0 send_inflight=0
     if [ "${2:-}" = --agent-token ]; then
-      [ "$#" = 3 ] || { echo 'usage: roost send --agent-token %N' >&2; exit 2; }
+      [ "$#" = 3 ] || { echo 'usage: roost send --agent-token ID' >&2; exit 2; }
       send_guard_setup
       raw="$3"
+      if roost_pane_id_target "$raw"; then resolve_was send "$raw" || exit 2; raw="$RW_TARGET"; fi
       send_guard_pane "$raw" || send_guard_stop
-      guard_token="$(t display-message -p -t "$raw" "$ROOST_SEND_GUARD_FORMAT" 2>/dev/null)" || send_guard_stop
-      roost_send_guard_action "$guard_token" "$raw" || send_guard_stop
+      guard_token="$(roost_target_tmux display-message -p -t "$raw" "$ROOST_SEND_GUARD_FORMAT" 2>/dev/null)" || send_guard_stop
+      roost_send_guard_action "$guard_token" "$raw" "" "$RW_STABLE_ID" "$RW_STABLE_BOOT" || send_guard_stop
       printf '%s\n' "$guard_token"
       exit 0
     fi
@@ -1943,8 +2107,8 @@ JSON
           echo "roost send: --from needs one word of at most 64 bytes, with no space or control character and not beginning with a dash — nothing was sent" >&2
           exit 2
         fi
-        # A bare %N — what `roost whoami` prints, and what skills/roost/SKILL.md
-        # tells a coordinator to pass — names the same sender as the checked
+        # A bare %N — what `roost whoami` used to print, and what older skills
+        # told a coordinator to pass — names the same sender as the checked
         # default's `pane:%N`, and is kept in that spelling, so one sender has
         # one name in the record and a consumer grouping by sent_by does not
         # split a coordinator in two (flock review, fix loop 1). Only `%` and
@@ -1954,6 +2118,7 @@ JSON
         case "$from" in
           %[0-9]*) case "${from#%}" in *[!0-9]*) ;; *) from="pane:$from" ;; esac ;;
         esac
+        if roost_pane_id_parse "${from#pane:}"; then from="pane:$ROOST_PANE_ID"; fi
         # Drop "send", the flag and its label, then put the subcommand back,
         # for the same reason as the two-word shift below.
         shift 3
@@ -1966,29 +2131,46 @@ JSON
       set -- send "$@"
     done
     need_arg "${2:-}" "$usage_send"; raw="$2"; shift 2
+    send_target_lost() {
+      [ "$send_entered" = 0 ] || return 1
+      [ "$send_pasted" = 1 ] || roost_target_lost send
+      if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
+      echo "roost send: text pasted into '$raw' but never submitted (the pane id changed or the pane went away)" >&2
+      exit 1
+    }
     send_guard_require() {
       [ "$guard_given" = 1 ] || return 0
       local action="${1:-}" rc=0
       # A signal while a terminal action is in flight can leave its outcome
       # unknown. In that case the EXIT trap must leave the terminal alone.
       if [ -n "$action" ]; then send_inflight=1; fi
-      roost_send_guard_action "$guard_token" "$tgt" "$action" || rc=$?
+      roost_send_guard_action "$guard_token" "$tgt" "$action" "$RW_STABLE_ID" "$RW_STABLE_BOOT" || rc=$?
+      # 8 from the guard means the queue acknowledged the action, but the
+      # follow-up identity probe could no longer confirm the recipient.
+      if [ "$rc" = 0 ] || [ "$rc" = 8 ]; then
+        case "${2:-}" in
+          paste) send_pasted=1 ;;
+          Enter) send_entered=1 ;;
+        esac
+        send_inflight=0
+      fi
       if [ "$rc" != 0 ]; then
+        if [ "$rc" != 1 ] && ! roost_target_matches; then
+          send_target_lost || send_guard_unknown
+        fi
         if [ -n "$action" ]; then send_guard_stop "$rc"; fi
         send_guard_stop
       fi
-      case "${2:-}" in
-        paste) send_pasted=1 ;;
-        Enter) send_entered=1 ;;
-      esac
-      send_inflight=0
     }
     send_key() {
       if [ "$guard_given" = 1 ]; then
         send_guard_require "send-keys -t $tgt $1" "$1"
+      elif [ -n "$RW_STABLE_ID" ]; then
+        roost_target_action "send-keys -t $tgt $1" || { send_target_lost; return 1; }
       else
         t send-keys -t "$tgt" "$1" 2>/dev/null || true
       fi
+      if [ "$1" = Enter ]; then send_entered=1; fi
     }
     if [ "$guard_given" = 1 ]; then
       if [ "$force" = 1 ]; then echo "$usage_send" >&2; exit 2; fi
@@ -2004,6 +2186,7 @@ JSON
         echo 'roost send: guarded messages require one line of text without control characters — no input was delivered' >&2; exit 2
       fi
       send_guard_setup
+      if roost_pane_id_target "$raw"; then resolve_was send "$raw" || exit 2; raw="$RW_TARGET"; fi
       send_guard_pane "$raw" || send_guard_stop
       tgt="$raw"
       send_guard_require
@@ -2065,7 +2248,7 @@ JSON
     # because it can never hold a space and the socket path can, so the
     # first-space split is the one that is safe.
     . "$ROOST_HOME/scripts/lib/roost-panelock.sh"
-    lock_info="$(t display-message -p -t "$tgt" '#{pane_id} #{socket_path}' 2>/dev/null || true)"
+    lock_info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{socket_path}' 2>/dev/null || true)"
     lock_pane="${lock_info%% *}"
     lock_sock="${lock_info#* }"
     # Cleanup on EVERY way out of this command, not just the happy one: the
@@ -2093,13 +2276,27 @@ JSON
     send_cleanup() {
       if [ "$send_pasted" = 1 ] && [ "$send_entered" = 0 ] && [ "$send_guard_refused" = 0 ] \
         && [ "$send_inflight" = 0 ] && roost_panelock_check; then
-        if [ "$guard_given" = 1 ]; then
+        # This draft belongs to the pane that received the paste, even if
+        # its address moved. The original socket, boot and lock protect C-u.
+        if [ -n "$RW_STABLE_ID" ]; then
+          tmux -S "$lock_sock" if-shell -F -t "$tgt" "$(roost_target_boot_condition "$RW_STABLE_BOOT" "$tgt")" \
+            "send-keys -t $tgt C-u" '' 2>/dev/null || true
+        elif [ "$guard_given" = 1 ]; then
           roost_send_guard_action "$guard_token" "$tgt" "send-keys -t $tgt C-u" 2>/dev/null || true
         else
           send_key C-u
         fi
       fi
-      [ -n "${ROOST_SEND_BUF:-}" ] && t delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true
+      if [ -n "${ROOST_SEND_BUF:-}" ]; then
+        if [ -n "$RW_STABLE_ID" ]; then
+          # The buffer is server-wide and still needs deleting if this pane
+          # closed. Only the original boot can hold this send's buffer.
+          tmux -S "$lock_sock" if-shell -F "#{==:#{start_time}-#{pid},$RW_STABLE_BOOT}" \
+            "delete-buffer -b $ROOST_SEND_BUF" '' 2>/dev/null || true
+        else
+          t delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true
+        fi
+      fi
       roost_panelock_drop
       return 0
     }
@@ -2123,7 +2320,7 @@ JSON
     # check and never saw this.
     # The clamp and the zero strip live in roost_panelock_timeout, shared with
     # `answer` (#181), so the two verbs cannot read one knob two ways.
-    lock_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
+    lock_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
 
     # HOLD UNTIL NOT WORKING (--when-idle, #56). A plain send pastes at once,
     # and into a `working` pane the text queues in the harness's input line
@@ -2174,13 +2371,14 @@ JSON
     # took and however the clock's second boundaries fell.
     idle_waited=0
     if [ "$when_idle" -eq 1 ] && [ -n "$lock_pane" ]; then
-      idle_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
+      idle_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
       idle_deadline=$(( $(date +%s) + idle_timeout ))
     fi
     send_idle_timeout() {
       # Nothing was typed and no lock is held: the lock is dropped before
       # every return to the wait. Nothing on stdout, --json or not, like
       # every other failure of this command.
+      roost_target_require send
       echo "roost send: '$raw' still reads working after ${idle_timeout}s (--when-idle; @roost-send-idle-timeout) — nothing was submitted" >&2
       exit 6
     }
@@ -2193,7 +2391,7 @@ JSON
       local info rest now held_from=""
       while :; do
         send_guard_require
-        info="$(t display-message -p -t "$lock_pane" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+        info="$(roost_target_tmux display-message -p -t "$lock_pane" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
         rest="${info#* }"
         if [ -z "${info%% *}" ] || [ "${rest%% *}" = 1 ] || [ "${rest#* }" != working ]; then
           [ -z "$held_from" ] || idle_waited=$(( idle_waited + $(date +%s) - held_from ))
@@ -2214,6 +2412,7 @@ JSON
         # Esc'd Claude turn, the same shape). Each only ever unsets, and only
         # on its own evidence; a clear goes straight back to the poll, which
         # now reads no badge and returns.
+        roost_target_require send
         if roost_died_pane "$lock_pane" || roost_interrupted_pane "$lock_pane"; then
           continue
         fi
@@ -2234,7 +2433,7 @@ JSON
       # flag. A dead pane passes, so the dead-pane exit 2 below is what the
       # caller sees.
       if [ "$when_idle" -eq 1 ] && [ "$lock_rc" = 0 ] \
-         && [ "$(t display-message -p -t "$lock_pane" '#{pane_dead} #{@agent_state}' 2>/dev/null || true)" = "0 working" ]; then
+         && [ "$(roost_target_tmux display-message -p -t "$lock_pane" '#{pane_dead} #{@agent_state}' 2>/dev/null || true)" = "0 working" ]; then
         roost_panelock_drop
         # NOT straight back to the poll (fix loop 1, found by review,
         # reproduced with a bound of 0): the poll returns as soon as it reads
@@ -2258,6 +2457,10 @@ JSON
       send_waited_field=()
       if [ "$when_idle" -eq 1 ]; then send_waited_field=(waited i "$idle_waited"); fi
     }
+    if ! roost_target_matches; then
+      roost_panelock_drop
+      roost_target_lost send
+    fi
     case "$lock_rc" in
       0) send_traps
          tgt="$lock_pane" ;;
@@ -2316,13 +2519,14 @@ JSON
     # last on purpose: it is the only field that can be EMPTY (an agent that
     # has never reported), and a trailing empty field survives this split
     # while a middle one would not.
-    info="$(t display-message -p -t "$tgt" '#{window_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+    info="$(roost_target_tmux display-message -p -t "$tgt" '#{window_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
     wid="${info%% *}"
     rest="${info#* }"
     dead="${rest%% *}"
     state="${rest#* }"
     if [ -z "$wid" ]; then
       if [ "$guard_given" = 1 ]; then send_guard_stop; fi
+      roost_target_require send
       echo "roost send: no such target '$raw'" >&2; exit 2
     fi
     # A pane roost may still replace (#191 Part 3, spec §4.7's `roost send`
@@ -2336,7 +2540,7 @@ JSON
     # pane is the one send-keys will type into: a window target's active pane.
     . "$ROOST_HOME/scripts/lib/roost-resume.sh"
     . "$ROOST_HOME/scripts/lib/roost-pending.sh"
-    if [ "$guard_given" = 0 ] && ! roost_pending_refuse send "$raw" "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
+    if [ "$guard_given" = 0 ] && ! roost_pending_refuse send "$raw" "$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
       exit 3
     fi
     # Same exit code as "no such target": a dead pane is unusable for exactly
@@ -2407,6 +2611,7 @@ JSON
         && [ -r "$ROOST_HOME/scripts/roost-input.py" ] || return 0
       local input_deadline="" input_timeout input_state input_refresh=0
       while :; do
+        roost_target_require send
         # A hold can outlive a badge or restore transition. Keep send's
         # existing refusal and --when-idle policies before the final read.
         if [ -n "$input_deadline" ]; then
@@ -2414,7 +2619,7 @@ JSON
             send_guard_require
           else
             roost_pending_refuse send "$raw" "$tgt" "$force" || exit 3
-            input_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+            input_state="$(roost_target_tmux display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
             if [ "$input_state" = blocked ] && ! roost_unblock_pane "$tgt"; then
               echo "roost send: target '$raw' is blocked — nothing was typed" >&2; exit 3
             fi
@@ -2436,11 +2641,12 @@ JSON
         [ "$input_state" = occupied ] || return 0
         input_refresh=1
         if [ -z "$input_deadline" ]; then
-          input_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
+          input_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
           input_deadline=$(( $(date +%s) + input_timeout ))
           echo "roost send: waiting for '$raw': input box contains text" >&2
         fi
         if [ "$(date +%s)" -ge "$input_deadline" ]; then
+          roost_target_require send
           echo "roost send: input box for '$raw' still contains text after ${input_timeout}s (@roost-send-idle-timeout) — nothing was typed" >&2
           exit 6
         fi
@@ -2449,7 +2655,7 @@ JSON
     }
     # Two-step submit: literal text, a beat, then Enter. A single
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
-    delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null)"
+    delay="$(roost_target_tmux show-options -gqv @roost-send-enter-delay 2>/dev/null)"
     # Fall back to 0.3 for unset / non-numeric / multi-dot values, AND guard the
     # sleep itself, so NO value can ever abort after the text is pasted but before
     # Enter is sent (which would leave the prompt half-delivered in the input box).
@@ -2482,8 +2688,8 @@ JSON
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         send_waited_fields
-        roost_jsonout_emit send target s "$raw" \
-          pane z "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" \
+        roost_jsonout_emit send target s "${RW_STABLE_INPUT:-$raw}" \
+          pane z "$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" \
           turn i "" started b 0 \
           state z "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" \
           sent_by z "" \
@@ -2493,7 +2699,7 @@ JSON
       exit 0
     fi
 
-    retries="$(t show-options -gqv @roost-send-retries 2>/dev/null)"
+    retries="$(roost_target_tmux show-options -gqv @roost-send-retries 2>/dev/null)"
     case "$retries" in ''|*[!0-9]*) retries=3 ;; esac
     # A pathologically long digit string (thousands of chars) is clamped by
     # length BEFORE anything else touches it: `${#retries}` is an O(1) length
@@ -2553,9 +2759,17 @@ JSON
     # submitted" harder to reach, never easier.
     pending() {
       local cur last cursor_now
-      cur="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+      if [ -n "$RW_STABLE_ID" ]; then
+        # An ID move cannot erase delivery evidence already in the old
+        # pane. Read its cursor and screen together on the original boot.
+        cur="$(tmux -S "$lock_sock" if-shell -F -t "$tgt" "$(roost_target_boot_condition "$RW_STABLE_BOOT" "$tgt")" \
+          "display-message -p -t $tgt '#{cursor_x} #{cursor_y}' ; capture-pane -p -t $tgt" '' 2>/dev/null)" || return 1
+        cursor_now="${cur%%$'\n'*}"; cur="${cur#*$'\n'}"
+      else
+        cur="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+        cursor_now="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+      fi
       [ "$cur" = "$before" ] || return 1
-      cursor_now="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
       [ "$cursor_now" = "$cursor_before" ] || return 1
       last="$(printf '%s\n' "$cur" | grep -v '^[[:space:]]*$' | tail -n 1)"
       case "$last" in *"$1"*) return 0 ;; *) return 1 ;; esac
@@ -2584,13 +2798,36 @@ JSON
     # message's HEAD — the part a cold start eats, and therefore the only part
     # worth looking for.
     msg="$*"
+    # Attribute a prompt to the sender only when this socket owns the pane
+    # named by $TMUX_PANE. A %N from the user's other tmux server could name
+    # someone else here. An explicit label remains a caller's claim.
+    sender_id=""
+    if [ -n "${TMUX_PANE:-}" ] && [ -n "${TMUX:-}" ]; then
+      caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
+      if [ "$(roost_target_tmux display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}' 2>/dev/null || true)" = "$caller_pid $TMUX_PANE" ]; then
+        if roost_pane_id_ensure t "$TMUX_PANE" "" "$RW_STABLE_BOOT"; then
+          sender_id="$ROOST_PANE_ID"
+          if [ "$ROOST_PANE_ID_NEW" = 1 ]; then
+            . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+            roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" send "$RW_STABLE_BOOT"
+          fi
+        fi
+        if [ "$from_given" = 0 ] || [ "$from" = "pane:$TMUX_PANE" ]; then
+          from="pane:${sender_id:-$TMUX_PANE}"
+        fi
+      fi
+    fi
+    [ -n "$from" ] || from=human
+    # Agents need an address to send their answer back to. Keep shell input
+    # literal, including an old prefix supplied by the caller. The sender's
+    # stable address goes in the turn record.
     # How long to keep trying before giving up and saying so. Generous on
     # purpose: a cold agent can take several seconds to draw its input box, and
     # a send that gave up after one second would be a worse tool than the one
     # that lost the front quietly. Clamped by LENGTH first, then by value, the
     # same way @roost-send-retries is above and for the same reason — a
     # pathological digit string must not make the arithmetic itself slow.
-    ready_timeout="$(t show-options -gqv @roost-send-ready-timeout 2>/dev/null)"
+    ready_timeout="$(roost_target_tmux show-options -gqv @roost-send-ready-timeout 2>/dev/null)"
     case "$ready_timeout" in ''|*[!0-9]*) ready_timeout=15 ;; esac
     [ "${#ready_timeout}" -gt 6 ] && ready_timeout=120
     [ "$ready_timeout" -gt 120 ] 2>/dev/null && ready_timeout=120 || true
@@ -2611,7 +2848,7 @@ JSON
     # behaviour, while trusting it would hand back a false success, which is
     # the exact failure being removed.
     send_delivery_baseline() {
-      pre="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+      pre="$(roost_target_tmux capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
       verifiable=1
       [ -z "$head" ] && verifiable=0
       case "$pre" in *"$head"*) verifiable=0 ;; esac
@@ -2674,7 +2911,7 @@ JSON
 
     screen_has_head() {
       local now
-      now="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+      now="$(roost_target_tmux capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
       case "$now" in
         *"$head"*) return 0 ;;
       esac
@@ -2721,13 +2958,25 @@ JSON
     # either as "pane may have died" sent callers to inspect a pane that was
     # alive, idle and blameless.
     type_message() {
-      local rc
+      local rc had_paste
       local -a paste=(paste-buffer -p -d -b "$ROOST_SEND_BUF" -t "$tgt")
-      senderr="$(printf '%s' "$msg" | t load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
+      senderr="$(printf '%s' "$msg" | roost_target_tmux load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
+      if [ "$rc" = 2 ] && [ -n "$RW_STABLE_ID" ]; then send_target_lost; fi
       [ "$rc" -eq 0 ] || return "$rc"
       if [ "$guard_given" = 1 ]; then
         send_guard_require "${paste[*]}" paste
         return 0
+      fi
+      if [ -n "$RW_STABLE_ID" ]; then
+        roost_target_matches || send_target_lost
+        had_paste="$send_pasted"
+        send_pasted=1
+        rc=0; roost_target_action "${paste[*]}" || rc=$?
+        if [ "$rc" = 2 ]; then
+          send_pasted="$had_paste"
+          send_target_lost
+        fi
+        return "$rc"
       fi
       senderr="$(t "${paste[@]}" 2>&1 >/dev/null)"; rc=$?
       return "$rc"
@@ -2823,7 +3072,7 @@ JSON
       # release has reserved and not yet filed. It is digits or empty, and an
       # empty middle field keeps its place, as the measurement below shows for
       # @agent_since.
-      turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@roost-turn-reserved} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+      turn_info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{@roost-turn-reserved} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
       turn_pane="${turn_info%% *}"
       turn_rest="${turn_info#* }"
       turn_reserved="${turn_rest%% *}"
@@ -2839,7 +3088,7 @@ JSON
       # gives: a format lookup falls back pane -> window -> global, and a stray
       # outer-scope value would then be compared as if it were this pane's.
       if [ "$turn_watch" = 1 ]; then
-        turn_reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+        turn_reply="$(roost_target_tmux show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
       fi
       # $turn_have_base, and not merely "$turn_base is 0": with recording off
       # there is no numbering at all, and base+1 would name a turn that will never
@@ -2894,12 +3143,15 @@ JSON
       exit 1
     fi
     send_input_gate send_refresh_baselines
-    # Set BEFORE the paste, not after: a paste that tmux accepted and then
+    # For an unguarded numeric or named address, set BEFORE the paste, not
+    # after: a paste that tmux accepted and then
     # failed to report is still text in the box, and the cleanup must clear
     # it. A paste that never happened is cleared by a C-u that does nothing.
-    # The guarded path tracks an in-flight paste separately. When the guard
-    # explicitly refuses before typing, cleanup must also leave the pane alone.
-    if [ "$guard_given" = 0 ]; then send_pasted=1; fi
+    # The guarded path tracks an in-flight paste separately. Stable sends
+    # mark it inside type_message, after loading the buffer and before
+    # dispatch. When the queue confirms a refusal before typing, cleanup
+    # must leave the pane alone.
+    if [ "$guard_given" = 0 ] && [ -z "$RW_STABLE_ID" ]; then send_pasted=1; fi
     if ! type_message; then
       case "$senderr" in
         *"too long"*|*"failed to send command"*)
@@ -2978,6 +3230,7 @@ JSON
         sleep "$delay" 2>/dev/null || true
       done
       if ! screen_has_head; then
+        roost_target_matches || send_target_lost
         # Before failing, ask a weaker question that a real agent TUI can still
         # answer: did the screen change at all?
         #
@@ -3025,7 +3278,7 @@ JSON
       fi
     fi
     sleep "$delay" 2>/dev/null || true
-    before="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+    before="$(roost_target_tmux capture-pane -p -t "$tgt" 2>/dev/null || true)"
     # Same call shape as the #{window_id} #{pane_dead} fetch above, and the
     # same reasoning applies to the separator: #{cursor_x} and #{cursor_y}
     # are always plain digits, so a plain space can never appear inside
@@ -3034,7 +3287,7 @@ JSON
     # against a later snapshot taken the same way — so there is nothing here
     # for a wrong separator to silently break; the space is kept anyway for
     # consistency and so the raw string is readable if ever logged.
-    cursor_before="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+    cursor_before="$(roost_target_tmux display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
     # The point of no return. Same check as before each C-u above, for the
     # same reason: an Enter on a box another sender is typing into submits
     # THEIR half-typed text. Nothing has been submitted when this fires.
@@ -3043,14 +3296,13 @@ JSON
       echo "roost send: the send lock for '$raw' was taken from this send — nothing was submitted; the box may still hold this send's draft; retry the same target" >&2
       exit 1
     fi
-    # From here the text is in: cleanup must not clear it.
-    if [ "$guard_given" = 0 ]; then send_entered=1; fi
+    # Once Enter lands the text is in: cleanup must not clear it.
     send_key Enter
 
     n="$retries"
     while [ "$n" -gt 0 ]; do
       sleep "$delay" 2>/dev/null || true
-      pending "$*" || break
+      pending "$msg" || break
       # An extra Enter into a box that is another sender's by now would
       # submit their half-typed text. Not exit 1 here — the first Enter is
       # already in, and "nothing was submitted" would be a lie — just no more
@@ -3064,11 +3316,11 @@ JSON
       # a pane that dies mid-loop must not abort the script with tmux's raw
       # error — it should fall through to the same conservative handling as
       # any other "can no longer tell" case below.
-      send_key Enter
+      send_key Enter || break
       n=$((n - 1))
     done
 
-    if [ "$retries" -gt 0 ] && pending "$*"; then
+    if [ "$retries" -gt 0 ] && pending "$msg"; then
       if [ "$guard_given" = 1 ]; then send_guard_unknown; fi
       echo "roost send: text pasted into '$raw' but never submitted (tried $retries extra Enter(s))" >&2
       exit 1
@@ -3158,7 +3410,8 @@ JSON
         #   state only    `%0 0  done`        -> since [] state [done]
         #   both          `%0 0 1790000000 done`
         #   since only    `%0 0 1790000000 `  -> state []
-        turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+        turn_info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{pane_dead} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+        if ! roost_target_matches; then turn_gone=1; break; fi
         turn_pid="${turn_info%% *}"
         turn_rest="${turn_info#* }"
         turn_dead="${turn_rest%% *}"
@@ -3229,7 +3482,9 @@ JSON
         #    than the only one: 1 catches any turn slower than a poll, 2 catches
         #    any turn at all when records are on, 3 catches any stamp inside the
         #    same second. All four have to miss at once to reach exit 4.
-        if [ "$turn_reply" != "$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)" ]; then
+        now_reply="$(roost_target_tmux show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+        if ! roost_target_matches; then turn_gone=1; break; fi
+        if [ "$turn_reply" != "$now_reply" ]; then
           turn_started=1; break
         fi
         sleep 0.25 2>/dev/null || true
@@ -3273,33 +3528,22 @@ JSON
     # `reply` makes before it trusts $TMUX_PANE, and for the same reason — the
     # user's everyday tmux sets both variables too, and a %N from that server
     # is a stranger's id over here. Anything less certain is `human`, which is
-    # what a send typed at a shell outside any pane is. One tmux call, and only
-    # on this path.
+    # what a send typed at a shell outside any pane is. The check runs
+    # before delivery so the record can use the stable address. The numeric
+    # label is a fallback if allocation failed.
     #
     # The write fails soft: a record that cannot be written has never failed a
     # send, and the sidecar is no exception. sent_by in the document names the
     # label only when the file holds it.
     sent_by=""
     if [ -n "$turn_num" ] && [ -n "$turn_dir" ]; then
-      if [ "$from_given" -eq 0 ]; then
-        from=human
-        case "${TMUX_PANE:-}" in
-          %[0-9]*)
-            if [ -n "${TMUX:-}" ]; then
-              caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
-              if [ "$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}' 2>/dev/null || true)" = "$caller_pid $TMUX_PANE" ]; then
-                from="pane:$TMUX_PANE"
-              fi
-            fi ;;
-        esac
-      fi
       # A record that does not exist yet (this is the pane's first turn) is
       # created by the writer, and it files the socket path so that `forget
       # --gone` can later ask the right server about it. Asked only in that
       # case: every later send finds the directory and pays nothing.
       sidecar_sock=""
       if [ ! -d "$turn_dir" ]; then
-        sidecar_sock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+        sidecar_sock="$lock_sock"
       fi
       if roost_record_put_turn_field "$turn_dir" "$turn_num" sent_by "$from" "$sidecar_sock"; then
         sent_by="$from"
@@ -3331,7 +3575,7 @@ JSON
       # re-resolve a second later can answer differently if the window's active
       # pane has moved.
       send_waited_fields
-      roost_jsonout_emit send target s "$raw" \
+      roost_jsonout_emit send target s "${RW_STABLE_INPUT:-$raw}" \
         pane z "$turn_pane" \
         turn i "$turn_num" started b "$turn_started" \
         state z "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" \
@@ -3498,7 +3742,7 @@ JSON
     pane="" dead=""
     case "$tgt" in
       %*)
-        info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
+        info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
         pane="${info%% *}"; dead="${info#* }"
         case "$pane" in %[0-9]*) ;; *) pane="" ;; esac ;;
       *)
@@ -3518,12 +3762,13 @@ EOF
         # No blocked pane: the window's active one, so the refusal below can
         # say what it reads.
         if [ "$nb" -eq 0 ] && [ -n "$rows" ]; then
-          info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
+          info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
           pane="${info%% *}"; dead="${info#* }"
           case "$pane" in %[0-9]*) ;; *) pane="" ;; esac
         fi ;;
     esac
     if [ -z "$pane" ]; then
+      roost_target_require answer
       echo "roost answer: no such target '$raw'" >&2; exit 2
     fi
     # The ownership refusal (#191 Part 3), `send`'s, from the one table
@@ -3581,7 +3826,7 @@ EOF
       %[0-9]*)
         if [ -n "${TMUX:-}" ]; then
           caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
-          cinfo="$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}|#{@agent_state}|#{@roost-session}' 2>/dev/null || true)"
+          cinfo="$(roost_target_tmux display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}|#{@agent_state}|#{@roost-session}' 2>/dev/null || true)"
           if [ "${cinfo%%|*}" = "$caller_pid $TMUX_PANE" ]; then
             caller="$TMUX_PANE"; by="pane:$TMUX_PANE"
             crest="${cinfo#*|}"
@@ -3601,7 +3846,7 @@ EOF
     # one free-text field: a `|` in it (a shell pipe is the common case) stays
     # in it, and never reaches the words the checks below use. The separator
     # is `|` for the locale reason given at the caller check above.
-    pinfo="$(t display-message -p -t "$pane" '#{pane_in_mode}|#{@agent_state}|#{@roost-dialog}|#{@roost-answered}|#{@roost-blocked-on}' 2>/dev/null || true)"
+    pinfo="$(roost_target_tmux display-message -p -t "$pane" '#{pane_in_mode}|#{@agent_state}|#{@roost-dialog}|#{@roost-answered}|#{@roost-blocked-on}' 2>/dev/null || true)"
     in_mode="${pinfo%%|*}"; prest="${pinfo#*|}"
     state="${prest%%|*}"; prest="${prest#*|}"
     drec="${prest%%|*}"; prest="${prest#*|}"
@@ -3614,8 +3859,9 @@ EOF
     # badge only when Claude's own transcript proves the decline, exactly as
     # `send` asks it, so a declined dialog is "not blocked" here and never a
     # target. It is fail-closed for every other pane.
+    roost_target_require answer
     if [ "$state" = blocked ] && roost_unblock_pane "$pane"; then
-      state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+      state="$(roost_target_tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
     fi
     if [ "$state" != blocked ]; then
       echo "roost answer: '$raw' is not blocked (it reads ${state:-no badge}). There is nothing to answer" >&2
@@ -3665,7 +3911,7 @@ EOF
       echo "roost answer: '$raw' is in copy mode, so keys would not reach the agent. Nothing was sent" >&2
       exit 6
     fi
-    if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+    if ! roost_answer_marked "$(roost_target_tmux capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
       echo "roost answer: '$raw' reads blocked, but no dialog is on its screen. Nothing was sent" >&2
       exit 6
     fi
@@ -3692,10 +3938,11 @@ EOF
     trap 'ans_cleanup' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    lock_sock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
-    lock_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
+    lock_sock="$(roost_target_tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
+    lock_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
     lock_rc=0
     roost_panelock_take "$lock_sock" "$pane" "$lock_timeout" || lock_rc=$?
+    roost_target_require answer
     case "$lock_rc" in
       0) # The wait may have been long, and the screen checks above are from
          # before it. The send itself re-tests the badge, the fingerprint, the
@@ -3704,7 +3951,8 @@ EOF
          # pane blocked with the same fingerprint and the dialog gone, and an
          # Escape would then interrupt the running tool (found by review).
          # So the marker is read once more, now, under the lock.
-         if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+         if ! roost_answer_marked "$(roost_target_tmux capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+           roost_target_require answer
            echo "roost answer: '$raw' changed while waiting for its pane lock: the dialog is no longer on its screen. Nothing was sent" >&2
            exit 7
          fi ;;
@@ -3731,8 +3979,10 @@ EOF
       echo "roost answer: the pane lock for '$raw' was taken from this call. Nothing was sent; try again" >&2
       exit 11
     fi
+    roost_target_require answer
     src=0
     roost_answer_send "$pane" "$fp" "$ROOST_ANSWER_KEY" "$fp $sent_at $act_word $by" "$nonce" || src=$?
+    if [ "$src" != 0 ]; then roost_target_require answer; fi
     if [ "$src" -eq 1 ]; then
       echo "roost answer: '$raw' changed before the key was sent (a new dialog, an answer at the pane, or copy mode). Nothing was sent" >&2
       exit 7
@@ -3811,10 +4061,10 @@ EOF
     SECONDS=0
     while { [ "$SECONDS" -le "$ans_timeout" ] || [ -n "$screen_at" ]; } \
           && [ "$SECONDS" -le $((ans_timeout + 10)) ]; do
-      cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
+      cinfo="$(roost_target_tmux display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
       # The pane is gone: nothing on it can confirm anything any more, and a
       # screen that had lost its marker before it went proves nothing.
-      if [ "${cinfo%%|*}" != "$pane" ]; then gone=1; break; fi
+      if [ "${cinfo%%|*}" != "$pane" ] || ! roost_target_matches; then gone=1; break; fi
       crest="${cinfo#*|}"
       # A DEAD pane is gone too, though tmux still answers for it: with
       # remain-on-exit on (a user's roost.conf can set it) a pane whose process
@@ -3831,7 +4081,7 @@ EOF
         esac
         if [ "$now_state" = blocked ] && roost_unblock_pane "$pane"; then
           confirmed=transcript
-          now_state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+          now_state="$(roost_target_tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
           break
         fi
       else
@@ -3841,13 +4091,15 @@ EOF
           *) wrong="it no longer reads blocked (${now_state:-no badge}): the dialog was declined, not by this call"; break ;;
         esac
         case "$cdrec" in "$fp "*) ;; ?*) confirmed=dialog; break ;; esac
-        if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+        answer_screen="$(roost_target_tmux capture-pane -p -J -t "$pane" 2>/dev/null || true)"
+        if ! roost_target_matches; then gone=1; break; fi
+        if ! roost_answer_marked "$answer_screen"; then
           # The marker is gone and the badge still says blocked. For Claude,
           # a decline would write its three records into the transcript 5 to
           # 55 ms after the key (M1), so the screen proves an approval only
           # when they are not there.
-          rec="$(t show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
-          since="$(t show-options -pqv -t "$pane" @agent_since 2>/dev/null || true)"
+          rec="$(roost_target_tmux show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
+          since="$(roost_target_tmux show-options -pqv -t "$pane" @agent_since 2>/dev/null || true)"
           rpath="${rec#* }"
           if [ "$ROOST_DIALOG_HARNESS" = claude ] && [ -n "$rec" ] && [ "${rec%% *}" = "$since" ] \
              && roost_claude_declined "$rpath" "$since"; then
@@ -3881,10 +4133,10 @@ EOF
     . "$ROOST_HOME/scripts/lib/roost-record.sh"
     roost_record_root
     if [ -n "$ROOST_RECORD_ROOT" ]; then
-      rboot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      rboot="${RW_STABLE_BOOT:-$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)}"
       if roost_record_pane_dir "$rboot" "$pane"; then
         rsock=""
-        [ -d "$ROOST_RECORD_PANE_DIR" ] || rsock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+        [ -d "$ROOST_RECORD_PANE_DIR" ] || rsock="$lock_sock"
         roost_record_put_answer "$ROOST_RECORD_PANE_DIR" \
           "$sent_at $fp $ROOST_DIALOG_HARNESS $ROOST_DIALOG_KIND $act_word $by forced=$force confirmed=${confirmed:-none} $blocked_on" \
           "$rsock" || true
@@ -3905,7 +4157,7 @@ EOF
       # roost_unblock_pane cleared, which unsets the badge rather than set
       # one. `option` is the number for --option, null otherwise.
       . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-      roost_jsonout_emit answer target s "$raw" pane s "$pane" action s "$action" \
+      roost_jsonout_emit answer target s "${RW_STABLE_INPUT:-$raw}" pane s "$pane" action s "$action" \
         option i "$opt_n" fingerprint s "$fp" harness s "$ROOST_DIALOG_HARNESS" \
         kind s "$ROOST_DIALOG_KIND" confirmed s "$confirmed" state z "$now_state" \
         forced b "$force" \
@@ -4064,6 +4316,7 @@ EOF
     # was:%OLD reads the OLD boot's record (§5.4): record_for honours this.
     RF_FORCE_BOOT="$RW_OLDBOOT" RF_FORCE_PANE="$RW_OLD"
     tgt="$(target "$raw")"
+    roost_target_require read
     # --turn N: one kept turn, from the record only (#42). It never falls back
     # to the screen — the caller asked for a particular turn, and the screen is
     # not it — and it carries no staleness notice, because the caller chose the
@@ -4078,6 +4331,7 @@ EOF
           record_warn read "$raw"
         fi
       fi
+      roost_target_require read
       if [ "$ROOST_RECORD_COUNT" -eq 0 ]; then
         echo "roost read: no recorded turns for '$raw'." >&2
         exit 1
@@ -4159,11 +4413,13 @@ EOF
         roost_record_get_turn_field "$RF_DIR" "$want" sent_by || true
         # `final` and `background` (#97): a kept turn is a final reply by
         # construction -- the hold writes no turn file -- and no count applies.
-        roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "$json_state" \
+        roost_target_require read
+        roost_jsonout_emit read target s "${RW_STABLE_INPUT:-$raw}" pane z "$RF_PANE" source s record state z "$json_state" \
           stale b 0 error_reason z "" turn i "$want" text t "$ROOST_RECORD_TEXT" \
           sent_by z "$ROOST_RECORD_FIELD" final b 1 background i "" || roost_jsonout_fail read
         exit 0
       fi
+      roost_target_require read
       if [ "$render" -eq 1 ]; then
         printf '%s\n' "$ROOST_RECORD_TEXT" | render_stdin
       else
@@ -4193,11 +4449,13 @@ EOF
                   . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
                   # The last kept turn's sent_by (#56), as on the --turn path.
                   roost_record_get_turn_field "$RF_DIR" "$ROOST_RECORD_MAX" sent_by || true
-                  roost_jsonout_emit read target s "$raw" pane z "$RF_PANE" source s record state z "" \
+                  roost_target_require read
+                  roost_jsonout_emit read target s "${RW_STABLE_INPUT:-$raw}" pane z "$RF_PANE" source s record state z "" \
                     stale b 0 error_reason z "" turn i "$ROOST_RECORD_MAX" text t "$ROOST_RECORD_TEXT" \
                     sent_by z "$ROOST_RECORD_FIELD" final b 1 background i "" || roost_jsonout_fail read
                   exit 0
                 fi
+                roost_target_require read
                 if [ "$render" -eq 1 ]; then
                   printf '%s\n' "$ROOST_RECORD_TEXT" | render_stdin
                 else
@@ -4243,11 +4501,13 @@ EOF
     # unset and recorded as `died`, and read then answers for a pane with no
     # badge -- the previous turn's reply cleared with it, a held main reply
     # kept and said to be a dead agent's.
-    case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" in
+    roost_target_require read
+    case "$(roost_target_tmux display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" in
       blocked) roost_died_pane "$tgt" || roost_unblock_pane "$tgt" || true ;;
       working) roost_died_pane "$tgt" || roost_interrupted_pane "$tgt" || true ;;
     esac
     reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+    roost_target_require read
     if [ -n "$reply" ]; then
       # A reply recorded at the end of turn N is still on the pane during turn
       # N+1. It is not cleared at the turn start — that would throw away a
@@ -4385,7 +4645,8 @@ EOF
           roost_record_get_turn_field "$RF_DIR" "$json_turn" sent_by || true
           json_sent_by="$ROOST_RECORD_FIELD"
         fi
-        roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s reply state z "$state" \
+        roost_target_require read
+        roost_jsonout_emit read target s "${RW_STABLE_INPUT:-$raw}" pane z "$json_pane" source s reply state z "$state" \
           stale b "$json_stale" error_reason z "$json_why" turn i "$json_turn" text "$json_text_kind" "$reply" \
           sent_by z "$json_sent_by" final b "$json_final" background i "$json_bg" || roost_jsonout_fail read
         exit 0
@@ -4397,6 +4658,7 @@ EOF
       # Branch rather than always piping: with --render absent the reply must
       # leave this command by exactly the printf it always has, unchanged down
       # to the byte, because that is what callers diff against.
+      roost_target_require read
       if [ "$render" -eq 1 ]; then
         printf '%s\n' "$reply" | render_stdin
       else
@@ -4456,17 +4718,18 @@ EOF
     # screen, which is a valid empty document at exit 0 -- see that function.
     if [ "$json" -eq 1 ]; then
       . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-      roost_jsonout_screen "$tgt" "$lines" || exit 1
+      roost_jsonout_screen "$tgt" "$lines" || { roost_target_require read; exit 1; }
       json_pane="$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)"
       json_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
       json_why=""
       if [ "$json_state" = "error" ]; then json_why="$why"; fi
-      roost_jsonout_emit read target s "$raw" pane z "$json_pane" source s screen state z "$json_state" \
+      roost_target_require read
+      roost_jsonout_emit read target s "${RW_STABLE_INPUT:-$raw}" pane z "$json_pane" source s screen state z "$json_state" \
         stale b 0 error_reason z "$json_why" turn i "" text t "$ROOST_JSONOUT_TEXT" \
         sent_by z "" final b 1 background i "" || roost_jsonout_fail read
       exit 0
     fi
-    screen_dump "$tgt" "$lines"
+    screen_dump_checked read "$tgt" "$lines"
     ;;
   screen)
     # What `read` did before it learned to prefer a recorded reply, under a
@@ -4524,7 +4787,7 @@ EOF
     done
     if [ "$json" -eq 1 ]; then
       . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-      roost_jsonout_screen "$(target "$raw")" "$lines" || exit 1
+      roost_jsonout_screen "$(target "$raw")" "$lines" || { roost_target_require screen; exit 1; }
       json_pane="$(t display-message -p -t "$(target "$raw")" '#{pane_id}' 2>/dev/null || true)"
       # A negative LINES is reported as its count, the way tail reads it. Any
       # other spelling tail accepts (`+3`, "from line 3") is not a count, and
@@ -4543,11 +4806,12 @@ EOF
           [ -n "$json_lines" ] || json_lines=0
           [ "${#json_lines}" -le 18 ] || json_lines="" ;;
       esac
-      roost_jsonout_emit screen target s "$raw" pane z "$json_pane" lines i "$json_lines" \
+      roost_target_require screen
+      roost_jsonout_emit screen target s "${RW_STABLE_INPUT:-$raw}" pane z "$json_pane" lines i "$json_lines" \
         text t "$ROOST_JSONOUT_TEXT" || roost_jsonout_fail screen
       exit 0
     fi
-    screen_dump "$(target "$raw")" "$lines"
+    screen_dump_checked screen "$(target "$raw")" "$lines"
     ;;
   reply)
     shift
@@ -4755,7 +5019,44 @@ EOF
       esac
     done
     need_arg "${2:-}" "usage: roost wait-done [SESSION:]WINDOW [TIMEOUT_SEC]"; raw="$2"; timeout=0
-    resolve_was wait-done "$raw" || exit 2; raw="$RW_TARGET"
+    # wd_exit CODE OUTCOME PANE STATE [REASON] -- every way out of the wait
+    # below, including a valid stable ID whose pane is gone. The stderr line has already
+    # been printed by the caller, unchanged; this prints the --json document
+    # when one was asked for, and exits CODE. PANE is "" when no single pane
+    # is the outcome's (a window that finished, a target that is gone).
+    wd_exit() {
+      local code="$1" outcome="$2" pane="$3" state="$4" reason="${5:-}" info bg reply=null elapsed pane_j state_j reason_j
+      if [ "$wd_json" = 1 ]; then
+        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
+        elapsed=$(( $(date +%s) - wd_start ))
+        bg=null
+        if [ -n "$pane" ] && roost_target_matches; then
+          info="$(t display-message -p -t "$pane" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
+          roost_jsonout_background "${info%%|*}" "${info#*|}"; bg="$ROOST_JSONOUT_INT"
+          if [ "$outcome" = done ]; then wd_reply_json "$pane" && reply="$WD_REPLY"; fi
+          if ! roost_target_matches; then bg=null reply=null; fi
+        fi
+        roost_jsonout_encode "${RW_STABLE_INPUT:-$raw}" "$pane" "$state" "$outcome" "$reason" || roost_jsonout_fail wait-done
+        pane_j=null; [ -n "$pane" ] && pane_j="${ROOST_JSONOUT_STR[1]}"
+        state_j=null; [ -n "$state" ] && state_j="${ROOST_JSONOUT_STR[2]}"
+        reason_j=null; [ -n "$reason" ] && reason_j="${ROOST_JSONOUT_STR[4]}"
+        roost_jsonout_int "$wt_turn"
+        printf '{"schema":%s,"command":%s,"target":%s,"pane":%s,"state":%s,"outcome":%s,"error_reason":%s,"background":%s,"elapsed":%s,"turn":%s,"reply":%s}\n' \
+          "$ROOST_JSON_SCHEMA" '"wait-done"' "${ROOST_JSONOUT_STR[0]}" "$pane_j" "$state_j" "${ROOST_JSONOUT_STR[3]}" "$reason_j" "$bg" "$elapsed" "$ROOST_JSONOUT_INT" "$reply"
+      fi
+      exit "$code"
+    }
+    if ! resolve_was wait-done "$raw"; then
+      [ "$RW_STABLE_MISSING" = 0 ] || wd_exit 2 gone "" ""
+      exit 2
+    fi
+    raw="$RW_TARGET"
+    wd_require_target() {
+      if ! roost_target_matches; then
+        roost_target_lost_notice wait-done
+        wd_exit 2 gone "" ""
+      fi
+    }
     # TIMEOUT_SEC is refused here, before any polling, unless it is a whole
     # number of seconds (#66). It flows into `[ "$timeout" -gt 0 ]` and
     # `$((timeout * 4))` in the loop below, and measured on the old code:
@@ -4793,6 +5094,7 @@ EOF
       fi
     fi
     tgt="$(target "$raw")"
+    wd_require_target
     # --turn is resolved to a record directory ONCE, here, and the loop below
     # then costs one stat(2) per poll rather than a tmux round trip.
     #
@@ -4822,6 +5124,7 @@ EOF
           *) record_warn wait-done "$raw" ;;
         esac
       fi
+      wd_require_target
       if [ -z "$wt_dir" ]; then
         echo "roost wait-done: --turn $wt_turn cannot be answered for '$raw' — it has no usable turn record, so turn $wt_turn will never be written and this wait could only ever time out." >&2
         exit 1
@@ -4885,32 +5188,6 @@ EOF
       if [ "$final" = 1 ]; then WD_REPLY="$WD_REPLY,\"final\":true"; else WD_REPLY="$WD_REPLY,\"final\":false"; fi
       roost_jsonout_int "$bg"; WD_REPLY="$WD_REPLY,\"background\":$ROOST_JSONOUT_INT}"
       return 0
-    }
-    # wd_exit CODE OUTCOME PANE STATE [REASON] -- every way out of the wait
-    # below once the target has been resolved. The stderr line has already
-    # been printed by the caller, unchanged; this prints the --json document
-    # when one was asked for, and exits CODE. PANE is "" when no single pane
-    # is the outcome's (a window that finished, a target that is gone).
-    wd_exit() {
-      local code="$1" outcome="$2" pane="$3" state="$4" reason="${5:-}" info bg reply=null elapsed pane_j state_j reason_j
-      if [ "$wd_json" = 1 ]; then
-        . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-        elapsed=$(( $(date +%s) - wd_start ))
-        bg=null
-        if [ -n "$pane" ]; then
-          info="$(t display-message -p -t "$pane" '#{@agent_since}|#{@roost-background}' 2>/dev/null || true)"
-          roost_jsonout_background "${info%%|*}" "${info#*|}"; bg="$ROOST_JSONOUT_INT"
-          if [ "$outcome" = done ]; then wd_reply_json "$pane" && reply="$WD_REPLY"; fi
-        fi
-        roost_jsonout_encode "$raw" "$pane" "$state" "$outcome" "$reason" || roost_jsonout_fail wait-done
-        pane_j=null; [ -n "$pane" ] && pane_j="${ROOST_JSONOUT_STR[1]}"
-        state_j=null; [ -n "$state" ] && state_j="${ROOST_JSONOUT_STR[2]}"
-        reason_j=null; [ -n "$reason" ] && reason_j="${ROOST_JSONOUT_STR[4]}"
-        roost_jsonout_int "$wt_turn"
-        printf '{"schema":%s,"command":%s,"target":%s,"pane":%s,"state":%s,"outcome":%s,"error_reason":%s,"background":%s,"elapsed":%s,"turn":%s,"reply":%s}\n' \
-          "$ROOST_JSON_SCHEMA" '"wait-done"' "${ROOST_JSONOUT_STR[0]}" "$pane_j" "$state_j" "${ROOST_JSONOUT_STR[3]}" "$reason_j" "$bg" "$elapsed" "$ROOST_JSONOUT_INT" "$reply"
-      fi
-      exit "$code"
     }
     # wd_state_of PANE -> the badge PANE reads in the last snapshot, or "".
     wd_state_of() {
@@ -4986,17 +5263,25 @@ EOF
     # SIGPIPE list-panes, so the pipeline would report failure even when the
     # pane IS there — and wait-done would call a live agent gone.
     snapshot() {
-      local _all _id _dead _pp _job _st
+      local _all _row _id _dead _pp _job _st
+      local fmt='#{pane_id} #{pane_dead} p#{pane_pid} j#{@roost-agent-job} #{@agent_state}'
       case "$tgt" in
         %*)
-          _all="$(t list-panes -a -F '#{pane_id} #{pane_dead} p#{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null)" || return 1
-          while read -r _id _dead _pp _job _st; do
+          # Sample the identity with the state. A restart or moved ID now
+          # looks like an absent pane to the wait already in progress.
+          if [ -n "$RW_STABLE_ID" ]; then fmt="#{start_time}-#{pid} #{@roost-id} $fmt"; fi
+          _all="$(t list-panes -a -F "$fmt" 2>/dev/null)" || return 1
+          while IFS= read -r _row; do
+            if [ -n "$RW_STABLE_ID" ]; then
+              case "$_row" in "$RW_STABLE_BOOT $RW_STABLE_ID "*) _row="${_row#* * }" ;; *) continue ;; esac
+            fi
+            read -r _id _dead _pp _job _st <<< "$_row"
             [ "$_id" = "$tgt" ] && { printf '%s %s %s %s %s\n' "$_id" "$_dead" "$_pp" "$_job" "$_st"; return 0; }
           done <<< "$_all"
           return 1
           ;;
         *)
-          t list-panes -t "$tgt" -F '#{pane_id} #{pane_dead} p#{pane_pid} j#{@roost-agent-job} #{@agent_state}' 2>/dev/null
+          t list-panes -t "$tgt" -F "$fmt" 2>/dev/null
           ;;
       esac
     }
@@ -5121,6 +5406,7 @@ EOF
         # pane's reason. A pane with none (every adapter that has a real error
         # event) prints the one line it always has.
         why="$(t show-options -p -t "$err_pane" -qv @roost-error-reason 2>/dev/null || true)"
+        roost_target_matches || why=""
         [ -n "$why" ] && echo "roost: $err_pane: $why" >&2
         wd_exit 1 error "$err_pane" error "$why"
       fi
@@ -5164,6 +5450,7 @@ EOF
             # (the rule the interrupted record keeps, flock round 1 on #95).
             if [ "$wt_turn_given" = 0 ] && [ $((ticks % 4)) = 0 ]; then
               _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-session-ended}|#{@roost-ended}' 2>/dev/null || true)"
+              roost_target_matches || _ended=""
               _esince="${_ended%%|*}"; _ended="${_ended#*|}"
               _sesend="${_ended%%|*}"; _ended="${_ended#*|}"
               case "$_esince" in ''|*[!0-9]*) ;; *)
@@ -5257,6 +5544,7 @@ EOF
         # is the agent's own, inside its shell, not background work cut off.
         # The two get their own sentences; the exit is 2 for both.
         _ended="$(t display-message -p -t "$_id" '#{@agent_since}|#{@roost-session-ended}|#{@roost-ended}' 2>/dev/null || true)"
+        roost_target_matches || _ended=""
         _esince="${_ended%%|*}"; _ended="${_ended#*|}"
         _sesend="${_ended%%|*}"; _ended="${_ended#*|}"
         case "$_esince" in ''|*[!0-9]*) continue ;; esac
@@ -5371,11 +5659,13 @@ EOF
       *)
         tgt="$(target "$2")"
         if ! record_for "$2" "$tgt" || ! roost_record_is_record "$RF_DIR"; then
+          roost_target_require forget
           echo "roost forget: no record for '$2'." >&2
           exit 1
         fi
         roost_record_scan "$RF_DIR/replies"
         kb="$(du -sk "$RF_DIR" 2>/dev/null | awk '{print $1}')"
+        roost_target_require forget
         rm -rf "$RF_DIR"
         rmdir "${RF_DIR%/*}" 2>/dev/null || true
         echo "roost forget: removed the record for '$2' ($(plural "$ROOST_RECORD_COUNT" turn), ${kb:-0} KB)"
@@ -5409,7 +5699,7 @@ EOF
       roost_events_reconcile "${3:-}" "${4:-}" "${5:-}" >/dev/null 2>&1 || true
       exit 0
     fi
-    ev_usage() { echo "usage: roost events [--since CURSOR] [--follow] [--pane %N]" >&2; exit 1; }
+    ev_usage() { echo "usage: roost events [--since CURSOR] [--follow] [--pane ID]" >&2; exit 1; }
     ev_since="" ev_follow=0 ev_pane=""
     shift
     while [ "$#" -gt 0 ]; do
@@ -5418,21 +5708,26 @@ EOF
         --follow|-f) ev_follow=1; shift ;;
         --pane)
           [ "$#" -ge 2 ] || ev_usage
-          case "$2" in %[0-9]*) ;; *) ev_usage ;; esac
-          case "${2#%}" in *[!0-9]*) ev_usage ;; esac
+          if ! roost_pane_id_target "$2"; then
+            case "$2" in %[0-9]*) ;; *) ev_usage ;; esac
+            case "${2#%}" in *[!0-9]*) ev_usage ;; esac
+          fi
           ev_pane="$2"; shift 2 ;;
         *) ev_usage ;;
       esac
     done
     # --pane reads only this boot's event records, but a literal colliding id
     # still leaves the reader guessing which agent's events were requested.
-    [ -z "$ev_pane" ] || resolve_was events "$ev_pane" || exit 2
+    if [ -n "$ev_pane" ]; then
+      resolve_was events "$ev_pane" || exit 2
+      ev_pane="$RW_TARGET"
+    fi
     roost_events_dir
     if [ -z "$ROOST_EVENTS_DIR" ]; then
       echo "roost events: the event log is off — ROOST_EVENTS is set to \"\" (or is not an absolute path), or kept replies are off (ROOST_RECORD_DIR=\"\") and ROOST_EVENTS names no directory." >&2
       exit 1
     fi
-    ev_boot="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+    ev_boot="${RW_STABLE_BOOT:-$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)}"
     case "$ev_boot" in
       [0-9]*-[0-9]*) ;;
       *) echo "roost events: no roost server is running on $SOCKET." >&2; exit 2 ;;
@@ -5446,6 +5741,17 @@ EOF
     exit "$ev_rc"
     ;;
   status)
+    # Adopt panes opened by hand on first status or whoami. The format is a
+    # cheap prefilter. The allocator checks the pane's own option again.
+    adopted=0
+    while IFS=' ' read -r pane pane_address; do
+      [ -n "$pane" ] && [ -z "$pane_address" ] || continue
+      if roost_pane_id_ensure t "$pane" && [ "$ROOST_PANE_ID_NEW" = 1 ]; then adopted=1; fi
+    done < <(t list-panes -a -F '#{pane_id} #{@roost-id}' 2>/dev/null || true)
+    if [ "$adopted" = 1 ]; then
+      . "$ROOST_HOME/scripts/lib/roost-shape.sh"
+      roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" status
+    fi
     # --json (#41) only as the second word; any other extra word is ignored, as
     # it always was. The document reads the same tmux formats as the lines
     # below, without trusting a delimiter -- see roost_jsonout_list.
@@ -5473,8 +5779,8 @@ EOF
       # tmux/roost.conf, whose comment explains both. The state underneath is
       # still `working`, and `status --json` still says so in `state`.
       # A restored pane ends with `(was %930)`, its id before the reboot
-      # (#191 Part 3, §5.4); every other line is unchanged to the byte.
-      t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},#{@agent_state}},-}]#{?@roost-was, (was #{@roost-was}),}'
+      # (#191 Part 3, §5.4); this refers to its previous tmux number.
+      t list-panes -a -F '    #{?@roost-id,#{@roost-id}#{?#{!=:#{@roost-role},}, #{@roost-role},}  ,}#{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{?#{&&:#{==:#{@agent_state},working},#{&&:#{!=:#{@agent_since},},#{&&:#{==:#{s/ .*//:#{@roost-background}},#{@agent_since}},#{m/r:^[0-9]+ ([1-9][0-9]*|[?])$,#{@roost-background}}}}},background#{?#{m/r:^[^ ]+ [1-9][0-9]*$,#{@roost-background}}, (#{s/^[^ ]* //:#{@roost-background}}),},#{@agent_state}},-}]#{?@roost-was, (was #{@roost-was}),}'
     else echo "roost: not running"; fi
     ;;
   kill|down|stop)
@@ -5665,6 +5971,7 @@ EOF
     . "$ROOST_HOME/scripts/lib/roost-close.sh"
     resolve_was close "$raw" || exit 2; raw="$RW_TARGET"
     tgt="$(target "$raw")"
+    roost_target_require close
     # Step 1. A %N is matched by id out of `list-panes -a`, as wait-done's
     # snapshot does and for its reason: tmux 3.6 answers display-message for a
     # pane that is gone with exit 0 and every format empty, and `list-panes -t
@@ -5682,10 +5989,14 @@ EOF
     # never shifts it — both for the reasons wait-done's snapshot gives.
     cl_fmt='#{pane_id} #{window_id} #{pane_dead} #{pane_pid} #{window_panes} #{session_windows} j#{@roost-agent-job} #{@agent_state}'
     cl_row() {
-      local _all _r
-      _all="$(t list-panes -a -F "$cl_fmt" 2>/dev/null)" || return 1
+      local _all _r _fmt="$cl_fmt" _prefix=""
+      if [ -n "$RW_STABLE_BOOT" ]; then
+        _fmt="#{start_time}-#{pid} $_fmt"
+        _prefix="$RW_STABLE_BOOT "
+      fi
+      _all="$(t list-panes -a -F "$_fmt" 2>/dev/null)" || return 1
       while IFS= read -r _r; do
-        case "$_r" in "$1 "*) printf '%s\n' "$_r"; return 0 ;; esac
+        case "$_r" in "$_prefix$1 "*) printf '%s\n' "${_r#"$_prefix"}"; return 0 ;; esac
       done <<< "$_all"
       return 1
     }
@@ -5711,7 +6022,7 @@ EOF
     read -r _id cl_win cl_dead cl_pid cl_wpanes cl_swins cl_job cl_state <<< "$row"
     # Step 2. The session's last pane is its last window's only pane.
     if [ "$cl_wpanes" = 1 ] && [ "$cl_swins" = 1 ]; then
-      cl_sess="$(t display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+      cl_sess="$(roost_target_tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
       echo "roost close: '$raw' is the last pane of session '$cl_sess' — closing it would end the session. close takes one pane; roost kill $cl_sess ends a session" >&2
       exit 1
     fi
@@ -5733,11 +6044,11 @@ EOF
     # whether to force needs to know what was there.
     cl_harness="" cl_exit="" cl_cmd=""
     if [ -n "$cl_state" ]; then
-      cl_cmd="$(t display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
+      cl_cmd="$(roost_target_tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
       roost_close_harness \
-        "$(t show-options -p -t "$pane" -qv @roost-harness 2>/dev/null || true)" \
+        "$(roost_target_tmux show-options -p -t "$pane" -qv @roost-harness 2>/dev/null || true)" \
         "$cl_cmd" \
-        "$(t show-options -p -t "$pane" -qv @roost-name 2>/dev/null || true)"
+        "$(roost_target_tmux show-options -p -t "$pane" -qv @roost-name 2>/dev/null || true)"
       cl_harness="$ROOST_CLOSE_HARNESS"
     fi
     # THE INTENT (#51, spec §3.6a). Before close sends the exit command — or
@@ -5750,13 +6061,13 @@ EOF
     # no claim. One file per close, so taking it back edits nothing another
     # writer owns. With saving off there is no shape directory and nothing to
     # write. cl_intent writes once; cl_unintent removes only its own file.
-    cl_closed=""
+    cl_closed="" cl_started=0
     cl_intent() {
       local d b
       [ -n "$cl_closed" ] && return 0
       cl_closed=-
       d="$(roost_shape_dir "$_SOCKET_FLAG" "$SOCKET" 2>/dev/null)" || return 0
-      b="$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      b="${RW_STABLE_BOOT:-$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)}"
       [ -n "$b" ] || return 0
       roost_shape__closed_write "$d" "$b" "close.${pane#%}" "$pane"$'\n'
       cl_closed="$d/closed/$b/close.${pane#%}"
@@ -5766,21 +6077,45 @@ EOF
       cl_row "$pane" >/dev/null 2>&1 && rm -f "$cl_closed"
       return 0
     }
+    cl_target_lost() {
+      if [ "$cl_started" = 1 ]; then
+        if [ "$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)" != "$RW_STABLE_BOOT" ] || ! cl_row "$pane" >/dev/null; then
+          cl_done "$cl_harness left after $cl_exit" gone
+        fi
+        cl_unintent
+        echo "roost close: '$RW_STABLE_INPUT' changed after the exit command began — the pane is still open" >&2
+        exit 1
+      fi
+      case "$cl_closed" in ''|-) ;; *) rm -f "$cl_closed" ;; esac
+      roost_target_lost close
+    }
     # cl_done HOW: close the pane, report, exit 0. kill-pane by %N, never a
     # window or session target, so nothing but this pane can go. It failing
     # means the pane closed on its own in the meantime, which is the same
     # answer.
     cl_done() {
       cl_intent
-      t kill-pane -t "$pane" 2>/dev/null || true
+      if [ "${2:-}" = gone ]; then
+        # The original pane has already closed. Keep its intent and save.
+        :
+      elif [ -n "$RW_STABLE_ID" ]; then
+        if ! roost_target_action "kill-pane -t $pane"; then
+          # Natural exit on the same boot is a closed pane too.
+          if [ "$(t display-message -p '#{start_time}-#{pid}' 2>/dev/null)" != "$RW_STABLE_BOOT" ] || cl_row "$pane" >/dev/null; then
+            cl_target_lost
+          fi
+        fi
+      else
+        t kill-pane -t "$pane" 2>/dev/null || true
+      fi
       [ -n "$cl_pfile" ] && roost_pending_cancel "$cl_pfile" "$pane"
       # The pane is gone: save, `--trigger close` (#51, §3.4). The label is
       # not what keeps it closed after a reboot — closed/<boot>/close.<N>
       # is (§3.6a) — but it says in --list who removed it.
-      roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" close
+      roost_shape_save_now "$_SOCKET_FLAG" "$SOCKET" close "$RW_STABLE_BOOT"
       if [ "$json" -eq 1 ]; then
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
-        roost_jsonout_emit close target s "$raw" pane s "$pane" state z "$cl_state" \
+        roost_jsonout_emit close target s "${RW_STABLE_INPUT:-$raw}" pane s "$pane" state z "$cl_state" \
           harness z "$cl_harness" exit_command z "$cl_exit" forced b "$force" \
           || roost_jsonout_fail close
       else
@@ -5895,13 +6230,21 @@ EOF
     # full-screen TUI's input box sees a paste settle before the submit. Not
     # through `roost send` itself: send waits for a new turn to begin, and an
     # exit command begins none.
-    delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null || true)"
+    delay="$(roost_target_tmux show-options -gqv @roost-send-enter-delay 2>/dev/null || true)"
     case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
+    cl_key() {
+      if [ -n "$RW_STABLE_ID" ]; then
+        roost_target_action "send-keys -t $pane $*" || cl_target_lost
+        cl_started=1
+      else
+        t send-keys -t "$pane" "$@" 2>/dev/null || true
+      fi
+    }
     cl_exit="$ROOST_CLOSE_EXIT"
     cl_intent
-    t send-keys -t "$pane" -l "$cl_exit" 2>/dev/null || true
+    cl_key -l "$cl_exit"
     sleep "$delay" 2>/dev/null || sleep 0.3
-    t send-keys -t "$pane" Enter 2>/dev/null || true
+    cl_key Enter
     # Step 5, a quarter-second poll, as wait-done's.
     ticks=0
     while [ "$ticks" -lt $((timeout * 4)) ]; do
@@ -5909,6 +6252,7 @@ EOF
       # Gone on its own: an agent that was the pane's process took the pane
       # with it. That is the clean exit this command asked for.
       row="$(cl_row "$pane")" || cl_done "$cl_harness left after $cl_exit"
+      roost_target_matches || cl_target_lost
       read -r _id _w cl_dead _pp _wp _sw _jb cl_now <<< "$row"
       if [ "$cl_dead" = 1 ]; then cl_done "$cl_harness left after $cl_exit"; fi
       if [ "$cl_now" = blocked ]; then

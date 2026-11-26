@@ -157,5 +157,5 @@ assert_eq "$(T show-options -pqv -t "$zero" @roost-name)" "0" \
 zeroborder="$(T list-panes -a -F '#{pane_id}|#{E:@roost-pane-border}' | grep "^$zero|" | cut -d'|' -f2)"
 assert_contains "$zeroborder" "$zero 0" \
   "the pane border shows a pane named 0 as 0, not the process name"
-zerostatus="$(TMUX_PANE="$base" "$ROOST" status | grep "^    $zero ")"
+zerostatus="$(TMUX_PANE="$base" "$ROOST" status | grep "  $zero  ")"
 assert_contains "$zerostatus" "/0 " "roost status shows a pane named 0 as 0, not the process name"

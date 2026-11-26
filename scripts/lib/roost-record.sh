@@ -175,6 +175,18 @@ roost_record__put() {
   return 1
 }
 
+# Identity is written independently of replies. Keep the stable pane ID with
+# the same conversation record so revive can read it after the pane is gone.
+roost_record_identity_pane_id() {
+  local dir="$1" sock="$2" boot="$3" pane="$4" shown id
+  [ -n "$sock" ] || return 0
+  shown="$(tmux -S "$sock" display-message -p -t "$pane" '#{start_time}-#{pid} #{pane_id}' \
+    ';' show-options -pqv -t "$pane" @roost-id 2>/dev/null)" || return 0
+  [ "${shown%%$'\n'*}" = "$boot $pane" ] || return 0
+  id="${shown#*$'\n'}"
+  case "$id" in p-???-???-?) roost_record__put "$dir/roost_id" "$id"$'\n' ;; esac
+}
+
 # roost_record_scan REPLIES_DIR -> ROOST_RECORD_COUNT, ROOST_RECORD_MIN,
 # ROOST_RECORD_MAX (0 when there are none).
 #

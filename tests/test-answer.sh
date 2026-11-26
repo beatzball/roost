@@ -305,7 +305,7 @@ ans --expect "$fp" "$a" --approve; assert_eq "$rc" 6 "a second answer to the sam
 assert_prefix "$err" "roost answer: this dialog was already answered (approve, " "...saying what and when"
 ans "$a" --deny; assert_eq "$rc" 6 "...and a deny of it too"
 assert_eq "$(keys a)" "31" "exactly one key in all"
-jdialog="$("$ROOST" status --json | python3 -c 'import json,sys
+jdialog="$(XDG_STATE_HOME="$work/state" "$ROOST" status --json | python3 -c 'import json,sys
 d = json.load(sys.stdin)
 p = [x for x in d["panes"] if x["id"] == sys.argv[1]][0]
 print(p["dialog"]["answered"]["action"], p["dialog"]["answered"]["by"])' "$a")"
@@ -368,6 +368,14 @@ assert_eq "$rc,$out" "10," "a pane that exits after its dialog went: exit 10, no
 assert_contains "$err" "the pane is gone or dead, so nothing can confirm it" "...saying the pane is gone"
 assert_contains "$err" "it was sent once and will not be resent" "...and that the key will not be resent"
 assert_eq "$(keys v)" "31" "...with exactly one key in its log"
+vs="$(open_dialog vanish vs)"; boot="$(T display -p '#{start_time}-#{pid}')"
+stable_id=p-000-100-8
+T set -p -t "$vs" @roost-id "$stable_id"
+ans "$stable_id" --deny
+assert_eq "$rc,$out" '10,' 'stable answer preserves exit 10 when the pane exits after receiving the key'
+assert_contains "$err" 'Do NOT answer again' 'stable answer reports that the key was sent'
+assert_eq "$(keys vs)" 1b 'the departed dialog received precisely one Escape'
+assert_contains "$(cat "$ROOST_RECORD_DIR/$boot/${vs#%}/answers" 2>/dev/null)" ' confirmed=none ' 'the original pane keeps the answer record'
 # The same, with remain-on-exit on (a user's roost.conf can set it): the dead
 # pane stays, with its id, its blocked badge and a screen with no marker, so
 # the loop must treat dead as gone (review round 2). On for this case only.

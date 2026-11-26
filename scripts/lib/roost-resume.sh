@@ -553,6 +553,21 @@ roost_resume__listing_line() {
 
 roost_resume__t() { tmux -u "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" "$@"; }
 
+roost_resume__read() {
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    roost_tmux_bound roost_resume__t "$RW_TARGET" "$(roost_target_condition 1)" "$@"
+  else
+    roost_resume__t "$@"
+  fi
+}
+
+# Act on a window this revive opened only on its original server boot.
+roost_resume__new_action() {
+  local pane="$1" boot="$2" action="$3"
+  [ "$(roost_resume__t if-shell -F -t "$pane" "$(roost_target_boot_condition "$boot" "$pane")" \
+    "$action ; display-message -p acted" '' 2>/dev/null)" = acted ]
+}
+
 # roost_resume__me -> this run's owner record, "PID LSTART".
 roost_resume__me() { printf '%s %s' "$$" "$(roost_shape__lstart "$$")"; }
 
@@ -835,7 +850,7 @@ roost_resume_release() {
 # `\$` undone on a server that prints it, and a control byte refused.
 roost_resume__opt() {
   local v
-  v="$(roost_resume__t show-options -pqv -t "$1" "$2" 2>/dev/null; printf .)"
+  v="$(roost_resume__read show-options -pqv -t "$1" "$2" 2>/dev/null; printf .)"
   v="${v%.}"; v="${v%$'\n'}"
   ROOST_RESUME_V=""
   roost_shape__clean "$v" octal || return 1
@@ -845,7 +860,9 @@ roost_resume__opt() {
 # roost_resume__fmt PANE FORMAT -> ROOST_RESUME_V, a pane format (not an
 # option), cleaned the same way.
 roost_resume__fmt() {
-  roost_shape__d "$1" "$2"
+  ROOST_SHAPE_D="$(roost_resume__read display-message -p -t "$1" "$2" 2>/dev/null; printf .)"
+  ROOST_SHAPE_D="${ROOST_SHAPE_D%.}"
+  ROOST_SHAPE_D="${ROOST_SHAPE_D%$'\n'}"
   ROOST_RESUME_V=""
   roost_shape__clean "$ROOST_SHAPE_D" octal || return 1
   ROOST_RESUME_V="$ROOST_SHAPE_V"
@@ -856,7 +873,7 @@ roost_resume__fmt() {
 # answers display-message for a gone pane with exit 0 and every format empty.
 roost_resume__row() {
   local all r
-  all="$(roost_resume__t list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
+  all="$(roost_resume__read list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
   while IFS= read -r r; do [ "$r" = "$1" ] && return 0; done <<< "$all"
   return 1
 }
@@ -871,7 +888,7 @@ roost_resume__row() {
 roost_resume__dup() {
   local all p v
   ROOST_RESUME_HOLDER=""
-  all="$(roost_resume__t list-panes -a -F '#{pane_id} #{@roost-session}' 2>/dev/null)" || return 1
+  all="$(roost_resume__read list-panes -a -F '#{pane_id} #{@roost-session}' 2>/dev/null)" || return 1
   while read -r p v; do
     [ "$v" = "$2" ] || continue
     [ "$p" = "$1" ] && continue
@@ -916,7 +933,7 @@ roost_resume__record_get() {
 roost_resume__home_session() {
   local s cpid
   s="${1:-}"
-  if [ -n "$s" ] && roost_resume__t has-session -t "=$s" 2>/dev/null; then printf '%s\n' "$s"; return 0; fi
+  if [ -n "$s" ] && roost_resume__read has-session -t "=$s" 2>/dev/null; then printf '%s\n' "$s"; return 0; fi
   # The caller's pane counts only when the caller IS a pane of this server:
   # $TMUX's pid is this server's and $TMUX_PANE is a pane it has — the two
   # checks `reply` and `send --from` make before they trust $TMUX_PANE. The
@@ -926,14 +943,14 @@ roost_resume__home_session() {
     %[0-9]*)
       if [ -n "${TMUX:-}" ]; then
         cpid="${TMUX#*,}"; cpid="${cpid%%,*}"
-        s="$(roost_resume__t display -p -t "$TMUX_PANE" '#{pid} #{pane_id} #{session_name}' 2>/dev/null || true)"
+        s="$(roost_resume__read display -p -t "$TMUX_PANE" '#{pid} #{pane_id} #{session_name}' 2>/dev/null || true)"
         case "$s" in
           "$cpid $TMUX_PANE "?*) printf '%s\n' "${s#"$cpid $TMUX_PANE "}"; return 0 ;;
         esac
       fi ;;
   esac
-  if roost_resume__t has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s\n' "${DEFAULT_SESSION:-main}"; return 0; fi
-  roost_resume__t list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
+  if roost_resume__read has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s\n' "${DEFAULT_SESSION:-main}"; return 0; fi
+  roost_resume__read list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
 }
 
 # roost_resume__pend_back — T8 for `revive` (§4.7): a refusal after this run
@@ -1002,10 +1019,14 @@ roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
   local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess lh ld
+  local pane_id="" moved=0 launch command
   ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
-  if ! roost_shape__read_rules; then
+  local -a read_rules=()
+  if [ -n "$RW_STABLE_ID" ]; then read_rules=("$RW_TARGET" "$(roost_target_condition 1)"); fi
+  if ! roost_shape__read_rules ${read_rules[@]+"${read_rules[@]}"}; then
+    roost_target_require revive
     echo "roost revive: no roost server is running" >&2; return 1
   fi
   # Step 1: one pane. A window with more than one pane is refused, `close`'s
@@ -1026,6 +1047,7 @@ roost_revive() {
       pane="$panes" ;;
   esac
   if ! roost_resume__row "$pane"; then
+    [ -z "$RW_STABLE_ID" ] || roost_target_lost revive
     # A gone pane: only a %N can name one (a window id or name of a window
     # that is gone names no pane), and only on this boot (pane ids restart at
     # %0, so a %N of an earlier boot is another pane — record_for's rule).
@@ -1046,6 +1068,7 @@ roost_revive() {
       roost_pending__get "$ROOST_RESUME_XF" session_cwd; scwd="$ROOST_PENDING_V"
       [ -n "$scwd" ] || { roost_pending__get "$ROOST_RESUME_XF" cwd; scwd="$ROOST_PENDING_V"; }
       roost_pending__get "$ROOST_RESUME_XF" transcript; tr="$ROOST_PENDING_V"
+      roost_pending__get "$ROOST_RESUME_XF" roost_id; pane_id="$ROOST_PENDING_V"
       roost_pending__get "$ROOST_RESUME_XF" session; rsess="$ROOST_PENDING_V"
       rname=""
       pcwd="" cmd="" ppid="" dead=0 state=""
@@ -1058,6 +1081,7 @@ roost_revive() {
       roost_resume__record_get "$RF_DIR/session_id"; sid="$ROOST_RESUME_V"
       roost_resume__record_get "$RF_DIR/cwd"; scwd="$ROOST_RESUME_V"
       roost_resume__record_get "$RF_DIR/transcript"; tr="$ROOST_RESUME_V"
+      roost_resume__record_get "$RF_DIR/roost_id"; pane_id="$ROOST_RESUME_V"
       # The reserved `session` and `name` (§1), read when a later part writes
       # them; today they are absent and the fallbacks below apply.
       roost_resume__record_get "$RF_DIR/session"; rsess="$ROOST_RESUME_V"
@@ -1113,7 +1137,7 @@ roost_revive() {
     roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
     roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
     roost_resume__opt "$pane" @roost-name; rname="$ROOST_RESUME_V"
-    rsess="$(roost_resume__t display -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+    rsess="$(roost_resume__read display -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
     # A DEAD pane with no key (review round 2, Fable N1). A revive clears the
     # pane's identity before its respawn, so when that resume exits non-zero
     # the dead pane it leaves has no key, and §4.1 step 7's "the next revive
@@ -1250,7 +1274,8 @@ roost_revive() {
   fi
   # Step 5a: claim, before anything is launched — always, saving on or off
   # (roost_resume_claims_dir says where, and why there is no exemption).
-  boot="$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  roost_target_require revive
+  boot="${RW_STABLE_BOOT:-$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)}"
   if [ -z "$boot" ]; then
     echo "roost revive: cannot read the server's boot key, so no launch claim can be taken — nothing resumed" >&2
     return 1
@@ -1267,6 +1292,7 @@ roost_revive() {
   # ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN seam sits between the two). Lost:
   # the worker or a key got there first, nothing touched.
   if [ -n "$ROOST_RESUME_PST" ]; then
+    roost_target_require revive
     case "$ROOST_RESUME_PST" in
       waiting) o="$ROOST_RESUME_PL"; n=waiting ;;
       taken) o="$ROOST_RESUME_PL.taken"; n=taken ;;
@@ -1325,7 +1351,7 @@ roost_revive() {
     roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
     case "$ROOST_RESUME_PST" in
       waiting|failed-waiting)
-        o="$(roost_resume__t display -p -t "$pane" '#{pane_start_command}' 2>/dev/null || true)"
+        o="$(roost_resume__read display -p -t "$pane" '#{pane_start_command}' 2>/dev/null || true)"
         if [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$o" "$ROOST_RESUME_PL" "$h"; then
           roost_resume__pend_changed "$claim"
           echo "roost revive: '$raw' no longer runs its placeholder — someone replaced it; nothing resumed" >&2
@@ -1388,29 +1414,81 @@ roost_revive() {
   # checked is the store it is launched with.
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_env_argv "$h"; roost_resume_command "$h" "$sid" "$tr")
   if pane_cmd_wired; then argv=("$ROOST_HOME/scripts/roost-pane-shell" "${argv[@]}"); fi
+  if [ -n "$RW_STABLE_ID" ]; then
+    # Quote for tmux's command parser so respawn-pane still receives argv.
+    # No shell evaluates the resumed command or its directory.
+    launch="-c $(roost_sq "$dir")"
+    for o in "${argv[@]}"; do launch="$launch $(roost_sq "$o")"; done
+  fi
   if [ "$mode" != place ]; then
     # A new window, `new-window -d` so no client's focus moves, in the old
     # pane's session (roost_resume__home_session). Made holding a `sleep`,
     # then given `remain-on-exit failed`, then respawned with the resume: set
     # on a pane already running the resume, the option would come too late
     # for a resume that exits non-zero at once — the case it is the net for.
+    if [ "$mode" = newwin ]; then
+      if [ -n "$RW_STABLE_ID" ]; then
+        pane_id="$RW_STABLE_ID"
+      elif roost_pane_id_ensure roost_resume__t "$pane"; then
+        pane_id="$ROOST_PANE_ID"
+      else
+        roost_resume_release "$claim"
+        echo "roost revive: could not read the original pane's ID" >&2
+        return 2
+      fi
+    fi
     sess="$(roost_resume__home_session "$rsess")"
-    if [ -z "$sess" ] || ! new="$(roost_resume__t new-window -d -P -F '#{pane_id}' -t "=$sess:" -c "$dir" 'exec sleep 60' 2>/dev/null)" || [ -z "$new" ]; then
+    new=""
+    if [ -n "$sess" ]; then
+      if [ -n "$RW_STABLE_ID" ]; then
+        command="new-window -d -P -F '#{pane_id}' -t $(roost_sq "=$sess:") -c $(roost_sq "$dir") 'exec sleep 60'"
+        new="$(roost_resume__t if-shell -F -t "$pane" "$(roost_target_condition 1)" \
+          "$command" 'display-message -p refused' 2>/dev/null || true)"
+        if [ "$new" = refused ] || { [ -z "$new" ] && ! roost_target_matches; }; then
+          roost_resume_release "$claim"
+          roost_target_lost revive
+        fi
+      else
+        new="$(roost_resume__t new-window -d -P -F '#{pane_id}' -t "=$sess:" -c "$dir" 'exec sleep 60' 2>/dev/null || true)"
+      fi
+    fi
+    if [ -z "$new" ]; then
       roost_resume_release "$claim"
+      roost_target_require revive
       echo "roost revive: tmux could not open a window for '$raw'" >&2
       return 1
     fi
     if [ -n "$claim" ] && ! roost_resume_claim_pane "$claim" "$new"; then
       # Another launcher took the claim over: it launches, this one does not.
-      roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+      roost_resume__new_action "$new" "$boot" "kill-pane -t $new" || true
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — nothing resumed" >&2
       return 13
     fi
-    roost_resume__t set-option -p -t "$new" remain-on-exit failed 2>/dev/null || true
-    roost_resume__t set-option -p -t "$new" @roost-was "$pane" 2>/dev/null || true
-    [ -n "$rname" ] && { roost_resume__t set-option -p -t "$new" @roost-name "$rname" 2>/dev/null || true; }
-    if ! roost_resume__t respawn-pane -k -t "$new" -c "$dir" "${argv[@]}" 2>/dev/null; then
-      roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+    roost_resume__new_action "$new" "$boot" "set-option -p -t $new remain-on-exit failed" || true
+    roost_resume__new_action "$new" "$boot" "set-option -p -t $new @roost-was $(roost_sq "$pane")" || true
+    if [ -n "$rname" ]; then roost_resume__new_action "$new" "$boot" "set-option -p -t $new @roost-name $(roost_sq "$rname")" || true; fi
+    if [ "$mode" = newwin ]; then
+      if ! roost_pane_id_move roost_resume__t "$pane" "$new" "$pane_id" "$boot"; then
+        roost_resume__new_action "$new" "$boot" "kill-pane -t $new" || true
+        roost_resume_release "$claim"
+        echo "roost revive: could not move pane id '$pane_id' into the new window" >&2
+        return 2
+      fi
+      moved=1
+    elif ! roost_pane_id_restore roost_resume__t "$new" "$pane_id"; then
+      roost_pane_id_ensure roost_resume__t "$new" || true
+    fi
+    rc=0
+    if [ -n "$RW_STABLE_ID" ]; then
+      roost_resume__new_action "$new" "$boot" "respawn-pane -k -t $new $launch" || rc=1
+    else
+      roost_resume__t respawn-pane -k -t "$new" -c "$dir" "${argv[@]}" 2>/dev/null || rc=1
+    fi
+    if [ "$rc" != 0 ]; then
+      if [ "$moved" = 1 ] && ! roost_pane_id_move roost_resume__t "$new" "$pane" "$pane_id" "$boot"; then
+        printf "roost revive: could not return pane id '%s' to %s\n" "$pane_id" "$pane" >&2
+      fi
+      roost_resume__new_action "$new" "$boot" "kill-pane -t $new" || true
       roost_resume_release "$claim"
       echo "roost revive: tmux could not start the resume for '$raw'" >&2
       return 1
@@ -1429,11 +1507,25 @@ roost_revive() {
     for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
     # One tmux call for all of them; the list ends in a no-op so the last `;`
     # has a command after it.
-    roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
-    # Its own call, as restore sets it: a tmux that refuses `failed`
-    # refuses only this, and the resume still runs, without the net.
-    roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
-    if ! roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
+    rc=0
+    if [ -n "$RW_STABLE_ID" ]; then
+      command="${clear[*]} set-option -p -t $pane remain-on-exit failed ; respawn-pane -k -t $pane $launch"
+      if ! roost_target_action "$command" roost_resume__t; then
+        if ! roost_target_matches; then
+          if [ -n "$ROOST_RESUME_PST" ]; then roost_resume__pend_back ""; fi
+          roost_resume_release "$claim"
+          roost_target_lost revive
+        fi
+        rc=1
+      fi
+    else
+      roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
+      # Its own call, as restore sets it: a tmux that refuses `failed`
+      # refuses only this, and the resume still runs, without the net.
+      roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
+      roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null || rc=1
+    fi
+    if [ "$rc" != 0 ]; then
       if [ -n "$ROOST_RESUME_PST" ]; then roost_resume__pend_changed "$claim"; else roost_resume_release "$claim"; fi
       echo "roost revive: tmux could not respawn '$raw'" >&2
       return 1
@@ -1444,7 +1536,7 @@ roost_revive() {
   [ -n "${ROOST_RESUME_XF:-}" ] && rm -f "$ROOST_RESUME_XF"
   # The respawn fired no hook (§2.7): save it (#51, §3.4, `--trigger
   # respawn`), so a revive into a dialog is on disk before identity lands.
-  roost_shape_save_now "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" respawn
+  roost_shape_save_now "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" respawn "$RW_STABLE_BOOT"
   # Step 8.
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
   if [ "$json" = 1 ]; then

@@ -465,7 +465,7 @@ roost_events__turn() {
 # turn (#95) passes `working` and "the turn was interrupted".
 #
 # `to` is null, as `status --json` shows the pane: the clear UNSETS the state.
-# Needs bin/roost's `t`, the way the reader below does.
+# Reads through the same target guard as the recovery that landed.
 roost_events_unblocked() {
   local info rest boot window cur unb session from="${4:-blocked}" reason="${5:-the dialog was declined or dismissed}" want="$2 since=$3"
   [ -n "${6:-}" ] && want="$want by=$6"
@@ -478,7 +478,7 @@ roost_events_unblocked() {
   # first four values can hold a `|`; @roost-session is last and may hold
   # anything, so the remainder is it, and the shape check below throws out
   # whatever is not an id.
-  info="$(t display-message -p -t "$1" \
+  info="$(roost_unblock_read display-message -p -t "$1" \
     '#{start_time}-#{pid}|#{window_id}|#{@agent_state}|#{@roost-unblocked}|#{@roost-session}' \
     2>/dev/null || true)"
   info="${info%%$'\n'*}"

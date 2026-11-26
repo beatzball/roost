@@ -6,7 +6,8 @@
 #
 # Four things are pinned here, in this order:
 #   1. every human invocation is BYTE-IDENTICAL to the output captured from the
-#      commit before --json existed (tests/fixtures/json-human-output.txt)
+#      commit before --json existed (tests/fixtures/json-human-output.txt),
+#      after accounting for the new random IDs in status and whoami
 #   2. every document is one line of valid JSON with exactly the fields and
 #      values the design names
 #   3. pathological bytes -- quotes, backslashes, control bytes, emoji, invalid
@@ -72,9 +73,13 @@ gold() {
   local label="$1"; shift
   cap g "$@"
   python3 - "$work/g" "$label" "$s" >>"$work/human.txt" <<'PY'
-import sys
+import re, sys
 p, label, sock = sys.argv[1], sys.argv[2], sys.argv[3].encode()
 out = open(p + '.out', 'rb').read().replace(sock, b'<SOCK>')
+if label.startswith('status'):
+    out = re.sub(rb'(?m)^    p-[a-z0-9]{3}-[a-z0-9]{3}-[a-z0-9]  ', b'    ', out)
+if label == 'whoami in %1' and re.fullmatch(rb'p-[a-z0-9]{3}-[a-z0-9]{3}-[a-z0-9]\n', out):
+    out = b'%1\n'
 err = open(p + '.err', 'rb').read().replace(sock, b'<SOCK>')
 rc = open(p + '.rc').read()
 sys.stdout.buffer.write(b'=== %s\nrc=%s\n--- stdout %d bytes\n' % (label.encode(), rc.encode(), len(out))
@@ -176,6 +181,7 @@ doc_is st0 "{\"schema\":1,\"command\":\"status\",\"running\":false,\"socket\":\"
 assert_eq "$(rc st0)" 0 "status --json with no server exits 0, as the human mode does"
 
 status_doc() {
+  {
   printf '{"schema":1,"command":"status","running":true,"socket":"%s","socket_kind":"path",' "$s"
   printf '"sessions":[{"name":"main","windows":2,"attached_clients":0},{"name":"side","windows":2,"attached_clients":0}],'
   printf '"panes":['
@@ -185,6 +191,14 @@ status_doc() {
   printf '{"id":"%%3","session":"side","window_id":"@2","window_index":0,"window_name":"ops","pane_index":0,"name":null,"command":"sleep","state":"error","since":1789000200,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null,"verified":null,"refused":null,"was":null},'
   printf '{"id":"%%4","session":"side","window_id":"@3","window_index":1,"window_name":"blank","pane_index":0,"name":null,"command":"sleep","state":null,"since":null,"session_id":null,"cwd":null,"harness":null,"transcript":null,"subagents":null,"dialog":null,"background":null,"verified":null,"refused":null,"was":null}'
   printf ']}'
+  } | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+for pane, stable_id in zip(doc["panes"], sys.argv[1:]):
+    pane.update(roost_id=stable_id, role=None)
+print(json.dumps(doc))
+' "$(T show -pqv -t %0 @roost-id)" "$(T show -pqv -t %1 @roost-id)" \
+    "$(T show -pqv -t %2 @roost-id)" "$(T show -pqv -t %3 @roost-id)" "$(T show -pqv -t %4 @roost-id)"
 }
 cap st "$ROOST" status --json
 doc_is st "$(status_doc '"helper"')" "status --json carries every session and pane with raw values"
@@ -193,7 +207,7 @@ assert_eq "$(cat "$work/st.err")" "" "status --json writes nothing to stderr"
 assert_eq "$(jv st 'list(d)[:2]')" "['schema', 'command']" "schema and command are the first two keys"
 
 cap wh as_pane %1 "$ROOST" whoami --json
-doc_is wh '{"schema":1,"command":"whoami","pane":"%1"}' "whoami --json names the caller's pane"
+doc_is wh "{\"schema\":1,\"command\":\"whoami\",\"roost_id\":\"$(T show -pqv -t %1 @roost-id)\",\"pane\":\"%1\"}" "whoami --json names the caller's pane"
 cap wh_h "$ROOST" whoami
 cap wh_j "$ROOST" whoami --json
 assert_eq "$(rc wh_j)" "$(rc wh_h)" "whoami --json outside a pane keeps the human exit status"

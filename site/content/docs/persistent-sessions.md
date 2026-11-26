@@ -470,7 +470,15 @@ it, attached or not; this was measured, and roost starts its server the
 ordinary way. Other terminal apps, and newer macOS versions, have not been
 checked.
 
-## Addressing a pane after a restore: `was:%N`
+## Addressing a pane after a restore
+
+`roost save` stores each pane's stable ID with the pane. After restore you
+can use the same address, for example `roost send p-k7q-2x9-z "carry on"`.
+A pane with a missing or damaged ID in the save gets a new ID. `roost status` lists the IDs after
+restore. Roost keeps a list of issued IDs in `pane-ids/` next to the shapes
+directory under `$XDG_STATE_HOME/roost` (normally `~/.local/state/roost`).
+
+### Old tmux numbers and `was:%N`
 
 Pane ids start again at `%0` every time the roost server starts, so after a
 reboot the pane that was `%930` has a new id, and **an old id like `%1`
@@ -501,9 +509,9 @@ is missing. A pane's own `@roost-was`, a dead pane, or a restored pane that
 has gone does not make the target ambiguous.
 
 `roost status` ends a restored pane's line with `(was %930)`, and
-`roost status --json` has `was` for every pane (`null` when it was not
-restored). A resumed Claude Code is told both ids when it starts: "This pane
-is %34 (it was %930 before a restore)".
+`roost status --json` includes the previous tmux number in `was`. A resumed
+agent's session context starts with its stable address and includes its
+current and previous tmux numbers.
 
 ### Pick a save, or part of one
 
@@ -512,8 +520,10 @@ is %34 (it was %930 before a restore)".
 - `roost restore --from FILE` restores a copy, from anywhere. A file saved on
   another machine says so in one line, then restores. It places the panes; it
   cannot bring back conversations whose harness store is not on this machine.
-- `--only NAME`, `--only NAME:WINDOW` or `--only %N` (a pane id from the save)
-  restores just that, and can be given more than once.
+- `--only NAME`, `--only NAME:WINDOW` or `--only ID` (a stable ID or `%N` from the save)
+  restores just that, and can be given more than once. Use `--only =p-proj`
+  or `--only =p-proj:0` for a saved session or window whose session name
+  starts with `p-`.
 
 ## Revive one conversation
 
@@ -539,6 +549,10 @@ Claude Code that is the directory written inside the conversation's own
 transcript; for the others it is the directory the agent reported. A harness
 resumed from a different directory moves the conversation there (Claude Code)
 or asks about it, so `revive` would rather refuse than guess.
+
+With `--new-window`, the stable ID follows the conversation and the original
+pane gets a fresh ID. A gone pane's saved ID follows the conversation into
+its new window when that ID is free.
 
 Before it touches the pane, `revive` checks that the harness still has the
 conversation, so an old pane cannot be killed for nothing. Claude Code, for
@@ -690,7 +704,8 @@ notes: a blank line between them is refused too.
   NAME`, with the save restore names in its message: after the kill, the
   newest save no longer has that session.
 - **A window linked into two sessions** (`tmux link-window`) comes back as
-  two separate windows.
+  two separate windows. The first copy keeps the original pane IDs. The
+  second copy gets fresh IDs.
 - **A session group** (`tmux new-session -t`) comes back as a group: the
   first member with its windows, and each other member joined to it.
 

@@ -186,6 +186,7 @@ roost_identity__record() {
 " || return 1
   roost_record__put "$dir/harness" "$6
 " || return 1
+  roost_record_identity_pane_id "$dir" "$sock" "$boot" "$pane" || true
   if [ -n "${7:-}" ]; then
     roost_record__put "$dir/transcript" "$7
 " || return 1

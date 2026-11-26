@@ -103,10 +103,14 @@ key_hex() { od -An -tx1 -v "$1" | tr -d ' \n'; }
 paste_hex() { printf '\033[200~%s\033[201~' "$1" | od -An -tx1 -v | tr -d ' \n'; }
 
 launch success ''
-confirmed="$(token "$p")" || exit 1
-send_rc --json --agent-only "$confirmed" "$p" 'inert notes reference'
-assert_eq "$rc" 0 'a confirmed live agent receives a guarded send'
+first_id="$(TMUX_PANE="$p" "$ROOST" whoami)" || exit 1
+T set -p -t %0 @roost-was "$p"
+confirmed="$(token "$first_id")" || exit 1
+send_rc --json --agent-only "$confirmed" "$first_id" 'inert notes reference'
+assert_eq "$rc" 0 'a stable ID reaches a confirmed agent even when its tmux number is ambiguous'
+T set -pu -t %0 @roost-was
 assert_contains "$(cat "$work/out")" "\"pane\":\"$p\"" 'guarded send keeps existing JSON output'
+assert_contains "$(cat "$work/out")" "\"target\":\"$first_id\"" 'the guarded send JSON keeps the stable ID as typed'
 assert_eq "$(cat "$work/success")" '"inert notes reference"' 'a one-line message is submitted whole exactly once'
 
 for mode in brackets no-brackets; do
@@ -339,6 +343,16 @@ assert_eq "$rc" 8 'losing eligibility after paste has a distinct delivery outcom
 assert_eq "$(key_hex "$work/submit.keys")" "$(paste_hex 'inert before block')" 'only the initial paste reached the pane, with no Enter or cleanup key'
 assert_file_absent "$work/submit" 'nothing was submitted after the target became blocked'
 assert_eq "$(T list-buffers -F '#{buffer_name}' 2>/dev/null)" '' 'refusals leave no send buffer behind'
+
+launch moving-id ''
+moving_id="$(TMUX_PANE="$p" "$ROOST" whoami)" || exit 1
+confirmed="$(token "$moving_id")" || exit 1
+printf -v move_id '%q -S %q set-option -pu -t %q @roost-id' "$REAL_TMUX" "$ROOST_TEST_SOCK" "$p"
+AFTER_DISPATCH="$move_id" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$moving_id" 'guarded words'
+assert_eq "$rc" 8 'losing the stable ID just after dispatch preserves guarded exit 8'
+wait_for screen_has "$p" 'Ask Codex'
+assert_eq "$(key_hex "$work/moving-id.keys")" "$(paste_hex 'guarded words')15" 'the original editor gets its paste and cleanup, without Enter'
+assert_file_absent "$work/moving-id" 'no prompt was submitted after the ID moved'
 
 launch ordinary '' none
 T set-option -g @roost-send-enter-delay 0.1

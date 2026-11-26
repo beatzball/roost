@@ -29,9 +29,9 @@ echo "all three agents finished"
 
 ## From inside roost
 
-An agent (or you) can coordinate the fleet from inside roost. Targets are stable ids (for example `%12`) captured from `spawn` / `split` / `view` / `whoami` — capture them in a variable and reuse them. Friendly `session:index` and name forms still work too.
+An agent (or you) can coordinate the fleet from inside roost.
 
-- `roost whoami` — this agent's own target (its `%N`)
+- `roost whoami` — this pane's stable ID
 - `roost spawn NAME [cmd]` — open a co-agent **window** without attaching; prints its `%N`
 - `roost split [-h|-v] [-t P] [-n NAME] [cmd]` — a helper **pane** in your current window (prints its `%N`); compose layouts by splitting a specific pane, `-n NAME` labels it (border, tab, switcher) instead of showing the raw process name
 - `roost view [-n NAME] cmd…` — show `cmd` to the **human**: a pane beside you if your pane is wide enough, a window if it is not. Never steals focus, and a second call with the same `NAME` replaces the first view instead of adding another. See below
@@ -43,6 +43,26 @@ An agent (or you) can coordinate the fleet from inside roost. Targets are stable
 - `roost revive TARGET` — bring one agent's conversation back in its pane, after a crash or an `/exit` (see below)
 
 `spawn` (window) is for a co-agent you `wait-done` on independently. `split` (pane) is for a helper you `send` / `read` in-place. `view` is for neither — it is for a **human**, and it picks pane or window for you. State is **per-pane**, so `wait-done %N` waits on that one pane whichever way it was created; give it a window target instead and it waits for every agent pane in that window.
+
+### Pane addresses
+
+Use a stable address such as `p-k7q-2x9-z` when you want to find the same
+pane after a restore. `roost whoami` prints yours, and `roost status` lists
+each one with its current tmux number and its role, when set. Uppercase works
+and you can move or leave out the hyphens after the initial `p-`. An invalid
+`p-` address prints `not a valid pane id` and exits `2` before typing anything.
+
+`send`, `read`, `screen`, `wait-done`, `answer`, `close`, `revive`, `forget`,
+`events --pane` and `split -t` all accept a stable ID for a live pane. You can
+still use `%N`, a window name or `session:window.pane` where the command
+allows it. `spawn`, `split` and `view` print the new pane's `%N`. Look up its
+stable ID in `roost status` when you need to keep the address for later.
+Any target containing a colon uses tmux syntax, for example `main:p-worker`
+or `p-proj:web.1`. A bare name starting with `p-` is read as a pane ID.
+To select a saved session called `p-proj`, use `roost restore --only =p-proj`
+or `--only =p-proj:0` for its first window. If a stable target moves or
+disappears before a command starts work on it, the command exits `2`.
+Once work starts, the command reports the outcome of what it already did.
 
 ### If you are the worker
 
@@ -224,13 +244,19 @@ me="$(roost whoami)"
 roost send --from "$me" api "run the tests"
 ```
 
-The label is one word of at most 64 bytes, with no space and no control character, and it does not begin with a dash (so a mistyped `--from --json` is an error, not a sender called `--json`); anything else is refused with exit `2` before anything is pasted. A bare `%N` is kept as `pane:%N`, the spelling the default uses, so one sender has one name in the record. Without `--from`, the label is `pane:%N` when the send came from a pane on this server, and `human` otherwise — a send typed at a shell outside roost.
+The label is one word of at most 64 bytes. Spaces, control characters and a
+leading dash cause exit `2` before anything is pasted. Without `--from`,
+the record uses `pane:p-k7q-2x9-z` for a sender on this server and `human`
+for a sender outside it. Older records can contain `pane:%N`.
 
 Three things to know:
 
-- **The text pasted into the agent does not change.** `--from` records who sent it; it does not tell the receiving agent. Until roost adds an envelope, keep writing `[from %N]` at the front of a prompt when the receiver needs to reply to you.
+- **The pasted text is unchanged.** Use `[from $me]` in the text if the
+  receiver needs your address in the prompt itself. `--from` sets the label
+  kept beside the turn.
 - **No turn, no label.** The label is kept only when `send` names a turn (the `%N TURN` line), so every case above that prints nothing keeps nothing: a pane that is not an agent, a target already mid-turn, replies not recorded, a turn that errored. A pane straight from `roost spawn claude` has no badge until its first prompt, so that first prompt is not numbered and keeps no label either; every later one does.
-- **It is a claim.** `--from` takes whatever word you give it. The default `pane:%N` is checked against the server; a label you pass is not.
+- The default sender address is checked against the server. A label passed
+  with `--from` is a claim made by the caller.
 
 ### Wait for a busy agent: `roost send --when-idle`
 
@@ -505,7 +531,8 @@ harness still holds the conversation. Exit `0` means **launched**: a dialog
 the harness opens on resume stays on screen for a person. The
 [Persistent Sessions](/docs/persistent-sessions) page has the whole story.
 
-**After a restore, old ids are `was:%N`.** Pane ids start again at `%0` on
+**After a restore, old tmux numbers are `was:%N`.** The stable address still
+works. Tmux numbers start again at `%0` on
 every server start, so a bare `%930` from before a reboot is never redirected
 — it addresses the pane `%930` now, if there is one. A bare id shared with
 another live pane's pre-restore id is refused with exit `2` before acting;
@@ -644,7 +671,9 @@ Without `--json`, every one of them prints exactly what it printed before, byte 
 | `sessions[].name` | string | session name |
 | `sessions[].windows` | integer | number of windows |
 | `sessions[].attached_clients` | integer | clients attached to it; `0` when nobody is looking |
-| `panes[].id` | string | the pane's `%N` — use this as the target |
+| `panes[].roost_id` | string or `null` | the pane's stable ID, safe to keep across restores |
+| `panes[].role` | string or `null` | the pane's role when set |
+| `panes[].id` | string | the pane's current tmux number (`%N`) |
 | `panes[].session` | string | its session |
 | `panes[].window_id` | string | its window's `@N` |
 | `panes[].window_index`, `pane_index` | integer | the `session:window.pane` numbers |
@@ -677,12 +706,13 @@ A codex pane is identified at its first prompt, because that is when codex first
 
 ### `roost whoami --json`
 
-`{"schema":1,"command":"whoami","pane":"%7"}` — `pane` is your own `%N`. Outside roost it exits 1, as the plain command does.
+`{"schema":1,"command":"whoami","roost_id":"p-k7q-2x9-z","pane":"%7"}` gives your
+stable ID and current tmux number. Outside roost it exits `1`.
 
 ### `roost read --json`
 
 ```json
-{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:%1","final":true,"background":null}
+{"schema":1,"command":"read","target":"api","pane":"%3","source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:p-k7q-2x9-z","final":true,"background":null}
 ```
 
 | field | type | meaning |
@@ -696,7 +726,7 @@ A codex pane is identified at its first prompt, because that is when codex first
 | `text` | string | the reply, whole; or the last `LINES` non-blank lines of the screen. No trailing newline |
 | `lossy` | bool | `text` may differ from the bytes the agent wrote: invalid UTF-8 was replaced, or tmux 3.4/3.5a had already rewritten the reply (below) |
 | `turn` | integer or `null` | the kept turn whose file supplied `text`, numbered as `roost send` numbers them. `null` when replies are not recorded, when `text` is the screen, or when what the pane holds is not a kept turn's reply |
-| `sent_by` | string or `null` | who sent the prompt that started that turn: the `roost send --from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`, and for a turn that was not started through `roost send` |
+| `sent_by` | string or `null` | who sent the prompt that started that turn: the `roost send --from` label, else a stable `pane:ID` or `human` (see "Who sent it"). `null` whenever `turn` is `null`, and for a turn that was not started through `roost send` |
 | `final` | bool | `false` when `text` is the **main reply** of a Claude Code turn whose background work still runs in the pane: the answer is ready and the turn is not over. `true` otherwise, including on the screen fallback |
 | `background` | integer or `null` | how many of that turn's background tasks still run, when `final` is `false` and roost could count them; `null` otherwise — never `0` for "could not see" |
 
@@ -713,7 +743,7 @@ A main reply is `"stale": false, "final": false`: it is this turn's answer, not 
 ### `roost send --json`
 
 ```json
-{"schema":1,"command":"send","target":"api","pane":"%3","turn":7,"started":true,"state":"working","sent_by":"pane:%1"}
+{"schema":1,"command":"send","target":"api","pane":"%3","turn":7,"started":true,"state":"working","sent_by":"pane:p-k7q-2x9-z"}
 ```
 
 | field | type | meaning |
@@ -723,7 +753,7 @@ A main reply is `"stale": false, "final": false`: it is this turn's answer, not 
 | `turn` | integer or `null` | the turn this prompt started, for `wait-done --turn` and `read --turn`. `null` when there is no number to give: the target is not an agent, it was already mid-turn, or its replies are not recorded |
 | `started` | bool | `true` when roost proved a new turn began. `false` means it did not watch — the target had no badge, or was already `working`/`blocked`, or the bound is set to `0` |
 | `state` | string or `null` | the agent state just after the wait |
-| `sent_by` | string or `null` | who sent the prompt, as kept beside the turn: the `--from` label, else `pane:%N` or `human` (see "Who sent it"). `null` whenever `turn` is `null`: with no turn there is nothing to keep it beside |
+| `sent_by` | string or `null` | who sent the prompt, as kept beside the turn: the `--from` label, else a stable `pane:ID` or `human` (see "Who sent it"). `null` whenever `turn` is `null`: with no turn there is nothing to keep it beside |
 | `waited` | integer | **only with `--when-idle`**: how many seconds the send was held while the target read `working`. `0` when it was not busy. Absent without the flag, so a plain `send --json` prints exactly what it printed before |
 
 A send that fails prints **nothing** on stdout and keeps its exit status, as every `--json` command does — including exit `4`, where the text was delivered but no turn began, and exit `6`, where the input or `--when-idle` wait gave up. Read the exit status first.
@@ -789,7 +819,7 @@ An answer that fails prints **nothing** on stdout, as every `--json` command doe
 The document **is** the outcome, so it is printed on every outcome — exit `0`, `1`, `2` and `5` alike — and only a usage refusal (a bad timeout, `--turn` on a window target, a pane with no record) prints nothing:
 
 ```json
-{"schema":1,"command":"wait-done","target":"api","pane":"%3","state":"done","outcome":"done","error_reason":null,"background":null,"elapsed":42,"turn":7,"reply":{"source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:%1","final":true,"background":null}}
+{"schema":1,"command":"wait-done","target":"api","pane":"%3","state":"done","outcome":"done","error_reason":null,"background":null,"elapsed":42,"turn":7,"reply":{"source":"reply","state":"done","stale":false,"error_reason":null,"turn":7,"text":"Tests pass.","lossy":false,"sent_by":"pane:p-k7q-2x9-z","final":true,"background":null}}
 ```
 
 | field | type | meaning |
