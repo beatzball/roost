@@ -100,6 +100,13 @@ for name in postgres payments packages perftest pooo1oo9; do
   assert_contains "$(R screen --json "$name")" "\"pane\":\"$named\"" "ordinary window name $name still resolves"
 done
 assert_contains "$(R screen --json "main:$bad")" "\"pane\":\"$decoy\"" "a qualified p- window name still resolves"
+proj="$(T new-session -d -P -F '#{pane_id}' -s p-proj -n web 'exec cat')"
+assert_contains "$(R screen --json p-proj:0)" "\"pane\":\"$proj\"" 'a colon qualifies a p- session with a numeric window'
+project_split="$(T split-window -d -P -F '#{pane_id}' -t p-proj:web 'exec cat')"
+assert_contains "$(R screen --json p-proj:web.1)" "\"pane\":\"$project_split\"" 'a colon qualifies a p- session with a named window and pane'
+R send p-proj:web.1 'QUALIFIED-PANE-INPUT' >/dev/null 2>&1
+assert_true $? 'send accepts a session-qualified p- target'
+assert_contains "$(T capture-pane -pt "$project_split")" QUALIFIED-PANE-INPUT 'the qualified target receives the input'
 if roost_pane_id_restore T "$decoy" "$id"; then collision_rejected=1; else collision_rejected=0; fi
 assert_eq "$collision_rejected" 0 "a saved ID already present on the live server cannot be assigned to another pane"
 valid "$(id_of "$decoy")"; decoy_stamped=$?
@@ -164,7 +171,6 @@ assert_true $? "spawning after close rejects the already issued random payload"
 
 payments_pane="$(T new-session -d -P -F '#{pane_id}' -s payments 'exec sleep 120')"
 roost_pane_id_ensure T "$payments_pane" || exit 1
-T new-session -d -s p-proj 'exec sleep 120'
 R save --to "$work/shape" >/dev/null || exit 1
 assert_contains "$(cat "$work/shape")" "roost_id $me" "save keeps the original ID"
 sed -e "s/^roost_id $id\$/roost_id p-000-100-9/" -e "/^roost_id $other_id\$/d" "$work/shape" > "$work/old-shape"
@@ -180,6 +186,7 @@ R restore --dry-run --from "$work/shape" --only "$me" >/dev/null; assert_true $?
 R restore --dry-run --from "$work/shape" --only payments >/dev/null; assert_true $? "restore --only accepts the session name payments"
 R restore --dry-run --from "$work/shape" --only '=p-proj' >/dev/null; assert_true $? "restore --only accepts an exact p- session"
 R restore --dry-run --from "$work/shape" --only '=p-proj:0' >/dev/null; assert_true $? "restore --only accepts an exact p- session's window"
+R restore --dry-run --from "$work/shape" --only 'p-proj:0' >/dev/null; assert_true $? "restore --only accepts the qualified p- session's window"
 out="$(R restore --no-resume --from "$work/old-shape" 2>"$work/restore.err")"; rc=$?
 assert_eq "$rc" 0 "restore accepts a shape with intact, missing and damaged pane IDs"
 restored="$(T list-panes -a -F '#{pane_id} #{@roost-id}' | awk -v id="$me" '$2==id {print $1}')"

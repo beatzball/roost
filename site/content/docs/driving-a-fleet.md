@@ -57,7 +57,8 @@ and you can move or leave out the hyphens after the initial `p-`. An invalid
 still use `%N`, a window name or `session:window.pane` where the command
 allows it. `spawn`, `split` and `view` print the new pane's `%N`. Look up its
 stable ID in `roost status` when you need to keep the address for later.
-Qualify window names that start with `p-`, for example `main:p-worker`.
+Any target containing a colon uses tmux syntax, for example `main:p-worker`
+or `p-proj:web.1`. A bare name starting with `p-` is read as a pane ID.
 To select a saved session called `p-proj`, use `roost restore --only =p-proj`
 or `--only =p-proj:0` for its first window. If a stable target moves or
 disappears before a command starts work on it, the command exits `2`.
