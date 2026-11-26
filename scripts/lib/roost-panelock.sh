@@ -200,7 +200,8 @@ roost_panelock__retire() {
 # directory. With twelve contenders, only the process whose mkdir syscall
 # succeeded printed a creation message under -v (#256). Require that message
 # for the pane lock and its takeover guard. Other implementations keep their
-# normal status check, including BusyBox, whose mkdir has no -v.
+# normal status check, including BusyBox and BSD, which do not answer
+# --version.
 #
 # 0 created, 1 another process got there first, 3 mkdir failed and there is
 # no directory. A silent uutils success is contention even if the other
@@ -208,7 +209,7 @@ roost_panelock__retire() {
 roost_panelock__create_dir() {
   local created
   if [ -z "$ROOST_PANELOCK_MKDIR_VERBOSE" ]; then
-    case "$(mkdir --version 2>/dev/null || true)" in
+    case "$(LC_ALL=C mkdir --version 2>/dev/null || true)" in
       'mkdir (uutils coreutils)'*) ROOST_PANELOCK_MKDIR_VERBOSE=1 ;;
       *) ROOST_PANELOCK_MKDIR_VERBOSE=0 ;;
     esac

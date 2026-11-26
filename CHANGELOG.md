@@ -9,8 +9,10 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- Fixed pane lock acquisition on Ubuntu 26.04 so concurrent `roost send`
-  and `roost answer` calls stay serialized. (#256)
+- **Sends to one pane take turns again on Ubuntu 26.04.** Its `mkdir`
+  (uutils coreutils) could let two `roost send` or `roost answer` calls take
+  the same pane's lock at once. One of them then stopped with nothing sent.
+  Now the second one waits. (#256)
 
 ## [0.13.0]
 
