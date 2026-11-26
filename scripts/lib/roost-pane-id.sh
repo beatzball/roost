@@ -189,6 +189,10 @@ roost_pane_id_move() {
     "set-option -p -t $from @roost-id $fresh ; set-option -p -t $to @roost-id $id ; display-message -p moved" '' 2>/dev/null)" = moved ]
 }
 
+roost_target_boot_condition() {
+  printf '#{==:#{start_time}-#{pid}/#{pane_id},%s/%s}' "$1" "$2"
+}
+
 roost_target_condition() {
   local cond="$1"
   if [ -n "${RW_STABLE_ID:-}" ]; then

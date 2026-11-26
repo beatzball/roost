@@ -252,11 +252,21 @@ roost_answer_marked() {
 # FINGERPRINT 12 hex, KEY a key name from the map above, VALUE hex, digits, a
 # fixed word and `pane:%N`/terminal/program, NONCE digits and a dot.
 roost_answer_send() {
-  local pane="$1" fp="$2" key="$3" value="$4" nonce="$5" cond got
+  local pane="$1" fp="$2" key="$3" value="$4" nonce="$5" cond got command
   cond="#{&&:#{==:#{@agent_state},blocked},#{&&:#{m:$fp *,#{@roost-dialog}},#{&&:#{?#{m:$fp *,#{@roost-answered}},,1},#{==:#{pane_in_mode},0}}}}"
-  if [ -n "${RW_STABLE_ID:-}" ]; then cond="$(roost_target_condition "$cond")"; fi
+  command="send-keys -t $pane $key ; set-option -p -t $pane @roost-answered '$value' ; set-option -p -t $pane @roost-answer-nonce '$nonce'"
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    cond="$(roost_target_condition "$cond")"
+    # Keep the acknowledgement in the same branch as the key. A reply
+    # retrieved from the pane afterwards may disappear with the pane.
+    got="$(t if-shell -F -t "$pane" "$cond" \
+      "$command ; display-message -p answered" \
+      '' 2>/dev/null)" || return 2
+    [ "$got" = answered ]
+    return
+  fi
   got="$(t if-shell -F -t "$pane" "$cond" \
-    "send-keys -t $pane $key ; set-option -p -t $pane @roost-answered '$value' ; set-option -p -t $pane @roost-answer-nonce '$nonce'" \
+    "$command" \
     ';' display-message -p -t "$pane" '#{@roost-answer-nonce}' 2>/dev/null)" || {
     # The whole command failed. Ask once more whether the branch ran: tmux
     # stops a command list at its first error, so a nonce that is ours means

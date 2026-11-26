@@ -553,6 +553,13 @@ roost_resume__listing_line() {
 
 roost_resume__t() { tmux -u "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" "$@"; }
 
+# Act on a window this revive opened only on its original server boot.
+roost_resume__new_action() {
+  local pane="$1" boot="$2" action="$3"
+  [ "$(roost_resume__t if-shell -F -t "$pane" "$(roost_target_boot_condition "$boot" "$pane")" \
+    "$action ; display-message -p acted" '' 2>/dev/null)" = acted ]
+}
+
 # roost_resume__me -> this run's owner record, "PID LSTART".
 roost_resume__me() { printf '%s %s' "$$" "$(roost_shape__lstart "$$")"; }
 
@@ -1002,7 +1009,7 @@ roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
   local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess lh ld
-  local pane_id="" moved=0
+  local pane_id="" moved=0 launch command
   ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
@@ -1391,6 +1398,12 @@ roost_revive() {
   # checked is the store it is launched with.
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_env_argv "$h"; roost_resume_command "$h" "$sid" "$tr")
   if pane_cmd_wired; then argv=("$ROOST_HOME/scripts/roost-pane-shell" "${argv[@]}"); fi
+  if [ -n "$RW_STABLE_ID" ]; then
+    # Quote for tmux's command parser so respawn-pane still receives argv.
+    # No shell evaluates the resumed command or its directory.
+    launch="-c $(roost_sq "$dir")"
+    for o in "${argv[@]}"; do launch="$launch $(roost_sq "$o")"; done
+  fi
   if [ "$mode" != place ]; then
     # A new window, `new-window -d` so no client's focus moves, in the old
     # pane's session (roost_resume__home_session). Made holding a `sleep`,
@@ -1398,31 +1411,48 @@ roost_revive() {
     # on a pane already running the resume, the option would come too late
     # for a resume that exits non-zero at once — the case it is the net for.
     if [ "$mode" = newwin ]; then
-      if ! roost_target_matches || ! roost_pane_id_ensure roost_resume__t "$pane"; then
+      if [ -n "$RW_STABLE_ID" ]; then
+        pane_id="$RW_STABLE_ID"
+      elif roost_pane_id_ensure roost_resume__t "$pane"; then
+        pane_id="$ROOST_PANE_ID"
+      else
         roost_resume_release "$claim"
         echo "roost revive: could not read the original pane's ID" >&2
         return 2
       fi
-      pane_id="$ROOST_PANE_ID"
     fi
     sess="$(roost_resume__home_session "$rsess")"
-    if [ -z "$sess" ] || ! new="$(roost_resume__t new-window -d -P -F '#{pane_id}' -t "=$sess:" -c "$dir" 'exec sleep 60' 2>/dev/null)" || [ -z "$new" ]; then
+    new=""
+    if [ -n "$sess" ]; then
+      if [ -n "$RW_STABLE_ID" ]; then
+        command="new-window -d -P -F '#{pane_id}' -t $(roost_sq "=$sess:") -c $(roost_sq "$dir") 'exec sleep 60'"
+        new="$(roost_resume__t if-shell -F -t "$pane" "$(roost_target_condition 1)" \
+          "$command" 'display-message -p refused' 2>/dev/null || true)"
+        if [ "$new" = refused ] || { [ -z "$new" ] && ! roost_target_matches; }; then
+          roost_resume_release "$claim"
+          roost_target_lost revive
+        fi
+      else
+        new="$(roost_resume__t new-window -d -P -F '#{pane_id}' -t "=$sess:" -c "$dir" 'exec sleep 60' 2>/dev/null || true)"
+      fi
+    fi
+    if [ -z "$new" ]; then
       roost_resume_release "$claim"
       echo "roost revive: tmux could not open a window for '$raw'" >&2
       return 1
     fi
     if [ -n "$claim" ] && ! roost_resume_claim_pane "$claim" "$new"; then
       # Another launcher took the claim over: it launches, this one does not.
-      roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+      roost_resume__new_action "$new" "$boot" "kill-pane -t $new" || true
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — nothing resumed" >&2
       return 13
     fi
-    roost_resume__t set-option -p -t "$new" remain-on-exit failed 2>/dev/null || true
-    roost_resume__t set-option -p -t "$new" @roost-was "$pane" 2>/dev/null || true
-    [ -n "$rname" ] && { roost_resume__t set-option -p -t "$new" @roost-name "$rname" 2>/dev/null || true; }
+    roost_resume__new_action "$new" "$boot" "set-option -p -t $new remain-on-exit failed" || true
+    roost_resume__new_action "$new" "$boot" "set-option -p -t $new @roost-was $(roost_sq "$pane")" || true
+    if [ -n "$rname" ]; then roost_resume__new_action "$new" "$boot" "set-option -p -t $new @roost-name $(roost_sq "$rname")" || true; fi
     if [ "$mode" = newwin ]; then
       if ! roost_pane_id_move roost_resume__t "$pane" "$new" "$pane_id" "$boot"; then
-        roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+        roost_resume__new_action "$new" "$boot" "kill-pane -t $new" || true
         roost_resume_release "$claim"
         echo "roost revive: could not move pane id '$pane_id' into the new window" >&2
         return 2
@@ -1431,11 +1461,17 @@ roost_revive() {
     elif ! roost_pane_id_restore roost_resume__t "$new" "$pane_id"; then
       roost_pane_id_ensure roost_resume__t "$new" || true
     fi
-    if ! roost_resume__t respawn-pane -k -t "$new" -c "$dir" "${argv[@]}" 2>/dev/null; then
+    rc=0
+    if [ -n "$RW_STABLE_ID" ]; then
+      roost_resume__new_action "$new" "$boot" "respawn-pane -k -t $new $launch" || rc=1
+    else
+      roost_resume__t respawn-pane -k -t "$new" -c "$dir" "${argv[@]}" 2>/dev/null || rc=1
+    fi
+    if [ "$rc" != 0 ]; then
       if [ "$moved" = 1 ] && ! roost_pane_id_move roost_resume__t "$new" "$pane" "$pane_id" "$boot"; then
         printf "roost revive: could not return pane id '%s' to %s\n" "$pane_id" "$pane" >&2
       fi
-      roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+      roost_resume__new_action "$new" "$boot" "kill-pane -t $new" || true
       roost_resume_release "$claim"
       echo "roost revive: tmux could not start the resume for '$raw'" >&2
       return 1
@@ -1445,11 +1481,6 @@ roost_revive() {
     # always passed (a bare respawn-pane re-runs the pane's creation command,
     # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
     new="$pane"
-    if ! roost_target_matches; then
-      roost_resume_release "$claim"
-      echo "roost revive: pane id '$RW_STABLE_INPUT' no longer names the resolved pane" >&2
-      return 2
-    fi
     if [ -n "$claim" ] && ! roost_resume_claim_held "$claim"; then
       [ -n "$ROOST_RESUME_PST" ] && roost_resume__pend_back ""
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — the pane is untouched" >&2
@@ -1459,11 +1490,25 @@ roost_revive() {
     for o in $ROOST_RESUME_CLEAR; do clear+=(set-option -pu -t "$pane" "$o" ';'); done
     # One tmux call for all of them; the list ends in a no-op so the last `;`
     # has a command after it.
-    roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
-    # Its own call, as restore sets it: a tmux that refuses `failed`
-    # refuses only this, and the resume still runs, without the net.
-    roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
-    if ! roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null; then
+    rc=0
+    if [ -n "$RW_STABLE_ID" ]; then
+      command="${clear[*]} set-option -p -t $pane remain-on-exit failed ; respawn-pane -k -t $pane $launch"
+      if ! roost_target_action "$command" roost_resume__t; then
+        if ! roost_target_matches; then
+          if [ -n "$ROOST_RESUME_PST" ]; then roost_resume__pend_back ""; fi
+          roost_resume_release "$claim"
+          roost_target_lost revive
+        fi
+        rc=1
+      fi
+    else
+      roost_resume__t "${clear[@]}" display -p -t "$pane" '' >/dev/null 2>&1 || true
+      # Its own call, as restore sets it: a tmux that refuses `failed`
+      # refuses only this, and the resume still runs, without the net.
+      roost_resume__t set-option -p -t "$pane" remain-on-exit failed 2>/dev/null || true
+      roost_resume__t respawn-pane -k -t "$pane" -c "$dir" "${argv[@]}" 2>/dev/null || rc=1
+    fi
+    if [ "$rc" != 0 ]; then
       if [ -n "$ROOST_RESUME_PST" ]; then roost_resume__pend_changed "$claim"; else roost_resume_release "$claim"; fi
       echo "roost revive: tmux could not respawn '$raw'" >&2
       return 1

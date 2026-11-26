@@ -344,6 +344,16 @@ assert_eq "$(key_hex "$work/submit.keys")" "$(paste_hex 'inert before block')" '
 assert_file_absent "$work/submit" 'nothing was submitted after the target became blocked'
 assert_eq "$(T list-buffers -F '#{buffer_name}' 2>/dev/null)" '' 'refusals leave no send buffer behind'
 
+launch moving-id ''
+moving_id="$(TMUX_PANE="$p" "$ROOST" whoami)" || exit 1
+confirmed="$(token "$moving_id")" || exit 1
+printf -v move_id '%q -S %q set-option -pu -t %q @roost-id' "$REAL_TMUX" "$ROOST_TEST_SOCK" "$p"
+AFTER_DISPATCH="$move_id" PATH="$work/shim:$PATH" send_rc --agent-only "$confirmed" "$moving_id" 'guarded words'
+assert_eq "$rc" 8 'losing the stable ID just after dispatch preserves guarded exit 8'
+wait_for screen_has "$p" 'Ask Codex'
+assert_eq "$(key_hex "$work/moving-id.keys")" "$(paste_hex 'guarded words')15" 'the original editor gets its paste and cleanup, without Enter'
+assert_file_absent "$work/moving-id" 'no prompt was submitted after the ID moved'
+
 launch ordinary '' none
 T set-option -g @roost-send-enter-delay 0.1
 send_rc "$p" $'ordinary send\nstill multiline'

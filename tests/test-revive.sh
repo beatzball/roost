@@ -310,8 +310,10 @@ reset
 P="$(stubpane claude)"; wait_cmd "$P" claude
 setid "$P" claude "$U4" /some/old/worktree; TL set-option -p -t "$P" @agent_state idle
 pid0="$(ppid_of "$P")"
-out="$(R revive "$P" 2>"$SHAPE_TMP/err")"; rc=$?
-assert_eq "$rc|$out" "0|$P" "an idle agent pane: exit 0, and the SAME %N printed"
+idle_id=p-000-100-8
+TL set -p -t "$P" @roost-id "$idle_id"
+out="$(R revive "$idle_id" 2>"$SHAPE_TMP/err")"; rc=$?
+assert_eq "$rc|$out" "0|$P" "revive by stable ID on an idle agent pane: exit 0, and the SAME %N printed"
 wait_log "claude --resume $U4"; assert_true $? "...the stub was launched with --resume <id>"
 assert_eq "$(awk '{print $2}' "$STUB_LOG" | head -n 1)" "$D1R" "...in the transcript's own cwd (not @roost-cwd)"
 [ "$(ppid_of "$P")" != "$pid0" ]; assert_true $? "...the pane was respawned (its process changed)"

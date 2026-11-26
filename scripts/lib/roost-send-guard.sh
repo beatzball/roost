@@ -33,7 +33,8 @@ roost_send_guard_query() {
   esac
 }
 
-# -> 0 action confirmed, 7 refused before input, 1 outcome uncertain.
+# -> 0 action confirmed, 7 refused before input, 1 outcome uncertain,
+#    8 action was queued but the recipient could no longer be confirmed.
 # The process probe runs from the server, then the format is evaluated in the
 # same command queue as the action. Compare tmux's live foreground command
 # with the identity and pane PID. Do not evaluate an option as a format or
@@ -79,5 +80,5 @@ roost_send_guard_action() {
   # The queue accepted the action. If the recipient disappeared during
   # delivery, preserve the uncertain outcome even after a final Enter. A
   # state change on the same agent (for example a new dialog) is allowed here.
-  [ -z "$action" ] || roost_send_guard_query "$pane" "$probe" "$identity" || return 1
+  [ -z "$action" ] || roost_send_guard_query "$pane" "$probe" "$identity" || return 8
 }
