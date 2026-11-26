@@ -1034,6 +1034,7 @@ roost_revive() {
       pane="$panes" ;;
   esac
   if ! roost_resume__row "$pane"; then
+    [ -z "$RW_STABLE_ID" ] || roost_target_lost revive
     # A gone pane: only a %N can name one (a window id or name of a window
     # that is gone names no pane), and only on this boot (pane ids restart at
     # %0, so a %N of an earlier boot is another pane — record_for's rule).
@@ -1260,7 +1261,8 @@ roost_revive() {
   fi
   # Step 5a: claim, before anything is launched — always, saving on or off
   # (roost_resume_claims_dir says where, and why there is no exemption).
-  boot="$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+  roost_target_require revive
+  boot="${RW_STABLE_BOOT:-$(roost_resume__t display -p '#{start_time}-#{pid}' 2>/dev/null || true)}"
   if [ -z "$boot" ]; then
     echo "roost revive: cannot read the server's boot key, so no launch claim can be taken — nothing resumed" >&2
     return 1
@@ -1277,6 +1279,7 @@ roost_revive() {
   # ROOST_TEST_REVIVE_HOLD_BEFORE_ORIGIN seam sits between the two). Lost:
   # the worker or a key got there first, nothing touched.
   if [ -n "$ROOST_RESUME_PST" ]; then
+    roost_target_require revive
     case "$ROOST_RESUME_PST" in
       waiting) o="$ROOST_RESUME_PL"; n=waiting ;;
       taken) o="$ROOST_RESUME_PL.taken"; n=taken ;;
@@ -1519,7 +1522,7 @@ roost_revive() {
   [ -n "${ROOST_RESUME_XF:-}" ] && rm -f "$ROOST_RESUME_XF"
   # The respawn fired no hook (§2.7): save it (#51, §3.4, `--trigger
   # respawn`), so a revive into a dialog is on disk before identity lands.
-  roost_shape_save_now "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" respawn
+  roost_shape_save_now "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" respawn "$RW_STABLE_BOOT"
   # Step 8.
   argv=(); while IFS= read -r o; do argv+=("$o"); done < <(roost_resume_command "$h" "$sid" "$tr")
   if [ "$json" = 1 ]; then

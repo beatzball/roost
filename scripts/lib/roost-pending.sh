@@ -346,6 +346,11 @@ roost_pane__owner() {
   info="${info#"$pane "}"
   dead="${info%% *}"; info="${info#* }"
   boot="${info%% *}"; sc="${info#* }"
+  # Pending paths are scoped by boot, including those carried in the
+  # placeholder command. A restarted server can reuse the pane number.
+  if [ -n "${RW_STABLE_BOOT:-}" ] && [ "$pane" = "$RW_TARGET" ] && [ "$boot" != "$RW_STABLE_BOOT" ]; then
+    return 1
+  fi
   # tmux prints an argv command with double quotes round an argument that
   # holds a space (roost_restore__placing measured it): dropped before the
   # compare, with backslashes.

@@ -38,13 +38,13 @@ roost_pane_id_parse() {
   ROOST_PANE_ID="p-${digits:0:3}-${digits:3:3}-${digits:6:1}"
 }
 
-# Reserve the address-shaped namespace. A name outside it, or a qualified
-# tmux target, keeps its usual interpretation. In particular a wrong check
-# character in this namespace must never fall back to a tmux name match.
+# A colon qualifies a tmux target, even when its session starts with p-.
+# Reserve bare p- addresses, including a bad check digit or an extra dot,
+# so a malformed ID can never fall back to a tmux name match.
 roost_pane_id_target() {
   # Compact forms keep the initial hyphen. Other p-prefixed words such as
   # "postgres" are ordinary window names regardless of their checksum.
-  case "$1" in [pP]-*) return 0 ;; *) return 1 ;; esac
+  case "$1" in *:*) return 1 ;; [pP]-*) return 0 ;; *) return 1 ;; esac
 }
 
 roost_pane_id__new() {
@@ -79,13 +79,14 @@ roost_pane_id__reserve() {
 # its own ID, including when a different conversation takes over the pane.
 roost_pane_id__backfill_record() (
   [ "${ROOST_RECORD_DIR-unset}" != "" ] || exit 0
-  local tmux_call="$1" pane="$2" id="$3" row boot
+  local tmux_call="$1" pane="$2" id="$3" expected="${4:-}" row boot
   . "${BASH_SOURCE[0]%/*}/roost-record.sh"
   roost_record_root
   [ -n "$ROOST_RECORD_ROOT" ] || exit 0
   row="$("$tmux_call" display-message -p -t "$pane" '#{start_time}-#{pid} #{pane_id} #{@roost-id}' 2>/dev/null)" || exit 0
   boot="${row%% *}"
   [ "$row" = "$boot $pane $id" ] || exit 0
+  [ -z "$expected" ] || [ "$boot" = "$expected" ] || exit 0
   roost_record_pane_dir "$boot" "$pane" && roost_record_schema "$ROOST_RECORD_PANE_DIR" || exit 0
   [ -f "$ROOST_RECORD_PANE_DIR/roost_id" ] || roost_record__put "$ROOST_RECORD_PANE_DIR/roost_id" "$id"$'\n'
 )
@@ -111,22 +112,32 @@ roost_pane_id_find() {
 # already issued ID and IDs already on this server from another state root.
 # -o makes concurrent adoption of the same pane keep the first stamp.
 roost_pane_id__stamp() {
-  local tmux_call="$1" pane="$2" id="$3"
+  local tmux_call="$1" pane="$2" id="$3" boot="${4:-}" cond
   case "$pane" in %*) ;; *) return 1 ;; esac
   case "${pane#%}" in ''|*[!0123456789]*) return 1 ;; esac
-  "$tmux_call" if-shell -F -t "$pane" "#{m:* $id *,#{S:#{W:#{P: #{@roost-id} }}}}}" '' \
+  cond="#{m:* $id *,#{S:#{W:#{P: #{@roost-id} }}}}}"
+  if [ -n "$boot" ]; then cond="#{||:$cond,#{!=:#{start_time}-#{pid}/#{pane_id},$boot/$pane}}"; fi
+  "$tmux_call" if-shell -F -t "$pane" "$cond" '' \
     "set-option -po -t $pane @roost-id $id" >/dev/null 2>&1 || return 1
-  ROOST_PANE_ID="$("$tmux_call" show-options -pqv -t "$pane" @roost-id 2>/dev/null)"
+  ROOST_PANE_ID="$("$tmux_call" show-options -pqv -t "$pane" @roost-id 2>/dev/null)" || return 1
+  roost_pane_id__on_boot "$tmux_call" "$pane" "$boot"
+}
+
+roost_pane_id__on_boot() {
+  [ -z "$3" ] || [ "$("$1" display-message -p -t "$2" '#{start_time}-#{pid} #{pane_id}' 2>/dev/null)" = "$3 $2" ]
 }
 
 # Adopt or allocate. A placing placeholder has yet to receive the ID from
 # its shape block. Let restore assign it before SessionStart or status can.
 roost_pane_id_ensure() {
-  local tmux_call="$1" pane="$2" launch id tries=0
+  local tmux_call="$1" pane="$2" boot="${4:-}" launch id tries=0
   ROOST_PANE_ID="" ROOST_PANE_ID_NEW=0
   [ -n "$pane" ] || return 1
   id="$("$tmux_call" show-options -pqv -t "$pane" @roost-id 2>/dev/null)" || return 1
-  if [ -n "$id" ]; then roost_pane_id_parse "$id" && [ "$id" = "$ROOST_PANE_ID" ]; return; fi
+  if [ -n "$id" ]; then
+    roost_pane_id_parse "$id" && [ "$id" = "$ROOST_PANE_ID" ] && roost_pane_id__on_boot "$tmux_call" "$pane" "$boot"
+    return
+  fi
   if [ "${3:-}" != restore ]; then
     launch="$("$tmux_call" display-message -p -t "$pane" '#{pane_start_command}' 2>/dev/null)" || return 1
     case "$launch" in *roost-placeholder*' --placing') return 1 ;; esac
@@ -141,10 +152,10 @@ roost_pane_id_ensure() {
       [ -e "$ROOST_PANE_ID_BUCKET/$id" ] && continue
       return 1
     fi
-    roost_pane_id__stamp "$tmux_call" "$pane" "$id" || return 1
+    roost_pane_id__stamp "$tmux_call" "$pane" "$id" "$boot" || return 1
     if [ -n "$ROOST_PANE_ID" ]; then
       ROOST_PANE_ID_NEW=1
-      roost_pane_id__backfill_record "$tmux_call" "$pane" "$ROOST_PANE_ID" || true
+      roost_pane_id__backfill_record "$tmux_call" "$pane" "$ROOST_PANE_ID" "$boot" || true
       return 0
     fi
   done

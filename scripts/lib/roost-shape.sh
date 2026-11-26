@@ -1283,6 +1283,12 @@ roost_shape__round() {
     ROOST_SHAPE_LAST=lost; return 1
   fi
   roost_shape__seam ROOST_TEST_SAVE_HOLD_AFTER_LIST
+  # The pane and window lists are separate calls. Drop a body if its
+  # pinned server went away while those calls were gathering the shape.
+  if [ -n "${ROOST_SHAPE_EXPECT:-}" ] && \
+     [ "$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)" != "$ROOST_SHAPE_EXPECT" ]; then
+    ROOST_SHAPE_LAST=lost; return 1
+  fi
   # The body (everything after the header's blank line) equal to `shape`'s
   # means nothing is written: the header alone never makes a save worth
   # keeping (§3.2). The `#` notes sit above the header with no blank line
@@ -1518,7 +1524,7 @@ roost_shape_auto() {
   return 0
 }
 
-# roost_shape_save_now FLAG SOCKET TRIGGER — §3.4's direct call, for roost's
+# roost_shape_save_now FLAG SOCKET TRIGGER [BOOT] — §3.4's direct call, for roost's
 # own verbs: `spawn`, `split`, `view` after the name is stamped, `close`
 # after the pane is gone, `revive` and the resume engine after a respawn
 # (respawn-pane -k fires no hook, §2.7), restore after `restoring/` is
@@ -1535,7 +1541,7 @@ roost_shape_auto() {
 # record, not that save, keeps the pane closed).
 roost_shape_save_now() {
   roost_shape__seam ROOST_TEST_SAVE_HOLD
-  ( roost_shape_auto "$1" "$2" "$3" ) >/dev/null 2>&1 || true
+  ( roost_shape_auto "$1" "$2" "$3" "" "${4:-}" ) >/dev/null 2>&1 || true
 }
 
 # roost_shape_check FILE -> exit 0 when the whole file may be restored; else

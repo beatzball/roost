@@ -38,6 +38,26 @@ if [ "$1" = -S ] && [ "$2" = "$RACE_DIR/route" ]; then
     exit "$rc"
   fi
   case "${RACE_GATE:-}:$*" in
+    paste-signal:*paste-buffer*)
+      "$RACE_TMUX" "${args[@]}"; rc=$?
+      . "$RACE_DIR/bin/rendezvous"
+      pause_client
+      exit "$rc" ;;
+    paste-no-ack:*paste-buffer*)
+      "$RACE_TMUX" "${args[@]}" >/dev/null
+      exit $? ;;
+    paste-refusal:*paste-buffer*)
+      . "$RACE_DIR/bin/rendezvous"
+      pause_client
+      args=("${extra[@]}" -S "$(cat "$RACE_DIR/route")" "$@") ;;
+    lost-after-enter:*send-keys*' Enter ;'*)
+      "$RACE_TMUX" "${args[@]}"; rc=$?
+      "$RACE_TMUX" -S "$sock" set-option -pu -t %0 @roost-id
+      exit "$rc" ;;
+    close-save:*kill-pane*)
+      "$RACE_TMUX" "${args[@]}"; rc=$?
+      printf '%s/new\n' "$RACE_DIR" > "$RACE_DIR/route"
+      exit "$rc" ;;
     revive:*respawn-pane*|revive-new:*new-window*)
       . "$RACE_DIR/bin/rendezvous"
       pause_client
@@ -107,7 +127,11 @@ cross_boot() {
     "$RACE_SLEEP" 0.05; i=$((i+1))
   done
   [ -e "$dir/paused" ]; assert_true $? "$label reached the pause"
-  printf '%s/new\n' "$dir" > "$dir/route"
+  if [ "$gate" = paste-signal ]; then
+    kill -TERM "$pid" 2>/dev/null
+  else
+    printf '%s/new\n' "$dir" > "$dir/route"
+  fi
   if [ "$gate" = 0.1 ]; then
     touch "$dir/unlock"
     wait "$lock_pid"
@@ -117,6 +141,15 @@ cross_boot() {
   race_out="$(cat "$dir/out")"; race_err="$(cat "$dir/err")"
   after="$(T new capture-pane -pt %0 2>/dev/null)"; exists=$?
   assert_eq "$exists|$after" "0|$before" "$label leaves the replacement open with its input untouched"
+}
+
+old_draft_clear() {
+  local i
+  for ((i=0; i<50; i++)); do
+    [ -n "$(T old capture-pane -pt %0)" ] || return 0
+    "$RACE_SLEEP" 0.05
+  done
+  return 1
 }
 
 refuses() {
@@ -148,9 +181,94 @@ for ((i=0; i<50; i++)); do
   "$RACE_SLEEP" 0.05
 done
 assert_eq "$old_screen" '' 'cleanup clears the draft in the pane that received it'
+
+# A paste can land before the client has its acknowledgement. A signal or
+# a missing acknowledgement must leave the old editor ready for the next send.
+cross_boot paste-signal 'send interrupted during paste' send "$id" 'FIRST-'
+assert_eq "$race_rc" 143 'a signal during paste keeps the interrupted status'
+old_draft_clear; assert_true $? 'the signal trap clears the in-flight stable paste'
+out="$(PATH="$dir/bin:$PATH" "$HERE/bin/roost" send "$id" SECOND 2>"$dir/err")"; rc=$?
+assert_eq "$rc" 0 'the next stable send succeeds'
+old_screen="$(T old capture-pane -pt %0)"
+assert_contains "$old_screen" SECOND 'the next prompt reaches the original pane'
+[[ "$old_screen" != *FIRST-SECOND* ]]; assert_true $? 'the next prompt contains no previous draft'
+T old respawn-pane -k -t %0 'exec cat'
+PATH="$dir/bin:$PATH" RACE_GATE=paste-no-ack "$HERE/bin/roost" send "$id" 'UNACKNOWLEDGED-DRAFT' >"$dir/out" 2>"$dir/err"; rc=$?
+assert_eq "$rc" 1 'an unacknowledged paste fails as a delivery error'
+old_draft_clear; assert_true $? 'the unacknowledged paste is also cleared'
+
+T old send-keys -t %0 -l EXISTING-DRAFT
+refuses paste-refusal 'send refused at dispatch' send "$id" 'NOT-PASTED'
+assert_eq "$(T old capture-pane -pt %0)" EXISTING-DRAFT 'a confirmed refusal leaves existing input alone'
+
+# This editor echoes the paste and swallows Enter without moving its cursor.
+# Losing the ID after Enter cannot turn that surviving draft into a success.
+cat >"$dir/editor.py" <<'PY'
+import os
+import tty
+
+tty.setraw(0)
+os.write(1, b"> ")
+while True:
+    data = os.read(0, 1024)
+    if not data:
+        break
+    os.write(1, data.replace(b"\r", b"").replace(b"\n", b""))
+PY
+T old respawn-pane -k -t %0 "exec python3 '$dir/editor.py'"
+for ((i=0; i<100; i++)); do
+  [ "$(T old capture-pane -pt %0)" != '> ' ] || break
+  "$RACE_SLEEP" 0.05
+done
+printf '%s/old\n' "$dir" > "$dir/route"
+PATH="$dir/bin:$PATH" RACE_GATE=lost-after-enter "$HERE/bin/roost" send "$id" 'SWALLOWED-ENTER-DRAFT' >"$dir/out" 2>"$dir/err"; rc=$?
+assert_eq "$rc" 1 'an ID move after a swallowed Enter preserves the delivery failure'
+assert_contains "$(cat "$dir/err")" 'but never submitted' 'a swallowed Enter is reported as unsubmitted'
+T old set -p -t %0 @roost-id "$id"
+T old respawn-pane -k -t %0 'exec cat'
+
 refuses resolve 'read after resolution' read --json "$id"
 refuses resolve 'answer after resolution' answer "$id" --deny
 refuses resolve 'close after resolution' close --force "$id"
+
+# Both records have the same pane number. Forget must reject the target
+# after the boot changes, and its lookup must stay on the original boot.
+old_boot="$(T old display -p '#{start_time}-#{pid}')"
+new_boot="$(T new display -p '#{start_time}-#{pid}')"
+for server in "$old_boot" "$new_boot"; do
+  mkdir -p "$dir/kept/$server/0/replies"
+  printf '1\n' >"$dir/kept/$server/0/schema"
+  printf '%s\n' "$server" >"$dir/kept/$server/0/replies/000001"
+done
+ROOST_RECORD_DIR="$dir/kept" refuses resolve 'forget after resolution' forget "$id"
+for server in "$old_boot" "$new_boot"; do
+  assert_eq "$(cat "$dir/kept/$server/0/replies/000001" 2>/dev/null)" "$server" 'forget preserves the kept reply'
+done
+
+(
+  export ROOST_EVENTS="$dir/event-log"
+  . "$HERE/scripts/lib/roost-events.sh"
+  roost_events_write "{\"server\":\"$old_boot\",\"pane\":\"%0\",\"event\":\"original-boot\"}"
+  roost_events_write "{\"server\":\"$new_boot\",\"pane\":\"%0\",\"event\":\"replacement-boot\"}"
+)
+ROOST_EVENTS="$dir/event-log" cross_boot resolve 'events after resolution' events --pane "$id"
+assert_eq "$race_rc" 0 'events can read the original boot after replacement'
+assert_contains "$race_out" 'original-boot' 'events uses the resolved boot'
+[[ "$race_out" != *replacement-boot* ]]; assert_true $? 'events excludes the replacement boot'
+
+T new set -p -t %1 @roost-name existing-view
+TMUX_PANE=%0 refuses resolve 'view before replacing a pane' view -n existing-view -- -t "$id" 'exec cat'
+assert_eq "$(T new show -pqv -t %1 @roost-name)" existing-view 'view preserves the replacement boot view pane'
+refuses resolve 'spawn before creating a window' spawn newer -t "$id" 'exec cat'
+refuses resolve 'split before creating a pane' split -h -t "$id" 'exec cat'
+
+# Control the stable split path re-entered by view without changing the boot.
+printf '%s/old\n' "$dir" > "$dir/route"
+created="$(TMUX_PANE=%0 ROOST_VIEW_MIN_COLS=0 PATH="$dir/bin:$PATH" "$HERE/bin/roost" view -n stable-view -- -t "$id" 'exec cat')"
+require_pane "$created" 'view with a stable placement target'
+assert_eq "$(T old show -pqv -t "$created" @roost-name)" stable-view 'view preserves its stable target through child placement'
+T old kill-pane -t "$created"
+
 T new send-keys -t %0 -l WRONG-PANE-SCREEN
 refuses resolve 'screen after resolution' screen "$id"
 refuses resolve 'JSON screen after resolution' screen --json "$id"
@@ -210,4 +328,16 @@ out="$(PATH="$dir/bin:$PATH" RACE_GATE=wait-done RACE_PANE="$done_pane" "$HERE/b
 assert_eq "$rc" 0 'wait-done succeeds when a pane exits after the done snapshot'
 assert_contains "$out" '"outcome":"done"' 'wait-done preserves the completed JSON outcome'
 assert_contains "$out" '"state":"done"' 'the done snapshot supplies the last known state'
+alias_id=P-0001008
+out="$(PATH="$dir/bin:$PATH" "$HERE/bin/roost" wait-done --json --turn 7 "$alias_id" 5 2>"$dir/err")"; rc=$?
+assert_eq "$rc" 2 'wait-done exits 2 for a valid stable ID whose pane is already gone'
+assert_contains "$out" '"outcome":"gone"' 'wait-done emits the gone JSON document'
+assert_contains "$out" "\"target\":\"$alias_id\"" 'the gone document preserves the address as typed'
+assert_contains "$out" '"turn":7' 'the gone document preserves the requested turn'
+
+closing_pane="$(T old new-window -d -P -F '#{pane_id}' 'exec cat')"
+T old set -p -t "$closing_pane" @roost-id "$id"
+out="$(ROOST_SHAPE_DIR="$dir/close-save" PATH="$dir/bin:$PATH" RACE_GATE=close-save "$HERE/bin/roost" close --force "$id" 2>"$dir/err")"; rc=$?
+assert_eq "$rc" 0 'close reports its successful kill even when the server changes before save'
+assert_file_absent "$dir/close-save/$shape_key/shape" 'close never saves a shape from the replacement boot'
 [ "$ROOST_TESTS_FAIL" -eq 0 ]
