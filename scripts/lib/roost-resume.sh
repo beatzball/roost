@@ -1002,6 +1002,7 @@ roost_revive() {
   local raw="$1" tgt="$2" force="$3" json="$4" newwin="${5:-0}"
   local pane panes n h sid scwd tr pcwd cmd ppid dead state agree dir rc
   local sd boot claim="" kid kids o n mode=place rsess="" rname="" exempt new sess lh ld
+  local pane_id="" moved=0
   ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
@@ -1046,6 +1047,7 @@ roost_revive() {
       roost_pending__get "$ROOST_RESUME_XF" session_cwd; scwd="$ROOST_PENDING_V"
       [ -n "$scwd" ] || { roost_pending__get "$ROOST_RESUME_XF" cwd; scwd="$ROOST_PENDING_V"; }
       roost_pending__get "$ROOST_RESUME_XF" transcript; tr="$ROOST_PENDING_V"
+      roost_pending__get "$ROOST_RESUME_XF" roost_id; pane_id="$ROOST_PENDING_V"
       roost_pending__get "$ROOST_RESUME_XF" session; rsess="$ROOST_PENDING_V"
       rname=""
       pcwd="" cmd="" ppid="" dead=0 state=""
@@ -1058,6 +1060,7 @@ roost_revive() {
       roost_resume__record_get "$RF_DIR/session_id"; sid="$ROOST_RESUME_V"
       roost_resume__record_get "$RF_DIR/cwd"; scwd="$ROOST_RESUME_V"
       roost_resume__record_get "$RF_DIR/transcript"; tr="$ROOST_RESUME_V"
+      roost_resume__record_get "$RF_DIR/roost_id"; pane_id="$ROOST_RESUME_V"
       # The reserved `session` and `name` (§1), read when a later part writes
       # them; today they are absent and the fallbacks below apply.
       roost_resume__record_get "$RF_DIR/session"; rsess="$ROOST_RESUME_V"
@@ -1394,6 +1397,14 @@ roost_revive() {
     # then given `remain-on-exit failed`, then respawned with the resume: set
     # on a pane already running the resume, the option would come too late
     # for a resume that exits non-zero at once — the case it is the net for.
+    if [ "$mode" = newwin ]; then
+      if ! roost_target_matches || ! roost_pane_id_ensure roost_resume__t "$pane"; then
+        roost_resume_release "$claim"
+        echo "roost revive: could not read the original pane's ID" >&2
+        return 2
+      fi
+      pane_id="$ROOST_PANE_ID"
+    fi
     sess="$(roost_resume__home_session "$rsess")"
     if [ -z "$sess" ] || ! new="$(roost_resume__t new-window -d -P -F '#{pane_id}' -t "=$sess:" -c "$dir" 'exec sleep 60' 2>/dev/null)" || [ -z "$new" ]; then
       roost_resume_release "$claim"
@@ -1406,11 +1417,24 @@ roost_revive() {
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — nothing resumed" >&2
       return 13
     fi
-    roost_pane_id_ensure roost_resume__t "$new" || true
     roost_resume__t set-option -p -t "$new" remain-on-exit failed 2>/dev/null || true
     roost_resume__t set-option -p -t "$new" @roost-was "$pane" 2>/dev/null || true
     [ -n "$rname" ] && { roost_resume__t set-option -p -t "$new" @roost-name "$rname" 2>/dev/null || true; }
+    if [ "$mode" = newwin ]; then
+      if ! roost_pane_id_move roost_resume__t "$pane" "$new" "$pane_id" "$boot"; then
+        roost_resume__t kill-pane -t "$new" 2>/dev/null || true
+        roost_resume_release "$claim"
+        echo "roost revive: could not move pane id '$pane_id' into the new window" >&2
+        return 2
+      fi
+      moved=1
+    elif ! roost_pane_id_restore roost_resume__t "$new" "$pane_id"; then
+      roost_pane_id_ensure roost_resume__t "$new" || true
+    fi
     if ! roost_resume__t respawn-pane -k -t "$new" -c "$dir" "${argv[@]}" 2>/dev/null; then
+      if [ "$moved" = 1 ] && ! roost_pane_id_move roost_resume__t "$new" "$pane" "$pane_id" "$boot"; then
+        printf "roost revive: could not return pane id '%s' to %s\n" "$pane_id" "$pane" >&2
+      fi
       roost_resume__t kill-pane -t "$new" 2>/dev/null || true
       roost_resume_release "$claim"
       echo "roost revive: tmux could not start the resume for '$raw'" >&2
@@ -1421,6 +1445,11 @@ roost_revive() {
     # always passed (a bare respawn-pane re-runs the pane's creation command,
     # §1). `-k` ends what runs there; the pane keeps its %N (§2.7).
     new="$pane"
+    if ! roost_target_matches; then
+      roost_resume_release "$claim"
+      echo "roost revive: pane id '$RW_STABLE_INPUT' no longer names the resolved pane" >&2
+      return 2
+    fi
     if [ -n "$claim" ] && ! roost_resume_claim_held "$claim"; then
       [ -n "$ROOST_RESUME_PST" ] && roost_resume__pend_back ""
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — the pane is untouched" >&2

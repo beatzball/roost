@@ -26,6 +26,7 @@ roost_pane_id__residue() {
 roost_pane_id_parse() {
   local LC_ALL=C compact="${1//-/}" digits
   ROOST_PANE_ID=""
+  roost_pane_id_target "$1" || return 1
   case "$compact" in *[ABCDEFGHIJKLMNOPQRSTUVWXYZilo]*)
     compact="$(printf '%s' "$compact" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZilo' 'abcdefgh1jk1mn0pqrstuvwxyz110')" ;;
   esac
@@ -41,19 +42,9 @@ roost_pane_id_parse() {
 # tmux target, keeps its usual interpretation. In particular a wrong check
 # character in this namespace must never fall back to a tmux name match.
 roost_pane_id_target() {
-  local LC_ALL=C compact="${1//-/}" body
-  case "$1" in
-    *:*|*.*) return 1 ;;
-    [pP]-???-???-*) return 0 ;;
-  esac
-  case "$compact" in [pP]???????) ;; *) return 1 ;; esac
-  body="${compact:1:6}"
-  # A compact spelling uses the Crockford alphabet. Try its folded form
-  # before treating a word like "postgres" as an ordinary window name.
-  case "$body" in
-    *[!0123456789ABCDEFGHJKMNPQRSTVWXYZabcdefghjkmnpqrstvwxyz]*) roost_pane_id_parse "$1" ;;
-    *) return 0 ;;
-  esac
+  # Compact forms keep the initial hyphen. Other p-prefixed words such as
+  # "postgres" are ordinary window names regardless of their checksum.
+  case "$1" in [pP]-*) return 0 ;; *) return 1 ;; esac
 }
 
 roost_pane_id__new() {
@@ -84,17 +75,33 @@ roost_pane_id__reserve() {
   (umask 077; set -C; : > "$ROOST_PANE_ID_BUCKET/$1") 2>/dev/null
 }
 
+# Backfill a record that predates adoption. A later identity report writes
+# its own ID, including when a different conversation takes over the pane.
+roost_pane_id__backfill_record() (
+  [ "${ROOST_RECORD_DIR-unset}" != "" ] || exit 0
+  local tmux_call="$1" pane="$2" id="$3" row boot
+  . "${BASH_SOURCE[0]%/*}/roost-record.sh"
+  roost_record_root
+  [ -n "$ROOST_RECORD_ROOT" ] || exit 0
+  row="$("$tmux_call" display-message -p -t "$pane" '#{start_time}-#{pid} #{pane_id} #{@roost-id}' 2>/dev/null)" || exit 0
+  boot="${row%% *}"
+  [ "$row" = "$boot $pane $id" ] || exit 0
+  roost_record_pane_dir "$boot" "$pane" && roost_record_schema "$ROOST_RECORD_PANE_DIR" || exit 0
+  [ -f "$ROOST_RECORD_PANE_DIR/roost_id" ] || roost_record__put "$ROOST_RECORD_PANE_DIR/roost_id" "$id"$'\n'
+)
+
 # Resolve through pane-owned options only. Linked windows can show the same
 # pane twice. Two distinct panes claiming an ID must never get a delivery.
 roost_pane_id_find() {
-  local tmux_call="$1" want="$2" rows pane stored
-  ROOST_PANE_ID_PANE=""
-  rows="$("$tmux_call" list-panes -a -F '#{pane_id} #{@roost-id}' 2>/dev/null)" || return 1
-  while IFS=' ' read -r pane stored; do
+  local tmux_call="$1" want="$2" rows pane stored boot
+  ROOST_PANE_ID_PANE="" ROOST_PANE_ID_BOOT=""
+  rows="$("$tmux_call" list-panes -a -F '#{pane_id} #{@roost-id} #{start_time}-#{pid}' 2>/dev/null)" || return 1
+  while IFS=' ' read -r pane stored boot; do
     [ "$stored" = "$want" ] && [ "$pane" != "$ROOST_PANE_ID_PANE" ] || continue
     [ "$("$tmux_call" show-options -pqv -t "$pane" @roost-id 2>/dev/null)" = "$want" ] || continue
     [ -z "$ROOST_PANE_ID_PANE" ] || return 2
-    ROOST_PANE_ID_PANE="$pane"
+    [[ "$boot" =~ ^[0-9]+-[0-9]+$ ]] || continue
+    ROOST_PANE_ID_PANE="$pane" ROOST_PANE_ID_BOOT="$boot"
   done <<< "$rows"
   [ -n "$ROOST_PANE_ID_PANE" ]
 }
@@ -137,6 +144,7 @@ roost_pane_id_ensure() {
     roost_pane_id__stamp "$tmux_call" "$pane" "$id" || return 1
     if [ -n "$ROOST_PANE_ID" ]; then
       ROOST_PANE_ID_NEW=1
+      roost_pane_id__backfill_record "$tmux_call" "$pane" "$ROOST_PANE_ID" || true
       return 0
     fi
   done
@@ -156,4 +164,34 @@ roost_pane_id_restore() {
   id="$ROOST_PANE_ID"
   roost_pane_id_remember "$id" || return 1
   roost_pane_id__stamp "$tmux_call" "$pane" "$id" && [ "$ROOST_PANE_ID" = "$id" ]
+}
+
+# Move the original address in one server queue. A second visit to the same
+# pane through a linked window is fine. A distinct claimant or a change of
+# boot refuses the move, just as it would refuse a delivery.
+roost_pane_id_move() {
+  local tmux_call="$1" from="$2" to="$3" id="$4" boot="$5" fresh claims cond n
+  for n in "$from" "$to"; do [[ "$n" =~ ^%[0-9]+$ ]] || return 1; done
+  [[ "$boot" =~ ^[0-9]+-[0-9]+$ ]] || return 1
+  roost_pane_id_parse "$id" && [ "$id" = "$ROOST_PANE_ID" ] || return 1
+  for ((n=0; n<64; n++)); do
+    roost_pane_id__new || return 1
+    fresh="$ROOST_PANE_ID"
+    roost_pane_id__bucket "$fresh" || return 1
+    if roost_pane_id__reserve "$fresh"; then break; fi
+    [ -e "$ROOST_PANE_ID_BUCKET/$fresh" ] || return 1
+  done
+  [ "$n" -lt 64 ] || return 1
+  claims="#{S:#{W:#{P:#{?#{==:#{@roost-id},$id},#{?#{==:#{pane_id},$from},y,x},#{?#{==:#{@roost-id},$fresh},x,}}}}}"
+  cond="#{&&:#{==:#{start_time}-#{pid}/#{pane_id},$boot/$to},#{m/r:^y+$,$claims}}"
+  [ "$("$tmux_call" if-shell -F -t "$to" "$cond" \
+    "set-option -p -t $from @roost-id $fresh ; set-option -p -t $to @roost-id $id ; display-message -p moved" '' 2>/dev/null)" = moved ]
+}
+
+roost_target_condition() {
+  local cond="$1"
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    cond="#{&&:#{==:#{start_time}-#{pid}/#{pane_id}/#{@roost-id},$RW_STABLE_BOOT/$RW_TARGET/$RW_STABLE_ID},$cond}"
+  fi
+  printf '%s' "$cond"
 }

@@ -1628,6 +1628,11 @@ roost_shape_check() {
       [ -n "$kind" ] && { roost_shape__endblock || return 1; }
       continue
     fi
+    # A damaged optional pane ID is treated as missing by restore. Required
+    # shape keys still go through the full validation below.
+    case "$kind:$line" in pane:roost_id|pane:roost_id\ *)
+      roost_pane_id_parse "${line#roost_id }" || continue ;;
+    esac
     case "$line" in *" "*) ;; *) ROOST_SHAPE_FAULT="line $n: no value after the key $line"; return 1 ;; esac
     key="${line%% *}" val="${line#* }"
     case "$val" in *[[:cntrl:]]*) ROOST_SHAPE_FAULT="line $n: a value holds a tab or a control character"; return 1 ;; esac
@@ -1665,9 +1670,6 @@ roost_shape_check() {
     [ "$kind" = unknown ] && continue
     case "$keys" in *" $key "*) ROOST_SHAPE_FAULT="line $n: repeated key $key"; return 1 ;; esac
     keys="$keys $key "
-    if [ "$kind:$key" = pane:roost_id ] && ! roost_pane_id_parse "$val"; then
-      ROOST_SHAPE_FAULT="line $n: '$val' is not a valid pane id"; return 1
-    fi
     [ "$kind" = session ] && [ "$key" = group ] && gchk="$gchk$bstart $addr $val$nl"
   done < "$file"
   # Nothing but notes: no header was ever read.
@@ -1733,6 +1735,9 @@ roost_shape_parse() {
       if [ "$kind" = unknown ]; then cur=/dev/null
       else cur="$dir/$(printf '%04d' "$n").$kind"; n=$((n + 1)); : > "$cur"; fi
     fi
+    case "$kind:$line" in pane:roost_id|pane:roost_id\ *)
+      roost_pane_id_parse "${line#roost_id }" || continue ;;
+    esac
     [ "$cur" = /dev/null ] || printf '%s\n' "$line" >> "$cur"
   done < "$file"
 }

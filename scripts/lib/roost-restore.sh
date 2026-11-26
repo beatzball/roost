@@ -550,6 +550,8 @@ roost_restore__pane_id() {
     old="$(roost_shape_get "$block" id 2>/dev/null || true)"
     pair="$saved $old"$'\n'
     case "$ROOST_RESTORE_SEEN_IDS" in *$'\n'"$pair"*) saved=""; pair="" ;; esac
+  else
+    saved=""
   fi
   if roost_pane_id_restore t "$pane" "$saved"; then
     ROOST_RESTORE_SEEN_IDS="$ROOST_RESTORE_SEEN_IDS$pair"
@@ -825,7 +827,7 @@ roost_restore__pending_write() {
   roost_pending_write "$ROOST_RESTORE_SD" "$ROOST_RESTORE_BOOT" "$1" \
     "$(roost_shape_get "$2" id)" "$ROOST_RESTORE_WR_H" "$ROOST_RESTORE_WR_ID" "$ROOST_RESTORE_WR_T" \
     "$(roost_shape_get "$2" cwd)" "$(roost_shape_get "$2" session_cwd 2>/dev/null || true)" \
-    "$sess" "$win" "$n"
+    "$sess" "$win" "$n" "$(t show-options -pqv -t "$1" @roost-id 2>/dev/null || true)"
 }
 
 # roost_restore__pending_root -> sets ROOST_RESTORE_BOOT, read once, after

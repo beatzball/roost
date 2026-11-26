@@ -254,6 +254,7 @@ roost_answer_marked() {
 roost_answer_send() {
   local pane="$1" fp="$2" key="$3" value="$4" nonce="$5" cond got
   cond="#{&&:#{==:#{@agent_state},blocked},#{&&:#{m:$fp *,#{@roost-dialog}},#{&&:#{?#{m:$fp *,#{@roost-answered}},,1},#{==:#{pane_in_mode},0}}}}"
+  if [ -n "${RW_STABLE_ID:-}" ]; then cond="$(roost_target_condition "$cond")"; fi
   got="$(t if-shell -F -t "$pane" "$cond" \
     "send-keys -t $pane $key ; set-option -p -t $pane @roost-answered '$value' ; set-option -p -t $pane @roost-answer-nonce '$nonce'" \
     ';' display-message -p -t "$pane" '#{@roost-answer-nonce}' 2>/dev/null)" || {

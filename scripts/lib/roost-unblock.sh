@@ -85,6 +85,7 @@
 # whole session and can reach many megabytes; the records that matter are the
 # last few. 4 MiB is far more than one turn's tail and still bounded.
 ROOST_UNBLOCK_TAIL_BYTES=4194304
+. "${BASH_SOURCE[0]%/*}/roost-pane-id.sh"
 
 # roost_claude_declined FILE SINCE -> 0 iff FILE's tail is a decline no older
 # than SINCE (epoch seconds). python3 first, then jq, as everywhere else in
@@ -326,7 +327,7 @@ roost_unblock_pane() {
   # So do the hold record, its types and its owner (@roost-background-session,
   # #188): a turn the human ended holds nothing for SessionEnd to release.
   t if-shell -F -t "$pane" \
-    "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}" \
+    "$(roost_target_condition "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}")" \
     "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
@@ -572,7 +573,7 @@ roost_interrupted_pane() {
   # The hold record, its types and its owner (@roost-background-session,
   # #188) go with the badge, as in the decline's clear.
   t if-shell -F -t "$pane" \
-    "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}" \
+    "$(roost_target_condition "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}")" \
     "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   # This caller's token, not the second: see roost_unblock_token.
@@ -749,7 +750,7 @@ roost_died_pane() {
     esac
   fi
   t if-shell -F -t "$pane" \
-    "#{&&:#{==:#{@agent_state},$state},#{&&:#{==:#{@agent_since},$since},#{==:#{@roost-agent-job},$job}}}" \
+    "$(roost_target_condition "#{&&:#{==:#{@agent_state},$state},#{&&:#{==:#{@agent_since},$since},#{==:#{@roost-agent-job},$job}}}")" \
     "set-option -pu -t $pane @agent_state ; ${held_wr}set-option -pu -t $pane @roost-agent-job ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since died' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'$res_wr" \
     2>/dev/null || true
   # LANDED is this caller's token, not the second (see roost_unblock_token),
@@ -791,7 +792,7 @@ roost_died_pane() {
     # written after the clear, here or in roost_unblock_record_turn: the
     # clear unset the old one with the reply, and a newer turn's pointer is
     # the one its own Stop set, left alone.
-    t if-shell -F -t "$pane" "#{==:#{@roost-turn-reserved},$res}" \
+    t if-shell -F -t "$pane" "$(roost_target_condition "#{==:#{@roost-turn-reserved},$res}")" \
       "set-option -pu -t $pane @roost-turn-reserved" 2>/dev/null || true
   elif [ "$ours" = 1 ]; then
     roost_unblock_record_turn "$pane" died_in_shell

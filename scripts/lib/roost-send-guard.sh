@@ -41,7 +41,7 @@ roost_send_guard_query() {
 # The terminal action cannot pin the foreground process through the PTY write.
 roost_send_guard_action() {
   local token="$1" pane="$2" action="${3:-}" stable_id="${4:-}" probe identity format claims rc=0
-  local RW_TARGET RW_OLD RW_OLDBOOT RW_STABLE_INPUT RW_STABLE_ID
+  local RW_TARGET RW_OLD RW_OLDBOOT RW_STABLE_INPUT RW_STABLE_ID RW_STABLE_BOOT
   roost_send_guard_args "$token" "$pane" || return 7
   if [ -n "$stable_id" ]; then
     roost_pane_id_parse "$stable_id" && [ "$ROOST_PANE_ID" = "$stable_id" ] || return 7

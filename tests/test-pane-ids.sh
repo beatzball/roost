@@ -20,6 +20,10 @@ id_of() { T show-options -pqv -t "$1" @roost-id; }
 in_pane() { local p="$1"; shift; env TMUX="$sock,$(T display -p '#{pid}'),0" TMUX_PANE="$p" "$@"; }
 valid() { roost_pane_id_parse "$1" && [ "$1" = "$ROOST_PANE_ID" ]; }
 
+changed="$(awk '/^## / { if (active) exit; active = ($0 ~ /Unreleased/) } active && /^### / { changed = ($0 == "### Changed") } active && changed' "$HERE/CHANGELOG.md")"
+assert_contains "$changed" 'roost whoami' "Unreleased Changed calls out the new whoami output"
+assert_contains "$changed" 'roost status' "Unreleased Changed calls out the leading status ID"
+
 # All single-symbol substitutions and distinct adjacent swaps for each of 64
 # random codewords, including the fixed prefix and the check digit.
 check_typos() {
@@ -32,13 +36,13 @@ check_typos() {
         digit="${ROOST_PANE_ID_ALPHABET:j:1}"
         [ "$digit" = "${compact:i:1}" ] && continue
         mutant="${compact:0:i}$digit${compact:i+1}"
-        if roost_pane_id_parse "$mutant"; then printf 'accepted substitution %s -> %s\n' "$compact" "$mutant"; return 1; fi
+        if roost_pane_id_parse "${mutant:0:1}-${mutant:1}"; then printf 'accepted substitution %s -> %s\n' "$compact" "$mutant"; return 1; fi
       done
       [ "$i" -lt 7 ] || continue
       digit="${compact:i:1}"; second="${compact:i+1:1}"
       [ "$digit" = "$second" ] && continue
       mutant="${compact:0:i}$second$digit${compact:i+2}"
-      if roost_pane_id_parse "$mutant"; then printf 'accepted swap %s -> %s\n' "$compact" "$mutant"; return 1; fi
+      if roost_pane_id_parse "${mutant:0:1}-${mutant:1}"; then printf 'accepted swap %s -> %s\n' "$compact" "$mutant"; return 1; fi
     done
   done
   return 0
@@ -83,8 +87,18 @@ out="$(R send "$bad" 'printf SHOULD-NOT-ARRIVE' 2>&1)"; rc=$?
 assert_eq "$rc" 2 "send refuses a bad check even when a tmux window has that name"
 assert_contains "$out" 'not a valid pane id' "the bad check has a specific diagnostic"
 assert_eq "$(T capture-pane -pt "$worker")$(T capture-pane -pt "$decoy")" "$before" "the bad ID typed no keys on either pane"
-named="$(T new-window -d -P -F '#{pane_id}' -n postgres 'exec cat')"
-assert_contains "$(R screen --json postgres)" "\"pane\":\"$named\"" "ordinary p-prefixed window names still resolve"
+for bad_alias in p-OOOIOO9 "$id." "${id%?}"; do
+  decoy_alias="$(T new-window -d -P -F '#{pane_id}' -n "$bad_alias" 'exec cat')"
+  out="$(R send "$bad_alias" MUST-NOT-ARRIVE 2>&1)"; rc=$?
+  assert_eq "$rc" 2 "refuse a malformed p- address ($bad_alias)"
+  assert_contains "$out" 'not a valid pane id' "malformed input stays in the pane ID namespace"
+  assert_eq "$(T capture-pane -pt "$decoy_alias")" '' "the matching window got no keys"
+done
+for name in postgres payments packages perftest pooo1oo9; do
+  named="$(T new-window -d -P -F '#{pane_id}' -n "$name" 'exec cat')"
+  assert_contains "$(R screen --json "$name")" "\"pane\":\"$named\"" "ordinary window name $name still resolves"
+done
+assert_contains "$(R screen --json "main:$bad")" "\"pane\":\"$decoy\"" "a qualified p- window name still resolves"
 if roost_pane_id_restore T "$decoy" "$id"; then collision_rejected=1; else collision_rejected=0; fi
 assert_eq "$collision_rejected" 0 "a saved ID already present on the live server cannot be assigned to another pane"
 valid "$(id_of "$decoy")"; decoy_stamped=$?
@@ -93,19 +107,36 @@ R status >/dev/null
 valid "$(id_of "$decoy")"; assert_true $? "status adopts a pane opened by hand"
 
 in_pane "$worker" "$HERE/scripts/roost-agent-state" idle </dev/null
-upper="$(printf '%s' "$id" | tr -d '-' | tr '[:lower:]' '[:upper:]')"
-out="$(in_pane "$caller" "$ROOST" send "$upper" 'review the change' 2>"$work/send.err")"; rc=$?
-assert_eq "$rc|$out" "0|$worker 1" "send accepts an uppercase ID without hyphens and reaches the right pane"
+upper="P-$(printf '%s' "${id#p-}" | tr -d '-' | tr '[:lower:]' '[:upper:]')"
+out="$(in_pane "$caller" "$ROOST" send "$upper" '/clear' 2>"$work/send.err")"; rc=$?
+assert_eq "$rc|$out" "0|$worker 1" "send accepts an uppercase compact ID and reaches the right pane"
 R wait-done --turn 1 "$id" 10 >/dev/null; assert_true $? "wait-done --turn accepts a stable ID"
 reply="$(R read --json --turn 1 "$upper")"
 assert_contains "$reply" "\"target\":\"$upper\"" "read JSON keeps the address as typed"
-assert_contains "$reply" "REPLY-TO[[from $me] review the change]" "the agent received the stable sender ID in [from]"
+assert_contains "$reply" "REPLY-TO[/clear]" "the command arrives literally from a roost caller"
 assert_contains "$reply" "\"sent_by\":\"pane:$me\"" "the kept reply names the stable sender"
-assert_contains "$(R screen "$id")" 'review the change' "screen accepts a stable ID"
+assert_contains "$(R screen "$id")" '/clear' "screen accepts a stable ID"
 assert_contains "$(R events --pane "$id")" "\"pane\":\"$worker\"" "events filters by the resolved pane"
 R answer "$id" --deny >/dev/null 2>"$work/answer.err"; assert_eq $? 6 "answer resolves the ID and sees no blocked dialog"
 R revive "$other_id" >/dev/null 2>"$work/revive.err"; assert_eq $? 13 "revive resolves the ID and sees no conversation key"
 R forget "$id" >/dev/null; assert_true $? "forget finds the pane's kept reply by stable ID"
+
+# The old sender prefix shortened the head match so that the old brief on
+# screen hid a lost new send. The receiver swallows input without echo.
+swallow="$(T new-window -d -P -F '#{pane_id}' \
+  "stty -echo; printf '%s\\n' '[from $me] Read /tmp/briefs/first.md'; exec cat >/dev/null")"
+for ((i=0; i<100; i++)); do
+  T capture-pane -pt "$swallow" | grep -q 'first.md' && break
+  sleep 0.05
+done
+T set -p -t "$swallow" @agent_state idle
+T set -g @roost-send-ready-timeout 0
+T set -g @roost-send-turn-timeout 0
+out="$(in_pane "$caller" "$ROOST" send "$swallow" 'Read /tmp/briefs/second.md' 2>&1)"; rc=$?
+assert_eq "$rc" 1 "the earlier brief does not hide the loss of the new prompt"
+assert_contains "$out" 'could not confirm the message reached' "lost delivery fails visibly"
+T set -gu @roost-send-ready-timeout
+T set -gu @roost-send-turn-timeout
 
 # Make the next draw deterministic: first issue the all-zero payload onto a
 # known pane, close it, then force the allocator to draw that payload again.
@@ -130,9 +161,10 @@ fresh="$(PANE_ID_DRAW="$work/draw" PANE_ID_REAL_OD="$real_od" PATH="$work/bin:$P
 [ -f "$work/draw" ] && [ -f "$XDG_STATE_HOME/roost/pane-ids/00/$retired" ] && valid "$(id_of "$fresh")" && [ "$(id_of "$fresh")" != "$retired" ]
 assert_true $? "spawning after close rejects the already issued random payload"
 
+T new-session -d -s payments 'exec sleep 120'
 R save --to "$work/shape" >/dev/null || exit 1
 assert_contains "$(cat "$work/shape")" "roost_id $me" "save keeps the original ID"
-sed "/^roost_id $id\$/d" "$work/shape" > "$work/old-shape"
+sed -e "s/^roost_id $id\$/roost_id p-000-100-9/" -e "/^roost_id $other_id\$/d" "$work/shape" > "$work/old-shape"
 T kill-server >/dev/null 2>&1 || true
 # A fresh socket keeps the test independent of when an exiting tmux 3.4
 # server removes the old socket. The archive and ID ledger stay the same.
@@ -142,12 +174,16 @@ sock="$work/restored/roost"; export ROOST_SOCKET="$sock"
 # sender ID cannot pass this test by accident.
 T -f /dev/null new-session -d -x 200 -y 50 -s unrelated 'ENV= exec /bin/sh' || exit 1
 R restore --dry-run --from "$work/shape" --only "$me" >/dev/null; assert_true $? "restore --only selects a pane by stable ID"
+R restore --dry-run --from "$work/shape" --only payments >/dev/null; assert_true $? "restore --only accepts the session name payments"
 out="$(R restore --no-resume --from "$work/old-shape" 2>"$work/restore.err")"; rc=$?
-assert_eq "$rc" 0 "restore accepts a shape with both old and new pane blocks"
+assert_eq "$rc" 0 "restore accepts a shape with intact, missing and damaged pane IDs"
 restored="$(T list-panes -a -F '#{pane_id} #{@roost-id}' | awk -v id="$me" '$2==id {print $1}')"
 [ -n "$restored" ] && [ "$restored" != "$caller" ]; assert_true $? "restore kept the sender ID on a different tmux number"
 restored_worker="$(T list-panes -a -F '#{pane_id} #{@roost-name}' | awk '$2=="worker" {print $1}')"
 valid "$(id_of "$restored_worker")" && [ "$(id_of "$restored_worker")" != "$id" ]
+assert_true $? "the pane with the damaged field receives a new ID"
+restored_helper="$(T list-panes -a -F '#{pane_id} #{@roost-name}' | awk '$2=="helper" {print $1}')"
+valid "$(id_of "$restored_helper")" && [ "$(id_of "$restored_helper")" != "$other_id" ]
 assert_true $? "a pane from an old block receives a new ID"
 R send "$me" "printf 'REPLY-%s\\n' RECEIVED" >/dev/null 2>"$work/return.err"; assert_true $? "the recorded sender ID still routes after restore"
 for ((i=0; i<100; i++)); do

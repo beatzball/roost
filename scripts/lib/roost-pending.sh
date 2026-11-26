@@ -43,7 +43,7 @@ fi
 roost_pending_dir() { printf '%s/pending/%s\n' "$1" "$2"; }
 
 # roost_pending_write SHAPE-DIR BOOT %N WAS HARNESS SESSION-ID TRANSCRIPT CWD
-#                     SESSION-CWD SESSION WINDOW ORDER
+#                     SESSION-CWD SESSION WINDOW ORDER [ROOST-ID]
 #   -> prints the file's path; exit 0 written, 1 refused (nothing written).
 #
 # T3's first half: placement writes this BEFORE it starts the pane's waiting
@@ -64,7 +64,7 @@ roost_pending_write() {
   local sd="$1" boot="$2" pane="$3" d f tmp v
   case "$pane" in %[0-9]*) ;; *) echo "roost: pending: '$pane' is not a pane id" >&2; return 1 ;; esac
   case "${pane#%}" in *[!0-9]*) echo "roost: pending: '$pane' is not a pane id" >&2; return 1 ;; esac
-  for v in "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}"; do
+  for v in "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13:-}"; do
     case "$v" in *$'\n'*|*$'\r'*) echo "roost: pending: a value for $pane holds a line break; not written" >&2; return 1 ;; esac
   done
   d="$(roost_pending_dir "$sd" "$boot")"
@@ -83,6 +83,7 @@ roost_pending_write() {
     printf 'session %s\n' "${10}"
     printf 'window %s\n' "${11}"
     printf 'order %s\n' "${12}"
+    if [ -n "${13:-}" ]; then printf 'roost_id %s\n' "${13}"; fi
   } > "$tmp" || { rm -f "$tmp"; return 1; }
   if ! mv -f "$tmp" "$f" 2>/dev/null; then rm -f "$tmp"; return 1; fi
   printf '%s\n' "$f"
