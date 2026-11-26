@@ -16,6 +16,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.13.1]
+
+roost now runs on Ubuntu 26.04. Two `roost send` calls to the same pane
+could both take its lock there, so one message was lost; now they take
+turns. The test suite also passes on Ubuntu 26.04 again, and CI tests every
+change on Ubuntu 24.04, Ubuntu 26.04 and macOS.
+
 ### Fixed
 
 - **Sends to one pane take turns again on Ubuntu 26.04.** Its `mkdir`
