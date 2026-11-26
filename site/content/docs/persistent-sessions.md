@@ -474,7 +474,7 @@ checked.
 
 `roost save` stores each pane's stable ID with the pane. After restore you
 can use the same address, for example `roost send p-k7q-2x9-z "carry on"`.
-Panes from older saves get new IDs. `roost status` lists the IDs after
+A pane with a missing or damaged ID in the save gets a new ID. `roost status` lists the IDs after
 restore. Roost keeps a list of issued IDs in `pane-ids/` next to the shapes
 directory under `$XDG_STATE_HOME/roost` (normally `~/.local/state/roost`).
 
@@ -547,6 +547,10 @@ Claude Code that is the directory written inside the conversation's own
 transcript; for the others it is the directory the agent reported. A harness
 resumed from a different directory moves the conversation there (Claude Code)
 or asks about it, so `revive` would rather refuse than guess.
+
+With `--new-window`, the stable ID follows the conversation and the original
+pane gets a fresh ID. A gone pane's saved ID follows the conversation into
+its new window when that ID is free.
 
 Before it touches the pane, `revive` checks that the harness still has the
 conversation, so an old pane cannot be killed for nothing. Claude Code, for

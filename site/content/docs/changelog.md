@@ -20,8 +20,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 - **Stable pane IDs survive restore.** Copy an ID such as `p-k7q-2x9-z`
   from `roost status` or `roost whoami` and use it anywhere you address a
-  live pane. A bad check character stops delivery. Prompts to agents and
-  kept replies carry the sender's stable address.
+  live pane. An invalid address starting with `p-` stops delivery. Kept
+  replies carry the sender's stable address.
+
+### Changed
+
+- `roost whoami` prints your stable pane ID. Each `roost status` pane line
+  starts with its stable ID, followed by its current tmux pane number.
 
 ## [0.13.1]
 

@@ -49,15 +49,16 @@ An agent (or you) can coordinate the fleet from inside roost.
 Use a stable address such as `p-k7q-2x9-z` when you want to find the same
 pane after a restore. `roost whoami` prints yours, and `roost status` lists
 each one with its current tmux number and its role, when set. Uppercase works
-and you can move or leave out the hyphens. A bad check character prints
-`not a valid pane id` and exits `2` before typing anything.
+and you can move or leave out the hyphens after the initial `p-`. An invalid
+`p-` address prints `not a valid pane id` and exits `2` before typing anything.
 
 `send`, `read`, `screen`, `wait-done`, `answer`, `close`, `revive`, `forget`,
 `events --pane` and `split -t` all accept a stable ID for a live pane. You can
 still use `%N`, a window name or `session:window.pane` where the command
 allows it. `spawn`, `split` and `view` print the new pane's `%N`. Look up its
 stable ID in `roost status` when you need to keep the address for later.
-If a window name looks like a stable ID, use its qualified tmux address.
+Qualify names that start with `p-`, for example `main:p-worker`. A stable
+target that moves or disappears while a command is waiting causes exit `2`.
 
 ### If you are the worker
 
@@ -246,10 +247,9 @@ for a sender outside it. Older records can contain `pane:%N`.
 
 Three things to know:
 
-- Prompts to a pane that has an agent badge carry `[from p-k7q-2x9-z]` when
-  roost knows the sender's stable ID. The receiver can use the ID after a
-  restore. For a first prompt to a pane that has yet to report a badge, you
-  can include `[from $me]` yourself.
+- **The pasted text is unchanged.** Use `[from $me]` in the text if the
+  receiver needs your address in the prompt itself. `--from` sets the label
+  kept beside the turn.
 - **No turn, no label.** The label is kept only when `send` names a turn (the `%N TURN` line), so every case above that prints nothing keeps nothing: a pane that is not an agent, a target already mid-turn, replies not recorded, a turn that errored. A pane straight from `roost spawn claude` has no badge until its first prompt, so that first prompt is not numbered and keeps no label either; every later one does.
 - The default sender address is checked against the server. A label passed
   with `--from` is a claim made by the caller.

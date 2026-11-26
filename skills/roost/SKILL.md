@@ -99,9 +99,9 @@ not report to roost: its pane shows no badge, and `roost wait-done` and
 `roost send TARGET "text"` pastes the text, submits it, and then waits briefly
 for the target to actually BEGIN a turn. The record keeps the sender's
 stable address as `pane:ID`, shown as `sent_by` by `roost read --json`.
-You can pass it explicitly with `--from "$me"`. Roost adds `[from $me]` when
-the recipient already has an agent badge. Include that prefix yourself on
-a first prompt to an unbadged agent (as above). An explicit sender label
+You can pass it explicitly with `--from "$me"`. Roost pastes your text
+unchanged. Include `[from $me]` yourself when the recipient needs a return
+address in the prompt (as above). An explicit sender label
 must be one word of at most 64 bytes. `send` refuses invalid labels with
 exit 2 before pasting anything.
 
