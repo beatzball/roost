@@ -177,6 +177,7 @@ roost_pane_id_move() {
   for ((n=0; n<64; n++)); do
     roost_pane_id__new || return 1
     fresh="$ROOST_PANE_ID"
+    [ "$fresh" != "$id" ] || continue
     roost_pane_id__bucket "$fresh" || return 1
     if roost_pane_id__reserve "$fresh"; then break; fi
     [ -e "$ROOST_PANE_ID_BUCKET/$fresh" ] || return 1
