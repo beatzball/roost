@@ -990,7 +990,7 @@ roost_restore__build_window() {
     # Stamp before respawning: the hook in the new process can ask whoami
     # as soon as it starts. The saved ID may still be on another live pane
     # if this is a partial restore into a running server.
-    roost_restore__pane_id "$id" "${blocks[$i]}" || rc=13
+    roost_restore__pane_id "$id" "${blocks[$i]}" || true
     out="$(roost_restore__cwd "${blocks[$i]}")"
     if [ "$id" = "$5" ]; then
       # The bootstrap was claimed before this window was built, so a person
@@ -1701,18 +1701,19 @@ roost_restore__host_line() {
 # group is selected without its first member and that member is not on the
 # server (ruling R7: an address with no parent, nothing done).
 roost_restore__select() {
-  local sel f a keep=$'\n' hit g i key want saved
+  local sel f a keep=$'\n' hit g i key want saved exact
   [ "${#ROOST_RESTORE_ONLY[@]}" -gt 0 ] || return 0
   for sel in "${ROOST_RESTORE_ONLY[@]}"; do
     hit=0
-    key=""; want="$sel"
-    if roost_pane_id_target "$sel"; then
+    key=""; want="$sel"; exact=0
+    case "$sel" in =*) exact=1; sel="${sel#=}" ;; esac
+    if [ "$exact" = 0 ] && roost_pane_id_target "$sel"; then
       if ! roost_pane_id_parse "$sel"; then
         printf "roost restore: '%s' is not a valid pane id\n" "$sel" >&2
         return 2
       fi
       key=roost_id; want="$ROOST_PANE_ID"
-    elif [[ "$sel" == %* ]]; then
+    elif [ "$exact" = 0 ] && [[ "$sel" == %* ]]; then
       key=id
     fi
     for f in "$ROOST_RESTORE_PD"/*.session "$ROOST_RESTORE_PD"/*.window "$ROOST_RESTORE_PD"/*.pane; do

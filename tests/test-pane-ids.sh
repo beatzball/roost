@@ -23,6 +23,7 @@ valid() { roost_pane_id_parse "$1" && [ "$1" = "$ROOST_PANE_ID" ]; }
 changed="$(awk '/^## / { if (active) exit; active = ($0 ~ /Unreleased/) } active && /^### / { changed = ($0 == "### Changed") } active && changed' "$HERE/CHANGELOG.md")"
 assert_contains "$changed" 'roost whoami' "Unreleased Changed calls out the new whoami output"
 assert_contains "$changed" 'roost status' "Unreleased Changed calls out the leading status ID"
+assert_contains "$changed" 'p-` are read as pane IDs' "Unreleased Changed calls out the reserved address prefix"
 
 # All single-symbol substitutions and distinct adjacent swaps for each of 64
 # random codewords, including the fixed prefix and the check digit.
@@ -161,7 +162,9 @@ fresh="$(PANE_ID_DRAW="$work/draw" PANE_ID_REAL_OD="$real_od" PATH="$work/bin:$P
 [ -f "$work/draw" ] && [ -f "$XDG_STATE_HOME/roost/pane-ids/00/$retired" ] && valid "$(id_of "$fresh")" && [ "$(id_of "$fresh")" != "$retired" ]
 assert_true $? "spawning after close rejects the already issued random payload"
 
-T new-session -d -s payments 'exec sleep 120'
+payments_pane="$(T new-session -d -P -F '#{pane_id}' -s payments 'exec sleep 120')"
+roost_pane_id_ensure T "$payments_pane" || exit 1
+T new-session -d -s p-proj 'exec sleep 120'
 R save --to "$work/shape" >/dev/null || exit 1
 assert_contains "$(cat "$work/shape")" "roost_id $me" "save keeps the original ID"
 sed -e "s/^roost_id $id\$/roost_id p-000-100-9/" -e "/^roost_id $other_id\$/d" "$work/shape" > "$work/old-shape"
@@ -175,6 +178,8 @@ sock="$work/restored/roost"; export ROOST_SOCKET="$sock"
 T -f /dev/null new-session -d -x 200 -y 50 -s unrelated 'ENV= exec /bin/sh' || exit 1
 R restore --dry-run --from "$work/shape" --only "$me" >/dev/null; assert_true $? "restore --only selects a pane by stable ID"
 R restore --dry-run --from "$work/shape" --only payments >/dev/null; assert_true $? "restore --only accepts the session name payments"
+R restore --dry-run --from "$work/shape" --only '=p-proj' >/dev/null; assert_true $? "restore --only accepts an exact p- session"
+R restore --dry-run --from "$work/shape" --only '=p-proj:0' >/dev/null; assert_true $? "restore --only accepts an exact p- session's window"
 out="$(R restore --no-resume --from "$work/old-shape" 2>"$work/restore.err")"; rc=$?
 assert_eq "$rc" 0 "restore accepts a shape with intact, missing and damaged pane IDs"
 restored="$(T list-panes -a -F '#{pane_id} #{@roost-id}' | awk -v id="$me" '$2==id {print $1}')"
@@ -192,4 +197,14 @@ for ((i=0; i<100; i++)); do
   sleep 0.05
 done
 assert_contains "$screen" REPLY-RECEIVED "the reply reaches the restored pane"
+
+live_payments="$(T display -pt payments:0 '#{pane_id}')"
+payments_id="$(id_of "$live_payments")"
+T move-window -s payments:0 -t main:99 || exit 1
+R restore --only payments --no-resume --from "$work/shape" >/dev/null 2>"$work/collision.err"; rc=$?
+assert_eq "$rc" 0 "an already-live saved ID does not change the restore outcome"
+assert_contains "$(cat "$work/collision.err")" "could not keep its pane id $payments_id" "restore warns about the occupied ID"
+new_payments_id="$(id_of "$(T display -pt payments:0 '#{pane_id}')")"
+valid "$new_payments_id" && [ "$new_payments_id" != "$payments_id" ]
+assert_true $? "the placed pane gets a fresh ID"
 [ "$ROOST_TESTS_FAIL" -eq 0 ]

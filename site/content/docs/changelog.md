@@ -27,6 +27,8 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 - `roost whoami` prints your stable pane ID. Each `roost status` pane line
   starts with its stable ID, followed by its current tmux pane number.
+- Bare names starting with `p-` are read as pane IDs. Qualify a window as
+  `main:p-worker` or select a saved session with `restore --only =p-proj`.
 
 ## [0.13.1]
 

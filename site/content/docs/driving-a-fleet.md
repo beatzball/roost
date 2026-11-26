@@ -57,8 +57,11 @@ and you can move or leave out the hyphens after the initial `p-`. An invalid
 still use `%N`, a window name or `session:window.pane` where the command
 allows it. `spawn`, `split` and `view` print the new pane's `%N`. Look up its
 stable ID in `roost status` when you need to keep the address for later.
-Qualify names that start with `p-`, for example `main:p-worker`. A stable
-target that moves or disappears while a command is waiting causes exit `2`.
+Qualify window names that start with `p-`, for example `main:p-worker`.
+To select a saved session called `p-proj`, use `roost restore --only =p-proj`
+or `--only =p-proj:0` for its first window. If a stable target moves or
+disappears before a command starts work on it, the command exits `2`.
+Once work starts, the command reports the outcome of what it already did.
 
 ### If you are the worker
 

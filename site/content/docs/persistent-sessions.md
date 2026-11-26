@@ -521,7 +521,9 @@ current and previous tmux numbers.
   another machine says so in one line, then restores. It places the panes; it
   cannot bring back conversations whose harness store is not on this machine.
 - `--only NAME`, `--only NAME:WINDOW` or `--only ID` (a stable ID or `%N` from the save)
-  restores just that, and can be given more than once.
+  restores just that, and can be given more than once. Use `--only =p-proj`
+  or `--only =p-proj:0` for a saved session or window whose session name
+  starts with `p-`.
 
 ## Revive one conversation
 
