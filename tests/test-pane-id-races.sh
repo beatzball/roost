@@ -38,14 +38,6 @@ if [ "$1" = -S ] && [ "$2" = "$RACE_DIR/route" ]; then
     exit "$rc"
   fi
   case "${RACE_GATE:-}:$*" in
-    held-reply:source-file\ -)
-      cat > "$RACE_DIR/queued-reply"
-      if [[ "$(cat "$RACE_DIR/queued-reply")" == *ORIGINAL-PRIVATE-HELD-REPLY* ]]; then
-        . "$RACE_DIR/bin/rendezvous"
-        pause_client
-        args=("${extra[@]}" -S "$(cat "$RACE_DIR/route")" "$@")
-      fi
-      exec "$RACE_TMUX" "${args[@]}" < "$RACE_DIR/queued-reply" ;;
     paste-signal:*paste-buffer*)
       "$RACE_TMUX" "${args[@]}"; rc=$?
       . "$RACE_DIR/bin/rendezvous"
@@ -54,7 +46,7 @@ if [ "$1" = -S ] && [ "$2" = "$RACE_DIR/route" ]; then
     paste-no-ack:*paste-buffer*)
       "$RACE_TMUX" "${args[@]}" >/dev/null
       exit $? ;;
-    paste-refusal:*paste-buffer*|load-refusal:*load-buffer*|held-reply:*set-option*'@roost-reply'*ORIGINAL-PRIVATE-HELD-REPLY*|revive-probe:*set-option*'@roost-shape-probe'*)
+    paste-refusal:*paste-buffer*|load-refusal:*load-buffer*|held-reply:*set-option*'@roost-reply '*ORIGINAL-PRIVATE-HELD-REPLY*|held-reply:*"@roost-reply '#{@roost-recovery-reply."*|revive-probe:*set-option*'@roost-shape-probe'*)
       . "$RACE_DIR/bin/rendezvous"
       pause_client
       sock="$(cat "$RACE_DIR/route")"
@@ -190,12 +182,15 @@ T old set -p -t %0 @roost-transcript "1789398932 $HERE/tests/fixtures/claude-tra
 T old set -p -t %0 @roost-background '1789398932 1'
 held="$(printf '%12256s' '' | tr ' ' '"')"$'\n# literal \047quote\047 $HOME;'
 T old set -p -t %0 @roost-reply "${held%;}\\;"
+T old show-options -pqv -t %0 @roost-reply > "$dir/held-expected"
 PATH="$dir/bin:$PATH" "$HERE/bin/roost" read "$id" > "$dir/out" 2>"$dir/err"
 assert_true $? 'the matching boot can read the recovered reply'
-cmp -s "$dir/out" <(printf '%s\n' "$held")
+cmp -s "$dir/out" "$dir/held-expected"
 assert_true $? 'recovery returns the complete quoted held reply on the matching boot'
-[[ "$(T old show-options -pqv -t %0 @roost-reply)" == "$held" ]]
+cmp -s "$dir/held-expected" <(T old show-options -pqv -t %0 @roost-reply)
 assert_true $? 'recovery restored the complete held reply to the original pane'
+T old show-options -p -t %0 | grep -q '^@roost-recovery-reply\.'
+assert_eq $? 1 'recovery removes its temporary reply copy'
 unset ROOST_RECORD_DIR
 
 bash "$dir/bin/roost-lock-fixture" "$HERE/scripts/lib/roost-panelock.sh" &
