@@ -104,9 +104,11 @@ paste_hex() { printf '\033[200~%s\033[201~' "$1" | od -An -tx1 -v | tr -d ' \n';
 
 launch success ''
 first_id="$(TMUX_PANE="$p" "$ROOST" whoami)" || exit 1
+T set -p -t %0 @roost-was "$p"
 confirmed="$(token "$first_id")" || exit 1
 send_rc --json --agent-only "$confirmed" "$first_id" 'inert notes reference'
-assert_eq "$rc" 0 'a confirmed live agent receives a guarded send'
+assert_eq "$rc" 0 'a stable ID reaches a confirmed agent even when its tmux number is ambiguous'
+T set -pu -t %0 @roost-was
 assert_contains "$(cat "$work/out")" "\"pane\":\"$p\"" 'guarded send keeps existing JSON output'
 assert_contains "$(cat "$work/out")" "\"target\":\"$first_id\"" 'the guarded send JSON keeps the stable ID as typed'
 assert_eq "$(cat "$work/success")" '"inert notes reference"' 'a one-line message is submitted whole exactly once'

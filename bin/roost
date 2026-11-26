@@ -455,7 +455,7 @@ target() { case "$1" in @*|%*|*:*) printf '%s' "$1" ;; *) printf '%s:%s' "$DEFAU
 resolve_was() {
   local verb="$1" raw="$2" strict="${3:-0}" old want="" root key boot map o b n hits=0 bl="" new=""
   local rows id dead was description canonical stamp live="" restored=""
-  RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT="" RW_STABLE_INPUT=""
+  RW_TARGET="$raw" RW_OLD="" RW_OLDBOOT="" RW_STABLE_INPUT="" RW_STABLE_ID=""
   if roost_pane_id_target "$raw"; then
     if ! roost_pane_id_parse "$raw"; then
       echo "roost $verb: '$raw' is not a valid pane id" >&2
@@ -464,7 +464,7 @@ resolve_was() {
     local id_rc=0
     roost_pane_id_find t "$ROOST_PANE_ID" || id_rc=$?
     case "$id_rc" in
-      0) RW_TARGET="$ROOST_PANE_ID_PANE"; RW_STABLE_INPUT="$raw"; return 0 ;;
+      0) RW_TARGET="$ROOST_PANE_ID_PANE"; RW_STABLE_INPUT="$raw"; RW_STABLE_ID="$ROOST_PANE_ID"; return 0 ;;
       2) echo "roost $verb: pane id '$raw' is ambiguous" >&2 ;;
       *) echo "roost $verb: no pane with id '$raw' on this server" >&2 ;;
     esac
@@ -1869,6 +1869,7 @@ JSON
     exec ssh -t "$host" "\"\$SHELL\" -lc $(roost_sq "$remote")"
     ;;
   send)
+    RW_STABLE_INPUT="" RW_STABLE_ID=""
     send_guard_setup() {
       . "$ROOST_HOME/scripts/lib/roost-adapters.sh"
       . "$ROOST_HOME/scripts/lib/roost-resume.sh"
@@ -1902,7 +1903,7 @@ JSON
       if roost_pane_id_target "$raw"; then resolve_was send "$raw" || exit 2; raw="$RW_TARGET"; fi
       send_guard_pane "$raw" || send_guard_stop
       guard_token="$(t display-message -p -t "$raw" "$ROOST_SEND_GUARD_FORMAT" 2>/dev/null)" || send_guard_stop
-      roost_send_guard_action "$guard_token" "$raw" || send_guard_stop
+      roost_send_guard_action "$guard_token" "$raw" "" "${RW_STABLE_ID:-}" || send_guard_stop
       printf '%s\n' "$guard_token"
       exit 0
     fi
@@ -2019,7 +2020,7 @@ JSON
       # A signal while a terminal action is in flight can leave its outcome
       # unknown. In that case the EXIT trap must leave the terminal alone.
       if [ -n "$action" ]; then send_inflight=1; fi
-      roost_send_guard_action "$guard_token" "$tgt" "$action" || rc=$?
+      roost_send_guard_action "$guard_token" "$tgt" "$action" "${RW_STABLE_ID:-}" || rc=$?
       if [ "$rc" != 0 ]; then
         if [ -n "$action" ]; then send_guard_stop "$rc"; fi
         send_guard_stop
@@ -2142,7 +2143,7 @@ JSON
       if [ "$send_pasted" = 1 ] && [ "$send_entered" = 0 ] && [ "$send_guard_refused" = 0 ] \
         && [ "$send_inflight" = 0 ] && roost_panelock_check; then
         if [ "$guard_given" = 1 ]; then
-          roost_send_guard_action "$guard_token" "$tgt" "send-keys -t $tgt C-u" 2>/dev/null || true
+          roost_send_guard_action "$guard_token" "$tgt" "send-keys -t $tgt C-u" "${RW_STABLE_ID:-}" 2>/dev/null || true
         else
           send_key C-u
         fi

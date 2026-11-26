@@ -83,6 +83,10 @@ out="$(R send "$bad" 'printf SHOULD-NOT-ARRIVE' 2>&1)"; rc=$?
 assert_eq "$rc" 2 "send refuses a bad check even when a tmux window has that name"
 assert_contains "$out" 'not a valid pane id' "the bad check has a specific diagnostic"
 assert_eq "$(T capture-pane -pt "$worker")$(T capture-pane -pt "$decoy")" "$before" "the bad ID typed no keys on either pane"
+T new-window -d -n postgres 'exec cat'
+R screen postgres >/dev/null; assert_true $? "ordinary p-prefixed window names still resolve"
+if roost_pane_id_restore T "$decoy" "$id"; then collision_rejected=1; else collision_rejected=0; fi
+assert_eq "$collision_rejected" 0 "a saved ID already present on the live server cannot be assigned to another pane"
 valid "$(id_of "$decoy")"; decoy_stamped=$?
 assert_eq "$decoy_stamped" 1 "before status, the hand-made decoy has no ID"
 R status >/dev/null
@@ -93,7 +97,8 @@ upper="$(printf '%s' "$id" | tr -d '-' | tr '[:lower:]' '[:upper:]')"
 out="$(in_pane "$caller" "$ROOST" send "$upper" 'review the change' 2>"$work/send.err")"; rc=$?
 assert_eq "$rc|$out" "0|$worker 1" "send accepts an uppercase ID without hyphens and reaches the right pane"
 R wait-done --turn 1 "$id" 10 >/dev/null; assert_true $? "wait-done --turn accepts a stable ID"
-reply="$(R read --json --turn 1 "$id")"
+reply="$(R read --json --turn 1 "$upper")"
+assert_contains "$reply" "\"target\":\"$upper\"" "read JSON keeps the address as typed"
 assert_contains "$reply" "REPLY-TO[[from $me] review the change]" "the agent received the stable sender ID in [from]"
 assert_contains "$reply" "\"sent_by\":\"pane:$me\"" "the kept reply names the stable sender"
 assert_contains "$(R screen "$id")" 'review the change' "screen accepts a stable ID"

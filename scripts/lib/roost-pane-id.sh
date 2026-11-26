@@ -41,11 +41,19 @@ roost_pane_id_parse() {
 # tmux target, keeps its usual interpretation. In particular a wrong check
 # character in this namespace must never fall back to a tmux name match.
 roost_pane_id_target() {
-  local compact="${1//-/}"
-  case "$1" in *:*|*.*) return 1 ;; esac
-  case "$compact" in [pP]???????) return 0 ;; esac
-  case "$1" in [pP]-*-*-*|[pP]-*@*) return 0 ;; esac
-  return 1
+  local LC_ALL=C compact="${1//-/}" body
+  case "$1" in
+    *:*|*.*) return 1 ;;
+    [pP]-???-???-*) return 0 ;;
+  esac
+  case "$compact" in [pP]???????) ;; *) return 1 ;; esac
+  body="${compact:1:6}"
+  # A compact spelling uses the Crockford alphabet. Try its folded form
+  # before treating a word like "postgres" as an ordinary window name.
+  case "$body" in
+    *[!0123456789ABCDEFGHJKMNPQRSTVWXYZabcdefghjkmnpqrstvwxyz]*) roost_pane_id_parse "$1" ;;
+    *) return 0 ;;
+  esac
 }
 
 roost_pane_id__new() {

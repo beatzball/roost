@@ -82,7 +82,9 @@ if t list-sessions >/dev/null 2>&1; then
   # of the window name standing where the real signal (what is running)
   # belongs. LABEL is inlined twice, once inside the #{==:} test and once as
   # the shown suffix, rather than factored through a second #{E:}.
-  t list-panes -a -F '    #{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{@agent_state},-}]'
+  # Core status has already adopted these panes. The extension can read the
+  # assigned address and role directly from the options exposed by tmux.
+  t list-panes -a -F '    #{?@roost-id,#{@roost-id}#{?#{!=:#{@roost-role},}, #{@roost-role},}  ,}#{pane_id}  #{session_name}:#{window_index}.#{pane_index} #{window_name}#{?#{==:#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}},#{window_name}},,/#{?#{==:#{@roost-name},},#{pane_current_command},#{@roost-name}}}  [#{?@agent_state,#{@agent_state},-}]'
 else
   echo "roost: not running"
 fi
