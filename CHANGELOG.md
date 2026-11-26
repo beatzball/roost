@@ -7,6 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Stable pane IDs survive restore.** Copy an ID such as `p-k7q-2x9-z`
+  from `roost status` or `roost whoami` and use it anywhere you address a
+  live pane. A bad check character stops delivery. Prompts to agents and
+  kept replies carry the sender's stable address.
+
 ## [0.13.1]
 
 roost now runs on Ubuntu 26.04. Two `roost send` calls to the same pane

@@ -11,13 +11,13 @@ each agent is a pane. These commands let you coordinate with sibling agents.
 ## Preflight — are you inside roost?
 
 If roost's `SessionStart` hook is wired, your context already opens with a line
-naming this pane — "This pane is `%7`". That id is YOUR address, and its
+naming this pane — "This pane is `p-k7q-2x9-z`". That id is YOUR address, and its
 presence means you are inside roost.
 
 **Its absence proves nothing.** That hook is opt-in: the user merges it into
 their Claude settings by hand, and a settings file written before the hook
 existed carries the four state hooks and not this one. So when there is no such
-line, run `roost whoami`. If it prints an id (e.g. `%7`), that is YOUR address
+line, run `roost whoami`. If it prints an id (e.g. `p-k7q-2x9-z`), that is YOUR address
 and you're inside roost. If it errors ("not inside a roost session"), **stop** —
 you are not in roost; tell the user and do not run the rest.
 
@@ -43,8 +43,8 @@ alone. See `AGENTS.md`; in particular, never run `tmux kill-server` without
 `roost status` lists every session and pane with its state, e.g.:
 
 ```
-    %3  main:1.1 api/claude  [working]
-    %7  main:2.1 web/claude  [blocked]
+    p-k7q-2x9-z  %3  main:1.1 api  [working]
+    p-000-100-8  %7  main:2.1 web  [blocked]
 ```
 
 If you are going to PARSE the output, do not parse that text — it is for people
@@ -57,12 +57,10 @@ Fleet" docs page.
 
 ## Targets are stable ids
 
-`spawn`, `split`, `view`, and `whoami` each print a stable id (e.g. `%7`) for the
-thing they just created or for you — capture it in a variable and use it for
-every later command. Ids don't drift if windows get renamed or reordered.
-Friendly `session:index` forms (e.g. `main:2`) or window names still work
-too — handy when a human is typing the target — but prefer the captured id in
-scripts.
+`whoami` prints your stable address. `status` lists the stable addresses of
+the other panes. Use them across restores, renames and reordering. `spawn`,
+`split` and `view` print a tmux number such as `%7` for immediate use. Window
+names and `session:window.pane` also work.
 
 State is per-pane. A pane opened with `roost split` is a real agent: it has its
 own badge, appears in the switcher, and is addressable by its `%N` for `send`,
@@ -99,13 +97,12 @@ not report to roost: its pane shows no badge, and `roost wait-done` and
 ## Message an agent
 
 `roost send TARGET "text"` pastes the text, submits it, and then waits briefly
-for the target to actually BEGIN a turn. Pass `--from "$me"` (your own `%N`,
-from `roost whoami`; it is kept as `pane:%N`, the spelling the default uses) so
-the record says who sent it: it is kept beside the turn and `roost read --json`
-shows it as `sent_by`. It is NOT put into the text, so
-keep the `[from $me]` prefix at the front of the prompt as well (as above) —
-that is what lets the receiver reply to you, and it stays until roost adds an
-envelope. The label is one word of at most 64 bytes, or `send` refuses it with
+for the target to actually BEGIN a turn. The record keeps the sender's
+stable address as `pane:ID`, shown as `sent_by` by `roost read --json`.
+You can pass it explicitly with `--from "$me"`. Roost adds `[from $me]` when
+the recipient already has an agent badge. Include that prefix yourself on
+a first prompt to an unbadged agent (as above). An explicit sender label
+must be one word of at most 64 bytes. `send` refuses invalid labels with
 exit 2 before pasting anything.
 
 On an agent that was idle or finished, `send` prints one line on stdout — **the

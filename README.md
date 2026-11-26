@@ -279,6 +279,11 @@ Everything below is for people working **on** roost.
 
 ## Repo layout
 
+Pane commands resolve stable addresses through `scripts/lib/roost-pane-id.sh`.
+The resolver translates to the selected server's tmux pane number before a
+verb acts. See the [addressing guide](https://roosting.dev/docs/driving-a-fleet#pane-addresses)
+for the forms people can pass.
+
 ```
 bin/roost                   # launcher / CLI (up, session, new, spawn, split, view,
                             #   whoami, ssh, send, read, screen, reply, wait-done,

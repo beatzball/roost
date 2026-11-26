@@ -470,7 +470,15 @@ it, attached or not; this was measured, and roost starts its server the
 ordinary way. Other terminal apps, and newer macOS versions, have not been
 checked.
 
-## Addressing a pane after a restore: `was:%N`
+## Addressing a pane after a restore
+
+`roost save` stores each pane's stable ID with the pane. After restore you
+can use the same address, for example `roost send p-k7q-2x9-z "carry on"`.
+Panes from older saves get new IDs. `roost status` lists the IDs after
+restore. Roost keeps a list of issued IDs in `pane-ids/` next to the shapes
+directory under `$XDG_STATE_HOME/roost` (normally `~/.local/state/roost`).
+
+### Old tmux numbers and `was:%N`
 
 Pane ids start again at `%0` every time the roost server starts, so after a
 reboot the pane that was `%930` has a new id, and **an old id like `%1`
@@ -501,9 +509,9 @@ is missing. A pane's own `@roost-was`, a dead pane, or a restored pane that
 has gone does not make the target ambiguous.
 
 `roost status` ends a restored pane's line with `(was %930)`, and
-`roost status --json` has `was` for every pane (`null` when it was not
-restored). A resumed Claude Code is told both ids when it starts: "This pane
-is %34 (it was %930 before a restore)".
+`roost status --json` includes the previous tmux number in `was`. A resumed
+agent's session context starts with its stable address and includes its
+current and previous tmux numbers.
 
 ### Pick a save, or part of one
 
@@ -512,7 +520,7 @@ is %34 (it was %930 before a restore)".
 - `roost restore --from FILE` restores a copy, from anywhere. A file saved on
   another machine says so in one line, then restores. It places the panes; it
   cannot bring back conversations whose harness store is not on this machine.
-- `--only NAME`, `--only NAME:WINDOW` or `--only %N` (a pane id from the save)
+- `--only NAME`, `--only NAME:WINDOW` or `--only ID` (a stable ID or `%N` from the save)
   restores just that, and can be given more than once.
 
 ## Revive one conversation
