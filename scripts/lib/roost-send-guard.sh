@@ -41,12 +41,15 @@ roost_send_guard_query() {
 # put it into a command: only the validated token supplies command arguments.
 # The terminal action cannot pin the foreground process through the PTY write.
 roost_send_guard_action() {
-  local token="$1" pane="$2" action="${3:-}" stable_id="${4:-}" probe identity format claims rc=0
+  local token="$1" pane="$2" action="${3:-}" stable_id="${4:-}" stable_boot="${5:-}" probe identity format claims rc=0
   local RW_TARGET RW_OLD RW_OLDBOOT RW_STABLE_INPUT RW_STABLE_ID RW_STABLE_BOOT RW_STABLE_MISSING
   roost_send_guard_args "$token" "$pane" || return 7
   if [ -n "$stable_id" ]; then
+    case "$token" in "v1/$stable_boot/$pane/"*) ;; *) return 7 ;; esac
     roost_pane_id_parse "$stable_id" && [ "$ROOST_PANE_ID" = "$stable_id" ] || return 7
-    roost_pane_id_find t "$stable_id" && [ "$ROOST_PANE_ID_PANE" = "$pane" ] || return 7
+    roost_pane_id_find t "$stable_id" && [ "$ROOST_PANE_ID_PANE" = "$pane" ] &&
+      [ "$ROOST_PANE_ID_BOOT" = "$stable_boot" ] || return 7
+    RW_TARGET="$pane" RW_STABLE_BOOT="$stable_boot"
   else
     resolve_was send "$pane" 1 || return 7
   fi

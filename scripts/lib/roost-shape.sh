@@ -263,7 +263,8 @@ roost_shape__agree_pane_set() {
 # every run from a roost pane.)
 roost_shape__t() { tmux -u "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$@"; }
 
-# roost_shape__read_rules -> sets ROOST_SHAPE_DOLLAR and ROOST_SHAPE_OCTAL.
+# roost_shape__read_rules [PANE CONDITION] -> sets ROOST_SHAPE_DOLLAR and
+# ROOST_SHAPE_OCTAL.
 #
 # What this server does to a value when it PRINTS it, learned once per run,
 # before the listings (rulings R6 and R8.2, probe 1.3,
@@ -278,15 +279,26 @@ roost_shape__t() { tmux -u "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" "$@"; }
 # So: set one pane option to a known value holding both, read it back, unset
 # it, all in one tmux command. No -t: the current pane of whichever session
 # tmux picks, which is fine, because any pane answers the question and the
-# option is gone before the command returns. Measured on 3.2a, 3.4 and 3.6:
+# option is gone before the command returns. On a pinned path use the same
+# conditional queue for the probe, so it cannot write on a replacement
+# server. Measured on 3.2a, 3.4 and 3.6:
 # the target-less form works on a detached server and leaves no pane with the
 # option.
 roost_shape__read_rules() {
-  local out esc
+  local out esc target="" command
   esc="$(printf '\033')"
   ROOST_SHAPE_DOLLAR=0 ROOST_SHAPE_OCTAL=0
-  out="$(roost_shape__t set-option -p @roost-shape-probe "a\$b${esc}c" ';' \
-    show-options -pv @roost-shape-probe ';' set-option -pu @roost-shape-probe 2>/dev/null)" || return 1
+  if [ -n "${2:-}" ]; then
+    if [ -n "$1" ]; then target=" -t $1"; fi
+    command="set-option -p$target @roost-shape-probe 'a\$b${esc}c' ; show-options -pv$target @roost-shape-probe ; set-option -pu$target @roost-shape-probe"
+    local -a scope=()
+    if [ -n "$1" ]; then scope=(-t "$1"); fi
+    out="$(roost_shape__t if-shell -F ${scope[@]+"${scope[@]}"} "$2" "$command" '' 2>/dev/null)" || return 1
+    [ -n "$out" ] || return 1
+  else
+    out="$(roost_shape__t set-option -p @roost-shape-probe "a\$b${esc}c" ';' \
+      show-options -pv @roost-shape-probe ';' set-option -pu @roost-shape-probe 2>/dev/null)" || return 1
+  fi
   case "$out" in *'\$'*) ROOST_SHAPE_DOLLAR=1 ;; esac
   case "$out" in *'\033'*) ROOST_SHAPE_OCTAL=1 ;; esac
   return 0
@@ -847,7 +859,11 @@ roost_shape__build() {
   local info r=0 bodyf
   info="$(roost_shape__t display-message -p '#{start_time}-#{pid} #{version} #{socket_path}' 2>/dev/null)" || r=$?
   [ -n "$info" ] || { [ "$r" = 0 ] && r=1; return "$r"; }
-  roost_shape__read_rules || return 1
+  if [ -n "${ROOST_SHAPE_EXPECT:-}" ]; then
+    roost_shape__read_rules '' "#{==:#{start_time}-#{pid},$ROOST_SHAPE_EXPECT}" || return 1
+  else
+    roost_shape__read_rules || return 1
+  fi
   roost_shape__list || return 1
   ROOST_SHAPE_BOOT="${info%% *}"; info="${info#* }"; ROOST_SHAPE_VER="${info%% *}"; ROOST_SHAPE_SPATH="${info#* }"
   roost_shape__clean "$ROOST_SHAPE_SPATH" octal && ROOST_SHAPE_SPATH="$ROOST_SHAPE_V" || ROOST_SHAPE_SPATH="-"
@@ -1273,6 +1289,12 @@ roost_shape__round() {
   # `shape` is worth more than a partial one.
   roost_shape__build || r=$?
   if [ "$r" != 0 ]; then
+    if [ -n "${ROOST_SHAPE_EXPECT:-}" ]; then
+      boot="$(roost_shape__t display-message -p '#{start_time}-#{pid}' 2>/dev/null || true)"
+      if [ "$boot" != "$ROOST_SHAPE_EXPECT" ] && { [ -n "$boot" ] || [ "${ROOST_SHAPE_HOOKONLY:-0}" = 1 ]; }; then
+        ROOST_SHAPE_LAST=lost; return 1
+      fi
+    fi
     printf 'roost save: could not list the tmux server on %s %s; nothing written\n' "$ROOST_SHAPE_TFLAG" "$ROOST_SHAPE_TSOCK" >&2
     roost_shape__err "$dir" list "$r"
     return 1

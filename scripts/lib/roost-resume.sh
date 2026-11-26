@@ -553,6 +553,14 @@ roost_resume__listing_line() {
 
 roost_resume__t() { tmux -u "$ROOST_RESUME_TFLAG" "$ROOST_RESUME_TSOCK" "$@"; }
 
+roost_resume__read() {
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    roost_tmux_bound roost_resume__t "$RW_TARGET" "$(roost_target_condition 1)" "$@"
+  else
+    roost_resume__t "$@"
+  fi
+}
+
 # Act on a window this revive opened only on its original server boot.
 roost_resume__new_action() {
   local pane="$1" boot="$2" action="$3"
@@ -842,7 +850,7 @@ roost_resume_release() {
 # `\$` undone on a server that prints it, and a control byte refused.
 roost_resume__opt() {
   local v
-  v="$(roost_resume__t show-options -pqv -t "$1" "$2" 2>/dev/null; printf .)"
+  v="$(roost_resume__read show-options -pqv -t "$1" "$2" 2>/dev/null; printf .)"
   v="${v%.}"; v="${v%$'\n'}"
   ROOST_RESUME_V=""
   roost_shape__clean "$v" octal || return 1
@@ -852,7 +860,9 @@ roost_resume__opt() {
 # roost_resume__fmt PANE FORMAT -> ROOST_RESUME_V, a pane format (not an
 # option), cleaned the same way.
 roost_resume__fmt() {
-  roost_shape__d "$1" "$2"
+  ROOST_SHAPE_D="$(roost_resume__read display-message -p -t "$1" "$2" 2>/dev/null; printf .)"
+  ROOST_SHAPE_D="${ROOST_SHAPE_D%.}"
+  ROOST_SHAPE_D="${ROOST_SHAPE_D%$'\n'}"
   ROOST_RESUME_V=""
   roost_shape__clean "$ROOST_SHAPE_D" octal || return 1
   ROOST_RESUME_V="$ROOST_SHAPE_V"
@@ -863,7 +873,7 @@ roost_resume__fmt() {
 # answers display-message for a gone pane with exit 0 and every format empty.
 roost_resume__row() {
   local all r
-  all="$(roost_resume__t list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
+  all="$(roost_resume__read list-panes -a -F '#{pane_id}' 2>/dev/null)" || return 1
   while IFS= read -r r; do [ "$r" = "$1" ] && return 0; done <<< "$all"
   return 1
 }
@@ -878,7 +888,7 @@ roost_resume__row() {
 roost_resume__dup() {
   local all p v
   ROOST_RESUME_HOLDER=""
-  all="$(roost_resume__t list-panes -a -F '#{pane_id} #{@roost-session}' 2>/dev/null)" || return 1
+  all="$(roost_resume__read list-panes -a -F '#{pane_id} #{@roost-session}' 2>/dev/null)" || return 1
   while read -r p v; do
     [ "$v" = "$2" ] || continue
     [ "$p" = "$1" ] && continue
@@ -923,7 +933,7 @@ roost_resume__record_get() {
 roost_resume__home_session() {
   local s cpid
   s="${1:-}"
-  if [ -n "$s" ] && roost_resume__t has-session -t "=$s" 2>/dev/null; then printf '%s\n' "$s"; return 0; fi
+  if [ -n "$s" ] && roost_resume__read has-session -t "=$s" 2>/dev/null; then printf '%s\n' "$s"; return 0; fi
   # The caller's pane counts only when the caller IS a pane of this server:
   # $TMUX's pid is this server's and $TMUX_PANE is a pane it has — the two
   # checks `reply` and `send --from` make before they trust $TMUX_PANE. The
@@ -933,14 +943,14 @@ roost_resume__home_session() {
     %[0-9]*)
       if [ -n "${TMUX:-}" ]; then
         cpid="${TMUX#*,}"; cpid="${cpid%%,*}"
-        s="$(roost_resume__t display -p -t "$TMUX_PANE" '#{pid} #{pane_id} #{session_name}' 2>/dev/null || true)"
+        s="$(roost_resume__read display -p -t "$TMUX_PANE" '#{pid} #{pane_id} #{session_name}' 2>/dev/null || true)"
         case "$s" in
           "$cpid $TMUX_PANE "?*) printf '%s\n' "${s#"$cpid $TMUX_PANE "}"; return 0 ;;
         esac
       fi ;;
   esac
-  if roost_resume__t has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s\n' "${DEFAULT_SESSION:-main}"; return 0; fi
-  roost_resume__t list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
+  if roost_resume__read has-session -t "=${DEFAULT_SESSION:-main}" 2>/dev/null; then printf '%s\n' "${DEFAULT_SESSION:-main}"; return 0; fi
+  roost_resume__read list-sessions -F '#{session_name}' 2>/dev/null | head -n 1
 }
 
 # roost_resume__pend_back — T8 for `revive` (§4.7): a refusal after this run
@@ -1013,7 +1023,10 @@ roost_revive() {
   ROOST_RESUME_XF=""
   local -a argv clear
   ROOST_SHAPE_TFLAG="$ROOST_RESUME_TFLAG" ROOST_SHAPE_TSOCK="$ROOST_RESUME_TSOCK"
-  if ! roost_shape__read_rules; then
+  local -a read_rules=()
+  if [ -n "$RW_STABLE_ID" ]; then read_rules=("$RW_TARGET" "$(roost_target_condition 1)"); fi
+  if ! roost_shape__read_rules ${read_rules[@]+"${read_rules[@]}"}; then
+    roost_target_require revive
     echo "roost revive: no roost server is running" >&2; return 1
   fi
   # Step 1: one pane. A window with more than one pane is refused, `close`'s
@@ -1124,7 +1137,7 @@ roost_revive() {
     roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
     roost_resume__fmt "$pane" '#{pane_dead}'; dead="$ROOST_RESUME_V"
     roost_resume__opt "$pane" @roost-name; rname="$ROOST_RESUME_V"
-    rsess="$(roost_resume__t display -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+    rsess="$(roost_resume__read display -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
     # A DEAD pane with no key (review round 2, Fable N1). A revive clears the
     # pane's identity before its respawn, so when that resume exits non-zero
     # the dead pane it leaves has no key, and §4.1 step 7's "the next revive
@@ -1338,7 +1351,7 @@ roost_revive() {
     roost_resume__fmt "$pane" '#{pane_pid}'; ppid="$ROOST_RESUME_V"
     case "$ROOST_RESUME_PST" in
       waiting|failed-waiting)
-        o="$(roost_resume__t display -p -t "$pane" '#{pane_start_command}' 2>/dev/null || true)"
+        o="$(roost_resume__read display -p -t "$pane" '#{pane_start_command}' 2>/dev/null || true)"
         if [ "$dead" != 0 ] || ! roost_pending__is_placeholder "$o" "$ROOST_RESUME_PL" "$h"; then
           roost_resume__pend_changed "$claim"
           echo "roost revive: '$raw' no longer runs its placeholder — someone replaced it; nothing resumed" >&2
@@ -1441,6 +1454,7 @@ roost_revive() {
     fi
     if [ -z "$new" ]; then
       roost_resume_release "$claim"
+      roost_target_require revive
       echo "roost revive: tmux could not open a window for '$raw'" >&2
       return 1
     fi

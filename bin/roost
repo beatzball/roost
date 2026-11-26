@@ -387,7 +387,7 @@ server_init() {
 # roost starts in a pane has to be run through roost-pane-shell. Kept separate
 # from the `set --` that uses it because `set --` inside a function would
 # change only the function's own arguments.
-pane_cmd_wired() { [ "$(t show-options -gqv @roost-wiring-active 2>/dev/null || true)" = on ]; }
+pane_cmd_wired() { [ "$(roost_target_tmux show-options -gqv @roost-wiring-active 2>/dev/null || true)" = on ]; }
 
 attach_session() { ensure_session "$1"; exec tmux "$_SOCKET_FLAG" "$SOCKET" attach -t "=$1"; }
 
@@ -623,8 +623,7 @@ resolve_tmux_targets() {
           i=$((OPTIND - 2)); word="${ROOST_TMUX_ARGS[i]}"
           ROOST_TMUX_ARGS[i]="${word%"$OPTARG"}$RW_TARGET"
         else
-          RW_STABLE_INPUT="" RW_STABLE_ID="" RW_STABLE_BOOT=""
-          case "$OPTARG" in %*) resolve_was "$verb" "$OPTARG" || return 1 ;; esac
+          case "$OPTARG" in %*) (resolve_was "$verb" "$OPTARG") || return 1 ;; esac
         fi ;;
       '?'|':') break ;;
     esac
@@ -797,28 +796,41 @@ roost_sq() {
 # Pass native tmux arguments through one conditional command queue. Put
 # the marker before the command so a caller's -F output stays opaque.
 roost_tmux_bound() {
-  local pane="$1" condition="$2" command="$3" arg result
-  shift 3
+  local tmux_call="$1" pane="$2" condition="$3" command="$4" arg result
+  shift 4
   for arg in "$@"; do command="$command $(roost_sq "$arg")"; done
-  result="$(t if-shell -F -t "$pane" "$condition" \
-    "display-message -p bound ; $command" 'display-message -p refused')" || return 1
+  result="$("$tmux_call" if-shell -F -t "$pane" "$condition" \
+    "display-message -p bound ; $command" 'display-message -p refused' && printf .)" || return 1
+  result="${result%.}"
   case "$result" in
-    bound) return 0 ;;
-    bound$'\n'*) printf '%s\n' "${result#*$'\n'}" ;;
-    refused) return 2 ;;
+    bound$'\n'*) printf '%s' "${result#*$'\n'}" ;;
+    refused$'\n') return 2 ;;
     *) return 1 ;;
   esac
+}
+
+# Keep a command and its identity check together after a stable lookup.
+roost_target_tmux() {
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    roost_tmux_bound t "$RW_TARGET" "$(roost_target_condition 1)" "$@"
+  else
+    t "$@"
+  fi
+}
+
+roost_placement_check_view() {
+  if [ -n "${ROOST_VIEW_TARGET:-}" ] && \
+    [ "${RW_STABLE_BOOT:-}/${RW_TARGET:-}/${RW_STABLE_ID:-}" != "$ROOST_VIEW_TARGET" ]; then
+    echo "roost $1: the view's stable target no longer names the resolved pane" >&2
+    return 2
+  fi
 }
 
 roost_placement_create() {
   local verb="$1" rc=0
   shift
-  if [ -n "${ROOST_VIEW_TARGET_BOOT:-}" ] && [ "${RW_STABLE_BOOT:-}" != "$ROOST_VIEW_TARGET_BOOT" ]; then
-    echo "roost $verb: the view's stable target was resolved on another boot" >&2
-    return 2
-  fi
-  if [ -z "${RW_STABLE_BOOT:-}" ]; then t "$@"; return; fi
-  roost_tmux_bound "$RW_TARGET" "$(roost_target_condition 1)" "$@" || rc=$?
+  if [ -z "${RW_STABLE_ID:-}" ]; then t "$@"; return; fi
+  roost_target_tmux "$@" || rc=$?
   if [ "$rc" = 2 ]; then roost_target_lost "$verb"; fi
   return "$rc"
 }
@@ -828,7 +840,7 @@ roost_placement_option() {
   if [ -z "${RW_STABLE_BOOT:-}" ]; then
     t set-option -p -t "$@"
   else
-    roost_tmux_bound "$pane" "$(roost_target_boot_condition "$RW_STABLE_BOOT" "$pane")" set-option -p -t "$@"
+    roost_tmux_bound t "$pane" "$(roost_target_boot_condition "$RW_STABLE_BOOT" "$pane")" set-option -p -t "$@"
   fi
 }
 
@@ -1556,9 +1568,10 @@ case "${1:-up}" in
     need_arg "${2:-}" "usage: roost spawn NAME [CMD...]"; name="$2"; shift 2
     reject_bad_name "$name" spawn
     resolve_tmux_targets spawn 'abdkPSc:e:F:n:t:' "$@" || exit 2
+    roost_placement_check_view spawn || exit 2
     # Helper lands in the caller's own session when inside roost, else the default.
     if [ -n "${TMUX_PANE:-}" ]; then
-      sess="$(t display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
+      sess="$(roost_target_tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null || echo "$DEFAULT_SESSION")"
     else
       sess="$DEFAULT_SESSION"
     fi
@@ -1618,6 +1631,7 @@ case "${1:-up}" in
       resolve_was split "$from" || exit 2; from="$RW_TARGET"
     fi
     resolve_tmux_targets split 'bdfhIvPZc:e:F:l:p:t:' "$@" || exit 2
+    roost_placement_check_view split || exit 2
     # Background helper pane in FROM's window; -d = no focus steal; prints its %N.
     # A command on a wired server goes through roost-pane-shell, for the reason
     # given at the same line in `spawn`.
@@ -1694,7 +1708,9 @@ case "${1:-up}" in
     # this command would then use both as a width source and as the one pane
     # the kill below spares. Resolve it on the roost socket first, the same
     # question `roost whoami` asks.
-    me="$(t display-message -p -t "$me" '#{pane_id}' 2>/dev/null || true)"
+    roost_target_require view
+    me="$(roost_target_tmux display-message -p -t "$me" '#{pane_id}' 2>/dev/null || true)"
+    [ -n "$me" ] || roost_target_require view
     [ -n "$me" ] || { echo "roost view: not inside a roost session" >&2; exit 1; }
 
     # Replace, don't stack. Only panes roost itself named, and never this pane.
@@ -1705,7 +1721,6 @@ case "${1:-up}" in
     # `read -r p pname` puts the REST of the line in pname, so a name
     # containing spaces ("code reviewer") still compares whole. A tab or a
     # newline cannot get this far — reject_bad_name refuses both above.
-    roost_target_require view
     while read -r p pname; do
       [ "$pname" = "$name" ] || continue
       [ "$p" = "$me" ] && continue
@@ -1714,7 +1729,7 @@ case "${1:-up}" in
       else
         t kill-pane -t "$p" 2>/dev/null || true
       fi
-    done < <(t list-panes -a -F '#{pane_id} #{@roost-name}' 2>/dev/null || true)
+    done < <(roost_target_tmux list-panes -a -F '#{pane_id} #{@roost-name}' 2>/dev/null || true)
 
     # Measured AFTER that kill, never before. A leftover view is still holding
     # half the columns at this point, so reading the width first makes every
@@ -1722,7 +1737,7 @@ case "${1:-up}" in
     # the view then walks off into a window when it should have shared. This
     # was a real bug in the script this command replaces; the ORDER here is
     # the fix, so do not hoist the measurement above the loop.
-    width="$(t display-message -p -t "$me" '#{pane_width}' 2>/dev/null || true)"
+    width="$(roost_target_tmux display-message -p -t "$me" '#{pane_width}' 2>/dev/null || true)"
     case "$width" in ''|*[!0-9]*) width=0 ;; esac
 
     # 180 columns, so both halves of the split still clear 80 — the width most
@@ -1743,17 +1758,20 @@ case "${1:-up}" in
     # this process did. A child inheriting nothing would fall through to the
     # production `-L roost` server — the exact failure the socket comment at
     # the top of this file describes — and this keeps the promise that no call
-    # site spells a socket flag of its own.
+    # site spells a socket flag of its own. Carry the resolved pane through
+    # re-entry too, so a stable ID that moved cannot redirect the placement.
+    view_target=""
+    if [ -n "${RW_STABLE_ID:-}" ]; then view_target="$RW_STABLE_BOOT/$RW_TARGET/$RW_STABLE_ID"; fi
     if [ "$width" -ge "$min" ]; then
       # This is the caller we already identified, not a literal user target.
       # Pass its current address so split's bare-id guard cannot confuse a
       # known caller with another pane's pre-restore id.
-      view_from="$(t display-message -p -t "$me" '#{session_id}:#{window_id}.#{pane_index}')"
-      new="$(ROOST_SOCKET="$SOCKET" ROOST_VIEW_TARGET_BOOT="${RW_STABLE_BOOT:-}" "$ROOST_HOME/bin/roost" split -h -t "$view_from" -n "$name" "$@")" \
+      view_from="$(roost_target_tmux display-message -p -t "$me" '#{session_id}:#{window_id}.#{pane_index}')"
+      new="$(ROOST_SOCKET="$SOCKET" ROOST_VIEW_TARGET="$view_target" "$ROOST_HOME/bin/roost" split -h -t "$view_from" -n "$name" "$@")" \
         || { echo "roost view: split failed" >&2; exit 1; }
       where=pane
     else
-      new="$(ROOST_SOCKET="$SOCKET" ROOST_VIEW_TARGET_BOOT="${RW_STABLE_BOOT:-}" "$ROOST_HOME/bin/roost" spawn "$name" "$@")" \
+      new="$(ROOST_SOCKET="$SOCKET" ROOST_VIEW_TARGET="$view_target" "$ROOST_HOME/bin/roost" spawn "$name" "$@")" \
         || { echo "roost view: spawn failed" >&2; exit 1; }
       where=window
     fi
@@ -2001,8 +2019,8 @@ JSON
       raw="$3"
       if roost_pane_id_target "$raw"; then resolve_was send "$raw" || exit 2; raw="$RW_TARGET"; fi
       send_guard_pane "$raw" || send_guard_stop
-      guard_token="$(t display-message -p -t "$raw" "$ROOST_SEND_GUARD_FORMAT" 2>/dev/null)" || send_guard_stop
-      roost_send_guard_action "$guard_token" "$raw" "" "${RW_STABLE_ID:-}" || send_guard_stop
+      guard_token="$(roost_target_tmux display-message -p -t "$raw" "$ROOST_SEND_GUARD_FORMAT" 2>/dev/null)" || send_guard_stop
+      roost_send_guard_action "$guard_token" "$raw" "" "$RW_STABLE_ID" "$RW_STABLE_BOOT" || send_guard_stop
       printf '%s\n' "$guard_token"
       exit 0
     fi
@@ -2126,7 +2144,7 @@ JSON
       # A signal while a terminal action is in flight can leave its outcome
       # unknown. In that case the EXIT trap must leave the terminal alone.
       if [ -n "$action" ]; then send_inflight=1; fi
-      roost_send_guard_action "$guard_token" "$tgt" "$action" "${RW_STABLE_ID:-}" || rc=$?
+      roost_send_guard_action "$guard_token" "$tgt" "$action" "$RW_STABLE_ID" "$RW_STABLE_BOOT" || rc=$?
       # 8 from the guard means the queue acknowledged the action, but the
       # follow-up identity probe could no longer confirm the recipient.
       if [ "$rc" = 0 ] || [ "$rc" = 8 ]; then
@@ -2230,7 +2248,7 @@ JSON
     # because it can never hold a space and the socket path can, so the
     # first-space split is the one that is safe.
     . "$ROOST_HOME/scripts/lib/roost-panelock.sh"
-    lock_info="$(t display-message -p -t "$tgt" '#{pane_id} #{socket_path}' 2>/dev/null || true)"
+    lock_info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{socket_path}' 2>/dev/null || true)"
     lock_pane="${lock_info%% *}"
     lock_sock="${lock_info#* }"
     # Cleanup on EVERY way out of this command, not just the happy one: the
@@ -2264,12 +2282,21 @@ JSON
           tmux -S "$lock_sock" if-shell -F -t "$tgt" "$(roost_target_boot_condition "$RW_STABLE_BOOT" "$tgt")" \
             "send-keys -t $tgt C-u" '' 2>/dev/null || true
         elif [ "$guard_given" = 1 ]; then
-          roost_send_guard_action "$guard_token" "$tgt" "send-keys -t $tgt C-u" "${RW_STABLE_ID:-}" 2>/dev/null || true
+          roost_send_guard_action "$guard_token" "$tgt" "send-keys -t $tgt C-u" 2>/dev/null || true
         else
           send_key C-u
         fi
       fi
-      [ -n "${ROOST_SEND_BUF:-}" ] && t delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true
+      if [ -n "${ROOST_SEND_BUF:-}" ]; then
+        if [ -n "$RW_STABLE_ID" ]; then
+          # The buffer is server-wide and still needs deleting if this pane
+          # closed. Only the original boot can hold this send's buffer.
+          tmux -S "$lock_sock" if-shell -F "#{==:#{start_time}-#{pid},$RW_STABLE_BOOT}" \
+            "delete-buffer -b $ROOST_SEND_BUF" '' 2>/dev/null || true
+        else
+          t delete-buffer -b "$ROOST_SEND_BUF" 2>/dev/null || true
+        fi
+      fi
       roost_panelock_drop
       return 0
     }
@@ -2293,7 +2320,7 @@ JSON
     # check and never saw this.
     # The clamp and the zero strip live in roost_panelock_timeout, shared with
     # `answer` (#181), so the two verbs cannot read one knob two ways.
-    lock_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
+    lock_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
 
     # HOLD UNTIL NOT WORKING (--when-idle, #56). A plain send pastes at once,
     # and into a `working` pane the text queues in the harness's input line
@@ -2344,7 +2371,7 @@ JSON
     # took and however the clock's second boundaries fell.
     idle_waited=0
     if [ "$when_idle" -eq 1 ] && [ -n "$lock_pane" ]; then
-      idle_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
+      idle_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
       idle_deadline=$(( $(date +%s) + idle_timeout ))
     fi
     send_idle_timeout() {
@@ -2364,7 +2391,7 @@ JSON
       local info rest now held_from=""
       while :; do
         send_guard_require
-        info="$(t display-message -p -t "$lock_pane" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+        info="$(roost_target_tmux display-message -p -t "$lock_pane" '#{pane_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
         rest="${info#* }"
         if [ -z "${info%% *}" ] || [ "${rest%% *}" = 1 ] || [ "${rest#* }" != working ]; then
           [ -z "$held_from" ] || idle_waited=$(( idle_waited + $(date +%s) - held_from ))
@@ -2406,7 +2433,7 @@ JSON
       # flag. A dead pane passes, so the dead-pane exit 2 below is what the
       # caller sees.
       if [ "$when_idle" -eq 1 ] && [ "$lock_rc" = 0 ] \
-         && [ "$(t display-message -p -t "$lock_pane" '#{pane_dead} #{@agent_state}' 2>/dev/null || true)" = "0 working" ]; then
+         && [ "$(roost_target_tmux display-message -p -t "$lock_pane" '#{pane_dead} #{@agent_state}' 2>/dev/null || true)" = "0 working" ]; then
         roost_panelock_drop
         # NOT straight back to the poll (fix loop 1, found by review,
         # reproduced with a bound of 0): the poll returns as soon as it reads
@@ -2492,13 +2519,14 @@ JSON
     # last on purpose: it is the only field that can be EMPTY (an agent that
     # has never reported), and a trailing empty field survives this split
     # while a middle one would not.
-    info="$(t display-message -p -t "$tgt" '#{window_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
+    info="$(roost_target_tmux display-message -p -t "$tgt" '#{window_id} #{pane_dead} #{@agent_state}' 2>/dev/null || true)"
     wid="${info%% *}"
     rest="${info#* }"
     dead="${rest%% *}"
     state="${rest#* }"
     if [ -z "$wid" ]; then
       if [ "$guard_given" = 1 ]; then send_guard_stop; fi
+      roost_target_require send
       echo "roost send: no such target '$raw'" >&2; exit 2
     fi
     # A pane roost may still replace (#191 Part 3, spec §4.7's `roost send`
@@ -2512,7 +2540,7 @@ JSON
     # pane is the one send-keys will type into: a window target's active pane.
     . "$ROOST_HOME/scripts/lib/roost-resume.sh"
     . "$ROOST_HOME/scripts/lib/roost-pending.sh"
-    if [ "$guard_given" = 0 ] && ! roost_pending_refuse send "$raw" "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
+    if [ "$guard_given" = 0 ] && ! roost_pending_refuse send "$raw" "$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" "$force"; then
       exit 3
     fi
     # Same exit code as "no such target": a dead pane is unusable for exactly
@@ -2591,7 +2619,7 @@ JSON
             send_guard_require
           else
             roost_pending_refuse send "$raw" "$tgt" "$force" || exit 3
-            input_state="$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
+            input_state="$(roost_target_tmux display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)"
             if [ "$input_state" = blocked ] && ! roost_unblock_pane "$tgt"; then
               echo "roost send: target '$raw' is blocked — nothing was typed" >&2; exit 3
             fi
@@ -2613,7 +2641,7 @@ JSON
         [ "$input_state" = occupied ] || return 0
         input_refresh=1
         if [ -z "$input_deadline" ]; then
-          input_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
+          input_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-idle-timeout 2>/dev/null || true)" 300 3600)"
           input_deadline=$(( $(date +%s) + input_timeout ))
           echo "roost send: waiting for '$raw': input box contains text" >&2
         fi
@@ -2627,7 +2655,7 @@ JSON
     }
     # Two-step submit: literal text, a beat, then Enter. A single
     # `send-keys "$*" Enter` can drop or race the submit in a full-screen TUI.
-    delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null)"
+    delay="$(roost_target_tmux show-options -gqv @roost-send-enter-delay 2>/dev/null)"
     # Fall back to 0.3 for unset / non-numeric / multi-dot values, AND guard the
     # sleep itself, so NO value can ever abort after the text is pasted but before
     # Enter is sent (which would leave the prompt half-delivered in the input box).
@@ -2661,7 +2689,7 @@ JSON
         . "$ROOST_HOME/scripts/lib/roost-jsonout.sh"
         send_waited_fields
         roost_jsonout_emit send target s "${RW_STABLE_INPUT:-$raw}" \
-          pane z "$(t display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" \
+          pane z "$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id}' 2>/dev/null || true)" \
           turn i "" started b 0 \
           state z "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" \
           sent_by z "" \
@@ -2671,7 +2699,7 @@ JSON
       exit 0
     fi
 
-    retries="$(t show-options -gqv @roost-send-retries 2>/dev/null)"
+    retries="$(roost_target_tmux show-options -gqv @roost-send-retries 2>/dev/null)"
     case "$retries" in ''|*[!0-9]*) retries=3 ;; esac
     # A pathologically long digit string (thousands of chars) is clamped by
     # length BEFORE anything else touches it: `${#retries}` is an O(1) length
@@ -2776,7 +2804,7 @@ JSON
     sender_id=""
     if [ -n "${TMUX_PANE:-}" ] && [ -n "${TMUX:-}" ]; then
       caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
-      if [ "$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}' 2>/dev/null || true)" = "$caller_pid $TMUX_PANE" ]; then
+      if [ "$(roost_target_tmux display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}' 2>/dev/null || true)" = "$caller_pid $TMUX_PANE" ]; then
         if roost_pane_id_ensure t "$TMUX_PANE" "" "$RW_STABLE_BOOT"; then
           sender_id="$ROOST_PANE_ID"
           if [ "$ROOST_PANE_ID_NEW" = 1 ]; then
@@ -2799,7 +2827,7 @@ JSON
     # that lost the front quietly. Clamped by LENGTH first, then by value, the
     # same way @roost-send-retries is above and for the same reason — a
     # pathological digit string must not make the arithmetic itself slow.
-    ready_timeout="$(t show-options -gqv @roost-send-ready-timeout 2>/dev/null)"
+    ready_timeout="$(roost_target_tmux show-options -gqv @roost-send-ready-timeout 2>/dev/null)"
     case "$ready_timeout" in ''|*[!0-9]*) ready_timeout=15 ;; esac
     [ "${#ready_timeout}" -gt 6 ] && ready_timeout=120
     [ "$ready_timeout" -gt 120 ] 2>/dev/null && ready_timeout=120 || true
@@ -2820,7 +2848,7 @@ JSON
     # behaviour, while trusting it would hand back a false success, which is
     # the exact failure being removed.
     send_delivery_baseline() {
-      pre="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+      pre="$(roost_target_tmux capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
       verifiable=1
       [ -z "$head" ] && verifiable=0
       case "$pre" in *"$head"*) verifiable=0 ;; esac
@@ -2883,7 +2911,7 @@ JSON
 
     screen_has_head() {
       local now
-      now="$(t capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
+      now="$(roost_target_tmux capture-pane -p -t "$tgt" 2>/dev/null | tr -d '[:space:]' || true)"
       case "$now" in
         *"$head"*) return 0 ;;
       esac
@@ -2932,7 +2960,8 @@ JSON
     type_message() {
       local rc had_paste
       local -a paste=(paste-buffer -p -d -b "$ROOST_SEND_BUF" -t "$tgt")
-      senderr="$(printf '%s' "$msg" | t load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
+      senderr="$(printf '%s' "$msg" | roost_target_tmux load-buffer -b "$ROOST_SEND_BUF" - 2>&1 >/dev/null)"; rc=$?
+      if [ "$rc" = 2 ] && [ -n "$RW_STABLE_ID" ]; then send_target_lost; fi
       [ "$rc" -eq 0 ] || return "$rc"
       if [ "$guard_given" = 1 ]; then
         send_guard_require "${paste[*]}" paste
@@ -3043,7 +3072,7 @@ JSON
       # release has reserved and not yet filed. It is digits or empty, and an
       # empty middle field keeps its place, as the measurement below shows for
       # @agent_since.
-      turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{@roost-turn-reserved} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+      turn_info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{@roost-turn-reserved} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
       turn_pane="${turn_info%% *}"
       turn_rest="${turn_info#* }"
       turn_reserved="${turn_rest%% *}"
@@ -3059,7 +3088,7 @@ JSON
       # gives: a format lookup falls back pane -> window -> global, and a stray
       # outer-scope value would then be compared as if it were this pane's.
       if [ "$turn_watch" = 1 ]; then
-        turn_reply="$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+        turn_reply="$(roost_target_tmux show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
       fi
       # $turn_have_base, and not merely "$turn_base is 0": with recording off
       # there is no numbering at all, and base+1 would name a turn that will never
@@ -3249,7 +3278,7 @@ JSON
       fi
     fi
     sleep "$delay" 2>/dev/null || true
-    before="$(t capture-pane -p -t "$tgt" 2>/dev/null || true)"
+    before="$(roost_target_tmux capture-pane -p -t "$tgt" 2>/dev/null || true)"
     # Same call shape as the #{window_id} #{pane_dead} fetch above, and the
     # same reasoning applies to the separator: #{cursor_x} and #{cursor_y}
     # are always plain digits, so a plain space can never appear inside
@@ -3258,7 +3287,7 @@ JSON
     # against a later snapshot taken the same way — so there is nothing here
     # for a wrong separator to silently break; the space is kept anyway for
     # consistency and so the raw string is readable if ever logged.
-    cursor_before="$(t display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
+    cursor_before="$(roost_target_tmux display-message -p -t "$tgt" '#{cursor_x} #{cursor_y}' 2>/dev/null || true)"
     # The point of no return. Same check as before each C-u above, for the
     # same reason: an Enter on a box another sender is typing into submits
     # THEIR half-typed text. Nothing has been submitted when this fires.
@@ -3381,7 +3410,7 @@ JSON
         #   state only    `%0 0  done`        -> since [] state [done]
         #   both          `%0 0 1790000000 done`
         #   since only    `%0 0 1790000000 `  -> state []
-        turn_info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
+        turn_info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{pane_dead} #{@agent_since} #{@agent_state}' 2>/dev/null || true)"
         if ! roost_target_matches; then turn_gone=1; break; fi
         turn_pid="${turn_info%% *}"
         turn_rest="${turn_info#* }"
@@ -3453,7 +3482,9 @@ JSON
         #    than the only one: 1 catches any turn slower than a poll, 2 catches
         #    any turn at all when records are on, 3 catches any stamp inside the
         #    same second. All four have to miss at once to reach exit 4.
-        if [ "$turn_reply" != "$(t show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)" ]; then
+        now_reply="$(roost_target_tmux show-options -p -t "$tgt" -qv @roost-reply 2>/dev/null || true)"
+        if ! roost_target_matches; then turn_gone=1; break; fi
+        if [ "$turn_reply" != "$now_reply" ]; then
           turn_started=1; break
         fi
         sleep 0.25 2>/dev/null || true
@@ -3711,7 +3742,7 @@ JSON
     pane="" dead=""
     case "$tgt" in
       %*)
-        info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
+        info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
         pane="${info%% *}"; dead="${info#* }"
         case "$pane" in %[0-9]*) ;; *) pane="" ;; esac ;;
       *)
@@ -3731,12 +3762,13 @@ EOF
         # No blocked pane: the window's active one, so the refusal below can
         # say what it reads.
         if [ "$nb" -eq 0 ] && [ -n "$rows" ]; then
-          info="$(t display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
+          info="$(roost_target_tmux display-message -p -t "$tgt" '#{pane_id} #{pane_dead}' 2>/dev/null || true)"
           pane="${info%% *}"; dead="${info#* }"
           case "$pane" in %[0-9]*) ;; *) pane="" ;; esac
         fi ;;
     esac
     if [ -z "$pane" ]; then
+      roost_target_require answer
       echo "roost answer: no such target '$raw'" >&2; exit 2
     fi
     # The ownership refusal (#191 Part 3), `send`'s, from the one table
@@ -3794,7 +3826,7 @@ EOF
       %[0-9]*)
         if [ -n "${TMUX:-}" ]; then
           caller_pid="${TMUX#*,}"; caller_pid="${caller_pid%%,*}"
-          cinfo="$(t display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}|#{@agent_state}|#{@roost-session}' 2>/dev/null || true)"
+          cinfo="$(roost_target_tmux display-message -p -t "$TMUX_PANE" '#{pid} #{pane_id}|#{@agent_state}|#{@roost-session}' 2>/dev/null || true)"
           if [ "${cinfo%%|*}" = "$caller_pid $TMUX_PANE" ]; then
             caller="$TMUX_PANE"; by="pane:$TMUX_PANE"
             crest="${cinfo#*|}"
@@ -3814,7 +3846,7 @@ EOF
     # one free-text field: a `|` in it (a shell pipe is the common case) stays
     # in it, and never reaches the words the checks below use. The separator
     # is `|` for the locale reason given at the caller check above.
-    pinfo="$(t display-message -p -t "$pane" '#{pane_in_mode}|#{@agent_state}|#{@roost-dialog}|#{@roost-answered}|#{@roost-blocked-on}' 2>/dev/null || true)"
+    pinfo="$(roost_target_tmux display-message -p -t "$pane" '#{pane_in_mode}|#{@agent_state}|#{@roost-dialog}|#{@roost-answered}|#{@roost-blocked-on}' 2>/dev/null || true)"
     in_mode="${pinfo%%|*}"; prest="${pinfo#*|}"
     state="${prest%%|*}"; prest="${prest#*|}"
     drec="${prest%%|*}"; prest="${prest#*|}"
@@ -3829,7 +3861,7 @@ EOF
     # target. It is fail-closed for every other pane.
     roost_target_require answer
     if [ "$state" = blocked ] && roost_unblock_pane "$pane"; then
-      state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+      state="$(roost_target_tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
     fi
     if [ "$state" != blocked ]; then
       echo "roost answer: '$raw' is not blocked (it reads ${state:-no badge}). There is nothing to answer" >&2
@@ -3879,7 +3911,7 @@ EOF
       echo "roost answer: '$raw' is in copy mode, so keys would not reach the agent. Nothing was sent" >&2
       exit 6
     fi
-    if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+    if ! roost_answer_marked "$(roost_target_tmux capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
       echo "roost answer: '$raw' reads blocked, but no dialog is on its screen. Nothing was sent" >&2
       exit 6
     fi
@@ -3906,8 +3938,8 @@ EOF
     trap 'ans_cleanup' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    lock_sock="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
-    lock_timeout="$(roost_panelock_timeout "$(t show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
+    lock_sock="$(roost_target_tmux display-message -p '#{socket_path}' 2>/dev/null || true)"
+    lock_timeout="$(roost_panelock_timeout "$(roost_target_tmux show-options -gqv @roost-send-lock-timeout 2>/dev/null || true)")"
     lock_rc=0
     roost_panelock_take "$lock_sock" "$pane" "$lock_timeout" || lock_rc=$?
     roost_target_require answer
@@ -3919,7 +3951,7 @@ EOF
          # pane blocked with the same fingerprint and the dialog gone, and an
          # Escape would then interrupt the running tool (found by review).
          # So the marker is read once more, now, under the lock.
-         if ! roost_answer_marked "$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
+         if ! roost_answer_marked "$(roost_target_tmux capture-pane -p -J -t "$pane" 2>/dev/null || true)"; then
            roost_target_require answer
            echo "roost answer: '$raw' changed while waiting for its pane lock: the dialog is no longer on its screen. Nothing was sent" >&2
            exit 7
@@ -4029,7 +4061,7 @@ EOF
     SECONDS=0
     while { [ "$SECONDS" -le "$ans_timeout" ] || [ -n "$screen_at" ]; } \
           && [ "$SECONDS" -le $((ans_timeout + 10)) ]; do
-      cinfo="$(t display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
+      cinfo="$(roost_target_tmux display-message -p -t "$pane" '#{pane_id}|#{pane_dead}|#{@agent_state}|#{@roost-dialog}' 2>/dev/null || true)"
       # The pane is gone: nothing on it can confirm anything any more, and a
       # screen that had lost its marker before it went proves nothing.
       if [ "${cinfo%%|*}" != "$pane" ] || ! roost_target_matches; then gone=1; break; fi
@@ -4049,7 +4081,7 @@ EOF
         esac
         if [ "$now_state" = blocked ] && roost_unblock_pane "$pane"; then
           confirmed=transcript
-          now_state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+          now_state="$(roost_target_tmux show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
           break
         fi
       else
@@ -4059,15 +4091,15 @@ EOF
           *) wrong="it no longer reads blocked (${now_state:-no badge}): the dialog was declined, not by this call"; break ;;
         esac
         case "$cdrec" in "$fp "*) ;; ?*) confirmed=dialog; break ;; esac
-        answer_screen="$(t capture-pane -p -J -t "$pane" 2>/dev/null || true)"
+        answer_screen="$(roost_target_tmux capture-pane -p -J -t "$pane" 2>/dev/null || true)"
         if ! roost_target_matches; then gone=1; break; fi
         if ! roost_answer_marked "$answer_screen"; then
           # The marker is gone and the badge still says blocked. For Claude,
           # a decline would write its three records into the transcript 5 to
           # 55 ms after the key (M1), so the screen proves an approval only
           # when they are not there.
-          rec="$(t show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
-          since="$(t show-options -pqv -t "$pane" @agent_since 2>/dev/null || true)"
+          rec="$(roost_target_tmux show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
+          since="$(roost_target_tmux show-options -pqv -t "$pane" @agent_since 2>/dev/null || true)"
           rpath="${rec#* }"
           if [ "$ROOST_DIALOG_HARNESS" = claude ] && [ -n "$rec" ] && [ "${rec%% *}" = "$since" ] \
              && roost_claude_declined "$rpath" "$since"; then
@@ -4470,7 +4502,7 @@ EOF
     # badge -- the previous turn's reply cleared with it, a held main reply
     # kept and said to be a dead agent's.
     roost_target_require read
-    case "$(t display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" in
+    case "$(roost_target_tmux display-message -p -t "$tgt" '#{@agent_state}' 2>/dev/null || true)" in
       blocked) roost_died_pane "$tgt" || roost_unblock_pane "$tgt" || true ;;
       working) roost_died_pane "$tgt" || roost_interrupted_pane "$tgt" || true ;;
     esac
@@ -5957,10 +5989,14 @@ EOF
     # never shifts it — both for the reasons wait-done's snapshot gives.
     cl_fmt='#{pane_id} #{window_id} #{pane_dead} #{pane_pid} #{window_panes} #{session_windows} j#{@roost-agent-job} #{@agent_state}'
     cl_row() {
-      local _all _r
-      _all="$(t list-panes -a -F "$cl_fmt" 2>/dev/null)" || return 1
+      local _all _r _fmt="$cl_fmt" _prefix=""
+      if [ -n "$RW_STABLE_BOOT" ]; then
+        _fmt="#{start_time}-#{pid} $_fmt"
+        _prefix="$RW_STABLE_BOOT "
+      fi
+      _all="$(t list-panes -a -F "$_fmt" 2>/dev/null)" || return 1
       while IFS= read -r _r; do
-        case "$_r" in "$1 "*) printf '%s\n' "$_r"; return 0 ;; esac
+        case "$_r" in "$_prefix$1 "*) printf '%s\n' "${_r#"$_prefix"}"; return 0 ;; esac
       done <<< "$_all"
       return 1
     }
@@ -5986,7 +6022,7 @@ EOF
     read -r _id cl_win cl_dead cl_pid cl_wpanes cl_swins cl_job cl_state <<< "$row"
     # Step 2. The session's last pane is its last window's only pane.
     if [ "$cl_wpanes" = 1 ] && [ "$cl_swins" = 1 ]; then
-      cl_sess="$(t display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
+      cl_sess="$(roost_target_tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)"
       echo "roost close: '$raw' is the last pane of session '$cl_sess' — closing it would end the session. close takes one pane; roost kill $cl_sess ends a session" >&2
       exit 1
     fi
@@ -6008,11 +6044,11 @@ EOF
     # whether to force needs to know what was there.
     cl_harness="" cl_exit="" cl_cmd=""
     if [ -n "$cl_state" ]; then
-      cl_cmd="$(t display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
+      cl_cmd="$(roost_target_tmux display-message -p -t "$pane" '#{pane_current_command}' 2>/dev/null || true)"
       roost_close_harness \
-        "$(t show-options -p -t "$pane" -qv @roost-harness 2>/dev/null || true)" \
+        "$(roost_target_tmux show-options -p -t "$pane" -qv @roost-harness 2>/dev/null || true)" \
         "$cl_cmd" \
-        "$(t show-options -p -t "$pane" -qv @roost-name 2>/dev/null || true)"
+        "$(roost_target_tmux show-options -p -t "$pane" -qv @roost-name 2>/dev/null || true)"
       cl_harness="$ROOST_CLOSE_HARNESS"
     fi
     # THE INTENT (#51, spec §3.6a). Before close sends the exit command — or
@@ -6194,7 +6230,7 @@ EOF
     # full-screen TUI's input box sees a paste settle before the submit. Not
     # through `roost send` itself: send waits for a new turn to begin, and an
     # exit command begins none.
-    delay="$(t show-options -gqv @roost-send-enter-delay 2>/dev/null || true)"
+    delay="$(roost_target_tmux show-options -gqv @roost-send-enter-delay 2>/dev/null || true)"
     case "$delay" in ''|.|*.*.*|*[!0-9.]*) delay=0.3 ;; esac
     cl_key() {
       if [ -n "$RW_STABLE_ID" ]; then

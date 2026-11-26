@@ -107,8 +107,27 @@ assert_contains "$(R screen --json p-proj:web.1)" "\"pane\":\"$project_split\"" 
 R send p-proj:web.1 'QUALIFIED-PANE-INPUT' >/dev/null 2>&1
 assert_true $? 'send accepts a session-qualified p- target'
 assert_contains "$(T capture-pane -pt "$project_split")" QUALIFIED-PANE-INPUT 'the qualified target receives the input'
-if roost_pane_id_restore T "$decoy" "$id"; then collision_rejected=1; else collision_rejected=0; fi
+stamp_tmux() {
+  if [ "$1" = if-shell ]; then
+    T display-message -p -t "$4" "$5" > "$work/stamp-predicate"
+  fi
+  T "$@"
+}
+if roost_pane_id_restore stamp_tmux "$decoy" "$id"; then collision_rejected=1; else collision_rejected=0; fi
 assert_eq "$collision_rejected" 0 "a saved ID already present on the live server cannot be assigned to another pane"
+assert_eq "$(cat "$work/stamp-predicate")" 1 "the duplicate predicate without a boot expands to 1"
+unstamped="$(T new-window -d -P -F '#{pane_id}' -n unstamped 'exec cat')"
+roost_pane_id_ensure stamp_tmux "$unstamped"
+assert_true $? "an unused ID can be stamped without a boot"
+assert_eq "$(cat "$work/stamp-predicate")" 0 "the unused ID predicate without a boot expands to 0"
+fresh="$(id_of "$unstamped")"
+T set -pu -t "$unstamped" @roost-id
+boot="$(T display-message -p -t "$unstamped" '#{start_time}-#{pid}')"
+if roost_pane_id__stamp T "$unstamped" "$fresh" "0-${boot#*-}"; then mismatched=0; else mismatched=1; fi
+assert_eq "$mismatched|$(id_of "$unstamped")" '1|' "a mismatched boot rejects adoption without writing an ID"
+roost_pane_id_ensure T "$unstamped" "" "$boot"
+assert_true $? "a matching boot accepts adoption"
+valid "$(id_of "$unstamped")"; assert_true $? "adoption on the matching boot writes a valid ID"
 valid "$(id_of "$decoy")"; decoy_stamped=$?
 assert_eq "$decoy_stamped" 1 "before status, the hand-made decoy has no ID"
 R status >/dev/null

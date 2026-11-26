@@ -115,7 +115,7 @@ roost_pane_id__stamp() {
   local tmux_call="$1" pane="$2" id="$3" boot="${4:-}" cond
   case "$pane" in %*) ;; *) return 1 ;; esac
   case "${pane#%}" in ''|*[!0123456789]*) return 1 ;; esac
-  cond="#{m:* $id *,#{S:#{W:#{P: #{@roost-id} }}}}}"
+  cond="#{m:* $id *,#{S:#{W:#{P: #{@roost-id} }}}}"
   if [ -n "$boot" ]; then cond="#{||:$cond,#{!=:#{start_time}-#{pid}/#{pane_id},$boot/$pane}}"; fi
   "$tmux_call" if-shell -F -t "$pane" "$cond" '' \
     "set-option -po -t $pane @roost-id $id" >/dev/null 2>&1 || return 1
@@ -139,7 +139,12 @@ roost_pane_id_ensure() {
     return
   fi
   if [ "${3:-}" != restore ]; then
-    launch="$("$tmux_call" display-message -p -t "$pane" '#{pane_start_command}' 2>/dev/null)" || return 1
+    if [ -n "$boot" ]; then
+      launch="$("$tmux_call" display-message -p -t "$pane" '#{start_time}-#{pid} #{pane_id} #{pane_start_command}' 2>/dev/null)" || return 1
+      case "$launch" in "$boot $pane "*) launch="${launch#"$boot $pane "}" ;; *) return 1 ;; esac
+    else
+      launch="$("$tmux_call" display-message -p -t "$pane" '#{pane_start_command}' 2>/dev/null)" || return 1
+    fi
     case "$launch" in *roost-placeholder*' --placing') return 1 ;; esac
   fi
   while [ "$tries" -lt 64 ]; do

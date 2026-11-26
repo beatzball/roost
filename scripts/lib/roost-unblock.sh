@@ -243,6 +243,15 @@ roost_unblock_token() {
   ROOST_UNBLOCK_TOKEN="$$.$RANDOM$RANDOM"
 }
 
+# Recovery is also used by readers with no stable target in scope.
+roost_unblock_read() {
+  if [ -n "${RW_STABLE_ID:-}" ]; then
+    roost_target_tmux "$@"
+  else
+    t "$@"
+  fi
+}
+
 # roost_unblock_record_turn PANE [OUTCOME [OURS]] -- after a recovery cleared PANE:
 # append the ended turn (the held main reply as its text, when there was one)
 # to the pane's record, with OUTCOME in its sidecar -- `interrupted` when none
@@ -259,21 +268,35 @@ roost_unblock_token() {
 # hold record stay cleared. A reader between the clear and this write sees
 # no reply for that moment; the clear has to come first, because only the
 # caller whose clear landed may write.
+# When the caller used a stable ID, the fallback write checks the same
+# identity in its own queue: a replacement server can reuse the pane number.
 #
 # OURS is 0 from the dead-agent clear when a newer turn has stamped the pane
 # since its clear landed (roost_died_pane, THE NUMBER): the turn is still
 # filed, but the held reply is never put back, because the pane's reply
 # belongs to the newer turn now. Any other value, or none, is today's.
 roost_unblock_record_turn() {
-  local saved=0
+  local saved=0 reply
   if record_for "$1" "$1" && [ "$RF_LIVE" = 1 ]; then
     case "$RF_STATE" in
-      0|1) roost_record_append_outcome "$RF_DIR" "$(t display-message -p '#{socket_path}' 2>/dev/null || true)" "${2:-interrupted}" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
+      0|1) roost_record_append_outcome "$RF_DIR" "$(roost_unblock_read display-message -p '#{socket_path}' 2>/dev/null || true)" "${2:-interrupted}" "$ROOST_UNBLOCK_HELD" && saved=1 ;;
     esac
   fi
   if [ "$saved" = 0 ] && [ -n "${ROOST_UNBLOCK_HELD:-}" ] && [ "${3:-1}" != 0 ]; then
     . "${BASH_SOURCE[0]%/*}/roost-reply.sh" 2>/dev/null || return 0
-    t set-option -p -t "$1" @roost-reply "$(roost_reply_escape "$ROOST_UNBLOCK_HELD")" 2>/dev/null || true
+    if [ -n "${RW_STABLE_ID:-}" ]; then
+      # Quoting a maximum-size reply can exceed tmux's client command
+      # limit. Stream a tmux command block. Escape the quoted argument
+      # and put it on one config line so a reply line beginning with '#'
+      # cannot be mistaken for a config comment.
+      reply="$(printf '%s\n' "$ROOST_UNBLOCK_HELD" | sed 's/[\\$"]/\\&/g' |
+        awk 'NR > 1 {printf "\\n"} {printf "%s", $0}')"
+      printf 'if-shell -F -t %s %s { set-option -p -t %s @roost-reply "%s" }\n' "$1" \
+        "$(roost_sq "$(roost_target_condition 1)")" "$1" "$reply" |
+        t source-file - 2>/dev/null || true
+    else
+      t set-option -p -t "$1" @roost-reply "$(roost_reply_escape "$ROOST_UNBLOCK_HELD")" 2>/dev/null || true
+    fi
   fi
   return 0
 }
@@ -289,24 +312,24 @@ roost_unblock_record_turn() {
 roost_unblock_held_reply() {
   local bg
   ROOST_UNBLOCK_HELD=""
-  bg="$(t show-options -pqv -t "$1" @roost-background 2>/dev/null || true)"
+  bg="$(roost_unblock_read show-options -pqv -t "$1" @roost-background 2>/dev/null || true)"
   case "$bg" in "$2 "?*) ;; *) return 0 ;; esac
-  ROOST_UNBLOCK_HELD="$(t show-options -pqv -t "$1" @roost-reply 2>/dev/null || true)"
+  ROOST_UNBLOCK_HELD="$(roost_unblock_read show-options -pqv -t "$1" @roost-reply 2>/dev/null || true)"
 }
 
 # roost_unblock_pane TARGET -> 0 iff TARGET's pane read `blocked` and was
 # cleared here. Any other answer is 1, and a 1 changes nothing.
 roost_unblock_pane() {
   local info pane since state rec rsince rpath now cond
-  info="$(t display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
+  info="$(roost_unblock_read display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
   pane="${info%% *}"
   since="${info#* }"
   case "$pane" in %[0-9]*) : ;; *) return 1 ;; esac
   # Pane scope only: a window- or global-scope value is not this pane's stamp.
-  state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  state="$(roost_unblock_read show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
   [ "$state" = "blocked" ] || return 1
   case "$since" in ''|*[!0-9]*) return 1 ;; esac
-  rec="$(t show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
+  rec="$(roost_unblock_read show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
   rsince="${rec%% *}"
   rpath="${rec#* }"
   # A string comparison, never arithmetic: a zero-padded stamp must not be read
@@ -335,8 +358,8 @@ roost_unblock_pane() {
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
   roost_events_unblocked "$pane" "$now" "$since" blocked "the dialog was declined or dismissed" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
-  [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
-    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
+  [ "$(roost_unblock_read show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "blocked" ] \
+    && [ "$(roost_unblock_read show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
     || return 1
   # The empty turn (#95), as roost_interrupted_pane below writes it, and for
   # the same reason; fails soft the same way.
@@ -554,14 +577,14 @@ roost_claude_interrupted_jq() {
 # `record_for`.
 roost_interrupted_pane() {
   local info pane since state rec rsince rpath now cond
-  info="$(t display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
+  info="$(roost_unblock_read display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
   pane="${info%% *}"
   since="${info#* }"
   case "$pane" in %[0-9]*) : ;; *) return 1 ;; esac
-  state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  state="$(roost_unblock_read show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
   [ "$state" = "working" ] || return 1
   case "$since" in ''|*[!0-9]*) return 1 ;; esac
-  rec="$(t show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
+  rec="$(roost_unblock_read show-options -pqv -t "$pane" @roost-transcript 2>/dev/null || true)"
   rsince="${rec%% *}"
   rpath="${rec#* }"
   [ -n "$rec" ] && [ "$rsince" = "$since" ] || return 1
@@ -581,8 +604,8 @@ roost_interrupted_pane() {
     "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   # This caller's token, not the second: see roost_unblock_token.
-  [ "$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "working" ] \
-    && [ "$(t show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
+  [ "$(roost_unblock_read show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)" != "working" ] \
+    && [ "$(roost_unblock_read show-options -pqv -t "$pane" @roost-unblocked 2>/dev/null || true)" = "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ] \
     || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
   roost_events_unblocked "$pane" "$now" "$since" working "the turn was interrupted" "$ROOST_UNBLOCK_TOKEN" 2>/dev/null || true
@@ -699,7 +722,7 @@ roost_died_pane() {
   # `|` between the fields: none can hold one. The pane pid and the job keep
   # a fixed letter in front, as wait-done's snapshot does (#165): either can
   # be EMPTY, and the letter keeps the fields where they are.
-  info="$(t display-message -p -t "$1" '#{pane_id}|#{@agent_since}|#{@agent_state}|p#{pane_pid}|j#{@roost-agent-job}' 2>/dev/null || true)"
+  info="$(roost_unblock_read display-message -p -t "$1" '#{pane_id}|#{@agent_since}|#{@agent_state}|p#{pane_pid}|j#{@roost-agent-job}' 2>/dev/null || true)"
   pane="${info%%|*}"; info="${info#*|}"
   since="${info%%|*}"; info="${info#*|}"
   state="${info%%|*}"; info="${info#*|}"
@@ -707,7 +730,7 @@ roost_died_pane() {
   case "$pane" in %[0-9]*) : ;; *) return 1 ;; esac
   # Pane scope only, as everywhere: a window- or global-scope value is not
   # this pane's badge.
-  state="$(t show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
+  state="$(roost_unblock_read show-options -pqv -t "$pane" @agent_state 2>/dev/null || true)"
   case "$state" in working|blocked) : ;; *) return 1 ;; esac
   case "$since" in ''|*[!0-9]*) return 1 ;; esac
   job_gone "${ppid#p}" "$job" || return 1
@@ -733,7 +756,7 @@ roost_died_pane() {
   if record_for "$pane" "$pane" && [ "$RF_LIVE" = 1 ]; then
     case "$RF_STATE" in
       0|1)
-        sockp="$(t display-message -p '#{socket_path}' 2>/dev/null || true)"
+        sockp="$(roost_unblock_read display-message -p '#{socket_path}' 2>/dev/null || true)"
         if roost_record_ensure "$RF_DIR" "$sockp"; then
           created="$ROOST_RECORD_CREATED"
           hint="$RF_DIR/replies/.reserving.$ROOST_UNBLOCK_TOKEN"
@@ -767,7 +790,7 @@ roost_died_pane() {
   # read the badge as well, so a replacement that reported before this read
   # made a landed clear look refused, and the death was never filed (fix
   # round 2, found by review, reproduced).
-  info="$(t display-message -p -t "$pane" '#{@agent_state}|#{@roost-ended}|#{@roost-unblocked}' 2>/dev/null || true)"
+  info="$(roost_unblock_read display-message -p -t "$pane" '#{@agent_state}|#{@roost-ended}|#{@roost-unblocked}' 2>/dev/null || true)"
   if [ "${info##*|}" != "$now since=$since by=$ROOST_UNBLOCK_TOKEN" ]; then
     [ -z "$hint" ] || rm -f "$hint" 2>/dev/null || true
     return 1

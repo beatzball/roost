@@ -38,6 +38,14 @@ if [ "$1" = -S ] && [ "$2" = "$RACE_DIR/route" ]; then
     exit "$rc"
   fi
   case "${RACE_GATE:-}:$*" in
+    held-reply:source-file\ -)
+      cat > "$RACE_DIR/queued-reply"
+      if [[ "$(cat "$RACE_DIR/queued-reply")" == *ORIGINAL-PRIVATE-HELD-REPLY* ]]; then
+        . "$RACE_DIR/bin/rendezvous"
+        pause_client
+        args=("${extra[@]}" -S "$(cat "$RACE_DIR/route")" "$@")
+      fi
+      exec "$RACE_TMUX" "${args[@]}" < "$RACE_DIR/queued-reply" ;;
     paste-signal:*paste-buffer*)
       "$RACE_TMUX" "${args[@]}"; rc=$?
       . "$RACE_DIR/bin/rendezvous"
@@ -46,10 +54,16 @@ if [ "$1" = -S ] && [ "$2" = "$RACE_DIR/route" ]; then
     paste-no-ack:*paste-buffer*)
       "$RACE_TMUX" "${args[@]}" >/dev/null
       exit $? ;;
-    paste-refusal:*paste-buffer*)
+    paste-refusal:*paste-buffer*|load-refusal:*load-buffer*|held-reply:*set-option*'@roost-reply'*ORIGINAL-PRIVATE-HELD-REPLY*|revive-probe:*set-option*'@roost-shape-probe'*)
       . "$RACE_DIR/bin/rendezvous"
       pause_client
-      args=("${extra[@]}" -S "$(cat "$RACE_DIR/route")" "$@") ;;
+      sock="$(cat "$RACE_DIR/route")"
+      args=("${extra[@]}" -S "$sock" "$@")
+      if [ "$RACE_GATE" = load-refusal ]; then
+        "$RACE_TMUX" "${args[@]}"; rc=$?
+        "$RACE_TMUX" -S "$sock" list-buffers > "$RACE_DIR/buffers-at-load" 2>/dev/null
+        exit "$rc"
+      fi ;;
     lost-after-enter:*send-keys*' Enter ;'*)
       "$RACE_TMUX" "${args[@]}"; rc=$?
       "$RACE_TMUX" -S "$sock" set-option -pu -t %0 @roost-id
@@ -158,6 +172,32 @@ refuses() {
   assert_contains "$race_err" 'no longer names the resolved pane' "$2 reports the lost stable target"
 }
 
+# Decline recovery clears the held reply before it tries to save the turn.
+# With recording off, pause just as it goes to put that reply back.
+T old set -p -t %0 @agent_state blocked
+T old set -p -t %0 @agent_since 1789398932
+T old set -p -t %0 @roost-transcript "1789398932 $HERE/tests/fixtures/claude-transcript-no.jsonl"
+T old set -p -t %0 @roost-background '1789398932 1'
+T old set -p -t %0 @roost-reply ORIGINAL-PRIVATE-HELD-REPLY
+export ROOST_RECORD_DIR=""
+refuses held-reply 'held reply recovery with recording off' read "$id"
+assert_eq "$(T new show-options -pqv -t %0 @roost-reply)" WRONG-REPLY 'recovery keeps the replacement reply intact'
+# On the matching boot the whole reply survives, even when quoting it
+# takes the command past tmux's argv limit.
+printf '%s/old\n' "$dir" > "$dir/route"
+T old set -p -t %0 @agent_state blocked
+T old set -p -t %0 @roost-transcript "1789398932 $HERE/tests/fixtures/claude-transcript-no.jsonl"
+T old set -p -t %0 @roost-background '1789398932 1'
+held="$(printf '%12256s' '' | tr ' ' '"')"$'\n# literal \047quote\047 $HOME;'
+T old set -p -t %0 @roost-reply "${held%;}\\;"
+PATH="$dir/bin:$PATH" "$HERE/bin/roost" read "$id" > "$dir/out" 2>"$dir/err"
+assert_true $? 'the matching boot can read the recovered reply'
+cmp -s "$dir/out" <(printf '%s\n' "$held")
+assert_true $? 'recovery returns the complete quoted held reply on the matching boot'
+[[ "$(T old show-options -pqv -t %0 @roost-reply)" == "$held" ]]
+assert_true $? 'recovery restored the complete held reply to the original pane'
+unset ROOST_RECORD_DIR
+
 bash "$dir/bin/roost-lock-fixture" "$HERE/scripts/lib/roost-panelock.sh" &
 lock_pid=$!
 for ((i=0; i<100; i++)); do
@@ -172,6 +212,8 @@ cross_boot 0.25 'wait-done after a poll' wait-done --json "$id" 5
 assert_eq "$race_rc" 2 'wait-done exits as a dead agent after losing a working pane'
 assert_contains "$race_out" '"outcome":"died"' 'wait-done preserves the died JSON outcome'
 T old set -pu -t %0 @agent_state
+refuses load-refusal 'send before loading its buffer' send "$id" 'private input for the original pane'
+assert_eq "$(cat "$dir/buffers-at-load")" '' 'send never loads its private buffer on the replacement boot'
 cross_boot 0.42 'send between paste and Enter' send "$id" 'third message for original pane'
 assert_eq "$race_rc|$race_out" '1|' 'send reports paste without submit'
 assert_contains "$race_err" 'but never submitted' 'the send failure explains that Enter was withheld'
@@ -284,6 +326,9 @@ T old set -p -t %0 @roost-cwd "$dir"
 T old set -p -t %0 @roost-transcript-path "$dir/transcript.jsonl"
 T new set -p -t %0 @roost-reply KEEP-REPLY
 replacement_pid="$(T new display -pt %0 '#{pane_pid}')"
+T new set -p -t %0 @roost-shape-probe KEEP-PROBE
+refuses revive-probe 'revive before probing tmux option printing' revive "$id"
+assert_eq "$(T new show -pqv -t %0 @roost-shape-probe)" KEEP-PROBE 'the probe leaves the replacement pane options alone'
 refuses revive 'revive before respawn' revive "$id"
 assert_eq "$(T new display -pt %0 '#{pane_pid}')" "$replacement_pid" 'revive leaves the replacement process alone'
 assert_eq "$(T new show -pqv -t %0 @roost-reply)" KEEP-REPLY 'revive leaves the replacement options alone'
