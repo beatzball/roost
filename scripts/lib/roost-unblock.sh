@@ -297,7 +297,7 @@ roost_unblock_held_reply() {
 # roost_unblock_pane TARGET -> 0 iff TARGET's pane read `blocked` and was
 # cleared here. Any other answer is 1, and a 1 changes nothing.
 roost_unblock_pane() {
-  local info pane since state rec rsince rpath now
+  local info pane since state rec rsince rpath now cond
   info="$(t display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
   pane="${info%% *}"
   since="${info#* }"
@@ -326,8 +326,11 @@ roost_unblock_pane() {
   # dialog that was just declined, as @roost-blocked-on does, and go with it.
   # So do the hold record, its types and its owner (@roost-background-session,
   # #188): a turn the human ended holds nothing for SessionEnd to release.
-  t if-shell -F -t "$pane" \
-    "$(roost_target_condition "#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}")" \
+  # Pass the format through a variable so Bash 3.2 keeps its commas inside
+  # the format instead of treating the braces as shell brace expansion.
+  cond="#{&&:#{==:#{@agent_state},blocked},#{==:#{@agent_since},$since}}"
+  if [ -n "${RW_STABLE_ID:-}" ]; then cond="$(roost_target_condition "$cond")"; fi
+  t if-shell -F -t "$pane" "$cond" \
     "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   . "${BASH_SOURCE[0]%/*}/roost-events.sh" 2>/dev/null || true
@@ -550,7 +553,7 @@ roost_claude_interrupted_jq() {
 # Any other answer is 1, and a 1 changes nothing. Needs bin/roost's `t` and
 # `record_for`.
 roost_interrupted_pane() {
-  local info pane since state rec rsince rpath now
+  local info pane since state rec rsince rpath now cond
   info="$(t display-message -p -t "$1" '#{pane_id} #{@agent_since}' 2>/dev/null || true)"
   pane="${info%% *}"
   since="${info#* }"
@@ -572,8 +575,9 @@ roost_interrupted_pane() {
   # badge gone finds the reason beside it, or finds neither.
   # The hold record, its types and its owner (@roost-background-session,
   # #188) go with the badge, as in the decline's clear.
-  t if-shell -F -t "$pane" \
-    "$(roost_target_condition "#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}")" \
+  cond="#{&&:#{==:#{@agent_state},working},#{==:#{@agent_since},$since}}"
+  if [ -n "${RW_STABLE_ID:-}" ]; then cond="$(roost_target_condition "$cond")"; fi
+  t if-shell -F -t "$pane" "$cond" \
     "set-option -pu -t $pane @agent_state ; set-option -pu -t $pane @roost-reply ; set-option -pu -t $pane @roost-reply-turn ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since interrupted' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'" \
     2>/dev/null || return 1
   # This caller's token, not the second: see roost_unblock_token.
@@ -691,7 +695,7 @@ roost_interrupted_pane() {
 # job is gone, and the pane was cleared here. Any other answer is 1, and a 1
 # changes nothing. Needs bin/roost's `t` and `job_gone`.
 roost_died_pane() {
-  local info pane since state ppid job now held_wr res res_wr hint created sockp ours
+  local info pane since state ppid job now held_wr res res_wr hint created sockp ours cond
   # `|` between the fields: none can hold one. The pane pid and the job keep
   # a fixed letter in front, as wait-done's snapshot does (#165): either can
   # be EMPTY, and the letter keeps the fields where they are.
@@ -749,8 +753,9 @@ roost_died_pane() {
         fi ;;
     esac
   fi
-  t if-shell -F -t "$pane" \
-    "$(roost_target_condition "#{&&:#{==:#{@agent_state},$state},#{&&:#{==:#{@agent_since},$since},#{==:#{@roost-agent-job},$job}}}")" \
+  cond="#{&&:#{==:#{@agent_state},$state},#{&&:#{==:#{@agent_since},$since},#{==:#{@roost-agent-job},$job}}}"
+  if [ -n "${RW_STABLE_ID:-}" ]; then cond="$(roost_target_condition "$cond")"; fi
+  t if-shell -F -t "$pane" "$cond" \
     "set-option -pu -t $pane @agent_state ; ${held_wr}set-option -pu -t $pane @roost-agent-job ; set-option -pu -t $pane @roost-transcript ; set-option -pu -t $pane @roost-blocked-on ; set-option -pu -t $pane @roost-stop-swallowed ; set-option -pu -t $pane @roost-dialog ; set-option -pu -t $pane @roost-answered ; set-option -pu -t $pane @roost-answer-nonce ; set-option -pu -t $pane @roost-background ; set-option -pu -t $pane @roost-background-types ; set-option -pu -t $pane @roost-background-session ; set-option -p -t $pane @roost-ended '$since died' ; set-option -p -t $pane @roost-unblocked '$now since=$since by=$ROOST_UNBLOCK_TOKEN'$res_wr" \
     2>/dev/null || true
   # LANDED is this caller's token, not the second (see roost_unblock_token),
@@ -792,7 +797,9 @@ roost_died_pane() {
     # written after the clear, here or in roost_unblock_record_turn: the
     # clear unset the old one with the reply, and a newer turn's pointer is
     # the one its own Stop set, left alone.
-    t if-shell -F -t "$pane" "$(roost_target_condition "#{==:#{@roost-turn-reserved},$res}")" \
+    cond="#{==:#{@roost-turn-reserved},$res}"
+    if [ -n "${RW_STABLE_ID:-}" ]; then cond="$(roost_target_condition "$cond")"; fi
+    t if-shell -F -t "$pane" "$cond" \
       "set-option -pu -t $pane @roost-turn-reserved" 2>/dev/null || true
   elif [ "$ours" = 1 ]; then
     roost_unblock_record_turn "$pane" died_in_shell
