@@ -7,6 +7,14 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.14.0]
+
+Every pane now has a stable ID, such as `p-k7q-2x9-z`. The ID stays the
+same when roost restores your fleet, so a saved address still reaches the
+same agent. roost checks the ID before it types, answers or closes, and it
+refuses with exit 2 when the ID no longer names that pane. `roost whoami`
+and `roost status` show the ID.
+
 ### Added
 
 - **Stable pane IDs survive restore.** Copy an ID such as `p-k7q-2x9-z`
