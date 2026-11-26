@@ -103,10 +103,12 @@ key_hex() { od -An -tx1 -v "$1" | tr -d ' \n'; }
 paste_hex() { printf '\033[200~%s\033[201~' "$1" | od -An -tx1 -v | tr -d ' \n'; }
 
 launch success ''
-confirmed="$(token "$p")" || exit 1
-send_rc --json --agent-only "$confirmed" "$p" 'inert notes reference'
+first_id="$(TMUX_PANE="$p" "$ROOST" whoami)" || exit 1
+confirmed="$(token "$first_id")" || exit 1
+send_rc --json --agent-only "$confirmed" "$first_id" 'inert notes reference'
 assert_eq "$rc" 0 'a confirmed live agent receives a guarded send'
 assert_contains "$(cat "$work/out")" "\"pane\":\"$p\"" 'guarded send keeps existing JSON output'
+assert_contains "$(cat "$work/out")" "\"target\":\"$first_id\"" 'the guarded send JSON keeps the stable ID as typed'
 assert_eq "$(cat "$work/success")" '"inert notes reference"' 'a one-line message is submitted whole exactly once'
 
 for mode in brackets no-brackets; do

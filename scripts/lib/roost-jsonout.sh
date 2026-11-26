@@ -482,7 +482,7 @@ roost_jsonout_status() {
   # it themselves.
   local kind=path trusted id k doc sep
   local -a strs s_name s_win s_att p_id p_sess p_wid p_widx p_wname p_pidx p_state p_since p_cmd p_name
-  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg p_ver p_ref p_was
+  local -a p_sid p_cwd p_harness p_tr p_sub p_dialog p_answered p_bg p_ver p_ref p_was p_roost_id p_role
   local ns=0 np=0 j
   # The dialog record's reader (#142). Sourced here, where it is used, so no
   # other roost command pays for it; it runs nothing at source time.
@@ -552,7 +552,7 @@ roost_jsonout_status() {
   # before the reboot, so a person or a coordinator who knows the old id finds
   # the pane. It only comes along.
   trusted=0
-  roost_jsonout_list 21 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}\t#{@roost-verified}\t#{@roost-refused}\t#{@roost-was}' list-panes -a && trusted=1 || true
+  roost_jsonout_list 23 '#{pane_id}' $'#{pane_id}\t#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_index}\t#{@agent_state}\t#{@agent_since}\t#{pane_current_command}\t#{@roost-name}\t#{@roost-session}\t#{@roost-cwd}\t#{@roost-harness}\t#{@roost-transcript-path}\t#{@roost-subagents}\t#{@roost-dialog}\t#{@roost-answered}\t#{@roost-background}\t#{@roost-verified}\t#{@roost-refused}\t#{@roost-was}\t#{@roost-id}\t#{@roost-role}' list-panes -a && trusted=1 || true
   k=0
   while [ "$k" -lt "${#ROOST_JSONOUT_IDS[@]}" ]; do
     id="${ROOST_JSONOUT_IDS[k]}"
@@ -581,6 +581,8 @@ roost_jsonout_status() {
       ROOST_JSONOUT_F[18]="$(t display-message -p -t "$id" '#{@roost-verified}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[19]="$(t display-message -p -t "$id" '#{@roost-refused}' 2>/dev/null || true)"
       ROOST_JSONOUT_F[20]="$(t display-message -p -t "$id" '#{@roost-was}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[21]="$(t display-message -p -t "$id" '#{@roost-id}' 2>/dev/null || true)"
+      ROOST_JSONOUT_F[22]="$(t display-message -p -t "$id" '#{@roost-role}' 2>/dev/null || true)"
     fi
     p_id[np]="${ROOST_JSONOUT_F[0]}"; p_sess[np]="${ROOST_JSONOUT_F[1]}"; p_wid[np]="${ROOST_JSONOUT_F[2]}"
     p_widx[np]="${ROOST_JSONOUT_F[3]}"; p_wname[np]="${ROOST_JSONOUT_F[4]}"; p_pidx[np]="${ROOST_JSONOUT_F[5]}"
@@ -593,6 +595,7 @@ roost_jsonout_status() {
     p_bg[np]="${ROOST_JSONOUT_F[17]}"
     p_ver[np]="${ROOST_JSONOUT_F[18]}"; p_ref[np]="${ROOST_JSONOUT_F[19]}"
     p_was[np]="${ROOST_JSONOUT_F[20]:-}"
+    p_roost_id[np]="${ROOST_JSONOUT_F[21]:-}"; p_role[np]="${ROOST_JSONOUT_F[22]:-}"
     np=$((np + 1)); k=$((k + 1))
   done
 
@@ -601,7 +604,7 @@ roost_jsonout_status() {
   k=0
   while [ "$k" -lt "$np" ]; do
     strs+=("${p_id[k]}" "${p_sess[k]}" "${p_wid[k]}" "${p_wname[k]}" "${p_state[k]}" "${p_cmd[k]}" "${p_name[k]}"
-      "${p_sid[k]}" "${p_cwd[k]}" "${p_harness[k]}" "${p_tr[k]}")
+      "${p_sid[k]}" "${p_cwd[k]}" "${p_harness[k]}" "${p_tr[k]}" "${p_roost_id[k]}" "${p_role[k]}")
     k=$((k + 1))
   done
   roost_jsonout_encode "${strs[@]}" || roost_jsonout_fail status
@@ -617,7 +620,10 @@ roost_jsonout_status() {
   doc="$doc],\"panes\":["
   k=0; sep=""
   while [ "$k" -lt "$np" ]; do
-    doc="$doc$sep{\"id\":${ROOST_JSONOUT_STR[j]},\"session\":${ROOST_JSONOUT_STR[j + 1]},\"window_id\":${ROOST_JSONOUT_STR[j + 2]}"
+    doc="$doc$sep{"
+    if [ -n "${p_roost_id[k]}" ]; then doc="$doc\"roost_id\":${ROOST_JSONOUT_STR[j + 11]}"; else doc="$doc\"roost_id\":null"; fi
+    if [ -n "${p_role[k]}" ]; then doc="$doc,\"role\":${ROOST_JSONOUT_STR[j + 12]}"; else doc="$doc,\"role\":null"; fi
+    doc="$doc,\"id\":${ROOST_JSONOUT_STR[j]},\"session\":${ROOST_JSONOUT_STR[j + 1]},\"window_id\":${ROOST_JSONOUT_STR[j + 2]}"
     roost_jsonout_int "${p_widx[k]}"; doc="$doc,\"window_index\":$ROOST_JSONOUT_INT"
     doc="$doc,\"window_name\":${ROOST_JSONOUT_STR[j + 3]}"
     roost_jsonout_int "${p_pidx[k]}"; doc="$doc,\"pane_index\":$ROOST_JSONOUT_INT"
@@ -691,7 +697,7 @@ roost_jsonout_status() {
       %[0-9]*) case "${p_was[k]#%}" in *[!0-9]*) doc="$doc,\"was\":null}" ;; *) doc="$doc,\"was\":\"${p_was[k]}\"}" ;; esac ;;
       *) doc="$doc,\"was\":null}" ;;
     esac
-    j=$((j + 11)); sep=","; k=$((k + 1))
+    j=$((j + 13)); sep=","; k=$((k + 1))
   done
   printf '%s]}\n' "$doc"
 }

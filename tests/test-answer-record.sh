@@ -220,7 +220,7 @@ env ROOST_DIALOG_HARNESS=opencode TMUX="$s,0,0" TMUX_PANE="$pane" "$HOOK" blocke
 assert_eq "$(pstate)|$(pdialog)" "blocked|" "an unknown ROOST_DIALOG_HARNESS records no dialog"
 
 # --- 5. status --json --------------------------------------------------------
-sj() { "$ROOST" status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps([p["dialog"] for p in d["panes"]][0]))'; }
+sj() { XDG_STATE_HOME="$sdir/state" "$ROOST" status --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps([p["dialog"] for p in d["panes"]][0]))'; }
 reset
 assert_eq "$(sj)" "null" "status --json: dialog is null for a pane that is not blocked"
 pr "$Q3_PR"; g="$(fp)"
@@ -248,9 +248,9 @@ tmux -S "$s" set -p -t "$pane" @roost-dialog "$g claude question 3 9a0c51e2"
 tmux -S "$s" set -p -t "$pane" @agent_state done
 assert_eq "$(sj)" "null" "status --json: a record on a pane that is not blocked is null"
 reset
-hum="$("$ROOST" status 2>&1)"
+hum="$(XDG_STATE_HOME="$sdir/state" "$ROOST" status 2>&1)"
 pr "$BASH_PR"; tmux -S "$s" set -p -t "$pane" @agent_state working
-assert_eq "$("$ROOST" status 2>&1)" "$hum" "human status is unchanged by a dialog record"
+assert_eq "$(XDG_STATE_HOME="$sdir/state" "$ROOST" status 2>&1)" "$hum" "human status is unchanged by a dialog record"
 
 # --- 6. the jq reader, on a PATH with no python3 ------------------------------
 # The same shim tests/test-claude-permission-request.sh builds: exec wrappers,

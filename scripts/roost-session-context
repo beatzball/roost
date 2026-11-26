@@ -78,7 +78,8 @@ roost_self_socket
 # session", and requirement three is that a non-roost user sees no change at
 # all. A visible stderr line would also reach Claude's transcript as a hook
 # error notice on every session start on that machine.
-pane="$("$ROOST_HOME/bin/roost" whoami 2>/dev/null || true)"
+address="$("$ROOST_HOME/bin/roost" whoami 2>/dev/null || true)"
+pane="${TMUX_PANE:-}"
 
 # Not inside roost — say nothing, and exit 0.
 #
@@ -88,7 +89,7 @@ pane="$("$ROOST_HOME/bin/roost" whoami 2>/dev/null || true)"
 # stderr in the transcript as a hook error. Neither is an acceptable thing for
 # roost to do to someone who merely has the hook wired globally and is running
 # `claude` in an ordinary terminal. Every exit in this file is 0.
-[ -n "$pane" ] || exit 0
+[ -n "$address" ] || exit 0
 
 # The id goes into a JSON string below, so refuse anything that is not the
 # shape tmux actually produces. `#{pane_id}` is always %<digits>, so this
@@ -100,6 +101,15 @@ case "$pane" in
   %[0-9]*) case "${pane#%}" in *[!0-9]*) exit 0 ;; esac ;;
   *) exit 0 ;;
 esac
+
+. "$ROOST_HOME/scripts/lib/roost-pane-id.sh"
+pane_note="$pane"
+if roost_pane_id_parse "$address"; then
+  address="$ROOST_PANE_ID"
+  pane_note="$address ($pane)"
+else
+  address="$pane"
+fi
 
 # Who this agent is (#141): its session id, directory and transcript, stamped
 # on the pane for `roost status --json` and copied into the pane record.
@@ -189,7 +199,7 @@ cat <<JSON
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "You are an agent running inside roost, a tmux \"agent view\" on its own separate server. This pane is $pane$was_note — that is your address, and how other agents reach you: roost send $pane \"...\".\nUse roost's own commands, not bare tmux: roost split and roost spawn to open a pane or a window, roost send to prompt another agent, roost status to list the fleet, roost read to collect a reply. A bare tmux command targets the DEFAULT server — the user's ordinary tmux, which roost exists to leave alone.\nNever run tmux kill-server without -S or -L naming a throwaway socket.\nRun roost help for the rest."
+    "additionalContext": "You are an agent running inside roost, a tmux \"agent view\" on its own separate server. This pane is $pane_note$was_note — that is your address, and how other agents reach you: roost send $address \"...\".\nUse roost's own commands, not bare tmux: roost split and roost spawn to open a pane or a window, roost send to prompt another agent, roost status to list the fleet, roost read to collect a reply. A bare tmux command targets the DEFAULT server — the user's ordinary tmux, which roost exists to leave alone.\nNever run tmux kill-server without -S or -L naming a throwaway socket.\nRun roost help for the rest."
   }
 }
 JSON

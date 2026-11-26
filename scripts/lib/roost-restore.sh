@@ -962,6 +962,16 @@ roost_restore__build_window() {
   while [ "$i" -lt "${#panes[@]}" ] && [ "$i" -lt "$k" ]; do
     id="${panes[$i]}"
     f="${map#*$'\n'"$id "}"; f="${f%%$'\n'*}"
+    # Stamp before respawning: the hook in the new process can ask whoami
+    # as soon as it starts. The saved ID may still be on another live pane
+    # if this is a partial restore into a running server.
+    out="$(roost_shape_get "${blocks[$i]}" roost_id 2>/dev/null || true)"
+    if ! roost_pane_id_restore t "$id" "$out"; then
+      printf 'roost restore: pane %s (%s) could not keep its pane id%s\n' \
+        "$(roost_restore__addr "${blocks[$i]}")" "$id" "${out:+ $out}" >&2
+      roost_pane_id_ensure t "$id" restore || true
+      rc=13
+    fi
     out="$(roost_restore__cwd "${blocks[$i]}")"
     if [ "$id" = "$5" ]; then
       # The bootstrap was claimed before this window was built, so a person
@@ -1303,7 +1313,7 @@ roost_restore_drop_closed() {
 }
 
 roost_restore_run() {
-  local file="$1" sdir="$2" held="${3:-}" rc=0 r blk boot=0 own
+  local file="$1" sdir="$2" held="${3:-}" rc=0 r blk boot=0 own stable_id
   # restoring/ lives in the server's shape directory, where the saver (Part 4)
   # looks for it; with saving off there is no saver to hold off, and the run's
   # files go to a directory of its own.
@@ -1356,6 +1366,13 @@ roost_restore_run() {
     rm -rf "$ROOST_RESTORE_PD"
     return 1
   fi
+  # On a new state directory, a pane from a legacy block must not randomly
+  # draw an ID that still belongs to a later block in the same restore.
+  for blk in "$ROOST_RESTORE_PD"/*.pane; do
+    [ -e "$blk" ] || continue
+    stable_id="$(roost_shape_get "$blk" roost_id 2>/dev/null)" || continue
+    if roost_pane_id_parse "$stable_id"; then roost_pane_id_remember "$ROOST_PANE_ID" || true; fi
+  done
   if server_running; then
     roost_shape__read_rules || true
     roost_restore__shell_cmd
@@ -1659,42 +1676,61 @@ roost_restore__host_line() {
 
 # roost_restore__select -> prunes $ROOST_RESTORE_PD to the blocks the
 # ROOST_RESTORE_ONLY selectors name (§4.3 --only: SESSION, SESSION:WINDOW, an
-# old %N); 0, 2 when a selector matches nothing, 16 when a later member of a
+# old %N or stable pane id); 0, 2 when a selector matches nothing or is invalid,
+# 16 when a later member of a
 # group is selected without its first member and that member is not on the
 # server (ruling R7: an address with no parent, nothing done).
 roost_restore__select() {
-  local sel f a keep=$'\n' hit g i
+  local sel f a keep=$'\n' hit g i key want saved
   [ "${#ROOST_RESTORE_ONLY[@]}" -gt 0 ] || return 0
   for sel in "${ROOST_RESTORE_ONLY[@]}"; do
     hit=0
+    key=""; want="$sel"
+    if roost_pane_id_target "$sel"; then
+      if ! roost_pane_id_parse "$sel"; then
+        printf "roost restore: '%s' is not a valid pane id\n" "$sel" >&2
+        return 2
+      fi
+      key=roost_id; want="$ROOST_PANE_ID"
+    elif [[ "$sel" == %* ]]; then
+      key=id
+    fi
     for f in "$ROOST_RESTORE_PD"/*.session "$ROOST_RESTORE_PD"/*.window "$ROOST_RESTORE_PD"/*.pane; do
       [ -e "$f" ] || continue
       a="$(roost_restore__addr "$f")"
-      case "$sel" in
-        %*)
-          [ "${f##*.}" = pane ] && [ "$(roost_shape_get "$f" id)" = "$sel" ] || continue
-          keep="$keep$f"$'\n'
-          keep="$keep$(roost_restore__block window "${a%.*}")"$'\n'
-          keep="$keep$(roost_restore__block session "${a%:*}")"$'\n' ;;
-        *:*)
-          case "${f##*.}" in
-            window) [ "$a" = "$sel" ] || continue ;;
-            pane) [ "${a%.*}" = "$sel" ] || continue ;;
-            *) continue ;;
-          esac
-          keep="$keep$f"$'\n'
-          keep="$keep$(roost_restore__block session "${sel%:*}")"$'\n' ;;
-        *)
-          case "${f##*.}" in
-            session)
-              if [ "$a" != "$sel" ]; then
-                # A later member comes with its first member.
-                [ "$(roost_shape_get "$f" group 2>/dev/null)" = "$sel" ] || continue
-              fi ;;
-            *) [ "${a%%:*}" = "$sel" ] || continue ;;
-          esac
-          keep="$keep$f"$'\n' ;;
-      esac
+      if [ -n "$key" ]; then
+        [ "${f##*.}" = pane ] || continue
+        saved="$(roost_shape_get "$f" "$key" 2>/dev/null)" || continue
+        if [ "$key" = roost_id ]; then
+          roost_pane_id_parse "$saved" || continue
+          saved="$ROOST_PANE_ID"
+        fi
+        [ "$saved" = "$want" ] || continue
+        keep="$keep$f"$'\n'
+        keep="$keep$(roost_restore__block window "${a%.*}")"$'\n'
+        keep="$keep$(roost_restore__block session "${a%:*}")"$'\n'
+      else
+        case "$sel" in
+          *:*)
+            case "${f##*.}" in
+              window) [ "$a" = "$sel" ] || continue ;;
+              pane) [ "${a%.*}" = "$sel" ] || continue ;;
+              *) continue ;;
+            esac
+            keep="$keep$f"$'\n'
+            keep="$keep$(roost_restore__block session "${sel%:*}")"$'\n' ;;
+          *)
+            case "${f##*.}" in
+              session)
+                if [ "$a" != "$sel" ]; then
+                  # A later member comes with its first member.
+                  [ "$(roost_shape_get "$f" group 2>/dev/null)" = "$sel" ] || continue
+                fi ;;
+              *) [ "${a%%:*}" = "$sel" ] || continue ;;
+            esac
+            keep="$keep$f"$'\n' ;;
+        esac
+      fi
       hit=1
     done
     if [ "$hit" = 0 ]; then

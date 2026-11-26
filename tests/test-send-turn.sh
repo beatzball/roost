@@ -501,11 +501,12 @@ assert_eq "$(cat "$(side "$p" 2)")" human "...and its sidecar says human when th
 "$ROOST" wait-done --turn 2 "$p" 30 >/dev/null 2>&1
 assert_contains "$("$ROOST" read --json "$p" 2>/dev/null)" '"sent_by":"human"' "...which read --json then reports"
 
-# 13c. without --from, from a live pane on THIS server: pane:%N.
+# 13c. without --from, from a live pane on THIS server: pane:<stable ID>.
 helper="$(T new-window -d -P -F '#{pane_id}' 'ENV= exec /bin/sh')"
 require_pane "$helper" "sending pane"
-env TMUX="$s,$spid,0" TMUX_PANE="$helper" "$ROOST" send "$p" "third prompt" >/dev/null 2>&1
-assert_eq "$(cat "$(side "$p" 3)")" "pane:$helper" "a send from a live pane on this server is labelled pane:%N"
+env XDG_STATE_HOME="$work/state" TMUX="$s,$spid,0" TMUX_PANE="$helper" "$ROOST" send "$p" "third prompt" >/dev/null 2>&1
+helper_id="$(T show -pqv -t "$helper" @roost-id)"
+assert_eq "$(cat "$(side "$p" 3)")" "pane:$helper_id" "a send from a live pane on this server is labelled with its stable ID"
 "$ROOST" wait-done --turn 3 "$p" 30 >/dev/null 2>&1
 # A $TMUX_PANE that is not a pane HERE. The user's everyday tmux sets the same
 # two variables, and a %N from that server is a stranger's id on this one. A

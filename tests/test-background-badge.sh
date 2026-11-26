@@ -50,8 +50,8 @@ badge()  { T list-windows -a -F "#{window_id}|#{E:@roost-tab-badge}" | grep "^$1
 busy()   { T list-windows -a -F "#{window_id}|#{E:@roost-tab-busy}"  | grep "^$1|" | cut -d'|' -f2; }
 jget() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))' "$1"; }
 # jbg PANE -> that pane's `background` in `status --json`, as Python prints it.
-jbg() { "$ROOST" status --json | jget '[x["background"] for x in d["panes"] if x["id"]=="'"$1"'"][0]'; }
-jstate() { "$ROOST" status --json | jget '[x["state"] for x in d["panes"] if x["id"]=="'"$1"'"][0]'; }
+jbg() { XDG_STATE_HOME="$work/state" "$ROOST" status --json | jget '[x["background"] for x in d["panes"] if x["id"]=="'"$1"'"][0]'; }
+jstate() { XDG_STATE_HOME="$work/state" "$ROOST" status --json | jget '[x["state"] for x in d["panes"] if x["id"]=="'"$1"'"][0]'; }
 # held PANE COUNT: the pane as a held Stop leaves it.
 held() {
   T set-option -p -t "$1" @agent_state working \; set-option -p -t "$1" @agent_since 1789000000 \; \
@@ -113,9 +113,9 @@ assert_eq "$("$ROOST" status --json | jget 'd["schema"]')" "1" "status --json: s
 
 # --- 5. roost status (human) --------------------------------------------------
 st="$("$ROOST" status)"
-assert_contains "$(printf '%s\n' "$st" | grep "^    $pa ")" "[background (2)]" "roost status names the held pane background (2)"
-assert_contains "$(printf '%s\n' "$st" | grep "^    $pq ")" "[background]" "roost status: a ? hold reads [background]"
-assert_contains "$(printf '%s\n' "$st" | grep "^    $pb ")" "[working]" "roost status: a working pane still reads [working]"
+assert_contains "$(printf '%s\n' "$st" | grep "  $pa  ")" "[background (2)]" "roost status names the held pane background (2)"
+assert_contains "$(printf '%s\n' "$st" | grep "  $pq  ")" "[background]" "roost status: a ? hold reads [background]"
+assert_contains "$(printf '%s\n' "$st" | grep "  $pb  ")" "[working]" "roost status: a working pane still reads [working]"
 
 # --- 6. the status-bar rollup and the switcher --------------------------------
 out="$(ROOST_STATUS_SOCK="$ROOST_TEST_SOCK" "$HERE/scripts/roost-status" 2>/dev/null || true)"
@@ -208,7 +208,7 @@ for rec in "1789000000" "1789000000 " "1789000000  3" "1789000000 0" "1789000000
   assert_contains "$(border "$pm")" "· working" "record '$rec': ...and the word working"
   assert_eq "$(badge "$wm")" "W" "record '$rec': the tab reads W"
   assert_eq "$(jbg "$pm")" "None" "record '$rec': status --json background null"
-  assert_contains "$("$ROOST" status | grep "^    $pm ")" "[working]" "record '$rec': roost status reads [working]"
+  assert_contains "$(XDG_STATE_HOME="$work/state" "$ROOST" status | grep "  $pm  ")" "[working]" "record '$rec': roost status reads [working]"
   rows_m="$(ROOST_SWITCH_SOCK="$ROOST_TEST_SOCK" ROOST_SWITCH_DUMP=1 NO_COLOR=1 "$HERE/scripts/roost-switch")"
   assert_contains "$(printf '%s\n' "$rows_m" | awk -F'\t' -v p="$pm" '$3==p')" "W working " "record '$rec': the switcher row reads working"
   # The rollup counts every pane on the server; compare it with the same

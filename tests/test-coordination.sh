@@ -158,7 +158,7 @@ T set-option -gu @roost-send-enter-delay 2>/dev/null || true
 # --- whoami ---
 pane="$(T display-message -p -t "$recv" '#{pane_id}')"
 me="$(TMUX_PANE="$pane" "$ROOST" whoami)"
-assert_eq "$me" "$pane" "whoami prints the caller's pane id (%N)"
+assert_eq "$me" "$(T show -pqv -t "$pane" @roost-id)" "whoami prints the caller's stable pane ID"
 
 out="$(env -u TMUX_PANE "$ROOST" whoami 2>&1)"; rc=$?
 assert_eq "$rc" "1" "whoami outside a roost pane exits 1"
@@ -181,7 +181,7 @@ assert_eq "$(T display-message -p -t "$new" '#{window_name}')" "helper" "spawn n
 # would just echo the window name back ("helper/helper"). The pre-fix bug
 # rendered exactly that duplicate; assert_contains "reviewer" elsewhere does
 # NOT catch this because that fixture names a pane differently from its window.
-statusline="$("$ROOST" status | grep "^    $new ")"
+statusline="$("$ROOST" status | grep "  $new  ")"
 case "$statusline" in
   *"helper/helper"*) assert_eq "helper/helper" "helper" "spawn: status does not duplicate the label (no window/window echo)" ;;
   *) assert_eq ok ok "spawn: status does not duplicate the label (no window/window echo)" ;;

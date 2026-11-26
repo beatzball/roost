@@ -220,8 +220,19 @@ for t in test-*.sh; do
   fi
   printf '\n== %s ==\n' "$t"
   # each test file sources lib.sh and prints PASS/FAIL lines; capture counts via env
-  out="$(ROOST_TESTS_PASS=0 ROOST_TESTS_FAIL=0 bash "$t" 2>&1)"
+  test_home="$(mktemp -d /tmp/amx.XXXX)" || exit 1
+  mkdir -p "$test_home/home" || exit 1
+  # Stable IDs are permanent even with shape and reply recording off. Give
+  # each file its own ledger and keep inherited harness paths out of the run.
+  out="$(env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ZDOTDIR \
+    HOME="$test_home/home" XDG_CONFIG_HOME="$test_home/config" \
+    XDG_DATA_HOME="$test_home/data" XDG_STATE_HOME="$test_home/state" \
+    COPILOT_HOME="$test_home/copilot" CODEX_HOME="$test_home/codex" \
+    PI_CODING_AGENT_DIR="$test_home/pi" OPENCODE_CONFIG_DIR="$test_home/opencode" \
+    CLAUDE_CONFIG_DIR="$test_home/claude" CLAUDE_SETTINGS="$test_home/claude/settings.json" \
+    ROOST_TESTS_PASS=0 ROOST_TESTS_FAIL=0 bash "$t" 2>&1)"
   rc=$?
+  rm -rf "$test_home"
   printf '%s\n' "$out"
   pass=$((pass + $(printf '%s' "$out" | grep -c '^  PASS')))
   fail=$((fail + $(printf '%s' "$out" | grep -c '^  FAIL')))

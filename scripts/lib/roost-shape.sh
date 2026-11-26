@@ -18,6 +18,8 @@
 # project directory and every session id, and a session id alone is enough to
 # `--resume` a conversation on a shared machine (§3.1).
 
+. "${BASH_SOURCE[0]%/*}/roost-pane-id.sh"
+
 # roost_shape_saving -> prints the shape root, or nothing; exit 0 when saving
 # is on, 1 when it is off.
 #
@@ -375,7 +377,7 @@ roost_shape__stamp() {
 # part after the cut is skipped.
 ROOST_SHAPE_FS='#{session_id} #{session_attached} #{session_grouped} #{window_index} x#{q:session_group} x#{q:session_name} .#{session_id}'
 ROOST_SHAPE_FW='#{window_id} #{session_id} #{window_index} #{window_active} #{window_zoomed_flag} #{automatic-rename} #{window_layout} x#{q:window_name} .#{window_id}'
-ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} #{pane_pid} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} .#{pane_id}'
+ROOST_SHAPE_FP='#{pane_id} #{session_id} #{window_id} #{pane_index} #{pane_active} #{pane_pid} x#{q:pane_current_command} x#{q:@agent_state} x#{q:@roost-harness} x#{q:@roost-session} x#{q:@roost-transcript-path} x#{q:@roost-launch} x#{q:@roost-cwd} x#{q:@roost-name} x#{q:pane_current_path} x#{q:@roost-id} .#{pane_id}'
 
 # roost_shape__suspect LINE -> exit 0 when a listing line must be read again
 # field by field. On a server that prints control bytes as `\NNN` (R8.2), the
@@ -460,12 +462,12 @@ roost_shape__parse_windows() {
 }
 
 roost_shape__parse_panes() {
-  local line pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp end
+  local line pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp xid end
   P_ID=() P_SID=() P_WID=() P_IDX=() P_ACT=() P_PPID=() P_CMD=() P_STATE=() P_HARNESS=()
-  P_SESSION=() P_TRANSCRIPT=() P_LAUNCH=() P_RCWD=() P_NAME=() P_PATH=()
+  P_SESSION=() P_TRANSCRIPT=() P_LAUNCH=() P_RCWD=() P_NAME=() P_PATH=() P_ROOST_ID=()
   while IFS= read -r line; do
     case "$line" in %[0-9]*) ;; *) continue ;; esac
-    IFS=' ' read pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp end <<< "$line"
+    IFS=' ' read pid sid wid idx act ppid xc xs xh xi xt xl xr xn xp xid end <<< "$line"
     if [ "$end" != ".$pid" ] || roost_shape__suspect "$line"; then
       # The free text only; session, window, index and active are this line's
       # own context (see the window case above, and Codex B3).
@@ -478,11 +480,13 @@ roost_shape__parse_panes() {
       roost_shape__d "$pid" '#{@roost-cwd}'; xr="x$ROOST_SHAPE_D"
       roost_shape__d "$pid" '#{@roost-name}'; xn="x$ROOST_SHAPE_D"
       roost_shape__d "$pid" '#{pane_current_path}'; xp="x$ROOST_SHAPE_D"
+      roost_shape__d "$pid" '#{@roost-id}'; xid="x$ROOST_SHAPE_D"
     fi
     P_ID+=("$pid"); P_SID+=("$sid"); P_WID+=("$wid"); P_IDX+=("$idx"); P_ACT+=("$act"); P_PPID+=("$ppid")
     P_CMD+=("${xc#x}"); P_STATE+=("${xs#x}"); P_HARNESS+=("${xh#x}"); P_SESSION+=("${xi#x}")
     P_TRANSCRIPT+=("${xt#x}"); P_LAUNCH+=("${xl#x}"); P_RCWD+=("${xr#x}"); P_NAME+=("${xn#x}")
     P_PATH+=("${xp#x}")
+    P_ROOST_ID+=("${xid#x}")
   done <<< "$1"
 }
 
@@ -766,6 +770,13 @@ roost_shape__pane() {
   ROOST_SHAPE_PANE_KIND=""
   roost_shape__clean "${S_NAME[$2]}" || true; sname="$ROOST_SHAPE_V"
   printf 'pane %s:%s.%s\nid %s\n' "$sname" "$3" "${P_IDX[$k]}" "$pid"
+  if roost_pane_id_parse "${P_ROOST_ID[$k]}"; then
+    # A format can inherit a window option. Only the real pane's own ID is
+    # saved, so a global option cannot write the same ID into every block.
+    if [ "$(roost_shape__t show-options -pqv -t "$pid" @roost-id 2>/dev/null)" = "$ROOST_PANE_ID" ]; then
+      printf 'roost_id %s\n' "$ROOST_PANE_ID"
+    fi
+  fi
   if [ -n "${P_NAME[$k]}" ]; then
     if roost_shape__clean "${P_NAME[$k]}" octal; then printf 'name %s\n' "$ROOST_SHAPE_V"
     else printf 'roost save: pane %s: its name holds a control character; name not saved\n' "$pid" >&2; fi
@@ -1654,6 +1665,9 @@ roost_shape_check() {
     [ "$kind" = unknown ] && continue
     case "$keys" in *" $key "*) ROOST_SHAPE_FAULT="line $n: repeated key $key"; return 1 ;; esac
     keys="$keys $key "
+    if [ "$kind:$key" = pane:roost_id ] && ! roost_pane_id_parse "$val"; then
+      ROOST_SHAPE_FAULT="line $n: '$val' is not a valid pane id"; return 1
+    fi
     [ "$kind" = session ] && [ "$key" = group ] && gchk="$gchk$bstart $addr $val$nl"
   done < "$file"
   # Nothing but notes: no header was ever read.

@@ -305,7 +305,7 @@ ans --expect "$fp" "$a" --approve; assert_eq "$rc" 6 "a second answer to the sam
 assert_prefix "$err" "roost answer: this dialog was already answered (approve, " "...saying what and when"
 ans "$a" --deny; assert_eq "$rc" 6 "...and a deny of it too"
 assert_eq "$(keys a)" "31" "exactly one key in all"
-jdialog="$("$ROOST" status --json | python3 -c 'import json,sys
+jdialog="$(XDG_STATE_HOME="$work/state" "$ROOST" status --json | python3 -c 'import json,sys
 d = json.load(sys.stdin)
 p = [x for x in d["panes"] if x["id"] == sys.argv[1]][0]
 print(p["dialog"]["answered"]["action"], p["dialog"]["answered"]["by"])' "$a")"

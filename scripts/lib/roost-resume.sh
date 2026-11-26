@@ -1406,6 +1406,7 @@ roost_revive() {
       echo "roost revive: $h $sid was claimed by another launcher meanwhile — nothing resumed" >&2
       return 13
     fi
+    roost_pane_id_ensure roost_resume__t "$new" || true
     roost_resume__t set-option -p -t "$new" remain-on-exit failed 2>/dev/null || true
     roost_resume__t set-option -p -t "$new" @roost-was "$pane" 2>/dev/null || true
     [ -n "$rname" ] && { roost_resume__t set-option -p -t "$new" @roost-name "$rname" 2>/dev/null || true; }
