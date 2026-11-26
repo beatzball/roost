@@ -1,5 +1,25 @@
 # tests/lib.sh — minimal bash test harness. No framework.
 # Sourced by tests/test-*.sh. Requires: tmux, mktemp.
+
+# A directly invoked test needs the same isolated homes as tests/run.sh.
+# Re-enter it from a wrapper that owns cleanup, so the test can still use its
+# own EXIT trap. Library-only probes sourced by bash -c do not run a test.
+if [ -z "${ROOST_TEST_HOME:-}" ]; then
+  case "${0##*/}" in test-*.sh)
+    (
+      test_home="$(mktemp -d /tmp/amx.XXXX)" || exit 1
+      trap 'rm -rf "$test_home"' EXIT
+      mkdir -p "$test_home/home" || exit 1
+      env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ZDOTDIR \
+        ROOST_TEST_HOME="$test_home" HOME="$test_home/home" \
+        XDG_STATE_HOME="$test_home/state" XDG_CONFIG_HOME="$test_home/config" XDG_DATA_HOME="$test_home/data" \
+        COPILOT_HOME="$test_home/copilot" CODEX_HOME="$test_home/codex" PI_CODING_AGENT_DIR="$test_home/pi" \
+        OPENCODE_CONFIG_DIR="$test_home/opencode" CLAUDE_CONFIG_DIR="$test_home/claude" \
+        CLAUDE_SETTINGS="$test_home/claude/settings.json" "$BASH" "$0" "$@"
+    )
+    exit $? ;;
+  esac
+fi
 : "${ROOST_TESTS_PASS:=0}"
 : "${ROOST_TESTS_FAIL:=0}"
 

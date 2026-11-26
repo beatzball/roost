@@ -49,3 +49,24 @@ assert_contains "$out" "PASS: sanity: this fixture passes cleanly" \
 rm -f "$fixdir/test-crash.sh"
 (cd "$fixdir" && bash run.sh >/dev/null 2>&1)
 assert_eq "$?" "0" "run.sh exits 0 when no test file dies"
+
+# A direct invocation must redirect the same homes even when the parent
+# supplies harness-specific overrides. All inherited paths are canaries.
+canary="$fixdir/canary"
+mkdir "$canary"
+cat > "$fixdir/test-direct.sh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+. "$(dirname "$0")/lib.sh"
+for var in HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME COPILOT_HOME CODEX_HOME \
+           PI_CODING_AGENT_DIR OPENCODE_CONFIG_DIR CLAUDE_SETTINGS CLAUDE_CONFIG_DIR; do
+  case "${!var}" in "${ROOST_TEST_HOME:-missing}/"*) ;; *) echo "$var escaped"; exit 1 ;; esac
+done
+mkdir -p "$XDG_STATE_HOME/roost/pane-ids"
+touch "$XDG_STATE_HOME/roost/pane-ids/marker"
+EOF
+out="$(env -u ROOST_TEST_HOME HOME="$canary" XDG_CONFIG_HOME="$canary" XDG_DATA_HOME="$canary" \
+  XDG_STATE_HOME="$canary" COPILOT_HOME="$canary" CODEX_HOME="$canary" PI_CODING_AGENT_DIR="$canary" \
+  OPENCODE_CONFIG_DIR="$canary" CLAUDE_SETTINGS="$canary/settings.json" CLAUDE_CONFIG_DIR="$canary" \
+  bash "$fixdir/test-direct.sh" 2>&1)"; rc=$?
+assert_eq "$rc|$out|$(ls -A "$canary")" '0||' "a direct test redirects every harness home and the pane ID ledger"

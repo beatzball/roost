@@ -225,7 +225,7 @@ for t in test-*.sh; do
   # Stable IDs are permanent even with shape and reply recording off. Give
   # each file its own ledger and keep inherited harness paths out of the run.
   out="$(env -u TMUX -u TMUX_PANE -u ROOST_SOCKET -u ZDOTDIR \
-    HOME="$test_home/home" XDG_CONFIG_HOME="$test_home/config" \
+    ROOST_TEST_HOME="$test_home" HOME="$test_home/home" XDG_CONFIG_HOME="$test_home/config" \
     XDG_DATA_HOME="$test_home/data" XDG_STATE_HOME="$test_home/state" \
     COPILOT_HOME="$test_home/copilot" CODEX_HOME="$test_home/codex" \
     PI_CODING_AGENT_DIR="$test_home/pi" OPENCODE_CONFIG_DIR="$test_home/opencode" \
