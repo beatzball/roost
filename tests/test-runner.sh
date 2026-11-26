@@ -70,3 +70,15 @@ out="$(env -u ROOST_TEST_HOME HOME="$canary" XDG_CONFIG_HOME="$canary" XDG_DATA_
   OPENCODE_CONFIG_DIR="$canary" CLAUDE_SETTINGS="$canary/settings.json" CLAUDE_CONFIG_DIR="$canary" \
   bash "$fixdir/test-direct.sh" 2>&1)"; rc=$?
 assert_eq "$rc|$out|$(ls -A "$canary")" '0||' "a direct test redirects every harness home and the pane ID ledger"
+
+mkdir "$fixdir/tests"
+cp "$fixdir/lib.sh" "$fixdir/tests/"
+cat >"$fixdir/tests/test-relative.sh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+cd "$(dirname "$0")/.."
+. tests/lib.sh
+[ -n "${ROOST_TEST_HOME:-}" ] && printf 'isolated\n'
+EOF
+out="$(cd "$fixdir/tests" && env -u ROOST_TEST_HOME bash test-relative.sh 2>&1)"; rc=$?
+assert_eq "$rc|$out" '0|isolated' 'a test invoked from tests/ can cd before loading the isolation wrapper'

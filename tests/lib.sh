@@ -7,6 +7,7 @@
 if [ -z "${ROOST_TEST_HOME:-}" ]; then
   case "${0##*/}" in test-*.sh)
     (
+      test_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/${0##*/}" || exit 1
       test_home="$(mktemp -d /tmp/amx.XXXX)" || exit 1
       trap 'rm -rf "$test_home"' EXIT
       mkdir -p "$test_home/home" || exit 1
@@ -15,7 +16,7 @@ if [ -z "${ROOST_TEST_HOME:-}" ]; then
         XDG_STATE_HOME="$test_home/state" XDG_CONFIG_HOME="$test_home/config" XDG_DATA_HOME="$test_home/data" \
         COPILOT_HOME="$test_home/copilot" CODEX_HOME="$test_home/codex" PI_CODING_AGENT_DIR="$test_home/pi" \
         OPENCODE_CONFIG_DIR="$test_home/opencode" CLAUDE_CONFIG_DIR="$test_home/claude" \
-        CLAUDE_SETTINGS="$test_home/claude/settings.json" "$BASH" "$0" "$@"
+        CLAUDE_SETTINGS="$test_home/claude/settings.json" "$BASH" "$test_file" "$@"
     )
     exit $? ;;
   esac
