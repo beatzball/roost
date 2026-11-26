@@ -492,8 +492,9 @@ python3 tests/test-contrast.py   # theme contrast validator
 bash tests/test-panes.sh   # a single file
 ```
 
-Tests spin up a throwaway tmux server; they do not touch your real one. CI runs
-the same two commands on `ubuntu-24.04` and `macos-latest`
+Tests spin up a throwaway tmux server; they do not touch your real one. The
+suite uses a C compiler (`cc`) to build test harness stubs. CI runs the same
+two commands on `ubuntu-24.04`, `ubuntu-latest` (26.04), and `macos-latest`
 (`.github/workflows/ci.yml`), the suite split four ways per runner.
 
 ```sh

@@ -1381,16 +1381,11 @@ else
 fi
 # A harness with no recorded conversation, and a disagreeing identity. The
 # "harness" is a process NAMED claude, built the way tests/lib-shape.sh builds
-# its stub (stub_build_bin: tmux reads the executable's own name, and on macOS
-# a link or a copy of /bin/sleep reads `sleep` or is killed at exec).
+# its stub (stub_build_bin uses roost_test_named_sleep: tmux reads the
+# executable's own name, and on macOS a link or a copy of /bin/sleep reads
+# `sleep` or is killed at exec).
 mkdir -p "$TMP/fakebin"
-if [ "$(uname -s)" = Darwin ]; then
-  printf '%s\n' '#include <stdlib.h>' '#include <unistd.h>' \
-    'int main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 600); return 0; }' > "$TMP/fakebin/s.c"
-  cc -o "$TMP/fakebin/claude" "$TMP/fakebin/s.c" 2>/dev/null
-else
-  cp "$(command -v sleep)" "$TMP/fakebin/claude"
-fi
+roost_test_named_sleep "$TMP/fakebin/claude" || exit 1
 tmux -S "$PSOCK" new-window -d -t '=d:' "$TMP/fakebin/claude 600"
 q="$(tmux -S "$PSOCK" new-window -d -P -F '#{pane_id}' -t '=d:' 'ENV= exec /bin/sh')"
 tmux -S "$PSOCK" set -p -t "$q" @roost-harness claude \; set -p -t "$q" @roost-session 3fa3c0de-0000-4abc-8def-000000000001

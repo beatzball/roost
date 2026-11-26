@@ -67,6 +67,34 @@ roost_test_teardown() {
   [ -n "${ROOST_TEST_SOCKDIR:-}" ] && rm -rf "$ROOST_TEST_SOCKDIR"
 }
 
+# roost_test_named_sleep FILE — build a process named after FILE that sleeps
+# for argv[1] seconds (600 by default).
+#
+# On macOS a copy of a system binary (`cp /bin/sleep`) is killed at exec
+# (status 137, also after an ad-hoc codesign). On Ubuntu 26.04 (tmux 3.6),
+# ordinary foreground sleep and python3 reported their names, but copying
+# uutils sleep to `claude` made it exit 1 with "unknown program 'claude'".
+# tmux then had no live foreground process to name (#256). A silent skip
+# without cc would leave every harness agreement case untested and green.
+roost_test_named_sleep() {
+  if ! command -v cc >/dev/null 2>&1; then
+    printf '  FAIL: needs cc to build the named sleep fixture\n'
+    return 1
+  fi
+  cc -x c -o "$1" - <<'C' || {
+#include <stdlib.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    sleep(argc > 1 ? atoi(argv[1]) : 600);
+    return 0;
+}
+C
+    printf '  FAIL: cc could not build the named sleep fixture [%s]\n' "$1"
+    return 1
+  }
+}
+
 T() { tmux -S "$ROOST_TEST_SOCK" "$@"; }
 
 roost_test_tmux_named_guard() {
