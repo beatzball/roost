@@ -192,7 +192,7 @@ assert_eq "$(opt "$p" @roost-background)" "$STREAM_SINCE 1" "setup: the pane is 
 "$ROOST" read "$p" >/dev/null 2>&1
 pane_has "$p" @agent_state; assert_eq "$?" "1" "the Esc is recovered"
 pane_has "$p" @roost-background; assert_eq "$?" "1" "...and the hold record goes with the badge"
-"$ROOST" status --json > "$work/sj" 2>/dev/null
+XDG_STATE_HOME="$work/state" "$ROOST" status --json > "$work/sj" 2>/dev/null
 assert_eq "$(jget '[x["background"] for x in d["panes"] if x["id"]=="'"$p"'"][0]' < "$work/sj")" "None" "...so status --json says background null"
 assert_eq "$(cat "$(recdir "$p")/replies/000001" 2>/dev/null)" "AFTER-TOOL" "...and the turn file keeps the held main reply"
 assert_eq "$(cat "$(recdir "$p")/replies/000001.outcome" 2>/dev/null)" "interrupted" "...with outcome interrupted"
@@ -211,7 +211,7 @@ hook "$p" working --tool-hook <<< '{"tool_name":"Bash","tool_input":{"command":"
 assert_eq "$(opt "$p" @agent_state)" "working" "setup: the approved tool goes back to working"
 "$ROOST" read --json "$p" > "$work/rj" 2>/dev/null
 assert_eq "$(jget 'd["stale"], d["final"], d["background"]' < "$work/rj")" "(False, False, 1)" "back to working after the dialog: still the main reply, still held"
-"$ROOST" status --json > "$work/sj" 2>/dev/null
+XDG_STATE_HOME="$work/state" "$ROOST" status --json > "$work/sj" 2>/dev/null
 assert_eq "$(jget '[x["background"] for x in d["panes"] if x["id"]=="'"$p"'"][0]' < "$work/sj")" "1" "...and status --json still counts it"
 
 # --- 8. an outcome that cannot be written leaves no false turn (lead 8) -----------

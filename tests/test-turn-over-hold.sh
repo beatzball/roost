@@ -223,7 +223,7 @@ assert_eq "$(jget 'd["stale"]' < "$work/rj")" "False" "read --json: stale is fal
 assert_eq "$(jget 'd["final"]' < "$work/rj")" "False" "read --json: final is false"
 assert_eq "$(jget 'd["background"]' < "$work/rj")" "1" "read --json: background is 1"
 assert_eq "$(jget 'd["text"]' < "$work/rj")" "AFTER-TOOL" "read --json: the text is the main reply"
-"$ROOST" status --json > "$work/sj" 2>/dev/null
+XDG_STATE_HOME="$work/state" "$ROOST" status --json > "$work/sj" 2>/dev/null
 assert_eq "$(jget '[x["background"] for x in d["panes"] if x["id"]=="'"$p"'"][0]' < "$work/sj")" "1" "status --json: background is 1 on the held pane"
 assert_eq "$(jget 'sorted(set(str(x["background"]) for x in d["panes"] if x["id"]!="'"$p"'" and x["state"]!="working"))' < "$work/sj")" "['None']" "status --json: null on every pane that is not held"
 # two tasks: plural
@@ -247,7 +247,7 @@ X set-option -p -t "$p3" @roost-background "$(opt "$p3" @agent_since) ?"
 assert_eq "$(jget 'd["stale"]' < "$work/rj")" "False" "a ? count is a hold roost could not count: not stale"
 assert_eq "$(jget 'd["final"]' < "$work/rj")" "False" "...final false"
 assert_eq "$(jget 'd["background"]' < "$work/rj")" "None" "...background null, never 0"
-"$ROOST" status --json > "$work/sj" 2>/dev/null
+XDG_STATE_HOME="$work/state" "$ROOST" status --json > "$work/sj" 2>/dev/null
 assert_eq "$(jget '[x["background"] for x in d["panes"] if x["id"]=="'"$p3"'"][0]' < "$work/sj")" "None" "status --json: ? is null"
 # the released pane: final true, background null
 "$ROOST" read --json "$p" >/dev/null 2>&1

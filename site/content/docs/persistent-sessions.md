@@ -698,7 +698,8 @@ notes: a blank line between them is refused too.
   NAME`, with the save restore names in its message: after the kill, the
   newest save no longer has that session.
 - **A window linked into two sessions** (`tmux link-window`) comes back as
-  two separate windows.
+  two separate windows. The first copy keeps the original pane IDs. The
+  second copy gets fresh IDs.
 - **A session group** (`tmux new-session -t`) comes back as a group: the
   first member with its windows, and each other member joined to it.
 

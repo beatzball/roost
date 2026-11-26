@@ -808,6 +808,7 @@ for d in d2 d3 d4 d5 d6; do TL split-window -h -d -t "$g1" -c "$SHAPE_TMP/$d" "$
 TL link-window -s '=alpha:1' -t '=beta:9'
 sleep 1
 F1="$(fleet)"; L1="$(layouts)"; J1="$(json5)"
+linked_id="$(TL show-options -pqv -t "$a1" @roost-id)"
 R save >/dev/null 2>&1
 stop_server; : > "$HOME/shells.log"; : > "$HOME/env.log"
 # --no-resume: this case is placement's (§8.1 test 1), every pane a shell. Since
@@ -839,6 +840,9 @@ assert_eq "$(strip "$(TL display -p -t '=alpha:5' '#{window_layout}')")" "$(stri
 assert_eq "$(TL display -p -t "$(first_pane alpha)" '#{window_width}x#{window_height}')" "200x50" "the first window is 200x50"
 assert_eq "$(TL list-panes -t '=beta:9' -F x | wc -l | tr -d ' '):$(TL display -p -t '=beta:9' '#{window_linked}')" "2:0" \
   "a window linked into two sessions comes back as two windows (§3.2)"
+copy_id="$(TL display -p -t '=beta:9.1' '#{@roost-id}')"
+assert_eq "$(TL display -p -t '=alpha:1.1' '#{@roost-id}')" "$linked_id" "the first copy keeps its stable ID"
+[ -n "$copy_id" ] && [ "$copy_id" != "$linked_id" ]; assert_true $? "the second copy gets a fresh stable ID"
 assert_eq "$(TL display -p -t "$(TL list-panes -t '=beta:1' -F '#{pane_id}' | tail -1)" '#{pane_current_path}')" "$SHAPE_TMP/d6" \
   "a keyed pane is a shell in its directory (--no-resume)"
 npl="$(TL list-panes -a -F x | wc -l | tr -d ' ')"

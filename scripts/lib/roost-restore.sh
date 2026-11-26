@@ -538,6 +538,29 @@ roost_restore__was() {
       && printf '%s %s %s\n' "$old" "${ROOST_RESTORE_OLDBOOT:-unknown}" "$1" >> "$ROOST_RESTORE_MAPDIR/$ROOST_RESTORE_BOOT" ) 2>/dev/null || true
 }
 
+# A window linked into two sessions is saved under both addresses. Restore
+# places separate copies (§3.2), so only the first copy of the original pane
+# keeps its ID. Matching the saved tmux number as well as the stable ID keeps
+# a conflicting ID on a different saved pane from being mistaken for a copy.
+roost_restore__pane_id() {
+  local pane="$1" block="$2" saved old pair=""
+  saved="$(roost_shape_get "$block" roost_id 2>/dev/null || true)"
+  if [ -n "$saved" ] && roost_pane_id_parse "$saved"; then
+    saved="$ROOST_PANE_ID"
+    old="$(roost_shape_get "$block" id 2>/dev/null || true)"
+    pair="$saved $old"$'\n'
+    case "$ROOST_RESTORE_SEEN_IDS" in *$'\n'"$pair"*) saved=""; pair="" ;; esac
+  fi
+  if roost_pane_id_restore t "$pane" "$saved"; then
+    ROOST_RESTORE_SEEN_IDS="$ROOST_RESTORE_SEEN_IDS$pair"
+    return 0
+  fi
+  printf 'roost restore: pane %s (%s) could not keep its pane id%s\n' \
+    "$(roost_restore__addr "$block")" "$pane" "${saved:+ $saved}" >&2
+  roost_pane_id_ensure t "$pane" restore || true
+  return 1
+}
+
 # roost_restore__rec PANE BLOCKFILE [REASON] — one placed pane, for the
 # report (§4.3 Report) and --json. Appends to ROOST_RESTORE_RECS one line:
 #   was|pane|session|window|harness|reason|stale-id|listing|launch hint
@@ -965,13 +988,7 @@ roost_restore__build_window() {
     # Stamp before respawning: the hook in the new process can ask whoami
     # as soon as it starts. The saved ID may still be on another live pane
     # if this is a partial restore into a running server.
-    out="$(roost_shape_get "${blocks[$i]}" roost_id 2>/dev/null || true)"
-    if ! roost_pane_id_restore t "$id" "$out"; then
-      printf 'roost restore: pane %s (%s) could not keep its pane id%s\n' \
-        "$(roost_restore__addr "${blocks[$i]}")" "$id" "${out:+ $out}" >&2
-      roost_pane_id_ensure t "$id" restore || true
-      rc=13
-    fi
+    roost_restore__pane_id "$id" "${blocks[$i]}" || rc=13
     out="$(roost_restore__cwd "${blocks[$i]}")"
     if [ "$id" = "$5" ]; then
       # The bootstrap was claimed before this window was built, so a person
@@ -1329,6 +1346,7 @@ roost_restore_run() {
   ROOST_RESTORE_MAPDIR="" ROOST_RESTORE_OLDBOOT="$(roost_restore__hdr "$file" boot 2>/dev/null || true)"
   [ -n "$sdir" ] && ROOST_RESTORE_MAPDIR="$sdir/aliases"
   ROOST_RESTORE_N=0 ROOST_RESTORE_SESSIONS=0 ROOST_RESTORE_WINDOWS=0 ROOST_RESTORE_PANES=0 ROOST_RESTORE_WAITING=0
+  ROOST_RESTORE_SEEN_IDS=$'\n'
   # The bootstrap's name record (roost_restore__respawn_claimed) is this
   # run's alone: a value from the environment is never one (review round 8,
   # Fable N1).
