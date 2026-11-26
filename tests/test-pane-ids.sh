@@ -133,7 +133,15 @@ assert_true $? "spawning after close rejects the already issued random payload"
 R save --to "$work/shape" >/dev/null || exit 1
 assert_contains "$(cat "$work/shape")" "roost_id $me" "save keeps the original ID"
 sed "/^roost_id $id\$/d" "$work/shape" > "$work/old-shape"
-T kill-server || exit 1
+T kill-server >/dev/null 2>&1 || true
+# The shutdown client can return before tmux 3.4 unlinks its socket. Wait
+# before starting a server at the same path or the next client can reach the
+# server that is still exiting.
+for ((i=0; i<100; i++)); do
+  [ -S "$sock" ] || break
+  sleep 0.05
+done
+[ ! -S "$sock" ] || exit 1
 # Start another boot with %0 used elsewhere so a lookup by an old numeric
 # sender ID cannot pass this test by accident.
 T -f /dev/null new-session -d -x 200 -y 50 -s unrelated 'ENV= exec /bin/sh' || exit 1
@@ -146,4 +154,10 @@ restored_worker="$(T list-panes -a -F '#{pane_id} #{@roost-name}' | awk '$2=="wo
 valid "$(id_of "$restored_worker")" && [ "$(id_of "$restored_worker")" != "$id" ]
 assert_true $? "a pane from an old block receives a new ID"
 R send "$me" "printf 'REPLY-%s\\n' RECEIVED" >/dev/null 2>"$work/return.err"; assert_true $? "the recorded sender ID still routes after restore"
-assert_contains "$(T capture-pane -pt "$restored")" REPLY-RECEIVED "the reply reaches the restored pane"
+for ((i=0; i<100; i++)); do
+  screen="$(T capture-pane -pt "$restored")"
+  [[ "$screen" == *REPLY-RECEIVED* ]] && break
+  sleep 0.05
+done
+assert_contains "$screen" REPLY-RECEIVED "the reply reaches the restored pane"
+[ "$ROOST_TESTS_FAIL" -eq 0 ]
