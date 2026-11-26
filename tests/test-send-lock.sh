@@ -157,6 +157,33 @@ assert_contains "$err" "nothing was submitted" "...and that nothing was submitte
 assert_eq "$(lines "$f1")" 0 "...and nothing reached the pane"
 [ -d "$lock" ]; assert_true $? "...and the live holder's lock was not stolen"
 
+# uutils mkdir can report success for both creators in a race. Its -v prints
+# only for the actual creator. Force a success with no output for the two
+# already-held directories to check both the pane lock and the takeover guard.
+# Use a subshell with an output file: Bash 3.2 misparses a case inside a
+# function declared directly inside a command substitution.
+mkdir "$lock.take"
+printf '%s\n' "$holder" >"$lock.take/pid"
+(
+  . "$HERE/scripts/lib/roost-panelock.sh"
+  mkdir() {
+    case "$1" in
+      --version) printf '%s\n' 'mkdir (uutils coreutils) 0.10.0'; return ;;
+      -v) shift ;;
+    esac
+    if [ -d "$1" ] || [ "$1" = "$lock.released" ]; then return 0; fi
+    command mkdir -v "$@"
+  }
+  roost_panelock__mkdir "$lock"; printf '%s ' "$?"
+  roost_panelock__takeover "$lock"; printf '%s ' "$?"
+  roost_panelock__mkdir "$lock.released"; printf '%s\n' "$?"
+) >"$work/fake-mkdir-result"
+assert_eq "$(cat "$work/fake-mkdir-result")" "1 1 1" \
+  "a silent uutils mkdir success is contention even if the winner already released"
+assert_eq "$(cat "$lock/pid")|$(cat "$lock.take/pid" 2>/dev/null)" "$holder|$holder" \
+  "...and both directories still belong to the live holder"
+rm -rf "$lock.take"
+
 # A timeout with a leading zero is read as a human reads it, not as octal:
 # `$((08 * 10))` aborts bash 3.2 and 5 alike ("value too great for base"),
 # which under `set -e` would end the send with no message at all.

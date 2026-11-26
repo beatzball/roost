@@ -16,6 +16,11 @@ and this project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed pane lock acquisition on Ubuntu 26.04 so concurrent `roost send`
+  and `roost answer` calls stay serialized. (#256)
+
 ## [0.13.0]
 
 ### Added

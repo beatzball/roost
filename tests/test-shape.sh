@@ -62,6 +62,9 @@ assert_eq "$rc:$d" "1:" "saving off: prints nothing, exits 1"
 d="$(ROOST_SHAPE_DIR="$SHAPE_TMP/off-check" roost_shape_dir -L x >/dev/null; ROOST_SHAPE_DIR="" roost_shape_dir -L y)"
 [ ! -e "$SHAPE_TMP/off-check/y" ]; assert_true $? "...and makes nothing"
 
+# wait_cmd PANE NAME — until #{pane_current_command} reads NAME, at most 3 s.
+wait_cmd() { local i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$1" '#{pane_current_command}')" != "$2" ]; do sleep 0.1; i=$((i+1)); done; }
+
 echo "== the test library itself =="
 stub_store_add 3fa32375-68cd-43c9-8bcf-fbb876b2db1e /tmp/roost-fixture/w.x/proj
 f="$CLAUDE_CONFIG_DIR/projects/-tmp-roost-fixture-w-x-proj/3fa32375-68cd-43c9-8bcf-fbb876b2db1e.jsonl"
@@ -72,6 +75,8 @@ i=0; while [ "$i" -lt 30 ] && [ -z "$(TL show -pqv -t "$p" @roost-session)" ]; d
 assert_eq "$(TL show -pqv -t "$p" @roost-session)" "3fa32375-68cd-43c9-8bcf-fbb876b2db1e" \
   "the claude stub with STUB_IDENTIFY=1 identifies its pane with the --resume id"
 assert_contains "$(cat "$STUB_LOG")" "claude --resume 3fa32375-68cd-43c9-8bcf-fbb876b2db1e" "...and logs its argv"
+# The wrapper reports the identity before it execs the named sleeper.
+wait_cmd "$p" claude
 assert_eq "$(TL display -p -t "$p" '#{pane_current_command}')" "claude" "...and reads as claude"
 TL kill-pane -t "$p"
 
@@ -86,8 +91,6 @@ has() { printf '%s\n' "$1" | grep -q "^$2 "; }
 # wait_opt PANE OPTION — until the pane's option is set (an identify inside it
 # runs asynchronously to this shell), at most 3 s.
 wait_opt() { local i=0; while [ "$i" -lt 30 ] && [ -z "$(TL show -pqv -t "$1" "$2")" ]; do sleep 0.1; i=$((i+1)); done; }
-# wait_cmd PANE NAME — until #{pane_current_command} reads NAME, at most 3 s.
-wait_cmd() { local i=0; while [ "$i" -lt 30 ] && [ "$(TL display -p -t "$1" '#{pane_current_command}')" != "$2" ]; do sleep 0.1; i=$((i+1)); done; }
 ID_A=3fa32375-68cd-43c9-8bcf-fbb876b2db1e
 ID_B=0b5e1c2a-7d4f-4e61-9a3b-5c2d1e0f9a87
 ID_C=6a7b8c9d-1e2f-4a3b-8c4d-5e6f7a8b9c0d
@@ -416,7 +419,10 @@ if [ -r /proc/self/stat ]; then
     "...while a record in the old ps form, from a roost before the ticks, still reads as live"
   # The command name is field 2, in parentheses, and may hold `) `: the
   # ticks are counted from after its LAST `) `.
-  cp "$(command -v sleep)" "$OD/a) b) c"; "$OD/a) b) c" 30 & op=$!; sleep 0.2
+  roost_test_named_sleep "$OD/a) b) c" || exit 1
+  "$OD/a) b) c" 30 & op=$!
+  sleep 0.2
+  assert_eq "$(cat "/proc/$op/comm" 2>/dev/null)" "a) b) c" "the fixture has a command name containing ') '"
   assert_eq "$(bash -c '. scripts/lib/roost-shape.sh; roost_shape__lstart "$1"' _ "$op")" \
     "t:$(sed 's/.*) //' "/proc/$op/stat" | cut -d' ' -f20)" "...and a command name holding ') ' does not shift the fields"
   kill "$op" 2>/dev/null

@@ -134,6 +134,7 @@
 # its other knobs, for the same measured reason).
 ROOST_PANELOCK=""
 ROOST_PANELOCK_HELD=0
+ROOST_PANELOCK_MKDIR_VERBOSE=""
 
 roost_panelock_path() {
   case "$2" in %[0-9]*) ;; *) return 0 ;; esac
@@ -195,16 +196,42 @@ roost_panelock__retire() {
   return 1
 }
 
-# 0 held, 1 someone else has it, 3 could not be made or could not keep its
-# pid. "Someone else has it" is ONLY a name that exists: a mkdir that fails
-# with nothing there (a socket directory that cannot be written) used to
-# read as held, wait the whole bound, and then name a send that did not
-# exist (flock review).
-roost_panelock__mkdir() {
-  if ! mkdir "$1" 2>/dev/null; then
-    [ -e "$1" ] && return 1
-    return 3
+# Ubuntu 26.04's uutils mkdir can exit 0 for two concurrent creators of one
+# directory. With twelve contenders, only the process whose mkdir syscall
+# succeeded printed a creation message under -v (#256). Require that message
+# for the pane lock and its takeover guard. Other implementations keep their
+# normal status check, including BusyBox, whose mkdir has no -v.
+#
+# 0 created, 1 another process got there first, 3 mkdir failed and there is
+# no directory. A silent uutils success is contention even if the other
+# holder has already removed its directory by the time we check.
+roost_panelock__create_dir() {
+  local created
+  if [ -z "$ROOST_PANELOCK_MKDIR_VERBOSE" ]; then
+    case "$(mkdir --version 2>/dev/null || true)" in
+      'mkdir (uutils coreutils)'*) ROOST_PANELOCK_MKDIR_VERBOSE=1 ;;
+      *) ROOST_PANELOCK_MKDIR_VERBOSE=0 ;;
+    esac
   fi
+  if [ "$ROOST_PANELOCK_MKDIR_VERBOSE" = 1 ]; then
+    if created="$(mkdir -v "$1" 2>/dev/null)"; then
+      [ -n "$created" ] && return 0
+      return 1
+    fi
+  elif mkdir "$1" 2>/dev/null; then
+    return 0
+  fi
+  [ -e "$1" ] && return 1
+  return 3
+}
+
+# 0 held, 1 someone else has it, 3 could not be made or could not keep its
+# pid. After a mkdir that fails, "someone else has it" is ONLY a name that
+# exists: a mkdir that fails with nothing there (a socket directory that
+# cannot be written) used to read as held, wait the whole bound, and then
+# name a send that did not exist (flock review).
+roost_panelock__mkdir() {
+  roost_panelock__create_dir "$1" || return $?
   if ! printf '%s\n' "$$" > "$1/pid" 2>/dev/null; then
     # A directory that is GONE was retired from under this process between
     # its mkdir and its write (the age read-back makes that rare, not
@@ -229,7 +256,7 @@ roost_panelock__takeover() {
       roost_panelock__retire "$guard" "$seen" || true
     fi
   fi
-  mkdir "$guard" 2>/dev/null || return 1
+  roost_panelock__create_dir "$guard" || return 1
   printf '%s\n' "$$" > "$guard/pid" 2>/dev/null || true
   if [ -d "$lock" ]; then
     seen="$(roost_panelock__pid "$lock")"

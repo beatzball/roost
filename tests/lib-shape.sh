@@ -96,7 +96,7 @@ shape_test_setup() {
   STUB_WRAP="$SHAPE_TMP/stub-wrap"
   export STUB_LOG="$SHAPE_TMP/stub.log"
   export STUB_BIN
-  stub_build_bin "$STUB_BIN"
+  stub_build_bin "$STUB_BIN" || exit 1
   stub_write_wrappers "$STUB_WRAP"
   export PATH="$STUB_WRAP:$PATH"
 
@@ -180,25 +180,11 @@ canary_check() {
 # the file reads the same. A script would read as its interpreter, and a stub
 # ending in `exec sleep 600` reads `sleep`.
 #
-# On macOS a copy of a system binary (`cp /bin/sleep`) is killed at exec
-# (status 137, also after an ad-hoc codesign), so there it is compiled. No `cc`
-# on a Mac stops the file: a silent skip would leave every agreement case
-# untested and green.
+# The compiled fixture in tests/lib.sh covers both macOS and Linux, where
+# renaming a copy of the system sleep can make it exit at startup.
 stub_build_bin() {
   local d="$1"
-  mkdir -p "$d"
-  if [ "$(uname -s)" = Darwin ]; then
-    if ! command -v cc >/dev/null 2>&1; then
-      printf '  FAIL: needs cc for the harness stub (a copy of /bin/sleep is killed at exec on macOS)\n'
-      exit 1
-    fi
-    printf '%s\n' '#include <stdlib.h>' '#include <unistd.h>' \
-      'int main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 600); return 0; }' \
-      > "$d/stub.c"
-    cc -o "$d/claude" "$d/stub.c" || { printf '  FAIL: cc could not build the harness stub\n'; exit 1; }
-  else
-    cp "$(command -v sleep)" "$d/claude"
-  fi
+  mkdir -p "$d" && roost_test_named_sleep "$d/claude" || return 1
   cp "$d/claude" "$d/codex"
 }
 
