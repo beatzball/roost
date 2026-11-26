@@ -20,10 +20,10 @@ id_of() { T show-options -pqv -t "$1" @roost-id; }
 in_pane() { local p="$1"; shift; env TMUX="$sock,$(T display -p '#{pid}'),0" TMUX_PANE="$p" "$@"; }
 valid() { roost_pane_id_parse "$1" && [ "$1" = "$ROOST_PANE_ID" ]; }
 
-changed="$(awk '/^## / { if (active) exit; active = ($0 ~ /Unreleased/) } active && /^### / { changed = ($0 == "### Changed") } active && changed' "$HERE/CHANGELOG.md")"
-assert_contains "$changed" 'roost whoami' "Unreleased Changed calls out the new whoami output"
-assert_contains "$changed" 'roost status' "Unreleased Changed calls out the leading status ID"
-assert_contains "$changed" 'p-` are read as pane IDs' "Unreleased Changed calls out the reserved address prefix"
+changed="$(awk '/^## / { if (active) exit; active = ($0 == "## [0.14.0]") } active && /^### / { changed = ($0 == "### Changed") } active && changed' "$HERE/CHANGELOG.md")"
+assert_contains "$changed" 'roost whoami' "0.14.0 Changed calls out the new whoami output"
+assert_contains "$changed" 'roost status' "0.14.0 Changed calls out the leading status ID"
+assert_contains "$changed" 'p-` are read as pane IDs' "0.14.0 Changed calls out the reserved address prefix"
 
 # All single-symbol substitutions and distinct adjacent swaps for each of 64
 # random codewords, including the fixed prefix and the check digit.
